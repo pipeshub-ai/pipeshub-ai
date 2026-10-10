@@ -491,7 +491,7 @@ export function ThinkingBlock({ content }: { content: string }) {
           userSelect: 'none',
         }}
       >
-        <Text size="1" weight="medium" style={{ color: 'var(--slate-10)', flex: 1 }}>
+        <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
           Thinking
         </Text>
         <MaterialIcon

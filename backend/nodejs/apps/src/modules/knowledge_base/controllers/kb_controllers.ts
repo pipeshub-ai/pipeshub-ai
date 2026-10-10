@@ -1808,42 +1808,63 @@ export const createKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      const {
+        principals,
+        userIds = [],
+        teamIds = [],
+        role,
+      } = req.body as {
+        principals?: Array<{
+          principalType: 'user' | 'team';
+          principalId: string;
+          role: string;
+        }>;
+        userIds?: string[];
+        teamIds?: string[];
+        role?: string;
+      };
 
-      if (userIds.length === 0 && teamIds.length === 0) {
-        throw new BadRequestError('User IDs or team IDs are required');
-      }
-
-      // Role is required only if users are provided (teams don't need roles)
-      if (userIds.length > 0 && !role) {
-        throw new BadRequestError('Role is required when adding users');
-      }
-
-      // Validate role only if it's provided (for users)
-      if (role) {
-        const validRoles = [
-          'OWNER',
-          'WRITER',
-          'READER',
-        ];
-        if (!validRoles.includes(role)) {
+      let payload: Record<string, unknown>;
+      if (principals !== undefined) {
+        if (principals.length === 0) {
+          throw new BadRequestError('At least one principal is required');
+        }
+        if (userIds.length > 0 || teamIds.length > 0 || role) {
           throw new BadRequestError(
-            `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+            'Send either principals or userIds/teamIds/role, not both',
           );
         }
-      }
+        logger.info(
+          `Creating permissions for ${principals.length} principals on KB ${kbId}`,
+        );
+        payload = { principals };
+      } else {
+        if (userIds.length === 0 && teamIds.length === 0) {
+          throw new BadRequestError('User IDs or team IDs are required');
+        }
 
-      logger.info(
-        `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
-      );
+        // Role is required only if users are provided (teams default to READER)
+        if (userIds.length > 0 && !role) {
+          throw new BadRequestError('Role is required when adding users');
+        }
 
-      const payload: { userIds: string[]; teamIds: string[]; role?: string } = {
-        userIds: userIds,
-        teamIds: teamIds,
-      };
-      // Only include role if it's provided (for users)
-      if (role) {
-        payload.role = role;
+        if (role) {
+          const validRoles = ['OWNER', 'WRITER', 'COMMENTER', 'READER'];
+          if (!validRoles.includes(role)) {
+            throw new BadRequestError(
+              `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+            );
+          }
+        }
+
+        logger.info(
+          `Creating ${role || 'team'} permissions for ${userIds.length} users and ${teamIds.length} teams on KB ${kbId}`,
+        );
+
+        payload = { userIds, teamIds };
+        if (role) {
+          payload.role = role;
+        }
       }
 
       const response = await executeConnectorCommand(
@@ -1888,7 +1909,7 @@ export const updateKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      const { userIds = [], teamIds = [], role } = req.body;
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');
@@ -1898,14 +1919,17 @@ export const updateKBPermission =
         throw new BadRequestError('Role is required');
       }
 
-      const validRoles = [
-        'OWNER',
-        'WRITER',
-        'READER',
-      ];
+      const validRoles = ['OWNER', 'WRITER', 'COMMENTER', 'READER'];
       if (!validRoles.includes(role)) {
         throw new BadRequestError(
           `Invalid role. Must be one of: ${validRoles.join(', ')}`,
+        );
+      }
+
+      // A team grant covers every current and future member, so it can never be OWNER.
+      if (teamIds.length > 0 && role === 'OWNER') {
+        throw new BadRequestError(
+          'A team role must be one of WRITER, COMMENTER or READER.',
         );
       }
 

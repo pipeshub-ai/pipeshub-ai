@@ -58,6 +58,21 @@ class TestArtifactContextReminder:
         assert "chart.png" in goal.constraints[0]
         assert "art-1" in goal.constraints[0]
 
+    async def test_listing_actor_carries_the_chat_acl_version(self, monkeypatch) -> None:
+        """The PDP cache key needs the aclVersion Node sent for this run."""
+        context = _make_context(
+            graph_provider=MagicMock(), blob_store=MagicMock(), acl_version=9, run_id="run-1",
+        )
+        registry = MagicMock()
+        registry.list_for_conversation = AsyncMock(return_value=[])
+        monkeypatch.setattr(AgentContext, "artifact_registry", property(lambda self: registry))
+        ctx, _ = _make_turn_ctx()
+
+        await artifact_context_reminder(context)(ctx, _noop_next)
+
+        actor = registry.list_for_conversation.await_args.kwargs["actor"]
+        assert (actor.acl_version, actor.run_id) == (9, "run-1")
+
     async def test_includes_args_and_summary_from_conversation(self, monkeypatch) -> None:
         previous_conversations = [
             {

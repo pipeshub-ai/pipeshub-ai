@@ -52,6 +52,10 @@ async def initialize_container(container: QueryAppContainer) -> bool:
     logger.info("🚀 Initializing application resources")
 
     try:
+        from app.modules.authz.node_pdp_client import set_node_pdp_client
+
+        set_node_pdp_client(container.node_pdp_client())
+
         # Ensure connector service is healthy before starting query service
         logger.info("Checking Connector service health before startup")
         await Health.health_check_connector_service(container)

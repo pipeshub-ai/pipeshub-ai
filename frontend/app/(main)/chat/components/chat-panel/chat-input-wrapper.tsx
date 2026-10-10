@@ -1,8 +1,10 @@
 'use client';
 
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
+import type { MentionRef } from '../composer/composer-input.types';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
@@ -18,6 +20,24 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { useCollabMessageContext } from '@/chat/hooks/use-collab-message-context';
+import { AudienceNotice } from './audience-notice';
+import { NonParticipantPrompt, type NonParticipant } from './non-participant-prompt';
+import { useFeatureFlagsStore, selectChatMentionsEnabled, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { CollaborationApi } from '@/chat/collaboration-api';
+import type { CollaboratorAccessLevel } from '@/chat/collaboration-types';
+import { classifyResponder } from '@/chat/mentions/classify';
+import { MentionsApi } from '@/chat/mentions/api';
+import { useChatParticipants } from '@/chat/mentions/use-chat-participants';
+import { useAddPeopleStore } from '@/chat/mentions/add-people-store';
+import { DraftShareLine } from '../collaboration/draft-share-line';
+import { useParticipantsStore, labelOfMention } from '@/chat/mentions/participants-store';
+import { newClientMessageId } from '@/chat/utils/collab-send-fields';
+import { refreshFeedForSlot } from '@/chat/utils/collab-send';
+import { conversationErrorMessage } from '@/chat/utils/conversation-errors';
+import { toast } from '@/lib/store/toast-store';
+import { useUserStore } from '@/lib/store/user-store';
+import { useSendCoachmarks } from './use-send-coachmarks';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -33,6 +53,36 @@ export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
+  const { collabActive } = useCollabMessageContext();
+  const { t } = useTranslation();
+  const mentionsEnabled = useFeatureFlagsStore(selectChatMentionsEnabled);
+  const collabFlag = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
+  const participants = useChatParticipants(mentionsEnabled);
+  const [outsiders, setOutsiders] = useState<NonParticipant[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [shareToolResults, setShareToolResults] = useState(false);
+  const participantCount = useChatStore((s) => {
+    const convId = s.activeSlotId ? s.slots[s.activeSlotId]?.convId : null;
+    if (!convId) return undefined;
+    const row = [...s.conversations, ...s.sharedConversations].find((c) => c.id === convId);
+    return row?.collaboratorCount !== undefined ? row.collaboratorCount + 1 : undefined;
+  });
+
+  // The busy banner (someone else's run, a queued send, the "new messages" notice) sits where the tip would; it goes first.
+  const busyBannerShown = useChatStore((s) => {
+    const slot = s.activeSlotId ? s.slots[s.activeSlotId] : undefined;
+    if (!slot || slot.accessLost) return false;
+    return Boolean(slot.queuedSend || slot.changedNotice || (slot.activeRun && !slot.isStreaming));
+  });
+
+  const sendTips = useSendCoachmarks({
+    enabled: mentionsEnabled,
+    shared: collabActive,
+    participantCount,
+    respondMode: participants.respondMode,
+    sessionKind: isAgentChat ? 'agent' : 'chat',
+    paused: outsiders.length > 0 || busyBannerShown,
+  });
 
   useEffect(() => {
     if (effectiveAgentId) {
@@ -146,7 +196,59 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[]) => {
+  const postNote = async (message: string, attachments: AttachmentRef[] | undefined, mentions: MentionRef[]): Promise<boolean> => {
+    const { ref } = participants;
+    const slotId = useChatStore.getState().activeSlotId;
+    if (!ref || !slotId) return false;
+    const restore = () => useChatStore.getState().updateSlot(slotId, { composerRestore: message });
+    if (attachments && attachments.length > 0) {
+      toast.error(
+        t('chat.mentions.note.noAttachments', {
+          defaultValue: 'A note cannot carry attachments. Mention @assistant to ask about a file.',
+        }),
+      );
+      restore();
+      return false;
+    }
+    try {
+      const outcome = await MentionsApi.postNote(ref, {
+        query: message.trim(),
+        mentions,
+        clientMessageId: newClientMessageId(),
+      });
+      await refreshFeedForSlot(slotId);
+      const labels = useParticipantsStore.getState().labels;
+      setOutsiders(
+        outcome.nonParticipants.map((userId) => ({
+          userId,
+          name: labelOfMention(labels, { type: 'user', id: userId }) ?? '',
+        })),
+      );
+      return true;
+    } catch (error) {
+      toast.error(conversationErrorMessage(t, error));
+      restore();
+      return false;
+    }
+  };
+
+  const handleAddOutsider = async (person: NonParticipant, level: CollaboratorAccessLevel) => {
+    if (!participants.ref) return;
+    setAdding(true);
+    try {
+      await CollaborationApi.putCollaborators(participants.ref, {
+        collaborators: [{ principalType: 'user', principalId: person.userId, accessLevel: level }],
+      });
+      setOutsiders((list) => list.filter((p) => p.userId !== person.userId));
+      toast.success(t('chat.mentions.resolve.added', { defaultValue: 'Added to this chat' }));
+    } catch (error) {
+      toast.error(conversationErrorMessage(t, error));
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const handleSend = async (message: string, attachments?: AttachmentRef[], mentions?: MentionRef[]) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
@@ -156,6 +258,22 @@ export function ChatInputWrapper() {
     if (store.settings.mode === 'search' && !isAgentChat) {
       if (message.trim()) handleSearchSubmit(message.trim());
       return;
+    }
+
+    // A note asks nobody, so it skips the run block below and send-when-free (MN-10): it can land while
+    // someone else's run streams. Without a conversation yet there is nobody to note. In `mention_only` a
+    // message that mentions nobody is a note too (MN-09).
+    if (mentionsEnabled && participants.ref) {
+      const noted = mentions ?? [];
+      const responder = classifyResponder({
+        mentions: noted,
+        respondMode: participants.respondMode,
+        sessionKind: isAgentChat ? 'agent' : 'chat',
+      });
+      if (responder === 'note') {
+        if (await postNote(message, attachments, noted)) sendTips.onSent(noted);
+        return;
+      }
     }
 
     // ── Chat mode ──
@@ -216,9 +334,21 @@ export function ChatInputWrapper() {
       });
     }
 
+    // The stream route accepts a mention of a colleague outside the chat too; with the full list in hand the owner is offered to add them.
+    if (mentionsEnabled && participants.canInvite && mentions?.length) {
+      const known = new Set(participants.candidates.map((c) => c.ref.id));
+      const meUserId = useUserStore.getState().profile?.userId;
+      const labels = useParticipantsStore.getState().labels;
+      const outside = mentions
+        .filter((m) => m.type === 'user' && m.id !== meUserId && !known.has(m.id))
+        .map((m) => ({ userId: m.id, name: labelOfMention(labels, m) ?? '' }));
+      if (outside.length > 0) setOutsiders(outside);
+    }
+
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
+    sendTips.onSent(mentions);
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: message }],
@@ -226,19 +356,60 @@ export function ChatInputWrapper() {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
           attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          mentions: mentions && mentions.length > 0 ? mentions : undefined,
+          shareToolResults: collabActive && isAgentChat && shareToolResults ? true : undefined,
         },
       },
       startRun: true,
     });
+    // The choice covers one turn; the next send starts from "private" again.
+    setShareToolResults(false);
   };
 
-  return (
+  const input = (
     <ChatInput
       onSend={handleSend}
+      placeholder={
+        mentionsEnabled
+          ? t(collabActive ? 'chat.mentions.placeholder.shared' : 'chat.mentions.placeholder.solo')
+          : undefined
+      }
       onUploadFile={handleUploadFile}
       onDeleteFile={handleDeleteFile}
       isAgentChat={isAgentChat}
       agentId={effectiveAgentId}
     />
+  );
+  const draftLine =
+    collabFlag && !participants.convId && !isAgentChat ? (
+      <DraftShareLine onEdit={() => useAddPeopleStore.getState().request('')} />
+    ) : null;
+  const prompt =
+    mentionsEnabled && outsiders.length > 0 ? (
+      <NonParticipantPrompt
+        people={outsiders}
+        canInvite={participants.canInvite}
+        busy={adding}
+        onAdd={(person, level) => void handleAddOutsider(person, level)}
+        onDismiss={() => setOutsiders([])}
+      />
+    ) : null;
+  // One shape for solo and shared chats: the composer keeps its position, so it is not remounted (losing the
+  // draft and focus) when the chat turns shared, for example once the history load reports the access.
+  return (
+    <>
+      {prompt}
+      {sendTips.tipRow}
+      {collabActive ? (
+        <AudienceNotice
+          participantCount={participantCount}
+          isAgentChat={isAgentChat}
+          shareToolResults={shareToolResults}
+          onShareToolResultsChange={setShareToolResults}
+        />
+      ) : null}
+      {draftLine}
+      {input}
+    </>
   );
 }

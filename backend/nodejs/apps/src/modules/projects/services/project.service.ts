@@ -5,22 +5,32 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { DEFAULT_PROJECT_CHAT_ACCESS } from '../constants/constants';
 import { Project } from '../schema/project.schema';
+import {
+  ProjectAccessFields,
+  memberPrincipalKey,
+  projectAccessFilter,
+} from '../../authz/loaders/project.loader';
+import { Subject } from '../../authz/domain/types';
+import {
+  ProjectServiceAccessAdapter,
+  projectRoleFor,
+} from './project-access.adapter';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import {
+  ACL_VERSION_INC,
+  bumpAclVersionOnDoc,
+} from '../../authz/cache/acl-version';
 import {
   IProject,
   IProjectDocument,
   IProjectMember,
   ProjectAccess,
+  ProjectChatAccess,
   ProjectContext,
   ProjectRole,
 } from '../types/project.interfaces';
-
-/** The subset of project fields `computeRole` needs — satisfied by both a hydrated document and a `.lean()` result. */
-type ProjectAccessFields = Pick<
-  IProject,
-  'orgId' | 'userId' | 'members' | 'visibility'
->;
 
 /** A `.lean()`-read project row enriched with the list endpoint's computed fields. */
 export type ProjectListItem = IProject & {
@@ -46,7 +56,13 @@ export interface CreateProjectInput {
 export type UpdateProjectInput = Partial<CreateProjectInput> & {
   visibility?: IProjectDocument['visibility'];
   chatSharing?: IProjectDocument['chatSharing'];
+  projectChatAccess?: ProjectChatAccess;
 };
+
+export interface ChatAccessChange {
+  before: ProjectChatAccess;
+  after: ProjectChatAccess;
+}
 
 export interface ListProjectsOptions {
   page: number;
@@ -57,16 +73,17 @@ export interface ListProjectsOptions {
   isArchived?: boolean;
 }
 
-const ROLE_RANK: Record<ProjectRole, number> = {
-  none: 0,
-  viewer: 1,
-  editor: 2,
-  owner: 3,
-};
+const accessAdapter = new ProjectServiceAccessAdapter();
 
-function hasAtLeastRole(role: ProjectRole, required: ProjectRole): boolean {
-  return ROLE_RANK[role] >= ROLE_RANK[required];
-}
+const subjectOf = (
+  orgId: string,
+  userId: string,
+  teamIds: readonly string[],
+): Subject => ({
+  userId,
+  orgId,
+  teamIds,
+});
 
 /**
  * Owns all project CRUD, access control, membership, and the derived
@@ -86,7 +103,7 @@ export class ProjectService {
    * that need to filter, not reject. `callerTeamIds` (resolved once per
    * request via `resolveCallerTeamIds` — see `team-membership.ts`) lets a
    * `team` member row grant access the same way a matching `user` row
-   * does; omit it (defaults to `[]`) where team membership hasn't been
+   * does; the rule itself lives in `authz/domain/rules.ts`. Omit it (defaults to `[]`) where team membership hasn't been
    * resolved, which only under-grants access, never over-grants it.
    * When both a user row and one or more matching team rows exist, the
    * highest-ranked role among all matches wins.
@@ -97,31 +114,7 @@ export class ProjectService {
     orgId: string,
     callerTeamIds: string[] = [],
   ): ProjectRole {
-    if (project.orgId.toString() !== orgId) {
-      return 'none';
-    }
-    if (project.userId.toString() === userId) {
-      return 'owner';
-    }
-    const teamIdSet = new Set(callerTeamIds);
-    let bestRole: ProjectRole = 'none';
-    for (const member of project.members as IProjectMember[]) {
-      const matches =
-        (member.principalType === 'user' &&
-          member.principalId.toString() === userId) ||
-        (member.principalType === 'team' &&
-          teamIdSet.has(member.principalId.toString()));
-      if (matches && ROLE_RANK[member.role] > ROLE_RANK[bestRole]) {
-        bestRole = member.role;
-      }
-    }
-    if (bestRole !== 'none') {
-      return bestRole;
-    }
-    if (project.visibility === 'org') {
-      return 'viewer';
-    }
-    return 'none';
+    return projectRoleFor(project, subjectOf(orgId, userId, callerTeamIds));
   }
 
   /** Loads a project and asserts the caller has at least `required` role: NotFoundError if they cannot see it, ForbiddenError if their role is too low (see class doc). */
@@ -132,24 +125,11 @@ export class ProjectService {
     required: ProjectRole = 'viewer',
     callerTeamIds: string[] = [],
   ): Promise<ProjectAccess> {
-    if (!mongoose.Types.ObjectId.isValid(projectId)) {
-      throw new BadRequestError('Invalid project ID format');
-    }
-    const project = await Project.findOne({
-      _id: projectId,
-      isDeleted: false,
-    });
-    if (!project) {
-      throw new NotFoundError('Project not found');
-    }
-    const role = this.computeRole(project, userId, orgId, callerTeamIds);
-    if (role === 'none') {
-      throw new NotFoundError('Project not found');
-    }
-    if (!hasAtLeastRole(role, required)) {
-      throw new ForbiddenError(`This action needs the ${required} role on the project`);
-    }
-    return { role, project };
+    return accessAdapter.access(
+      subjectOf(orgId, userId, callerTeamIds),
+      projectId,
+      required,
+    );
   }
 
   /**
@@ -203,30 +183,10 @@ export class ProjectService {
     callerTeamIds: string[] = [],
   ): Promise<{ projects: ProjectListItem[]; totalCount: number }> {
     const orgObjId = new Types.ObjectId(orgId);
-    const userObjId = new Types.ObjectId(userId);
-    const teamObjIds = callerTeamIds
-      .filter((id) => Types.ObjectId.isValid(id))
-      .map((id) => new Types.ObjectId(id));
-
-    const scopeOr: FilterQuery<IProjectDocument>[] = [];
-    if (opts.scope === 'mine' || opts.scope === 'all') {
-      scopeOr.push({ userId: userObjId });
-    }
-    if (opts.scope === 'shared' || opts.scope === 'all') {
-      scopeOr.push({
-        'members.principalType': 'user',
-        'members.principalId': userObjId,
-      });
-      if (teamObjIds.length > 0) {
-        scopeOr.push({
-          'members.principalType': 'team',
-          'members.principalId': { $in: teamObjIds },
-        });
-      }
-    }
-    if (opts.scope === 'all') {
-      scopeOr.push({ visibility: 'org' });
-    }
+    const scopeOr = projectAccessFilter(
+      subjectOf(orgId, userId, callerTeamIds),
+      opts.scope,
+    );
 
     const filter: FilterQuery<IProjectDocument> = {
       orgId: orgObjId,
@@ -288,6 +248,10 @@ export class ProjectService {
     projectId: string,
     patch: UpdateProjectInput,
     callerTeamIds: string[] = [],
+    onChatAccessChanged?: (
+      change: ChatAccessChange,
+      project: IProjectDocument,
+    ) => Promise<void>,
   ): Promise<IProjectDocument> {
     const { role, project } = await this.assertAccess(
       orgId,
@@ -298,7 +262,9 @@ export class ProjectService {
     );
 
     if (
-      (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
+      (patch.visibility !== undefined ||
+        patch.chatSharing !== undefined ||
+        patch.projectChatAccess !== undefined) &&
       role !== 'owner'
     ) {
       throw new ForbiddenError(
@@ -323,11 +289,38 @@ export class ProjectService {
     if (patch.appliedFilters !== undefined)
       project.appliedFilters = patch.appliedFilters;
     if (patch.tools !== undefined) project.tools = patch.tools;
-    if (patch.visibility !== undefined) project.visibility = patch.visibility;
+    if (patch.visibility !== undefined) {
+      if (patch.visibility !== project.visibility) {
+        bumpAclVersionOnDoc(project);
+      }
+      project.visibility = patch.visibility;
+    }
     if (patch.chatSharing !== undefined)
       project.chatSharing = patch.chatSharing;
 
-    return project.save();
+    const saved = await project.save();
+
+    const before = saved.projectChatAccess ?? DEFAULT_PROJECT_CHAT_ACCESS;
+    if (
+      patch.projectChatAccess === undefined ||
+      patch.projectChatAccess === before
+    ) {
+      return saved;
+    }
+    const change: ChatAccessChange = {
+      before,
+      after: patch.projectChatAccess,
+    };
+    const updated = await Project.findOneAndUpdate(
+      { _id: saved._id, orgId: saved.orgId, isDeleted: false },
+      { $set: { projectChatAccess: change.after }, ...ACL_VERSION_INC },
+      { new: true },
+    );
+    if (!updated) {
+      throw new NotFoundError('Project not found');
+    }
+    await onChatAccessChanged?.(change, updated);
+    return updated;
   }
 
   static async setPinned(
@@ -422,9 +415,13 @@ export class ProjectService {
     ): Promise<void> {
       await ChatSession.updateMany(
         { projectId: project._id },
-        { $unset: { projectId: '', projectVisibility: '' } },
+        {
+          $unset: { projectId: '', projectVisibility: '' },
+          ...ACL_VERSION_INC,
+        },
         session ? { session } : undefined,
       );
+      bumpAclVersionOnDoc(project);
       project.isDeleted = true;
       project.deletedBy = new Types.ObjectId(userId);
       await project.save(session ? { session } : undefined);
@@ -496,7 +493,7 @@ export class ProjectService {
 
     const existingByPrincipal = new Map(
       project.members.map((m) => [
-        `${m.principalType}:${m.principalId.toString()}`,
+        `${m.principalType}:${memberPrincipalKey(m)}`,
         m,
       ]),
     );
@@ -515,13 +512,16 @@ export class ProjectService {
       } else {
         project.members.push({
           principalType,
-          principalId: new Types.ObjectId(incoming.principalId),
+          ...(principalType === 'team'
+            ? { teamId: incoming.principalId }
+            : { principalId: new Types.ObjectId(incoming.principalId) }),
           role: incoming.role,
           addedBy: new Types.ObjectId(userId),
           addedAt: new Date(),
         });
       }
     }
+    bumpAclVersionOnDoc(project);
     return project.save();
   }
 
@@ -545,9 +545,10 @@ export class ProjectService {
       (m) =>
         !(
           m.principalType === principalType &&
-          m.principalId.toString() === memberPrincipalId
+          memberPrincipalKey(m) === memberPrincipalId
         ),
     );
+    bumpAclVersionOnDoc(project);
     return project.save();
   }
 
@@ -593,22 +594,39 @@ export class ProjectService {
     orgId: string,
     userId: string,
   ): Promise<void> {
+    const principalId = new Types.ObjectId(userId);
     await Project.updateMany(
-      { orgId: new Types.ObjectId(orgId) },
       {
-        $pull: {
-          members: {
-            principalType: 'user',
-            principalId: new Types.ObjectId(userId),
-          },
-        },
+        orgId: new Types.ObjectId(orgId),
+        members: { $elemMatch: { principalType: 'user', principalId } },
+      },
+      {
+        $pull: { members: { principalType: 'user', principalId } },
+        ...ACL_VERSION_INC,
+      },
+    );
+  }
+
+  /** Pulls a deleted team's member rows from every project in the org. */
+  static async removeTeamFromAllProjects(
+    orgId: string,
+    teamId: string,
+  ): Promise<void> {
+    await Project.updateMany(
+      {
+        orgId: new Types.ObjectId(orgId),
+        members: { $elemMatch: { principalType: 'team', teamId } },
+      },
+      {
+        $pull: { members: { principalType: 'team', teamId } },
+        ...ACL_VERSION_INC,
       },
     );
   }
 
   /**
    * All project ids the caller has at least viewer access to (owner, member,
-   * or org-visible) — used by `buildFilter` / `buildAgentConversationFilter`
+   * or org-visible) — used by `buildFilter`
    * (enterprise_search/utils/utils.ts) to extend conversation access with
    * the "projectId ∈ accessibleProjectIds && projectVisibility === 'project'"
    * branch, so a chat shared to a project's members shows up for all of them
@@ -617,22 +635,11 @@ export class ProjectService {
   static async getAccessibleProjectIds(
     orgId: string,
     userId: string,
+    callerTeamIds: string[] = [],
   ): Promise<Types.ObjectId[]> {
-    const orgObjId = new Types.ObjectId(orgId);
-    const userObjId = new Types.ObjectId(userId);
-    const projects = await Project.find(
-      {
-        orgId: orgObjId,
-        isDeleted: false,
-        $or: [
-          { userId: userObjId },
-          { 'members.principalType': 'user', 'members.principalId': userObjId },
-          { visibility: 'org' },
-        ],
-      },
-      { _id: 1 },
-    ).lean();
-    return projects.map((p) => p._id as Types.ObjectId);
+    return accessAdapter.accessibleObjectIds(
+      subjectOf(orgId, userId, callerTeamIds),
+    );
   }
 
   static async touchActivity(projectId: string): Promise<void> {

@@ -15,20 +15,15 @@ These check what only a server can show:
 - On both, a record whose writes to a new topic arrive while another record's
   create or alias update of it is still uncommitted completes its enrichment.
 
-Needs the graph services, and skips cleanly when they are not reachable:
+Needs your own graph services; see README.md in this folder. Skips when PCC_* is unset, fails when PCC_GATE=1.
 
-  docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
-    up -d --wait neo4j-graph-it arango-graph-it
   cd backend/python && pytest tests/integration/graph_db/test_entity_graph_real_backends.py -m integration
-
-Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import logging
-import os
 import uuid
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
@@ -50,6 +45,8 @@ from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
+from ._backends import ArangoEnv, Neo4jEnv, unavailable
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
@@ -57,10 +54,6 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 
-NEO4J_URI = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
-NEO4J_PASSWORD = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
-ARANGO_URL = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
-ARANGO_PASSWORD = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
 ARANGO_DB = "entity_graph_it"
 TOPICS = CollectionNames.TOPICS.value
 
@@ -73,23 +66,25 @@ logger = logging.getLogger("entity-graph-it")
 
 
 @pytest.fixture
-async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
-    async with _neo4j_backend(monkeypatch) as backend:
+async def neo4j(monkeypatch: pytest.MonkeyPatch, neo4j_env: Neo4jEnv) -> AsyncIterator[tuple[Neo4jProvider, str]]:
+    async with _neo4j_backend(monkeypatch, neo4j_env) as backend:
         yield backend
 
 
 @contextlib.asynccontextmanager
-async def _neo4j_backend(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
-    monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
-    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
-    monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
+async def _neo4j_backend(
+    monkeypatch: pytest.MonkeyPatch, neo4j_env: Neo4jEnv,
+) -> AsyncIterator[tuple[Neo4jProvider, str]]:
+    monkeypatch.setenv("NEO4J_URI", neo4j_env.uri)
+    monkeypatch.setenv("NEO4J_USERNAME", neo4j_env.user)
+    monkeypatch.setenv("NEO4J_PASSWORD", neo4j_env.password)
     monkeypatch.setenv("NEO4J_DATABASE", "neo4j")
     provider = Neo4jProvider(logger, MagicMock())
     try:
         if not await asyncio.wait_for(provider.connect(), timeout=60):
             raise ConnectionError("connect returned False")
     except Exception as exc:
-        pytest.skip(f"Neo4j not available at {NEO4J_URI}: {exc}")
+        unavailable(f"Neo4j not available at {neo4j_env.uri}: {exc}")
     # connect() does not create schema; the connector service runs this at start.
     await provider.ensure_schema()
     org_id = f"org-it-{uuid.uuid4().hex[:10]}"
@@ -312,16 +307,16 @@ class TestNeo4jRecordGroupInheritance:
 
 
 @pytest.fixture
-async def arango() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
-    async with _arango_backend() as backend:
+async def arango(arango_env: ArangoEnv) -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
+    async with _arango_backend(arango_env) as backend:
         yield backend
 
 
 @contextlib.asynccontextmanager
-async def _arango_backend() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
+async def _arango_backend(arango_env: ArangoEnv) -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
-        "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
+        "url": arango_env.url, "username": arango_env.user, "password": arango_env.password, "db": ARANGO_DB,
     })
     provider = ArangoHTTPProvider(logger, config_service)
     try:
@@ -329,7 +324,7 @@ async def _arango_backend() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
             raise ConnectionError("connect returned False")
         await provider.ensure_schema()
     except Exception as exc:
-        pytest.skip(f"ArangoDB not available at {ARANGO_URL}: {exc}")
+        unavailable(f"ArangoDB not available at {arango_env.url}: {exc}")
     org_id = f"org-it-{uuid.uuid4().hex[:10]}"
     try:
         yield provider, org_id
@@ -451,7 +446,11 @@ HOLD_SECONDS = 1.0
 async def graph(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[IGraphDBProvider, str]]:
-    backend = _neo4j_backend(monkeypatch) if request.param == "neo4j" else _arango_backend()
+    backend = (
+        _neo4j_backend(monkeypatch, request.getfixturevalue("neo4j_env"))
+        if request.param == "neo4j"
+        else _arango_backend(request.getfixturevalue("arango_env"))
+    )
     async with backend as connected:
         yield connected
 

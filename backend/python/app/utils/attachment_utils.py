@@ -40,6 +40,8 @@ async def resolve_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -124,6 +126,8 @@ async def resolve_attachments(
                 user_id=user_id,
                 graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                conversation_id=conversation_id,
+                acl_version=acl_version,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -147,6 +151,8 @@ async def resolve_attachments(
                 user_id=user_id,
                 graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                conversation_id=conversation_id,
+                acl_version=acl_version,
             )
             if doc_content:
                 blocks.extend(doc_content)
@@ -174,6 +180,8 @@ async def _resolve_attachment_content(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -195,6 +203,8 @@ async def _resolve_attachment_content(
         virtual_record_id=virtual_record_id,
         logger=logger,
         is_service_account=is_service_account,
+        conversation_id=conversation_id,
+        acl_version=acl_version,
     ):
         return [], ref_mapper
 

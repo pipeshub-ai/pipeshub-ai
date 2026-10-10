@@ -367,6 +367,8 @@ async def parse_intent_and_route(
                 is_multimodal_llm=is_multimodal_llm, logger=logger,
                 user_id=user_id, graph_provider=graph_provider,
                 is_service_account=is_service_account,
+                conversation_id=query_info.get("conversationId"),
+                acl_version=query_info.get("aclVersion"),
             )
             if attachment_blocks:
                 human_content = [

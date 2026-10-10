@@ -432,6 +432,54 @@ describe('knowledge_base/validators/validators', () => {
     });
   });
 
+  describe('kbPermissionSchema - principals', () => {
+    const params = { kbId: '550e8400-e29b-41d4-a716-446655440000' };
+
+    it('accepts principals with per-principal roles', () => {
+      const result = kbPermissionSchema.safeParse({
+        body: {
+          principals: [
+            { principalType: 'user', principalId: 'u1', role: 'OWNER' },
+            { principalType: 'team', principalId: 't1', role: 'COMMENTER' },
+          ],
+        },
+        params,
+      });
+      expect(result.success).to.be.true;
+    });
+
+    it('rejects principals mixed with legacy fields', () => {
+      const result = kbPermissionSchema.safeParse({
+        body: {
+          principals: [{ principalType: 'team', principalId: 't1', role: 'READER' }],
+          teamIds: ['t2'],
+        },
+        params,
+      });
+      expect(result.success).to.be.false;
+    });
+
+    it('rejects an empty principals list, unknown type or invalid role', () => {
+      for (const principals of [
+        [],
+        [{ principalType: 'group', principalId: 'g', role: 'READER' }],
+        [{ principalType: 'team', principalId: 't1', role: 'ADMIN' }],
+        [{ principalType: 'team', principalId: '', role: 'READER' }],
+      ]) {
+        expect(kbPermissionSchema.safeParse({ body: { principals }, params }).success).to.be.false;
+      }
+    });
+
+    it('rejects more principals than the cap', () => {
+      const principals = Array.from({ length: 501 }, (_, i) => ({
+        principalType: 'user',
+        principalId: `u${i}`,
+        role: 'READER',
+      }));
+      expect(kbPermissionSchema.safeParse({ body: { principals }, params }).success).to.be.false;
+    });
+  });
+
   describe('getPermissionsSchema', () => {
     it('should accept valid kbId', () => {
       const data = { params: { kbId: 'kb-1' } };
@@ -456,12 +504,21 @@ describe('knowledge_base/validators/validators', () => {
       expect(result.success).to.be.true;
     });
 
-    it('should reject team updates', () => {
-      const data = {
-        body: { role: 'READER', teamIds: ['team-1'] },
+    for (const role of ['WRITER', 'COMMENTER', 'READER']) {
+      it(`should accept a team role update to ${role}`, () => {
+        const result = updatePermissionsSchema.safeParse({
+          body: { role, teamIds: ['team-1'] },
+          params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
+        });
+        expect(result.success).to.be.true;
+      });
+    }
+
+    it('should reject OWNER for a team', () => {
+      const result = updatePermissionsSchema.safeParse({
+        body: { role: 'OWNER', teamIds: ['team-1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-      };
-      const result = updatePermissionsSchema.safeParse(data);
+      });
       expect(result.success).to.be.false;
     });
 
@@ -794,9 +851,9 @@ describe('Knowledge Base Validators - branch coverage', () => {
   // updatePermissionsSchema - refine
   // =========================================================================
   describe('updatePermissionsSchema - refine', () => {
-    it('should fail when teamIds are provided (teams cannot be updated)', () => {
+    it('should fail when OWNER is combined with teamIds', () => {
       const result = updatePermissionsSchema.safeParse({
-        body: { role: 'READER', teamIds: ['team1'] },
+        body: { role: 'OWNER', userIds: ['user1'], teamIds: ['team1'] },
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.false;
@@ -1110,12 +1167,12 @@ describe('Knowledge Base Validators - coverage', () => {
   // updatePermissionsSchema
   // -----------------------------------------------------------------------
   describe('updatePermissionsSchema', () => {
-    it('should reject teamIds in update', () => {
+    it('should accept teamIds in update with a team-eligible role', () => {
       const result = updatePermissionsSchema.safeParse({
         body: { role: 'WRITER', teamIds: ['team1'] },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
       });
-      expect(result.success).to.be.false;
+      expect(result.success).to.be.true;
     });
 
     it('should accept userIds with role', () => {

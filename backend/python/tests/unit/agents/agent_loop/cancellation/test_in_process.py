@@ -170,3 +170,31 @@ class TestCancel:
             await registry.register("run-1", CancellationToken(), _owner())
 
         assert caplog.records == []
+
+
+class TestParticipantRequester:
+    async def test_bound_participant_cancels_a_run_it_did_not_start(self) -> None:
+        from app.agents.agent_loop.cancellation.policy import CancelRequester
+
+        registry = InProcessRunCancellationRegistry()
+        token = CancellationToken()
+        await registry.register("run-a", token, _owner(user_id="user-a"))
+        requester = CancelRequester(
+            user_id="user-b", org_id="org-1", conversation_id="conv-1", via_participant_grant=True
+        )
+
+        assert await registry.cancel("run-a", requester) == "cancelled"
+        assert token.is_cancelled is True
+
+    async def test_participant_of_another_conversation_is_forbidden(self) -> None:
+        from app.agents.agent_loop.cancellation.policy import CancelRequester
+
+        registry = InProcessRunCancellationRegistry()
+        token = CancellationToken()
+        await registry.register("run-a", token, _owner(user_id="user-a"))
+        requester = CancelRequester(
+            user_id="user-b", org_id="org-1", conversation_id="conv-2", via_participant_grant=True
+        )
+
+        assert await registry.cancel("run-a", requester) == "forbidden"
+        assert token.is_cancelled is False

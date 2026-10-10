@@ -12,6 +12,7 @@ vi.mock('@/lib/api', () => ({
 }));
 
 const { loadHistoricalMessages } = await import('../runtime');
+const { maxSeq } = await import('../utils/merge-messages');
 
 function message(overrides: Partial<ConversationMessage>): ConversationMessage {
   return {
@@ -38,6 +39,18 @@ describe('loadHistoricalMessages', () => {
     ]);
 
     expect(messages.map((m) => m.role)).toEqual(['user']);
+  });
+
+  it('carries the delegate that answered, only when there was one', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q1', messageType: 'user_query', content: 'Plot it' }),
+      message({ _id: 'a1', messageType: 'bot_response', content: 'Done', answeredVia: 'coding_agent' }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'Thanks' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Welcome' }),
+    ]);
+
+    expect(messages[1].metadata?.custom?.answeredVia).toBe('coding_agent');
+    expect(messages[3].metadata?.custom).not.toHaveProperty('answeredVia');
   });
 
   it('keeps a stopped reply that has text, with its Stopped status', () => {
@@ -584,6 +597,17 @@ describe('loadHistoricalMessages', () => {
     }]);
   });
 
+  it('stamps an error row with its seq and the feed rev, so a later row is merged after it', () => {
+    const { messages } = loadHistoricalMessages(
+      [
+        message({ _id: 'q', messageType: 'user_query', content: 'hello', seq: 1 } as Partial<ConversationMessage>),
+        message({ _id: 'err', messageType: 'error', content: 'boom', seq: 2 } as Partial<ConversationMessage>),
+      ],
+      { rev: 7 },
+    );
+    expect(messages[1].metadata?.custom).toMatchObject({ failed: true, seq: 2, rev: 7 });
+  });
+
   it('absorbs an empty resume follow-up and keeps the card pending', () => {
     const payload = {
       name: 'ask_user_question',
@@ -841,5 +865,205 @@ describe('loadHistoricalMessages', () => {
       },
     });
     expect(unansweredAskUserQuestion).toBeNull();
+  });
+});
+
+describe('loadHistoricalMessages, collaboration fields', () => {
+  const alice = { userId: 'a', displayName: 'Alice' };
+  const bob = { userId: 'b', displayName: 'Bob' };
+  const ASK = { name: 'ask_user_question', questions: [{ uuid: 'q1', question: 'Which region?', options: [{ id: 'eu', label: 'EU' }] }] };
+
+  it('copies author, seq, clientMessageId and filesShared onto the user row, and requestedBy onto the answer (FE-08)', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Hi', seq: 1, author: alice, clientMessageId: 'c1', filesShared: true }),
+      message({ _id: 'a', messageType: 'bot_response', content: 'Hello', seq: 2, requestedBy: alice }),
+    ]);
+
+    expect(messages[0].metadata?.custom).toMatchObject({ seq: 1, author: alice, clientMessageId: 'c1', filesShared: true });
+    expect(messages[1].metadata?.custom).toMatchObject({ seq: 2, requestedBy: alice });
+  });
+
+  it('names the people on a detail-shaped payload (bare requestedBy id plus author) and gives the tab a baseSeq', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q1', messageType: 'user_query', content: 'Hi', seq: 1, author: alice }),
+      message({ _id: 'a1', messageType: 'bot_response', content: 'Hello', seq: 2, author: alice, requestedBy: 'a' as never }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'Me too', seq: 3, author: bob }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Sure', seq: 4, author: bob, requestedBy: 'b' as never }),
+    ]);
+
+    expect(messages[1].metadata?.custom).toMatchObject({ requestedBy: alice });
+    expect(messages[3].metadata?.custom).toMatchObject({ requestedBy: bob });
+    expect(messages.map((m) => (m.metadata?.custom as { author?: unknown }).author).filter(Boolean)).not.toContain(null);
+    expect(maxSeq(messages)).toBe(4);
+  });
+
+  it('keeps a null author so the row renders "Former member"', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Hi', author: null }),
+      message({ _id: 'a', messageType: 'bot_response', content: 'Hello', requestedBy: null }),
+    ]);
+
+    expect(messages[0].metadata?.custom).toHaveProperty('author', null);
+    expect(messages[1].metadata?.custom).toHaveProperty('requestedBy', null);
+  });
+
+  it('adds no collaboration keys to a solo conversation', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Hi' }),
+      message({ _id: 'a', messageType: 'bot_response', content: 'Hello' }),
+    ]);
+
+    for (const m of messages) {
+      expect(Object.keys(m.metadata?.custom ?? {})).not.toEqual(
+        expect.arrayContaining(['author']),
+      );
+      expect(m.metadata?.custom).not.toHaveProperty('requestedBy');
+      expect(m.metadata?.custom).not.toHaveProperty('seq');
+    }
+  });
+
+  it('binds an open card to its tool_call row and to the person it was put to', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it', author: alice }),
+      message({ _id: 'b', messageType: 'bot_response', content: '' }),
+      message({ _id: 'tc', messageType: 'tool_call', requestedBy: bob, tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as Partial<ConversationMessage>),
+    ]);
+
+    expect(unansweredAskUserQuestion).toMatchObject({ toolCallMessageId: 'tc', requestedBy: bob, status: 'pending' });
+  });
+
+  it('binds a card that precedes its bot row to the tool_call row', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it', author: alice }),
+      message({ _id: 'tc', messageType: 'tool_call', requestedBy: alice, tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as Partial<ConversationMessage>),
+      message({ _id: 'b', messageType: 'bot_response', content: '' }),
+    ]);
+
+    expect(unansweredAskUserQuestion).toMatchObject({ toolCallMessageId: 'tc', requestedBy: alice });
+  });
+
+  it('binds a card carried by the bot row itself to that row', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it', author: alice }),
+      message({ _id: 'b', messageType: 'bot_response', content: '', requestedBy: alice, tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as Partial<ConversationMessage>),
+    ]);
+
+    expect(unansweredAskUserQuestion).toMatchObject({ toolCallMessageId: 'b', requestedBy: alice });
+  });
+
+  it('falls back to the question author for a legacy card with no requestedBy', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it', author: bob }),
+      message({ _id: 'b', messageType: 'bot_response', content: '' }),
+      message({ _id: 'tc', messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as Partial<ConversationMessage>),
+    ]);
+
+    expect(unansweredAskUserQuestion).toMatchObject({ requestedBy: bob });
+  });
+
+  it('reads a bare user id in requestedBy (what the API stores) as that person, so the asker is not shown as a former member', () => {
+    const { unansweredAskUserQuestion, messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it' }),
+      message({ _id: 'b', messageType: 'bot_response', content: 'Done', requestedBy: 'b' as unknown as ConversationMessage['requestedBy'] }),
+      message({ _id: 'tc', messageType: 'tool_call', requestedBy: 'b', tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as unknown as Partial<ConversationMessage>),
+    ]);
+
+    expect(unansweredAskUserQuestion).toMatchObject({ toolCallMessageId: 'tc', requestedBy: { userId: 'b', displayName: null } });
+    expect(messages[1].metadata?.custom).toMatchObject({ requestedBy: { userId: 'b', displayName: null } });
+  });
+
+  it('leaves the asker unknown in a solo conversation', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'Plan it' }),
+      message({ _id: 'b', messageType: 'bot_response', content: '' }),
+      message({ _id: 'tc', messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: ASK }] } as Partial<ConversationMessage>),
+    ]);
+
+    expect(unansweredAskUserQuestion).not.toHaveProperty('requestedBy');
+  });
+
+  it('a note becomes its own system row with its author and mentions, between the question and its answer', () => {
+    const author = { userId: 'u-bob', displayName: 'Bob' };
+    const { messages } = loadHistoricalMessages(
+      [
+        message({ _id: 'q', messageType: 'user_query', content: 'Question', seq: 1 }),
+        message({ _id: 'n', messageType: 'note', content: 'fyi <@user:u-x>', mentions: [{ type: 'user', id: 'u-x' }], author, seq: 2 }),
+        message({ _id: 'a', messageType: 'bot_response', content: 'Answer', seq: 3 }),
+      ],
+      { rev: 4 },
+    );
+    expect(messages.map((m) => [m.id, m.role])).toEqual([['q', 'user'], ['n', 'system'], ['a', 'assistant']]);
+    expect(messages[1].metadata?.custom).toMatchObject({
+      messageType: 'note',
+      seq: 2,
+      author,
+      mentions: [{ type: 'user', id: 'u-x' }],
+    });
+  });
+
+  describe('agent drafts', () => {
+    const draft = { draftId: 'd1', name: 'Offer drafter', handleSuggestion: 'offer-drafter', toolsets: [] };
+    const draftRow = (toolResult: unknown, extra: Partial<ConversationMessage> = {}) =>
+      message({
+        _id: 'card',
+        messageType: 'tool_call',
+        tools: [{ toolName: 'draft_agent', toolResult }],
+        author: { userId: 'u-a', displayName: 'Alice' },
+        ...extra,
+      } as Partial<ConversationMessage>);
+
+    it('stamps the draft saved before an answer onto that answer, not onto its own row', () => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'make an agent' }),
+        draftRow(draft),
+        message({ _id: 'a', messageType: 'bot_response', content: 'Drafted.' }),
+      ]);
+
+      expect(messages.map((m) => m.role)).toEqual(['user', 'assistant']);
+      const custom = messages[1].metadata?.custom as Record<string, unknown>;
+      expect(custom.persistedAgentDraft).toEqual(draft);
+      expect(custom.agentDraftAuthor).toBe('Alice');
+    });
+
+    it('keeps the redacted placeholder as it came', () => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'make an agent' }),
+        draftRow({ redacted: true, authorId: 'u-a' }),
+        message({ _id: 'a', messageType: 'bot_response', content: 'Drafted.' }),
+      ]);
+      expect((messages[1].metadata?.custom as Record<string, unknown>).persistedAgentDraft).toEqual({
+        redacted: true,
+        authorId: 'u-a',
+      });
+    });
+
+    it('a regenerated turn stores the draft after its answer; it still lands on that answer', () => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'make an agent' }),
+        message({ _id: 'a', messageType: 'bot_response', content: 'Drafted.' }),
+        draftRow(draft),
+      ]);
+      expect((messages[1].metadata?.custom as Record<string, unknown>).persistedAgentDraft).toEqual(draft);
+    });
+
+    it('a draft with no answer does not leak onto the next turn', () => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q1', messageType: 'user_query', content: 'make an agent' }),
+        draftRow(draft),
+        message({ _id: 'q2', messageType: 'user_query', content: 'something else' }),
+        message({ _id: 'a2', messageType: 'bot_response', content: 'Sure.' }),
+      ]);
+      const answer = messages.find((m) => m.id === 'a2');
+      expect((answer?.metadata?.custom as Record<string, unknown>).persistedAgentDraft).toBeUndefined();
+    });
+
+    it('ignores a draft_agent row without a draft in it', () => {
+      const { messages } = loadHistoricalMessages([
+        message({ _id: 'q', messageType: 'user_query', content: 'x' }),
+        draftRow('not a draft'),
+        message({ _id: 'a', messageType: 'bot_response', content: 'ok' }),
+      ]);
+      expect((messages[1].metadata?.custom as Record<string, unknown>).persistedAgentDraft).toBeUndefined();
+    });
   });
 });

@@ -5096,7 +5096,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -7454,7 +7454,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
 
 
 # ---------------------------------------------------------------------------
@@ -10600,6 +10600,65 @@ class TestListAllRecords:
                 )
 
 
+class TestListAllRecordsQueryShape:
+    """One query lists the page and counts the total over the same accessible-KB set (direct + team)."""
+
+    @staticmethod
+    async def _run(provider, **kw):
+        provider.execute_query = AsyncMock(return_value=[{"records": [], "total": 0}])
+        args = dict(
+            user_id="u1", org_id="org1", skip=0, limit=10, search=None, record_types=None,
+            origins=None, connectors=None, indexing_status=None, permissions=None,
+            date_from=None, date_to=None, sort_by="recordName", sort_order="asc", source="all",
+        )
+        args.update(kw)
+        await provider.list_all_records(**args)
+        call = provider.execute_query.await_args
+        return call.args[0], call.kwargs["bind_vars"]
+
+    @pytest.mark.asyncio
+    async def test_listing_iterates_direct_and_team_kbs(self, connected_provider):
+        q, _ = await self._run(connected_provider)
+        assert "LET teamKbAccess" in q
+        assert "LET allKbAccess = (" in q
+        assert "FOR access IN allKbAccess" in q
+        assert "FOR access IN directKbAccess" not in q
+        assert "total: LENGTH(allRecords)" in q
+
+    @pytest.mark.asyncio
+    async def test_kbs_deduplicated_so_listing_has_no_repeat_rows(self, connected_provider):
+        q, _ = await self._run(connected_provider)
+        assert "FOR a IN APPEND(directKbAccess, teamKbAccess)" in q
+        assert q.count("COLLECT kb_id = a.kb_id INTO grouped") == 1
+
+    @pytest.mark.asyncio
+    async def test_effective_kb_role_is_highest_rank_with_direct_only_as_tiebreak(self, connected_provider):
+        q, _ = await self._run(connected_provider)
+        assert "OWNER: 6, ORGANIZER: 5, FILEORGANIZER: 4, WRITER: 3, COMMENTER: 2, READER: 1" in q
+        assert "SORT g.rank DESC, g.direct DESC" in q
+        assert "NOT IN directKbAccess" not in q
+
+    @pytest.mark.asyncio
+    async def test_binds_only_declared_params_and_applies_filters(self, connected_provider):
+        q, binds = await self._run(
+            connected_provider, search="x", indexing_status=["FAILED"], permissions=["READER"],
+        )
+        # Arango rejects a bind parameter the query does not use.
+        for key in binds:
+            assert f"@{key}" in q, key
+        assert binds["indexing_status"] == ["FAILED"]
+        assert binds["permissions"] == ["READER"]
+        assert "record.indexingStatus IN @indexing_status" in q
+        assert "permissionEdge.role IN @permissions" in q
+
+    @pytest.mark.asyncio
+    async def test_local_source_skips_connector_branch(self, connected_provider):
+        q, binds = await self._run(connected_provider, source="local")
+        assert 'record.origin == "CONNECTOR"' not in q
+        for key in binds:
+            assert f"@{key}" in q, key
+
+
 # ---------------------------------------------------------------------------
 # list_kb_records
 # ---------------------------------------------------------------------------
@@ -12596,6 +12655,12 @@ class TestListKbPermissionsExtended:
         result = await connected_provider.list_kb_permissions("kb1")
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_exception_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_kb_permissions("kb1", raise_on_error=True)
+
 
 # ---------------------------------------------------------------------------
 # list_all_records
@@ -13567,27 +13632,35 @@ class TestGetTeamWithUsers:
         connected_provider.execute_query = AsyncMock(
             return_value=[{"id": "t1", "name": "Team", "members": []}]
         )
-        result = await connected_provider.get_team_with_users("t1", "uk1")
+        result = await connected_provider.get_team_with_users("t1", "uk1", "org-1")
         assert result is not None
         assert result["id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.get_team_with_users("t999", "uk1")
+        result = await connected_provider.get_team_with_users("t999", "uk1", "org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_team_with_users("t1", "uk1")
+        result = await connected_provider.get_team_with_users("t1", "uk1", "org-1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_lookup_is_scoped_to_org(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.get_team_with_users("t1", "uk1", "org-1")
+        call = connected_provider.execute_query.call_args
+        assert "team.orgId == @orgId" in call.args[0]
+        assert call.kwargs["bind_vars"]["orgId"] == "org-1"
 
     @pytest.mark.asyncio
     async def test_members_exclude_inactive_users(self, connected_provider) -> None:
         """Removed users (isActive == false) must not be listed as team members."""
         connected_provider.execute_query = AsyncMock(return_value=[{"id": "t1", "members": []}])
-        await connected_provider.get_team_with_users("t1", "uk1")
+        await connected_provider.get_team_with_users("t1", "uk1", "org-1")
         query = connected_provider.execute_query.call_args.args[0]
         assert "FILTER user != null AND user.isActive == true" in query
 

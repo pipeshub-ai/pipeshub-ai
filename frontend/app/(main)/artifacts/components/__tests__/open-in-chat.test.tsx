@@ -10,6 +10,7 @@ import { ArtifactsGridView } from '../artifacts-grid-view';
 
 vi.mock('@/app/components/ui', () => ({ FileIcon: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
 const PAGINATION = { page: 1, limit: 50, totalCount: 2, totalPages: 1 };
 

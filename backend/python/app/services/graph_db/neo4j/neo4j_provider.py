@@ -90,6 +90,7 @@ from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
+from app.services.graph_db.common.kb_team_role import BACKFILL_STAMP_ROLE, cypher_team_kb_role
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     cypher_live_record,
@@ -128,6 +129,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -649,6 +651,13 @@ class Neo4jProvider(IGraphDBProvider):
         constraints.append(
             f"CREATE CONSTRAINT taxonomyalias_key_unique IF NOT EXISTS "
             f"FOR (a:{TAXONOMY_ALIAS_LABEL}) REQUIRE (a.orgId, a.collection, a.normalized) IS UNIQUE"
+        )
+
+        # Nodes without a handle are exempt, so unmigrated agents never collide.
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        constraints.append(
+            f"CREATE CONSTRAINT agent_org_handle_unique IF NOT EXISTS "
+            f"FOR (a:{agent_label}) REQUIRE (a.orgId, a.handle) IS UNIQUE"
         )
         return constraints
 
@@ -1354,6 +1363,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
@@ -1513,6 +1524,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(
@@ -7727,6 +7740,13 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"❌ Batch upsert app users failed: {str(e)}")
             raise
 
+    async def _count_team_permission_edges(self, team_id: str) -> int:
+        result = await self.client.execute_query(
+            "MATCH ()-[r:PERMISSION]->(t:Teams {id: $team_id}) RETURN count(r) AS count",
+            parameters={"team_id": team_id},
+        )
+        return int(result[0].get("count", 0)) if result else 0
+
     async def ensure_all_team_with_users(self, org_id: str) -> None:
         """
         Ensure the org's 'All' team exists and every active org user has a PERMISSION edge.
@@ -7755,6 +7775,8 @@ class Neo4jProvider(IGraphDBProvider):
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
                 self.logger.debug(f"Created 'All' team for org {org_id}")
+            elif not existing_team.get("orgId"):
+                await self.update_node(team_id, CollectionNames.TEAMS.value, {"orgId": org_id})
 
             # 2. Get all active users sorted by createdAtTimestamp ascending
             users = await self.get_users(org_id, active=True)
@@ -7766,19 +7788,10 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_id, user_key=None)
-            existing_member_count = len((team_with_users or {}).get("members", []))
+            existing_member_count = await self._count_team_permission_edges(team_id)
             owner_assigned = existing_member_count > 0
 
             self.logger.debug(f"📊 All team for org {org_id}: existing_member_count={existing_member_count}, owner_assigned={owner_assigned}")
-            if team_with_users and team_with_users.get("members"):
-                self.logger.debug(
-                    "📊 Existing members: %s",
-                    [
-                        f"{m.get('userEmail') or '?'}:{m.get('role') or '?'}"
-                        for m in team_with_users.get("members", [])
-                    ],
-                )
 
             # 4. Add each user without a PERMISSION edge
             for user in users_sorted:
@@ -7833,6 +7846,141 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"ensure_all_team_with_users failed for org {org_id}: {e}", exc_info=True)
             raise
 
+    async def backfill_team_org_ids(self) -> dict[str, Any]:
+        missing = "(t.orgId IS NULL OR t.orgId = '')"
+        try:
+            all_rows = await self.client.execute_query(
+                f"""
+                MATCH (t:Teams) WHERE {missing} AND t.id STARTS WITH 'all_' AND size(t.id) > 4
+                SET t.orgId = substring(t.id, 4)
+                RETURN count(t) AS n
+                """
+            )
+            creator_rows = await self.client.execute_query(
+                f"""
+                MATCH (t:Teams) WHERE {missing}
+                MATCH (u:User {{id: t.createdBy}})
+                WHERE u.orgId IS NOT NULL AND u.orgId <> ''
+                SET t.orgId = u.orgId
+                RETURN count(t) AS n
+                """
+            )
+            left = await self.client.execute_query(
+                f"MATCH (t:Teams) WHERE {missing} RETURN t.id AS id"
+            )
+            updated = sum(int(r[0].get("n", 0)) for r in (all_rows, creator_rows) if r)
+            return {"updated": updated, "unresolved_team_ids": [r["id"] for r in (left or [])]}
+        except Exception as e:
+            self.logger.error(f"backfill_team_org_ids failed: {e}", exc_info=True)
+            raise
+
+    async def get_agent_by_handle(
+        self, org_id: str, handle: str, transaction: str | None = None
+    ) -> dict | None:
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        rows = await self.client.execute_query(
+            f"MATCH (a:{agent_label} {{orgId: $org_id, handle: $handle}}) RETURN a LIMIT 1",
+            parameters={"org_id": org_id, "handle": handle},
+            txn_id=transaction,
+        )
+        if not rows:
+            return None
+        return self._neo4j_to_arango_node(dict(rows[0]["a"]), CollectionNames.AGENT_INSTANCES.value)
+
+    async def search_agent_handles(
+        self, org_id: str, prefix: str, limit: int = 20, transaction: str | None = None
+    ) -> list[str]:
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (a:{agent_label})
+            WHERE a.orgId = $org_id AND a.handle STARTS WITH $prefix
+            RETURN a.handle AS handle
+            ORDER BY handle
+            LIMIT $limit
+            """,
+            parameters={"org_id": org_id, "prefix": prefix, "limit": limit},
+            txn_id=transaction,
+        )
+        return [r["handle"] for r in rows or []]
+
+    async def list_agents_missing_handle(self, batch: int = 500) -> list[dict[str, Any]]:
+        agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+        user_label = collection_to_label(CollectionNames.USERS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (a:{agent_label})
+            WHERE a.handle IS NULL OR a.handle = ''
+            OPTIONAL MATCH (u:{user_label} {{id: a.createdBy}})
+            WITH a, CASE WHEN a.orgId IS NOT NULL AND a.orgId <> '' THEN a.orgId ELSE u.orgId END AS org
+            WHERE org IS NOT NULL AND org <> ''
+            RETURN a.id AS id, a.name AS name, org AS orgId
+            ORDER BY a.createdAtTimestamp, a.id
+            LIMIT $batch
+            """,
+            parameters={"batch": batch},
+        )
+        return [{"id": r["id"], "name": r["name"], "orgId": r["orgId"]} for r in rows or []]
+
+    async def backfill_kb_team_edge_roles(self) -> dict[str, int]:
+        """Stamp READER on role-less team->KB edges whose active members are all READER.
+
+        A stamped role is a grant to the team as a whole, including future members, so
+        only READER (the floor) is safe to stamp; every other edge stays role-less and
+        resolves per member at read time.
+        """
+        stamp_query = """
+        MATCH (t:Teams)-[tb:PERMISSION {type: 'TEAM'}]->(kb:App {type: 'KB'})
+        WHERE tb.role IS NULL OR tb.role = ''
+        OPTIONAL MATCH (m:User)-[ut:PERMISSION {type: 'USER'}]->(t)
+        WHERE m.isActive = true
+        WITH tb, collect(DISTINCT CASE WHEN ut.role IS NULL OR ut.role = '' THEN '' ELSE ut.role END) AS roles
+        WHERE roles = [$stamp_role]
+        SET tb.role = $stamp_role
+        RETURN count(tb) AS stamped
+        """
+        remaining_query = """
+        MATCH (:Teams)-[tb:PERMISSION {type: 'TEAM'}]->(:App {type: 'KB'})
+        WHERE tb.role IS NULL OR tb.role = ''
+        RETURN count(tb) AS remaining
+        """
+        stamped_rows = await self.client.execute_query(stamp_query, {"stamp_role": BACKFILL_STAMP_ROLE})
+        stamped = int(stamped_rows[0]["stamped"]) if stamped_rows else 0
+        try:
+            remaining_rows = await self.client.execute_query(remaining_query)
+            remaining = int(remaining_rows[0]["remaining"]) if remaining_rows else 0
+        except Exception as e:
+            self.logger.warning(f"Could not count role-less KB team edges: {e}")
+            remaining = -1
+        return {"stamped": stamped, "remaining_role_less": remaining}
+
+    async def delete_chat_content_reader_edges(self, batch_size: int = 1000) -> int:
+        """Delete user READER edges onto chat attachments and artifacts, in batches."""
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
+        query = """
+        MATCH (:User)-[p:PERMISSION]->(r:Record)
+        WHERE p.type = 'USER' AND p.role = 'READER'
+          AND (
+            r.connectorName = $attachments_connector
+            OR EXISTS {
+              MATCH (a:Artifact {id: r.id})
+              WHERE a.conversationId IS NOT NULL AND a.conversationId <> ''
+            }
+          )
+        WITH p LIMIT $batch_size
+        DELETE p
+        RETURN count(*) AS deleted
+        """
+        params = {"attachments_connector": Connectors.ATTACHMENTS.value, "batch_size": batch_size}
+        total = 0
+        while True:
+            rows = await self.client.execute_query(query, params)
+            deleted = int(rows[0]["deleted"]) if rows else 0
+            total += deleted
+            if deleted == 0:
+                return total
+
     async def add_user_to_all_team(self, org_id: str, user_key: str) -> None:
         """
         Add a specific user to the org's 'All' team with a PERMISSION edge.
@@ -7860,6 +8008,8 @@ class Neo4jProvider(IGraphDBProvider):
                 }
                 await self.batch_upsert_nodes([team_node], CollectionNames.TEAMS.value)
                 self.logger.debug(f"Created 'All' team for org {org_id}")
+            elif not existing_team.get("orgId"):
+                await self.update_node(team_id, CollectionNames.TEAMS.value, {"orgId": org_id})
 
             # 2. Check if this user already has a PERMISSION edge
             check_edge_query = """
@@ -10125,7 +10275,7 @@ class Neo4jProvider(IGraphDBProvider):
                  [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
-                     role: userTeamPerm.role,
+                     role: """ + cypher_team_kb_role("teamKbPerm", "userTeamPerm") + """,
                      folder: null
                  }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
 
@@ -11503,7 +11653,7 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
             WITH u, kb, d.role AS direct_role
             OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
-            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
+            WITH direct_role, collect(DISTINCT """ + cypher_team_kb_role("tb", "ut") + """) AS team_roles
             WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
@@ -11673,6 +11823,8 @@ class Neo4jProvider(IGraphDBProvider):
             # Role priority for resolving highest role
 
             # Main query: Get KBs with user permissions (direct and team-based)
+            team_kb_role = cypher_team_kb_role("r2", "r1")
+
             query = f"""
             MATCH (u:User {{id: $user_id}})
 
@@ -11702,9 +11854,9 @@ class Neo4jProvider(IGraphDBProvider):
 
             // Emit both direct and team KBs so team-only KBs are not lost (COALESCE would drop them)
             WITH kb, kb2, direct_role, direct_priority, is_direct,
-                 r1.role AS team_role,
+                 {team_kb_role} AS team_role,
                  CASE WHEN r1.role IS NOT NULL THEN
-                     CASE r1.role
+                     CASE {team_kb_role}
                          WHEN "OWNER" THEN 4
                          WHEN "WRITER" THEN 3
                          WHEN "READER" THEN 2
@@ -11732,7 +11884,9 @@ class Neo4jProvider(IGraphDBProvider):
                  [role_info IN all_roles WHERE role_info.role IS NOT NULL] AS valid_roles
 
             WITH kb,
-                 [role_info IN valid_roles | role_info] AS sorted_roles
+                 [reduce(best = null, ri IN valid_roles |
+                    CASE WHEN best IS NULL OR ri.priority > best.priority
+                              OR (ri.priority = best.priority AND ri.is_direct) THEN ri ELSE best END)] AS sorted_roles
             ORDER BY sorted_roles[0].priority DESC, sorted_roles[0].is_direct DESC
             WITH kb, sorted_roles[0].role AS final_role
 
@@ -11798,9 +11952,9 @@ class Neo4jProvider(IGraphDBProvider):
                 AND coalesce(kb2.isHidden, false) = false
                 {team_filters}
             WITH kb, kb2, direct_role, direct_priority, is_direct,
-                 r1.role AS team_role,
+                 {team_kb_role} AS team_role,
                  CASE WHEN r1.role IS NOT NULL THEN
-                     CASE r1.role
+                     CASE {team_kb_role}
                          WHEN "OWNER" THEN 4
                          WHEN "WRITER" THEN 3
                          WHEN "READER" THEN 2
@@ -11827,7 +11981,9 @@ class Neo4jProvider(IGraphDBProvider):
             WITH kb,
                  [role_info IN all_roles WHERE role_info.role IS NOT NULL] AS valid_roles
             WITH kb,
-                 [role_info IN valid_roles | role_info] AS sorted_roles
+                 [reduce(best = null, ri IN valid_roles |
+                    CASE WHEN best IS NULL OR ri.priority > best.priority
+                              OR (ri.priority = best.priority AND ri.is_direct) THEN ri ELSE best END)] AS sorted_roles
             ORDER BY sorted_roles[0].priority DESC, sorted_roles[0].is_direct DESC
             WITH kb, sorted_roles[0].role AS final_role
 
@@ -11859,9 +12015,9 @@ class Neo4jProvider(IGraphDBProvider):
                 AND kb2.type = $kb_type
                 AND coalesce(kb2.isHidden, false) = false
             WITH kb, kb2, direct_role, direct_priority, is_direct,
-                 r1.role AS team_role,
+                 """ + team_kb_role + """ AS team_role,
                  CASE WHEN r1.role IS NOT NULL THEN
-                     CASE r1.role
+                     CASE """ + team_kb_role + """
                          WHEN "OWNER" THEN 4
                          WHEN "WRITER" THEN 3
                          WHEN "READER" THEN 2
@@ -11887,7 +12043,9 @@ class Neo4jProvider(IGraphDBProvider):
             WITH kb,
                  [role_info IN all_roles WHERE role_info.role IS NOT NULL] AS valid_roles
             WITH kb,
-                 [role_info IN valid_roles | role_info] AS sorted_roles
+                 [reduce(best = null, ri IN valid_roles |
+                    CASE WHEN best IS NULL OR ri.priority > best.priority
+                              OR (ri.priority = best.priority AND ri.is_direct) THEN ri ELSE best END)] AS sorted_roles
             ORDER BY sorted_roles[0].priority DESC, sorted_roles[0].is_direct DESC
             WITH kb, sorted_roles[0].role AS permission
 
@@ -13826,6 +13984,7 @@ class Neo4jProvider(IGraphDBProvider):
                     "to_id": kb_id,
                     "to_collection": CollectionNames.APPS.value,
                     "type": "TEAM",
+                    "role": role,
                     "createdAtTimestamp": timestamp,
                     "updatedAtTimestamp": timestamp,
                 }
@@ -13845,6 +14004,74 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Create KB permissions failed: {str(e)}")
             return {"success": False, "reason": str(e)}
+
+    async def create_kb_principal_permissions(
+        self,
+        kb_id: str,
+        grants: list[dict[str, str]],
+    ) -> dict:
+        """Write every grant in one Cypher statement. A single statement is atomic even
+        with NEO4J_EXPLICIT_TRANSACTIONS off, where begin/commit would not be."""
+        try:
+            timestamp = get_epoch_timestamp_in_ms()
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            def _rows(principal_type: str) -> list[dict[str, Any]]:
+                return [
+                    {
+                        "id": g["principalId"],
+                        "props": {
+                            "type": principal_type.upper(),
+                            "role": g["role"],
+                            "externalPermissionId": "",
+                            "createdAtTimestamp": timestamp,
+                            "updatedAtTimestamp": timestamp,
+                            "lastUpdatedTimestampAtSource": timestamp,
+                        },
+                    }
+                    for g in grants
+                    if g["principalType"] == principal_type
+                ]
+
+            users, teams = _rows("user"), _rows("team")
+            query = f"""
+            MATCH (kb:App {{id: $kb_id, type: "KB"}})
+            CALL {{
+                WITH kb
+                UNWIND $users AS g
+                MATCH (p:{user_label} {{id: g.id}})
+                MERGE (p)-[r:{permission_rel}]->(kb)
+                SET r = g.props
+                RETURN count(r) AS granted_users
+            }}
+            CALL {{
+                WITH kb
+                UNWIND $teams AS g
+                MATCH (p:{team_label} {{id: g.id}})
+                MERGE (p)-[r:{permission_rel}]->(kb)
+                SET r = g.props
+                RETURN count(r) AS granted_teams
+            }}
+            RETURN granted_users, granted_teams
+            """
+            rows = await self.client.execute_query(
+                query, parameters={"kb_id": kb_id, "users": users, "teams": teams}
+            )
+            if not rows:
+                return {"success": False, "reason": "Knowledge base not found", "code": 404}
+            return {
+                "success": True,
+                "grantedCount": rows[0]["granted_users"] + rows[0]["granted_teams"],
+                "grantedUsers": [g["id"] for g in users],
+                "grantedTeams": [g["id"] for g in teams],
+                "kbId": kb_id,
+                "details": {},
+            }
+        except Exception as e:
+            self.logger.error(f"❌ Create KB principal permissions failed: {str(e)}")
+            return {"success": False, "reason": "Failed to create permissions", "code": 500}
 
     async def update_kb_permission(
         self,
@@ -13930,9 +14157,28 @@ class Neo4jProvider(IGraphDBProvider):
                         "new_role": new_role
                     }
 
-            # Teams don't have roles - they just have access or not
-            # So we don't update team permissions
             updated_teams = 0
+            for team_id in team_ids:
+                team_match = """
+                MATCH (t:Teams {id: $team_id})-[r:PERMISSION {type: "TEAM"}]->(kb:App {id: $kb_id, type: "KB"})
+                """
+                current_result = await self.client.execute_query(
+                    team_match + "RETURN r.role as old_role",
+                    parameters={"team_id": team_id, "kb_id": kb_id},
+                    txn_id=transaction
+                )
+                if current_result:
+                    await self.client.execute_query(
+                        team_match + "SET r.role = $new_role, r.updatedAtTimestamp = $timestamp, "
+                        "r.lastUpdatedTimestampAtSource = $timestamp",
+                        parameters={"team_id": team_id, "kb_id": kb_id, "new_role": new_role, "timestamp": timestamp},
+                        txn_id=transaction
+                    )
+                    updated_teams += 1
+                    updates_by_type["teams"][team_id] = {
+                        "old_role": current_result[0].get("old_role"),
+                        "new_role": new_role
+                    }
 
             self.logger.debug(f"✅ Optimistically updated {updated_users} user permissions for KB {kb_id}")
 
@@ -13997,7 +14243,9 @@ class Neo4jProvider(IGraphDBProvider):
     async def list_kb_permissions(
         self,
         kb_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """List all permissions for a knowledge base with entity details"""
         try:
@@ -14049,7 +14297,7 @@ class Neo4jProvider(IGraphDBProvider):
                 else:
                     # Team permissions
                     permission["name"] = entity_props.get("name")
-                    permission["role"] = None  # Teams don't have roles
+                    permission["role"] = rel_props.get("role") or None
                     permission["userId"] = None
                     permission["email"] = None
 
@@ -14059,6 +14307,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ List KB permissions failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def list_all_records(
@@ -14146,7 +14396,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
                 WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
-                WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
+                WITH u, directKbs, COLLECT({{kb: kb2, role: {cypher_team_kb_role('teamKbPerm', 'userTeamPerm')}}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
                 // One null row when the user reaches no KB: UNWIND of an empty list ends
@@ -14266,7 +14516,7 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {{type: "USER"}}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {{type: "TEAM"}}]->(kb2:App)
                 WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
-                WITH u, directKbs, COLLECT({{kb: kb2, role: userTeamPerm.role}}) AS teamKbs
+                WITH u, directKbs, COLLECT({{kb: kb2, role: {cypher_team_kb_role('teamKbPerm', 'userTeamPerm')}}}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
                 // One null row when the user reaches no KB: UNWIND of an empty list ends
@@ -14328,14 +14578,13 @@ class Neo4jProvider(IGraphDBProvider):
                 OPTIONAL MATCH (u)-[kbEdge:PERMISSION {type: "USER"}]->(kb:App)
                 WHERE kb.orgId = $org_id
                     AND kb.type = "KB"
-                    AND kbEdge.role IN ["OWNER", "READER", "FILEORGANIZER", "WRITER", "COMMENTER", "ORGANIZER"]
                     AND coalesce(kb.isHidden, false) = false
                 WITH u, COLLECT({kb: kb, role: kbEdge.role}) AS directKbs
 
                 OPTIONAL MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team:Teams)
                 OPTIONAL MATCH (team)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2:App)
                 WHERE kb2.orgId = $org_id AND kb2.type = "KB" AND coalesce(kb2.isHidden, false) = false
-                WITH u, directKbs, COLLECT({kb: kb2, role: userTeamPerm.role}) AS teamKbs
+                WITH u, directKbs, COLLECT({kb: kb2, role: """ + cypher_team_kb_role("teamKbPerm", "userTeamPerm") + """}) AS teamKbs
 
                 WITH u, directKbs + teamKbs AS allKbAccess
                 // One null row when the user reaches no KB: UNWIND of an empty list ends
@@ -14508,7 +14757,7 @@ class Neo4jProvider(IGraphDBProvider):
     @staticmethod
     def _artifact_gallery_match() -> str:
         return """
-            MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER"}]->(rec:Record)
+            MATCH (u:User {id: $user_id})-[perm:PERMISSION {type: "USER", role: "OWNER"}]->(rec:Record)
             WHERE rec.orgId = $org_id
               AND rec.recordType = "ARTIFACT"
               AND coalesce(rec.isDeleted, false) = false
@@ -16228,7 +16477,7 @@ class Neo4jProvider(IGraphDBProvider):
         team_ids: list[str] | None = None,
         transaction: str | None = None,
     ) -> dict[str, dict[str, str]]:
-        """Get current roles for users and teams on a KB. Returns {users: {id: role}, teams: {id: None}}."""
+        """Get current roles for users and teams on a KB. Returns {users: {id: role}, teams: {id: role|None}}."""
         try:
             result = {"users": {}, "teams": {}}
             if not user_ids and not team_ids:
@@ -16268,7 +16517,7 @@ class Neo4jProvider(IGraphDBProvider):
                 if label == user_label or r.get("type") == "USER":
                     result["users"][eid] = role or ""
                 elif label == team_label or r.get("type") == "TEAM":
-                    result["teams"][eid] = None
+                    result["teams"][eid] = role or None
             return result
         except Exception as e:
             self.logger.error(f"❌ Get KB permissions failed: {str(e)}")
@@ -20126,7 +20375,7 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE p5.role IS NOT NULL AND p5.role <> ''
 
             // Path 7: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Use role from User->Team permission edge (ut.role); for the KB App the team->KB edge role wins (kb_team_role)
             OPTIONAL MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team:Teams)-[p7:PERMISSION {{type: 'TEAM'}}]->(target)
             WHERE ut.role IS NOT NULL AND ut.role <> ''
 
@@ -20137,7 +20386,8 @@ class Neo4jProvider(IGraphDBProvider):
             // Collect all found permissions for this target
             WITH {node_var}, {user_var}, role_priority, permission_targets,
                  collect(DISTINCT p1.role) + collect(DISTINCT p3.role) + collect(DISTINCT p5.role) +
-                 collect(DISTINCT ut.role) + collect(DISTINCT p9.role) AS target_roles
+                 collect(DISTINCT CASE WHEN target:App AND target.type = 'KB' THEN {cypher_team_kb_role('p7', 'ut')} ELSE ut.role END) +
+                 collect(DISTINCT p9.role) AS target_roles
 
             // Flatten all roles across all targets
             WITH role_priority, target_roles
@@ -20270,8 +20520,9 @@ class Neo4jProvider(IGraphDBProvider):
 
         - Direct PERMISSION edge (explicit role, e.g. OWNER set on KB creation
           or via sharing) wins outright, regardless of admin/creator/scope.
-        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
-          returns the user's team membership role.
+        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, role).
+          Returns the share edge's role; legacy role-less edges fall back to the
+          member's team role capped at WRITER.
         - Otherwise: USER_APP_RELATION existence gates access; admin gets
           EDITOR (team apps) or OWNER (personal apps); the creator gets OWNER
           regardless of scope; team-only access (no USER_APP_RELATION) gets
@@ -20308,9 +20559,9 @@ class Neo4jProvider(IGraphDBProvider):
             // path whenever a team shares a KB via PERMISSION TEAM only (no USER_APP_RELATION).
             OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
-            // Collect team KB roles and find highest priority
+            // Team-derived role: the share edge's role, else the member's team role capped at WRITER
             WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
-                collect(DISTINCT ut.role) AS team_kb_roles_list
+                collect(DISTINCT {cypher_team_kb_role('tb', 'ut')}) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
                 CASE
@@ -21312,10 +21563,11 @@ class Neo4jProvider(IGraphDBProvider):
         self,
         team_id: str,
         user_key: str,
+        org_id: str,
         transaction: str | None = None
     ) -> dict | None:
         """
-        Get a single team with its members and permissions.
+        Get a single team with its members and permissions, scoped to org_id.
         """
         try:
             team_label = collection_to_label(CollectionNames.TEAMS.value)
@@ -21323,7 +21575,7 @@ class Neo4jProvider(IGraphDBProvider):
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
             team_query = f"""
-            MATCH (team:{team_label} {{id: $teamId}})
+            MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL AND member_user.isActive = true
@@ -21358,6 +21610,7 @@ class Neo4jProvider(IGraphDBProvider):
                 team_query,
                 parameters={
                     "teamId": team_id,
+                    "orgId": org_id,
                     "user_key": user_key
                 },
                 txn_id=transaction
@@ -21495,6 +21748,44 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
+
+    async def get_user_team_ids(
+        self,
+        user_key: str,
+        org_id: str,
+        limit: int = 1000,
+    ) -> list[str]:
+        """
+        Ids of the teams (within org_id) the user is a member of.
+        """
+        if not org_id:
+            return []
+        try:
+            team_label = collection_to_label(CollectionNames.TEAMS.value)
+            user_label = collection_to_label(CollectionNames.USERS.value)
+            permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
+
+            query = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[:{permission_rel}]->(team:{team_label})
+            WHERE team.orgId = $org_id
+            RETURN DISTINCT team.id AS id
+            ORDER BY id
+            LIMIT $limit
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"user_key": user_key, "org_id": org_id, "limit": limit + 1},
+            )
+            ids = [row["id"] for row in rows or [] if row.get("id")]
+            if len(ids) > limit:
+                self.logger.warning(
+                    "get_user_team_ids truncated at %d teams for org %s", limit, org_id
+                )
+                ids = ids[:limit]
+            return ids
+        except Exception as e:
+            self.logger.error(f"Error in get_user_team_ids: {str(e)}", exc_info=True)
+            raise
 
     async def get_team_users(
         self,

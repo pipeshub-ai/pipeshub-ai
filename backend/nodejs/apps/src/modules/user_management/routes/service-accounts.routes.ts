@@ -34,6 +34,7 @@ export function createServiceAccountsRouter(container: Container): Router {
   const rateLimiter = createOAuthClientRateLimiter(
     logger,
     appConfig.maxOAuthClientRequestsPerMinute,
+    'service-accounts',
   );
 
   router.use(authMiddleware.authenticate.bind(authMiddleware));

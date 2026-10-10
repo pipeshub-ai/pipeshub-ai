@@ -21,6 +21,9 @@ import {
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
 import * as XLSX from 'xlsx';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
+import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
+import { ChatCollaboratorCleanup } from '../../../../src/modules/enterprise_search/services/collaboration/persistence/chat-collaborator-cleanup';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -144,6 +147,11 @@ describe('UserController', () => {
     }
     if (!(ProjectService.removeUserFromAllProjects as any).restore) {
       sinon.stub(ProjectService, 'removeUserFromAllProjects').resolves();
+    }
+    if (!(ChatCollaboratorCleanup.removeUser as any).restore) {
+      sinon
+        .stub(ChatCollaboratorCleanup, 'removeUser')
+        .resolves({ removedFrom: 0, ownedSharedChats: 0 });
     }
   });
 
@@ -613,6 +621,7 @@ describe('UserController', () => {
                     fullName: 'John Admin',
                     email: 'john@acme.com',
                     hasLoggedIn: true,
+                    isDisabled: true,
                     role: 'admin',
                     createdAt: new Date('2025-01-01T00:00:00.000Z'),
                     updatedAt: new Date('2025-01-02T00:00:00.000Z'),
@@ -674,6 +683,7 @@ describe('UserController', () => {
       expect(payload.users[0].profilePicture).to.equal('data:image/png;base64,abc123');
       expect(payload.users[0].isBlocked).to.equal(true);
       expect(payload.users[0].isActive).to.equal(false);
+      expect(payload.users[0].isDisabled).to.equal(true);
       expect(payload.users[0].role).to.equal('Admin');
       expect(payload.users[0].groupCount).to.equal(1);
       expect(payload.users[0].userGroups).to.have.length(2);
@@ -1717,7 +1727,7 @@ describe('UserController', () => {
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockUser.save.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      expect(res.json.calledWith({ message: 'User deleted successfully', ownedSharedChats: 0 })).to.be.true;
       expect(
         recordActivity.calledWithMatch({
           userId: mockUser._id,
@@ -4167,6 +4177,111 @@ describe('UserController', () => {
       expect(mockUser.isDeleted).to.be.true;
       expect(mockUser.hasLoggedIn).to.be.false;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // deleteUser - collaborative-chat offboarding (LC-01, LC-02, LC-04)
+  // -----------------------------------------------------------------------
+  describe('deleteUser - chat offboarding', () => {
+    const makeUser = () => ({
+      _id: '507f1f77bcf86cd799439013',
+      orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+      email: 'delete@test.com',
+      fullName: 'Delete Me',
+      isDeleted: false,
+      hasLoggedIn: true,
+      role: 'member',
+      save: sinon.stub().resolves(),
+    });
+
+    beforeEach(() => {
+      req.params = { id: '507f1f77bcf86cd799439013' };
+      // Main records the deletion before changing anything; without it nothing is deleted.
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+    });
+
+    it('cleans up after the project memberships, org-scoped, and returns ownedSharedChats', async () => {
+      const mockUser = makeUser();
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      (ChatCollaboratorCleanup.removeUser as sinon.SinonStub).resolves({
+        removedFrom: 3,
+        ownedSharedChats: 2,
+      });
+
+      await controller.deleteUser(req, res, next);
+
+      const cleanup = ChatCollaboratorCleanup.removeUser as sinon.SinonStub;
+      expect(cleanup.calledOnce).to.be.true;
+      expect(cleanup.firstCall.args.slice(0, 2)).to.deep.equal([
+        '507f1f77bcf86cd799439012',
+        '507f1f77bcf86cd799439013',
+      ]);
+      expect(cleanup.firstCall.args[2]).to.deep.include({
+        actorUserId: '507f1f77bcf86cd799439011',
+      });
+      expect(cleanup.calledAfter(ProjectService.removeUserFromAllProjects as sinon.SinonStub)).to.be.true;
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        message: 'User deleted successfully',
+        ownedSharedChats: 2,
+      });
+      expect(mockUser.isDeleted).to.be.true;
+      expect(
+        mockLogger.info.getCalls().some((c: any) => c.args[1]?.ownedSharedChats === 2),
+      ).to.be.true;
+    });
+
+    it('reports zero owned shared chats for a user who owns none', async () => {
+      sinon.stub(Users, 'findOne').resolves(makeUser() as any);
+      await controller.deleteUser(req, res, next);
+      expect(res.json.firstCall.args[0].ownedSharedChats).to.equal(0);
+    });
+
+    it('fails the delete before the user is marked deleted when the cleanup throws, so a retry can finish', async () => {
+      const mockUser = makeUser();
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      (ChatCollaboratorCleanup.removeUser as sinon.SinonStub).rejects(new Error('mongo down'));
+
+      await controller.deleteUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(res.json.called).to.be.false;
+      expect(mockUser.isDeleted).to.be.false;
+      expect(mockUser.save.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('queues one projectKbSync per linked project without the user, and makes no KB HTTP call', async () => {
+      sinon.stub(Users, 'findOne').resolves(makeUser() as any);
+      const memberId = '507f1f77bcf86cd799439013';
+      const projects = ['507f1f77bcf86cd7994390a1', '507f1f77bcf86cd7994390a2'].map((id) => ({
+        _id: new mongoose.Types.ObjectId(id),
+        orgId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439012'),
+        userId: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        linkedKnowledgeBaseId: `kb-${id}`,
+        visibility: 'private',
+        members: [
+          { principalType: 'user', principalId: new mongoose.Types.ObjectId(memberId), role: 'editor' },
+        ],
+      }));
+      (ProjectService.findProjectsWithLinkedKbForUser as sinon.SinonStub).resolves(projects);
+      const create = sinon.stub(OutboxEvent, 'create').resolves([] as never);
+      const http = sinon.stub(connectorUtils, 'executeConnectorCommand');
+
+      await controller.deleteUser(req, res, next);
+
+      expect(create.callCount).to.equal(2);
+      const rows = create.getCalls().map((call) => (call.args[0] as any[])[0]);
+      expect(rows.map((row) => row.key)).to.deep.equal(['projectKbSync', 'projectKbSync']);
+      expect(rows.map((row) => row.orderingKey)).to.deep.equal(projects.map((p) => `project:${p._id}`));
+      for (const row of rows) {
+        expect(JSON.parse(row.value).payload.editorUserIds).to.deep.equal([]);
+      }
+      expect(http.called).to.be.false;
+      expect(create.calledBefore(ProjectService.removeUserFromAllProjects as sinon.SinonStub)).to.be.true;
     });
   });
 

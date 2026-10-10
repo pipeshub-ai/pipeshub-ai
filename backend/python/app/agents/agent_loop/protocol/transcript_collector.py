@@ -67,6 +67,10 @@ _MAX_TOOL_RESULT_CHARS = 500
 _MAX_ARG_VALUE_CHARS = 1200
 
 
+def _is_draft_tool(name: object) -> bool:
+    return isinstance(name, str) and name.endswith("draft_agent")
+
+
 def _serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
@@ -272,11 +276,13 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TOOL_CALL_START:
             tool_call_id = payload.get("tool_call_id") or f"call_{event.event_id[:12]}"
+            tool_name = payload.get("tool", "tool")
             part: MessagePart = {
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
-                "toolName": payload.get("tool", "tool"),
-                "args": _serialize_tool_args(payload.get("args", {})),
+                "toolName": tool_name,
+                # The draft is stored once, on its own row that only the requester can read.
+                "args": "{}" if _is_draft_tool(tool_name) else _serialize_tool_args(payload.get("args", {})),
                 "status": "running",
                 "runId": run_id,
             }
@@ -302,6 +308,9 @@ class TranscriptCollector(EventEmitter):
             if payload.get("status") == ToolCallStatus.BLOCKED:
                 part["status"] = "blocked"
                 part["resultPreview"] = str(payload.get("reason", ""))[:_MAX_TOOL_RESULT_CHARS]
+            elif _is_draft_tool(part.get("toolName")):
+                part["status"] = "failed" if payload.get("is_error") else "completed"
+                part["resultPreview"] = ""
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
                 part["resultPreview"] = str(payload.get("content", ""))[:_MAX_TOOL_RESULT_CHARS]

@@ -1,0 +1,6238 @@
+{
+  "version": 1,
+  "rows": [
+    {
+      "id": "role-mapper-project-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "project",
+        "grants": [
+          {
+            "stored": "owner"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "role-mapper-project-editor",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "project",
+        "grants": [
+          {
+            "stored": "editor"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-project-viewer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "project",
+        "grants": [
+          {
+            "stored": "viewer"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "role-mapper-chat-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": [
+          {
+            "stored": "owner"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "role-mapper-chat-write",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": [
+          {
+            "stored": "write"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-chat-read",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": [
+          {
+            "stored": "read"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "role-mapper-kb-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "OWNER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "role-mapper-kb-organizer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "ORGANIZER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "manager"
+      }
+    },
+    {
+      "id": "role-mapper-kb-fileorganizer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "FILEORGANIZER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-kb-writer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "WRITER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-kb-commenter",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "COMMENTER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "commenter"
+      }
+    },
+    {
+      "id": "role-mapper-kb-reader",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "READER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "role-mapper-agent-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "agent",
+        "grants": [
+          {
+            "stored": "OWNER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "role-mapper-agent-organizer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "agent",
+        "grants": [
+          {
+            "stored": "ORGANIZER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "manager"
+      }
+    },
+    {
+      "id": "role-mapper-agent-writer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "agent",
+        "grants": [
+          {
+            "stored": "WRITER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-agent-reader",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "agent",
+        "grants": [
+          {
+            "stored": "READER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "role-mapper-team-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "team",
+        "grants": [
+          {
+            "stored": "OWNER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "role-mapper-team-writer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "team",
+        "grants": [
+          {
+            "stored": "WRITER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "role-mapper-team-reader",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "team",
+        "grants": [
+          {
+            "stored": "READER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "role-mapper-project-unknown-admin",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "project",
+        "grants": [
+          {
+            "stored": "admin"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-chat-unknown-write",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": [
+          {
+            "stored": "WRITE"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-chat-unknown-editor",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": [
+          {
+            "stored": "editor"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-kb-unknown-owner",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": "owner"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-kb-unknown-empty",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "kb",
+        "grants": [
+          {
+            "stored": ""
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-agent-unknown-commenter",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "agent",
+        "grants": [
+          {
+            "stored": "COMMENTER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-team-unknown-organizer",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "team",
+        "grants": [
+          {
+            "stored": "ORGANIZER"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-project-unknown-constructor",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "project",
+        "grants": [
+          {
+            "stored": "constructor"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-chat-no-grants",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "chat",
+        "grants": []
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "role-mapper-unknown-resource",
+      "decider": "roleMapper",
+      "since": "PH-03",
+      "langs": [
+        "ts",
+        "py"
+      ],
+      "given": {
+        "principal": "n/a",
+        "resource": "document",
+        "grants": [
+          {
+            "stored": "owner"
+          }
+        ]
+      },
+      "action": "map",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PI-01-project-viewer-inherits-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "viewer"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "PI-02-project-editor-ceiling-viewer-stays-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "PI-02-project-owner-ceiling-viewer-stays-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "owner"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "PI-03-project-editor-ceiling-editor",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "PI-03-project-viewer-ceiling-editor-stays-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "viewer",
+            "ceiling": "editor"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "PI-04-project-member-private-chat-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "private",
+            "projectRole": "editor"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PI-05-union-direct-read-team-write-project-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "viewer"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          }
+        ]
+      },
+      "action": "editor",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "PI-08-project-cleared-keeps-direct",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "clearedProject"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "PI-08-project-cleared-drops-inherited",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "clearedProject"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PI-08-project-cleared-keeps-owner",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "clearedProject"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-owner",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-direct-write-is-editor",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "chat-direct-unknown-level-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "admin"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "chat-stranger-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": []
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "chat-other-user-direct-row-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write",
+            "userId": "u2"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "chat-other-org-owner-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "chat-team-row-matching-team",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1",
+              "t2"
+            ]
+          }
+        ]
+      },
+      "action": "editor",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "chat-team-row-non-matching-team",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t9",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-team-only-grant",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-owner-decided",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-direct-satisfies-needed",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "editor",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-direct-viewer-needs-editor",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "editor",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-no-team-rows-none",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PH03-03-unresolved-team-row-below-needed",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "editor",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "TM-01-direct-viewer-skips-team-resolution",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "SEC-19-collab-off-direct-write-is-read",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "SEC-19-collab-off-project-ceiling-editor-is-viewer",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "SEC-19-collab-off-ignores-team-rows",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "SEC-19-collab-off-owner-unchanged",
+      "decider": "chatRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          }
+        ]
+      },
+      "action": "viewer",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "project-owner",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "owner"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "project-user-editor",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "user",
+            "id": "u1",
+            "role": "editor"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "project-user-row-for-other-user",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "user",
+            "id": "u2",
+            "role": "editor"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "project-team-uuid-row",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "team",
+            "id": "3f2a9c1e-5b7d-4e1a-9c3b-0d8e7f6a5b4c",
+            "role": "editor"
+          },
+          {
+            "kind": "teams",
+            "ids": [
+              "3f2a9c1e-5b7d-4e1a-9c3b-0d8e7f6a5b4c"
+            ]
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "project-team-all-org-row",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "team",
+            "id": "all_abc",
+            "role": "viewer"
+          },
+          {
+            "kind": "teams",
+            "ids": [
+              "all_abc"
+            ]
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "project-team-row-no-match",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "team",
+            "id": "t9",
+            "role": "editor"
+          },
+          {
+            "kind": "teams",
+            "ids": [
+              "t1"
+            ]
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "project-team-unresolved-no-grant",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "team",
+            "id": "t1",
+            "role": "editor"
+          },
+          {
+            "kind": "teams",
+            "ids": "unresolved"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "project-highest-of-user-and-team-wins",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "user",
+            "id": "u1",
+            "role": "viewer"
+          },
+          {
+            "kind": "member",
+            "principalType": "team",
+            "id": "t1",
+            "role": "editor"
+          },
+          {
+            "kind": "teams",
+            "ids": [
+              "t1"
+            ]
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "editor"
+      }
+    },
+    {
+      "id": "project-org-visible-gives-viewer",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "visibility",
+            "value": "org"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": true,
+        "role": "viewer"
+      }
+    },
+    {
+      "id": "project-private-stranger-none",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": []
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "project-other-org-none",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "project-unknown-member-role-none",
+      "decider": "projectRole",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "project",
+        "grants": [
+          {
+            "kind": "member",
+            "principalType": "user",
+            "id": "u1",
+            "role": "admin"
+          }
+        ]
+      },
+      "action": "role",
+      "expect": {
+        "allow": false,
+        "role": "none"
+      }
+    },
+    {
+      "id": "PI-09-h4-consent-false-viewer-denied",
+      "decider": "h4",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isUploader": false,
+            "chatRole": "viewer",
+            "consent": false
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-09-h4-consent-false-uploader-allowed",
+      "decider": "h4",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isUploader": true,
+            "chatRole": "none",
+            "consent": false
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true
+      }
+    },
+    {
+      "id": "PI-09-h4-consent-false-owner-not-uploader-denied",
+      "decider": "h4",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isUploader": false,
+            "chatRole": "owner",
+            "consent": false
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-10-h4-consent-true-viewer-allowed",
+      "decider": "h4",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isUploader": false,
+            "chatRole": "viewer",
+            "consent": true
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true
+      }
+    },
+    {
+      "id": "h4-consent-true-no-chat-access-denied",
+      "decider": "h4",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isUploader": false,
+            "chatRole": "none",
+            "consent": true
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-09-h5-consent-false-viewer-denied",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": false,
+            "chatRole": "viewer",
+            "consent": false,
+            "kind": "FILE"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-09-h5-consent-false-creator-allowed",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": true,
+            "chatRole": "none",
+            "consent": false,
+            "kind": "FILE"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true
+      }
+    },
+    {
+      "id": "PI-10-h5-consent-true-viewer-allowed",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": false,
+            "chatRole": "viewer",
+            "consent": true,
+            "kind": "FILE"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true
+      }
+    },
+    {
+      "id": "PI-11-h5-staging-consent-denied-to-non-creator",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": false,
+            "chatRole": "owner",
+            "consent": true,
+            "kind": "STAGING"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-11-h5-temporary-consent-denied-to-non-creator",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": false,
+            "chatRole": "editor",
+            "consent": true,
+            "kind": "temporary"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "PI-11-h5-staging-creator-allowed",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": true,
+            "chatRole": "owner",
+            "consent": false,
+            "kind": "STAGING"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true
+      }
+    },
+    {
+      "id": "h5-consent-true-no-chat-access-denied",
+      "decider": "h5",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chatContent",
+        "grants": [
+          {
+            "isCreator": false,
+            "chatRole": "none",
+            "consent": true,
+            "kind": "FILE"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false
+      }
+    },
+    {
+      "id": "chat-op-owner-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-feedback",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "feedback",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-archiveSelf",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "archiveSelf",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-leave",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "leave",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-owner-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-settings",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "settings",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-transfer",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "transfer",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-rename",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "rename",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-linkProject",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "linkProject",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-delete",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "delete",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-feedback",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "feedback",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-archiveSelf",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "archiveSelf",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-leave",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "leave",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-settings",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "settings",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-transfer",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "transfer",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-rename",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "rename",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-linkProject",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "linkProject",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-delete",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "delete",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-feedback",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "feedback",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-archiveSelf",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "archiveSelf",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-leave",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "leave",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-settings",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "settings",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-transfer",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "transfer",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-rename",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "rename",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-linkProject",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "linkProject",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-delete",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "delete",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-stranger-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-feedback",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "feedback",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-archiveSelf",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "archiveSelf",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-leave",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "leave",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-settings",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "settings",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-transfer",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "transfer",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-rename",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "rename",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-linkProject",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "linkProject",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-stranger-delete",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "delete",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-team-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-team-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-team-write-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-team-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-team-read-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-team-read-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-team-read-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-team-read-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-other-org-owner-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-other-org-owner-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-other-org-owner-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-other-org-owner-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "otherOrg"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-editor-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-editor-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-editor-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-editor-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-viewer-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-viewer-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-viewer-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-project-editor-ceiling-viewer-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-direct-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-direct-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-direct-write-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-direct-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-owner-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-owner-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-owner-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-owner-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-team-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-team-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-team-write-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-team-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": [
+              "t1"
+            ]
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-project-editor-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-project-editor-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-project-editor-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-project-editor-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "project",
+            "visibility": "project",
+            "projectRole": "editor",
+            "ceiling": "editor"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-only-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-only-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-only-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-read-team-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-read-team-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-read-team-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-write-team-write-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-write-team-write-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-direct-write-team-write-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-owner-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-owner-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-owner-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "write"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-read-only-send-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": false,
+        "code": "TEAM_RESOLUTION_UNAVAILABLE"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-read-only-send-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-unresolved-team-read-only-send-manageCollaborators",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "team",
+            "teamId": "t1",
+            "level": "read"
+          },
+          {
+            "kind": "subject",
+            "teams": "unresolved"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "manageCollaborators",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    },
+    {
+      "id": "chat-op-owner-regenerate-not-asker",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "REGENERATE_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "chat-op-owner-resume-not-requester",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "asker"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "RESUME_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-regenerate-not-asker",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "REGENERATE_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-resume-not-requester",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "asker"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "RESUME_NOT_ALLOWED"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-regenerate-not-asker",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-invite-editors-can-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "settings",
+            "editorsCanInvite": true
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-invite-editors-cannot-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "settings",
+            "editorsCanInvite": false
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_OWNER_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-invite-editors-can-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "settings",
+            "editorsCanInvite": true
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-flag-off-direct-write-invite-editors-can-invite",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "collab",
+            "value": false
+          },
+          {
+            "kind": "settings",
+            "editorsCanInvite": true
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "invite",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-owner-owner-inactive-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-owner-owner-inactive-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-owner-owner-inactive-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-owner-owner-inactive-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-owner-owner-inactive-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "owner"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "owner"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-owner-inactive-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-owner-inactive-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-owner-inactive-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "OWNER_INACTIVE"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-owner-inactive-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-write-owner-inactive-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "write"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "write"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-owner-inactive-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-owner-inactive-regenerate",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "regenerate",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-owner-inactive-resume",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "resume",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-owner-inactive-cancel",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "cancel",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_READ_ONLY"
+      }
+    },
+    {
+      "id": "chat-op-direct-read-owner-inactive-read",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "direct",
+            "level": "read"
+          },
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "read",
+      "expect": {
+        "allow": true,
+        "role": "read"
+      }
+    },
+    {
+      "id": "chat-op-stranger-owner-inactive-send",
+      "decider": "chatOp",
+      "since": "PH-03",
+      "langs": [
+        "ts"
+      ],
+      "given": {
+        "principal": "u1",
+        "resource": "chat",
+        "grants": [
+          {
+            "kind": "ownerInactive"
+          },
+          {
+            "kind": "asker"
+          },
+          {
+            "kind": "requester"
+          }
+        ]
+      },
+      "action": "send",
+      "expect": {
+        "allow": false,
+        "code": "CONVERSATION_NOT_FOUND"
+      }
+    }
+  ]
+}

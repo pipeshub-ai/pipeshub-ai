@@ -401,6 +401,7 @@ Tests clone the [pipeshub-ai/integration-test](https://github.com/pipeshub-ai/in
 | `connectors/*/` | Per-connector lifecycle test modules. |
 | `helper/integration_report.py` | Builds the HTML report (root cause parsing, cascade hints, full tracebacks). |
 | `reports/INTEGRATION_TEST_REPORT_<graph_db>_<timestamp>.html` | HTML report per run (only report artifact). |
+| `collaborative-chats/stack/` | Real-HTTP lane for the collaborative-chats journeys: boots the Node API from source on throwaway Mongo and Redis containers with the Python services faked, or (`stack/run.sh --real-python [--graph arangodb]`) with the Python query and connectors services running from source on a throwaway Neo4j/Arango. Own entry point `stack/run.sh`; see its README. Code in `helper/collab_stack/`. |
 
 ---
 

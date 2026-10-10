@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Badge,
   Button,
@@ -345,6 +345,11 @@ export interface AskUserQuestionCardProps {
   status: 'pending' | 'submitted' | 'persisted';
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
+  /**
+   * Collaborative chats: the question was put to someone else (F-1). The card shows who it waits for and
+   * every input is disabled. `name: null` is a former member.
+   */
+  readOnlyFor?: { name: string | null };
 }
 
 export function AskUserQuestionCard({
@@ -353,8 +358,10 @@ export function AskUserQuestionCard({
   status,
   onAnswersChange,
   onSubmit,
+  readOnlyFor,
 }: AskUserQuestionCardProps) {
   const { t } = useTranslation();
+  const locked = Boolean(readOnlyFor);
   const normalized = useMemo(() => normalizeAskUserQuestionPayload(payload), [payload]);
   const questions = normalized.questions;
   const [answers, setAnswers] = useState<Record<string, AskUserQuestionAnswer>>(() => ({
@@ -364,8 +371,15 @@ export function AskUserQuestionCard({
     firstUnansweredStep(questions, initialAnswers),
   );
   const [showAnswers, setShowAnswers] = useState(true);
+  const actionsRef = useRef<HTMLDivElement>(null);
   const questionKey = questions.map((q) => q.uuid).join('|');
   const initialAnswersKey = JSON.stringify(initialAnswers);
+
+  // The card is the newest thing in the thread, so the composer below can hide Submit/Skip until it scrolls into view.
+  useEffect(() => {
+    if (status !== 'pending' || readOnlyFor) return;
+    actionsRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [status, step, readOnlyFor]);
 
   useEffect(() => {
     if (status === 'pending') return;
@@ -494,13 +508,13 @@ export function AskUserQuestionCard({
   }, []);
 
   const handleSubmit = useCallback(() => {
-    if (!stepValid || status !== 'pending') return;
+    if (locked || !stepValid || status !== 'pending') return;
     const msg = buildAnswerMessage(normalized, answers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, onSubmit]);
+  }, [locked, stepValid, status, normalized, answers, onSubmit]);
 
   const handleSkip = useCallback(() => {
-    if (!currentQ || status !== 'pending') return;
+    if (locked || !currentQ || status !== 'pending') return;
     const next = {
       ...answers,
       [currentQ.uuid]: {
@@ -516,7 +530,7 @@ export function AskUserQuestionCard({
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
+  }, [locked, currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
 
   if (status === 'submitted' || status === 'persisted') {
     const heading =
@@ -528,8 +542,8 @@ export function AskUserQuestionCard({
           ? t('askUserQuestion.questionAskedSingular')
           : t('askUserQuestion.questionAskedPlural');
     return (
-      <Card size="2">
-        <Flex direction="column" gap="3" p="4">
+      <Card size="2" data-ask-user-card="">
+        <Flex direction="column" gap="3" p="4" data-ask-user-card-body="">
           <Flex direction="column" gap="1">
             {normalized.userIntent ? (
               <Text size="2" color="gray">
@@ -636,31 +650,46 @@ export function AskUserQuestionCard({
     <Card
       size="2"
       variant="surface"
+      data-ask-user-card=""
       style={{
         marginTop: 'var(--space-4)',
         borderRadius: 'var(--radius-4)',
         border: '1px solid var(--accent-a6)',
       }}
     >
-      <Flex direction="column" gap="4" p="4">
+      <Flex direction="column" gap="4" p="4" data-ask-user-card-body="">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {normalized.userIntent ? (
-              <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {normalized.userIntent}
-              </Text>
-            ) : null}
             <Heading size="4" style={{ margin: 0 }}>
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
                 : t('askUserQuestion.quickQuestionPlural')}
             </Heading>
-            <Badge size="1" variant="outline" color="gray">
-              {t('askUserQuestion.stepOf', { step: step + 1, total })}
-            </Badge>
+            {total > 1 ? (
+              <Badge size="1" variant="soft" color="gray">
+                {t('askUserQuestion.stepOf', { step: step + 1, total })}
+              </Badge>
+            ) : null}
           </Flex>
-
+          {normalized.userIntent ? (
+            <Text size="2" color="gray" as="p" style={{ margin: 0 }}>
+              {normalized.userIntent}
+            </Text>
+          ) : null}
         </Flex>
+
+        {readOnlyFor ? (
+          <Flex align="center" gap="2" role="status" data-testid="ask-card-waiting">
+            <span aria-hidden style={{ display: 'inline-flex' }}>
+              <MaterialIcon name="hourglass_top" size={16} color="var(--slate-11)" />
+            </span>
+            <Text size="2" color="gray">
+              {t('chat.collab.attribution.waitingFor', {
+                name: readOnlyFor.name || t('chat.collab.attribution.formerMember'),
+              })}
+            </Text>
+          </Flex>
+        ) : null}
 
         <Flex direction="column" gap="1">
           <Heading as="h3" size="3" style={{ margin: 0 }}>
@@ -684,7 +713,7 @@ export function AskUserQuestionCard({
             {augmentedOptions.map((opt, idx) => {
               const checked = selectedIds.includes(opt.id);
               const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-              const isDisabled = false;
+              const isDisabled = locked;
               return (
                 <Flex key={`${opt.id}-${idx}`} direction="column" gap="2">
                   <label
@@ -716,6 +745,7 @@ export function AskUserQuestionCard({
                         setUserInput(currentQ, opt.id, e.target.value)
                       }
                       rows={3}
+                      disabled={locked}
                       style={{ marginLeft: '28px' }}
                     />
                   ) : null}
@@ -733,7 +763,7 @@ export function AskUserQuestionCard({
             <Flex direction="column" gap="3">
               {augmentedOptions.map((opt, idx) => {
                 const isSynthetic = opt.id === SOMETHING_ELSE_ID;
-                const isDisabled = isSomethingElseSelected && !isSynthetic;
+                const isDisabled = locked || (isSomethingElseSelected && !isSynthetic);
                 const radioValue = String(idx);
                 const isSelected = singleValue === radioValue;
                 return (
@@ -769,6 +799,7 @@ export function AskUserQuestionCard({
                           setUserInput(currentQ, opt.id, e.target.value)
                         }
                         rows={3}
+                        disabled={locked}
                         style={{ marginLeft: '28px' }}
                       />
                     ) : null}
@@ -780,7 +811,14 @@ export function AskUserQuestionCard({
           </RadioGroup.Root>
         )}
 
-        <Flex align="center" justify="between" gap="3" wrap="wrap">
+        <Flex
+          ref={actionsRef}
+          align="center"
+          justify="between"
+          gap="3"
+          wrap="wrap"
+          style={{ scrollMarginBottom: 'var(--space-4)' }}
+        >
           <Button type="button" variant="soft" onClick={handleBack} disabled={step === 0}>
             {t('askUserQuestion.back')}
           </Button>
@@ -790,6 +828,7 @@ export function AskUserQuestionCard({
               variant="outline"
               color="gray"
               onClick={handleSkip}
+              disabled={locked}
             >
               {t('askUserQuestion.skip')}
             </Button>
@@ -797,7 +836,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleContinue}
-                disabled={!stepValid}
+                disabled={locked || !stepValid}
               >
                 {t('askUserQuestion.next')}
               </Button>
@@ -805,7 +844,7 @@ export function AskUserQuestionCard({
               <Button
                 type="button"
                 onClick={handleSubmit}
-                disabled={!stepValid}
+                disabled={locked || !stepValid}
               >
                 {t('askUserQuestion.submit')}
               </Button>

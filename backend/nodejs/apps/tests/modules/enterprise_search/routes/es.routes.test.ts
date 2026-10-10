@@ -4,6 +4,10 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createConversationalRouter, createSemanticSearchRouter, createAgentConversationalRouter } from '../../../../src/modules/enterprise_search/routes/es.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import { turnDeps } from '../helpers/turn-deps'
+import { markingGuards } from '../helpers/guarded-chat'
+import { bindCollaborationStubs } from '../helpers/collaboration-world'
+import { COLLAB_TYPES } from '../../../../src/modules/enterprise_search/services/collaboration/collab.types'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 
 describe('Enterprise Search Routes', () => {
@@ -31,10 +35,21 @@ describe('Enterprise Search Routes', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(COLLAB_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(COLLAB_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
+    bindCollaborationStubs(container)
   })
 
   afterEach(() => {
     sinon.restore()
+  })
+
+  it('PH04-01: both conversation routers refuse to build without the guards binding', () => {
+    const bare = new Container()
+    bare.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
+    bare.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    expect(() => createConversationalRouter(bare)).to.throw()
+    expect(() => createAgentConversationalRouter(bare)).to.throw()
   })
 
   it('should return a valid Express router', () => {
@@ -393,7 +408,8 @@ describe('Enterprise Search Routes', () => {
     )
 
     expect(layer).to.exist
-    expect(layer.route.stack.length).to.equal(4)
+    // authenticate, requireScopes, validate, guard, handler
+    expect(layer.route.stack.length).to.equal(5)
   })
 
   it('should register internal agent stream route', () => {
@@ -653,11 +669,11 @@ describe('Enterprise Search Routes', () => {
         .filter((layer: any) => layer.route)
         .map((layer: any) => ({ path: layer.route.path, methods: layer.route.methods, stack: layer.route.stack }))
 
-      // authenticate, requireScopes, validate, handler
-      for (const path of ['/:agentKey/conversations', '/:agentKey/conversations/:conversationId/messages']) {
+      // authenticate, requireScopes, validate, (first sends: the share limiter), guard, handler; a follow-up also runs runLease() after its guard
+      for (const [path, length] of [['/:agentKey/conversations', 6], ['/:agentKey/conversations/:conversationId/messages', 6]] as const) {
         const nonStreaming = routes.find((r: any) => r.path === path && r.methods.post)
         const streaming = routes.find((r: any) => r.path === `${path}/stream` && r.methods.post)
-        expect(nonStreaming?.stack.length, path).to.equal(4)
+        expect(nonStreaming?.stack.length, path).to.equal(length)
         expect(nonStreaming?.stack.length).to.equal(streaming?.stack.length)
       }
     })
@@ -727,6 +743,9 @@ describe('Enterprise Search Routes - handler coverage', () => {
 
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<AppConfig>('AppConfig').toConstantValue(mockAppConfig as any)
+    container.bind(COLLAB_TYPES.ConversationGuards).toConstantValue(markingGuards())
+    container.bind(COLLAB_TYPES.ConversationTurnDeps).toConstantValue(turnDeps())
+    bindCollaborationStubs(container)
   })
 
   afterEach(() => {

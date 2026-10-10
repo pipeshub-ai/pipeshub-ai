@@ -11,7 +11,7 @@
  *       CUSTOM(conversation_created) → CUSTOM(ask_user_question) → RUN_FINISHED
  *       (`ask_user_question` ends the turn; the answer is sent as the next one)
  *  3. The AskUserQuestionCard renders with:
- *       - heading "Quick question :" / "Quick questions :"
+ *       - heading "Quick question:" / "Quick questions:"
  *       - question text + option labels (radio or checkbox)
  *       - "Something else" synthetic option always appended
  *       - Step indicator "Step N of M" for multi-question flows
@@ -24,8 +24,8 @@
  *  6. Card collapses into the 'submitted' read-only view ("Question :", "Show more")
  *
  * ── i18n key → English string map (from en-US.json) ─────────────────────
- *   askUserQuestion.quickQuestionSingular  → "Quick question :"
- *   askUserQuestion.quickQuestionPlural    → "Quick questions :"
+ *   askUserQuestion.quickQuestionSingular  → "Quick question:"
+ *   askUserQuestion.quickQuestionPlural    → "Quick questions:"
  *   askUserQuestion.questionsHeadingSingular → "Question :"
  *   askUserQuestion.submit                 → "Submit"
  *   askUserQuestion.skip                   → "Skip"
@@ -288,7 +288,7 @@ test.describe('Ask User Question — single-select card', () => {
     await page.locator('text=Which department are you in?').waitFor({ timeout: 20_000 });
   });
 
-  test('card heading "Quick question :" is visible', async ({ page }) => {
+  test('card heading "Quick question:" is visible', async ({ page }) => {
     await expect(
       page.locator('text=/Quick question/i').first(),
     ).toBeVisible({ timeout: 5_000 });
@@ -755,7 +755,7 @@ test.describe('Ask User Question — multi-step (2 questions)', () => {
     await page.locator('text=What type of report do you need?').waitFor({ timeout: 20_000 });
   }
 
-  test('card heading shows "Quick questions :" for multiple questions', async ({ page }) => {
+  test('card heading shows "Quick questions:" for multiple questions', async ({ page }) => {
     await setup(page);
     await expect(
       page.locator('text=/Quick questions/i').first(),

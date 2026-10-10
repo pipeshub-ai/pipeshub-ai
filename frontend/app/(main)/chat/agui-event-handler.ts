@@ -15,6 +15,7 @@ import type {
   AGUIJsonPatchOp,
   MessagePart,
   SSEAskUserQuestionEvent,
+  AgentDraft,
   SSEArtifactEvent,
   SSEChunkCitation,
   SSEConnectedEvent,
@@ -517,6 +518,8 @@ export function createAGUIEventHandler(
           callbacks.onConnected?.((value ?? {}) as SSEConnectedEvent);
         } else if (name === 'ask_user_question') {
           callbacks.onAskUserQuestion?.(value as SSEAskUserQuestionEvent);
+        } else if (name === 'agent_draft') {
+          callbacks.onAgentDraft?.(value as AgentDraft);
         } else if (name === 'artifact') {
           callbacks.onArtifact?.(value as SSEArtifactEvent);
         }

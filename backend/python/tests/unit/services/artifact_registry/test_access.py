@@ -116,3 +116,124 @@ class TestGrantOwnerPermission:
         # Caller (VersionManager) is responsible for persisting — this
         # method must not have written anything itself.
         assert graph.edges["permission"] == []
+
+
+class _RecordingPdp:
+    def __init__(self, result: bool) -> None:
+        self.result = result
+        self.reqs: list = []
+
+    async def can_read_chat_content(self, req) -> bool:
+        self.reqs.append(req)
+        return self.result
+
+
+def _shared_artifact(graph: FakeGraphProvider, artifact_id: str = "art-1", *, conv: str | None = "conv-1") -> None:
+    """B's artifact (OWNER edge), with C having no edge at all."""
+    graph.add_user("owner-b", key="ukey-b")
+    graph.add_user(USER, key="ukey-c")
+    graph.nodes["users"]["ukey-b"] = {"_key": "ukey-b", "userId": "owner-b"}
+    graph.nodes["records"][artifact_id] = {
+        "_key": artifact_id, "orgId": ORG, "recordName": "r.pdf",
+        "connectorName": "CODING_SANDBOX", "recordType": "ARTIFACT",
+    }
+    graph.nodes["artifacts"][artifact_id] = {
+        "_key": artifact_id, "orgId": ORG, "conversationId": conv, "runId": "run-1",
+        "visibility": "VISIBLE", "isTemporary": False,
+    }
+    graph.edges["permission"].append({
+        "from_id": "ukey-b", "from_collection": "users", "to_id": artifact_id,
+        "type": "USER", "role": "OWNER",
+    })
+
+
+class TestAuthorizeViaPdp:
+    """PH07-07: no edge + conversation artifact -> the Node PDP decides (reads only)."""
+
+    async def test_pdp_allow_authorizes_read_but_write_still_needs_owner(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        pdp = _RecordingPdp(True)
+        policy = AccessPolicy(graph, pdp)
+        actor = Actor(org_id=ORG, user_id=USER, acl_version=6, conversation_id="conv-1")
+
+        record = await policy.authorize_read(actor, "art-1")
+        assert record["_key"] == "art-1"
+        (req,) = pdp.reqs
+        assert (req.resource_type, req.owner_user_id, req.conversation_id, req.run_id, req.acl_version) == (
+            "chatArtifact", "owner-b", "conv-1", "run-1", 6,
+        )
+
+        with pytest.raises(AccessDeniedError):
+            await policy.authorize_write(actor, "art-1")
+        assert len(pdp.reqs) == 1  # the write path never consults the PDP
+
+    async def test_run_in_another_chat_cannot_read_this_chats_artifact(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        pdp = _RecordingPdp(True)
+        with pytest.raises(AccessDeniedError):
+            await AccessPolicy(graph, pdp).authorize_read(
+                Actor(org_id=ORG, user_id=USER, acl_version=6, conversation_id="conv-other"), "art-1",
+            )
+        assert pdp.reqs == []
+
+    async def test_pdp_deny_raises_access_denied(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        with pytest.raises(AccessDeniedError):
+            await AccessPolicy(graph, _RecordingPdp(False)).authorize_read(
+                Actor(org_id=ORG, user_id=USER), "art-1",
+            )
+
+    async def test_unset_pdp_is_deny_all(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        with pytest.raises(AccessDeniedError):
+            await AccessPolicy(graph).authorize_read(Actor(org_id=ORG, user_id=USER), "art-1")
+
+    async def test_owner_is_not_sent_to_pdp(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        pdp = _RecordingPdp(False)
+        record = await AccessPolicy(graph, pdp).authorize_read(Actor(org_id=ORG, user_id="owner-b"), "art-1")
+        assert record["_key"] == "art-1"
+        assert pdp.reqs == []
+
+    async def test_artifact_without_conversation_is_not_shared(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph, conv=None)
+        pdp = _RecordingPdp(True)
+        with pytest.raises(AccessDeniedError):
+            await AccessPolicy(graph, pdp).authorize_read(Actor(org_id=ORG, user_id=USER), "art-1")
+        assert pdp.reqs == []
+
+    async def test_cross_org_is_not_found_before_the_pdp(self) -> None:
+        graph = FakeGraphProvider()
+        _shared_artifact(graph)
+        pdp = _RecordingPdp(True)
+        with pytest.raises(ArtifactNotFoundError):
+            await AccessPolicy(graph, pdp).authorize_read(Actor(org_id="org-other", user_id=USER), "art-1")
+        assert pdp.reqs == []
+
+    async def test_list_for_conversation_includes_pdp_allowed_artifacts_only(self) -> None:
+        from app.services.artifact_registry.registry import ArtifactRegistryService
+
+        graph = FakeGraphProvider()
+        _shared_artifact(graph, "art-1")
+        _shared_artifact(graph, "art-2")
+        graph.nodes["records"]["art-1"]["id"] = "art-1"
+        graph.nodes["records"]["art-2"]["id"] = "art-2"
+        for rid in ("art-1", "art-2"):
+            graph.nodes["artifacts"][rid].update(artifactType="OTHER", logicalName=rid)
+
+        class OnlyFirst:
+            async def can_read_chat_content(self, req) -> bool:
+                return req.record_id == "art-1"
+
+        service = ArtifactRegistryService(graph, None, pdp=OnlyFirst())
+        results = await service.list_for_conversation(
+            actor=Actor(org_id=ORG, user_id=USER), conversation_id="conv-1", include_lineage=False,
+        )
+        assert [m.artifact_id for m in results] == ["art-1"]
+        assert results[0].run_id == "run-1"

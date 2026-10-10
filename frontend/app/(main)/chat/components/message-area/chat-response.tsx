@@ -13,15 +13,29 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
+import { AgentDraftPlaceholder } from './agent-draft-placeholder';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
+import { AuthorChip } from '../collaboration/author-chip';
+import { AnsweredAsLabel } from '../collaboration/answered-as-label';
+import { AnswerFailed } from './timeline/answer-failed';
+import { AnsweringLine } from './timeline/answering-line';
+import { HumanMessage } from './timeline/human-message';
+import { ReplyMessage } from './timeline/reply-message';
+import { AgentAnswerHeader } from '../collaboration/agent-answer-header';
+import { AnsweredViaLabel } from './answered-via-label';
+import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
+import { askCardReadOnlyFor, askerOf, attributionVisible, regenerateAllowed } from '../../utils/collab-attribution';
+import type { MessageAuthor } from '../../collaboration-types';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
+import { selectChatAgentBuilderEnabled, useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
+import { isRedactedAgentDraft } from '../../types';
+import type { AgentDraftPayload, AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart, RespondingAgent } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -48,7 +62,7 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-function formatMessageTime(isoString: string): string {
+export function formatMessageTime(isoString: string): string {
   const date = new Date(isoString);
   if (isNaN(date.getTime())) return '';
   const now = new Date();
@@ -86,6 +100,10 @@ interface ChatResponseProps {
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
   confidence?: ConfidenceLevel;
+  /** `Capability Card` (the `@assistant help` answer) is not a search answer: no confidence, Sources or Citations. */
+  answerMatchType?: 'Capability Card';
+  /** Delegate agent (tool name) whose output was the answer; the header says so. */
+  answeredVia?: string;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -121,16 +139,40 @@ interface ChatResponseProps {
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
+  /** The agent the assistant drafted in this turn (full for its requester, redacted for everyone else). */
+  persistedAgentDraft?: AgentDraftPayload;
+  agentDraftAuthor?: string;
+  agentDraftMessageId?: string;
+  /** Draft ids that a later draft in this chat revises; their cards collapse. */
+  supersededDraftIds?: ReadonlySet<string>;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /** The run failed: `answer` is the error text. */
+  failed?: boolean;
+  /** Resend a question; offered on a failed last answer to the person it was run for. */
+  onRetry?: (question: string) => void;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
+  /** Who sent the question; shown only in collaborative chats. `null` is a former member. */
+  author?: MessageAuthor | null;
+  /** Who the answer was run for; shown only in collaborative chats. `null` is a former member. */
+  requestedBy?: MessageAuthor | null;
+  /** The guest agent that answered this turn; shown in place of the assistant. */
+  respondingAgent?: RespondingAgent;
+  /** Collaborative timeline: draw only the person's message or only the reply. Default draws both, as a solo chat does. */
+  rowMode?: 'both' | 'human' | 'reply';
+  /** Timeline: continue the previous message from the same author without avatar and name. */
+  showHeader?: boolean;
+  /** Timeline: ISO time the answer was stored. */
+  answeredAt?: string;
+  /** Timeline: set when messages came between the question and this reply. */
+  replyingTo?: MessageAuthor | null;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -139,6 +181,8 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMaps = EMPTY_CITATION_MAPS,
   citationCallbacks,
   confidence,
+  answerMatchType,
+  answeredVia,
   isStreaming = false,
   modelInfo,
   collections,
@@ -157,13 +201,33 @@ export const ChatResponse = React.memo(function ChatResponse({
   createdAt,
   persistedAskUserQuestion,
   persistedAskUserQuestionAnswers,
+  persistedAgentDraft,
+  agentDraftAuthor,
+  agentDraftMessageId,
+  supersededDraftIds,
   feedbackInfo,
   status,
+  failed = false,
+  onRetry,
   unanswered = false,
+  author,
+  requestedBy,
+  respondingAgent,
+  rowMode = 'both',
+  showHeader = true,
+  answeredAt,
+  replyingTo,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const { collabActive, access: collabAccess, meUserId } = useCollabMessageContext();
+  const asker = askerOf({ requestedBy, author });
+  // In a solo chat the timeline names the viewer "You" (the feed sends their full name, an optimistic row nothing).
+  const soloSelf = (a: MessageAuthor | null | undefined) =>
+    collabAccess.collabEnabled && !collabActive && meUserId && (a === undefined || a?.userId === meUserId)
+      ? { userId: meUserId, displayName: null }
+      : a;
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -383,6 +447,16 @@ export const ChatResponse = React.memo(function ChatResponse({
   const questionPending =
     askQuestionMatchesRow && pendingAskUserQuestion?.status === 'pending';
 
+  const agentBuilderEnabled = useFeatureFlagsStore(selectChatAgentBuilderEnabled);
+  const liveAgentDraft = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.liveAgentDraft ?? null : null
+  );
+  const activeConvId = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null));
+  // With the builder off a stored card stays visible but read-only; a streaming one is not shown at all.
+  const agentDraft: AgentDraftPayload | null = agentBuilderEnabled
+    ? persistedAgentDraft ?? (isStreaming ? liveAgentDraft : null)
+    : persistedAgentDraft ?? null;
+
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
   const prevExpandedRef = useRef(activeExpandedMessageId);
@@ -538,16 +612,32 @@ export const ChatResponse = React.memo(function ChatResponse({
   }, [citationCallbacks]);
 
   // Derive counts from citation maps
+  const isCapabilityCard = answerMatchType === 'Capability Card';
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
+
+  const canRetry = isLastMessage && onRetry !== undefined && regenerateAllowed(
+    collabAccess,
+    collabAccess.collabEnabled,
+    { requestedBy, author },
+    meUserId,
+  );
+  const hideConfidence = rowMode !== 'both' && (confidence === 'High' || confidence === 'Very High');
 
   const renderTabContent = () => {
     switch (activeTab) {
       case 'answer':
+        if (failed && !isStreaming) {
+          return (
+            <Box style={{ padding: rowMode === 'reply' ? 'var(--space-1) 0' : 'var(--space-4) 0' }}>
+              <AnswerFailed message={answer} onRetry={canRetry ? () => onRetry?.(question) : undefined} />
+            </Box>
+          );
+        }
         return (
-          <Box style={{ padding: 'var(--space-4) 0' }}>
+          <Box style={{ padding: rowMode === 'reply' ? 'var(--space-1) 0' : 'var(--space-4) 0' }}>
             {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
+            {!isStreaming && !isCapabilityCard && confidence && !hideConfidence && <ConfidenceIndicator confidence={confidence} />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
@@ -614,12 +704,32 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
+            {agentDraft ? (
+              <AgentDraftPlaceholder
+                draft={agentDraft}
+                authorName={agentDraftAuthor ?? requestedBy?.displayName}
+                conversationId={activeConvId}
+                messageId={persistedAgentDraft ? agentDraftMessageId ?? null : null}
+                builderEnabled={agentBuilderEnabled}
+                superseded={!isRedactedAgentDraft(agentDraft) && Boolean(supersededDraftIds?.has(agentDraft.draftId))}
+              />
+            ) : null}
+
             {/* Active (streaming/pending) ask_user_question card */}
             {askQuestionMatchesRow && pendingAskUserQuestion ? (
               <AskUserQuestionCard
                 payload={pendingAskUserQuestion.payload}
                 initialAnswers={pendingAskUserQuestion.answers}
                 status={pendingAskUserQuestion.status}
+                readOnlyFor={
+                  collabActive
+                    ? askCardReadOnlyFor(
+                        pendingAskUserQuestion.requestedBy,
+                        meUserId,
+                        collabAccess.canSend,
+                      )
+                    : undefined
+                }
                 onAnswersChange={(nextAnswers) => {
                   const sid = useChatStore.getState().activeSlotId;
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
@@ -636,6 +746,9 @@ export const ChatResponse = React.memo(function ChatResponse({
                     pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
                   });
                   const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request && collabActive && p.toolCallMessageId) {
+                    request.resume = { toolCallMessageId: p.toolCallMessageId };
+                  }
                   if (request) {
                     void streamMessageForSlot(sid, message, request, {
                       resumeAskUserQuestion: true,
@@ -766,39 +879,8 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
     : visibleAnswer;
 
-  const shell = (
-    <Box style={{ width: '100%' }}>
-      <Box
-        style={{
-          marginBottom:
-            (collections && collections.length > 0) ||
-            (appliedFilters &&
-              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
-              ? 'var(--space-3)'
-              : 'var(--space-4)',
-        }}
-      >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={handleEditQuery}
-        />
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
+  const filtersAndAttachments = (
+    <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
       {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
@@ -888,11 +970,154 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
+    </>
+  );
+
+  const previewDialog = textPreviewAttachment ? (
+    <TextPreviewDialog
+      key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+      open
+      onOpenChange={(open) => {
+        if (!open) setTextPreviewAttachment(null);
+      }}
+      title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+      loadText={async () => {
+        const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+        return blob.text();
+      }}
+    />
+  ) : null;
+
+  if (rowMode === 'human') {
+    return (
+      <>
+        <HumanMessage
+          text={question}
+          author={soloSelf(author)}
+          meUserId={meUserId}
+          time={createdAt}
+          showHeader={showHeader}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        >
+          {filtersAndAttachments}
+        </HumanMessage>
+        {previewDialog}
+      </>
+    );
+  }
+
+  if (rowMode === 'reply') {
+    const showAsker = attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId);
+    const askerIsMe = asker != null && asker.userId === meUserId;
+    const askerExtra = !showAsker ? null : isStreaming ? (
+      askerIsMe ? null : <AnsweringLine name={asker?.displayName || t('chat.collab.attribution.formerMember')} />
+    ) : activeTab === 'answer' ? (
+      <AnsweredAsLabel asker={asker} meUserId={meUserId} />
+    ) : null;
+    const viaExtra = answeredVia && !isStreaming && !unanswered ? <AnsweredViaLabel delegate={answeredVia} /> : null;
+    const headerExtra = askerExtra && viaExtra ? <>{askerExtra}{viaExtra}</> : askerExtra ?? viaExtra;
+    const showChips = !unanswered && !isCapabilityCard && (sourcesCount > 0 || citationCount > 0 || activeTab !== 'answer') && !(askQuestionMatchesRow || persistedAskUserQuestion);
+    const reply = (
+      <ReplyMessage
+        respondingAgent={respondingAgent}
+        time={answeredAt}
+        replyingTo={replyingTo}
+        meUserId={meUserId}
+        headerExtra={headerExtra}
+      >
+        {renderTabContent()}
+        {showChips ? (
+          <ResponseTabs
+            variant="chips"
+            activeTab={activeTab}
+            onTabChange={setActiveTab}
+            sourcesCount={sourcesCount}
+            citationCount={citationCount}
+          />
+        ) : null}
+        {activeTab === 'answer' && !(failed && !isStreaming) && (
+          <MessageActions
+            compact
+            allowRegenerate={regenerateAllowed(
+              collabAccess,
+              collabAccess.collabEnabled,
+              { requestedBy, author },
+              meUserId,
+            )}
+            content={speakContent}
+            citationMaps={effectiveCitationMaps}
+            modelInfo={modelInfo}
+            isStreaming={isStreaming}
+            messageId={messageId}
+            question={question}
+            isLastMessage={isLastMessage && !questionPending}
+            appliedFilters={appliedFilters}
+            feedbackInfo={feedbackInfo}
+          />
+        )}
+      </ReplyMessage>
+    );
+    return citationMessageRowKey ? (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>{reply}</CitationMessageRowKeyContext.Provider>
+    ) : (
+      reply
+    );
+  }
+
+  const shell = (
+    <Box style={{ width: '100%' }}>
+      <Box
+        style={{
+          marginBottom:
+            (collections && collections.length > 0) ||
+            (appliedFilters &&
+              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
+              ? 'var(--space-3)'
+              : 'var(--space-4)',
+        }}
+      >
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        />
+        {attributionVisible(collabActive, collabAccess.collabEnabled, author, meUserId) ? (
+          <Flex align="center" gap="2" wrap="wrap" style={{ marginTop: 'var(--space-1)' }}>
+            <AuthorChip author={author} meUserId={meUserId} />
+            {createdAt && (
+              <Text size="1" style={{ color: 'var(--slate-9)' }}>
+                {formatMessageTime(createdAt)}
+              </Text>
+            )}
+          </Flex>
+        ) : createdAt && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              marginTop: 'var(--space-1)',
+              display: 'block',
+            }}
+          >
+            {formatMessageTime(createdAt)}
+          </Text>
+        )}
+      </Box>
+
+      {filtersAndAttachments}
+
+      {!unanswered && respondingAgent && <AgentAnswerHeader agent={respondingAgent} />}
+      {!unanswered && !isStreaming && answeredVia && <AnsweredViaLabel delegate={answeredVia} />}
+
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      {!unanswered && (
+      {!unanswered && !isCapabilityCard && (
         <ResponseTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -904,9 +1129,19 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tab Content */}
       {!unanswered && renderTabContent()}
 
+      {!unanswered && !isStreaming && activeTab === 'answer' && attributionVisible(collabActive, collabAccess.collabEnabled, asker, meUserId) && (
+        <AnsweredAsLabel asker={asker} meUserId={meUserId} />
+      )}
+
       {/* Message Actions (feedback, copy, regenerate, model info) */}
       {!unanswered && activeTab === 'answer' && (
         <MessageActions
+          allowRegenerate={regenerateAllowed(
+            collabAccess,
+            collabAccess.collabEnabled,
+            { requestedBy, author },
+            meUserId,
+          )}
           content={speakContent}
           citationMaps={effectiveCitationMaps}
           modelInfo={modelInfo}
@@ -919,21 +1154,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         />
       )}
 
-      {/* Pasted-text attachment preview — read-only (this message already sent) */}
-      {textPreviewAttachment && (
-        <TextPreviewDialog
-          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
-          open
-          onOpenChange={(open) => {
-            if (!open) setTextPreviewAttachment(null);
-          }}
-          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-          loadText={async () => {
-            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
-            return blob.text();
-          }}
-        />
-      )}
+      {previewDialog}
     </Box>
   );
 

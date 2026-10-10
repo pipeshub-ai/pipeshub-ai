@@ -93,7 +93,8 @@ import { AgentBuilder } from '../agent-builder';
 function lastSavedPayload(fn: ReturnType<typeof vi.fn>): AgentFormPayload {
   const call = fn.mock.calls[fn.mock.calls.length - 1];
   if (!call) throw new Error('Nothing was saved');
-  return call[call.length - 1] as AgentFormPayload;
+  // createAgent(payload, options?) and updateAgent(key, payload, options?)
+  return (typeof call[0] === 'string' ? call[1] : call[0]) as AgentFormPayload;
 }
 
 async function renderNewAgent() {
@@ -620,5 +621,127 @@ describe('toolset credential setup from the palette', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Authenticate this toolset' }));
 
     expect(await screen.findByRole('dialog', { name: /configure toolset/i })).toBeTruthy();
+  });
+});
+
+describe('the agent handle', () => {
+  const handleValue = () => screen.getByTestId('agent-handle-value').textContent;
+  const editHandleButton = () => screen.getByRole('button', { name: 'Edit handle' });
+  const handleInput = () => screen.getByRole('textbox', { name: 'Agent handle' }) as HTMLInputElement;
+
+  function chooseHandle(value: string) {
+    fireEvent.click(editHandleButton());
+    fireEvent.change(handleInput(), { target: { value } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply handle' }));
+  }
+
+  it('previews the handle derived from the name of a new agent and does not send it', async () => {
+    await renderNewAgent();
+
+    fireEvent.change(nameField(), { target: { value: 'Offer drafter' } });
+    expect(handleValue()).toBe('@offer-drafter');
+
+    fireEvent.click(saveButton(/create agent/i));
+    await waitFor(() => expect(agentsApi.createAgent).toHaveBeenCalledTimes(1));
+    expect(lastSavedPayload(agentsApi.createAgent)).not.toHaveProperty('handle');
+  });
+
+  it('sends a handle the person chose for a new agent', async () => {
+    await renderNewAgent();
+    fireEvent.change(nameField(), { target: { value: 'Offer drafter' } });
+
+    chooseHandle('@offers');
+    expect(handleValue()).toBe('@offers');
+    fireEvent.change(nameField(), { target: { value: 'Offer drafter 2' } });
+    expect(handleValue()).toBe('@offers');
+    fireEvent.click(saveButton(/create agent/i));
+
+    await waitFor(() => expect(agentsApi.createAgent).toHaveBeenCalledTimes(1));
+    expect(lastSavedPayload(agentsApi.createAgent).handle).toBe('offers');
+  });
+
+  it('refuses an invalid or reserved handle before it is applied', async () => {
+    await renderNewAgent();
+    fireEvent.change(nameField(), { target: { value: 'Offer drafter' } });
+
+    fireEvent.click(editHandleButton());
+    fireEvent.change(handleInput(), { target: { value: 'Bad Handle' } });
+    expect(screen.getByText('Use 2-40 lowercase letters, digits or hyphens.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply handle' })).toHaveProperty('disabled', true);
+
+    fireEvent.change(handleInput(), { target: { value: 'assistant' } });
+    expect(screen.getByText('@assistant is reserved. Choose another handle.')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing handle' }));
+    expect(handleValue()).toBe('@offer-drafter');
+  });
+
+  it('shows the stored handle read-only until the owner edits it, and saves only a change', async () => {
+    await renderExistingAgent({ handle: 'sales-helper' });
+    expect(handleValue()).toBe('@sales-helper');
+    await waitFor(() => expect(saveButton(/save changes/i)).toHaveProperty('disabled', true));
+
+    chooseHandle('closers');
+    await waitFor(() => expect(saveButton(/save changes/i)).toHaveProperty('disabled', false));
+    fireEvent.click(saveButton(/save changes/i));
+
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+    expect(lastSavedPayload(agentsApi.updateAgent).handle).toBe('closers');
+  });
+
+  it('does not send the handle when other fields change', async () => {
+    await renderExistingAgent({ handle: 'sales-helper' });
+    agentsApi.updateAgent.mockImplementationOnce(async (key: string, payload: AgentFormPayload) =>
+      agentDetail({ _key: key, id: key, name: payload.name, handle: 'sales-helper' }),
+    );
+
+    fireEvent.change(nameField(), { target: { value: 'Sales helper 2' } });
+    fireEvent.click(saveButton(/save changes/i));
+
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+    expect(lastSavedPayload(agentsApi.updateAgent)).not.toHaveProperty('handle');
+    expect(handleValue()).toBe('@sales-helper');
+  });
+
+  it('has no edit control for someone who cannot edit the agent', async () => {
+    await renderExistingAgent({ handle: 'sales-helper', can_edit: false });
+
+    expect(handleValue()).toBe('@sales-helper');
+    expect(screen.queryByRole('button', { name: 'Edit handle' })).toBeNull();
+  });
+
+  it('previews a handle for an agent that predates handles', async () => {
+    await renderExistingAgent({ handle: undefined });
+
+    expect(handleValue()).toBe('@sales-helper');
+  });
+
+  it('explains a taken handle and offers the suggested one', async () => {
+    agentsApi.updateAgent.mockRejectedValueOnce(
+      apiFailure(409, {
+        error: {
+          code: 'HANDLE_TAKEN',
+          message: 'The handle @closers is already taken.',
+          details: { suggestion: 'closers-2' },
+        },
+      }),
+    );
+    await renderExistingAgent({ handle: 'sales-helper' });
+    chooseHandle('closers');
+
+    fireEvent.click(saveButton(/save changes/i));
+
+    expect(await screen.findByText('@closers is already taken. Try @closers-2.')).toBeTruthy();
+    expect(screen.queryByText('Save failed')).toBeNull();
+    // The inline message is the only one: the request asked the API client not to raise its global toast.
+    expect(agentsApi.updateAgent.mock.calls[0][2]).toEqual({ suppressErrorToast: true });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Use @closers-2' }));
+    expect(handleValue()).toBe('@closers-2');
+    expect(screen.queryByText('@closers is already taken. Try @closers-2.')).toBeNull();
+
+    fireEvent.click(saveButton(/save changes/i));
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(2));
+    expect(lastSavedPayload(agentsApi.updateAgent).handle).toBe('closers-2');
   });
 });

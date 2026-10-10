@@ -5,8 +5,12 @@ import React from 'react';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { AvatarCell } from '@/app/(main)/workspace/components/avatar-cell';
-import type { ShareRole } from './types';
+import { TEAM_SHARE_ROLES, toTeamShareRole, type ShareRole, type ShareRoleOption } from './types';
 import { RoleDropdownMenu } from './role-dropdown-menu';
+
+function roleLabelsOf(options: ShareRoleOption[]) {
+  return Object.fromEntries(options.map((o) => [o.role, { label: o.label, description: o.description }]));
+}
 
 interface ShareableRowProps {
   type: 'team' | 'member';
@@ -21,6 +25,8 @@ interface ShareableRowProps {
   role?: ShareRole;
   /** Whether to show the role dropdown */
   showRoleDropdown?: boolean;
+  /** A team row shows its granted role and lets the owner change it (edit / comment / view) */
+  teamRoleEditable?: boolean;
   /** When provided, suppresses role options in the dropdown (e.g. for chat) */
   noRolesInfo?: { title: string; description: string };
   /** Whether to show a radio button for selection */
@@ -39,6 +45,12 @@ interface ShareableRowProps {
   onRemove?: () => void;
   /** Fires when the role dropdown open state changes */
   onRoleDropdownOpenChange?: (open: boolean) => void;
+  /** Levels the dropdown offers; defaults to the entity-agnostic list. */
+  roleOptions?: ShareRoleOption[];
+  /** Adds "Make owner" to the dropdown. */
+  onMakeOwner?: () => void;
+  /** Read-only text for the row's level, when the viewer may not change it. */
+  staticRoleLabel?: string;
 }
 
 export function ShareableRow({
@@ -53,12 +65,16 @@ export function ShareableRow({
   showRadio = false,
   showInvite = false,
   noRolesInfo,
+  teamRoleEditable = false,
   isCurrentUser = false,
   onToggle,
   onRoleChange,
   onInvite,
   onRemove,
   onRoleDropdownOpenChange,
+  roleOptions,
+  onMakeOwner,
+  staticRoleLabel,
 }: ShareableRowProps) {
   const { t } = useTranslation();
   return (
@@ -71,6 +87,20 @@ export function ShareableRow({
         cursor: showRadio ? 'pointer' : 'default',
       }}
       onClick={showRadio ? onToggle : undefined}
+      {...(showRadio
+        ? {
+            role: 'checkbox',
+            'aria-checked': isSelected,
+            'aria-label': name,
+            tabIndex: 0,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onToggle?.();
+              }
+            },
+          }
+        : {})}
     >
       {/* Avatar / Team icon + Name + subtitle */}
       {type === 'team' ? (
@@ -157,16 +187,25 @@ export function ShareableRow({
 
       {showRoleDropdown && role && (
         <RoleDropdownMenu
-          role={role}
+          role={type === 'team' && teamRoleEditable ? toTeamShareRole(role) : role}
+          roles={roleOptions ? roleOptions.map((o) => o.role) : type === 'team' && teamRoleEditable ? TEAM_SHARE_ROLES : undefined}
+          labels={roleOptions ? roleLabelsOf(roleOptions) : undefined}
+          onMakeOwner={onMakeOwner}
           onRoleChange={onRoleChange}
           onRemove={onRemove}
-          isTeam={type === 'team'}
+          isTeam={type === 'team' && !teamRoleEditable}
           noRolesInfo={noRolesInfo}
           onOpenChange={onRoleDropdownOpenChange}
         />
       )}
 
-      {isOwner && !showRoleDropdown && (
+      {staticRoleLabel && !showRoleDropdown && (
+        <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
+          {staticRoleLabel}
+        </Text>
+      )}
+
+      {isOwner && !showRoleDropdown && !staticRoleLabel && (
         <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
           {t('recordView.permissionOwner')}
         </Text>

@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.services.graph_db.common.kb_team_role import cypher_team_kb_role
 from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
@@ -345,3 +346,27 @@ class TestFilterNodesWithPermissionRole:
             await p.filter_nodes_with_permission_role(
                 self._NODES, "uk1", "org1", raise_on_error=True
             )
+
+
+class TestListAllRecordsKbRole:
+    @pytest.mark.asyncio
+    async def test_kb_role_is_ranked_not_collect_order(self) -> None:
+        p = _provider([])
+        await p.list_all_records(
+            user_id="u1", org_id="org1", skip=0, limit=10, search=None, record_types=None,
+            origins=None, connectors=None, indexing_status=None, permissions=None,
+            date_from=None, date_to=None, sort_by="recordName", sort_order="asc", source="all",
+        )
+        queries = _queries(p)
+        checked = 0
+        for q in queries:
+            if "AS kb_role" not in q:
+                continue
+            checked += 1
+            # Main ranks by $kb_role_priority before taking the head; collect() order alone is not trusted.
+            assert "ORDER BY coalesce($kb_role_priority[role], 0) DESC" in q
+            assert "head(collect(role)) AS kb_role" in q
+            # PH-01 S5: a team's KB role comes from the team->KB edge, not the user's role in the team.
+            assert "role: userTeamPerm.role" not in q
+            assert cypher_team_kb_role("teamKbPerm", "userTeamPerm") in q
+        assert checked == 3  # list, count and filters queries all rank the effective role

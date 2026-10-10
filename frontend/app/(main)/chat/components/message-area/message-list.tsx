@@ -4,11 +4,19 @@ import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
 import { Flex, Box } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse } from './chat-response';
+import { ChatResponse, formatMessageTime } from './chat-response';
+import { NoteBubble } from './note-bubble';
+import { DayDivider } from './timeline/day-divider';
+import { ReplyMessage } from './timeline/reply-message';
+import { AnsweringLine } from './timeline/answering-line';
+import { useCollabMessageContext } from '../../hooks/use-collab-message-context';
+import { buildTimeline } from '../../utils/collab-timeline';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useUserStore } from '@/lib/store/user-store';
+import { isRedactedAgentDraft } from '../../types';
 import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
@@ -52,9 +60,14 @@ const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
 export function MessageList() {
+  const meUserId = useUserStore((s) => s.profile?.userId ?? null);
+  const { collabActive, access: collabAccess } = useCollabMessageContext();
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
+  );
+  const activeRun = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.activeRun ?? null : null
   );
   const streamingQuestion = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.streamingQuestion || EMPTY_STRING : EMPTY_STRING
@@ -178,7 +191,7 @@ export function MessageList() {
     streamingScrollTopRef.current = scrollContainerRef.current.scrollTop;
   }
 
-  const { i18n } = useTranslation();
+  const { i18n, t } = useTranslation();
   const isMobile = useIsMobile();
 
   // Use useThread to get reactive thread state
@@ -241,6 +254,19 @@ export function MessageList() {
     }
     return versions;
   }, [thread.messages, isStreaming, streamingArtifacts]);
+
+  const liveRevisedDraftId = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.liveAgentDraft?.revisesDraftId ?? null : null
+  );
+  const supersededDraftIds = useMemo(() => {
+    const ids = new Set<string>();
+    if (liveRevisedDraftId) ids.add(liveRevisedDraftId);
+    for (const pair of messagePairs) {
+      const draft = pair.persistedAgentDraft;
+      if (draft && !isRedactedAgentDraft(draft) && draft.revisesDraftId) ids.add(draft.revisesDraftId);
+    }
+    return ids;
+  }, [messagePairs, liveRevisedDraftId]);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
@@ -1004,6 +1030,69 @@ export function MessageList() {
     [threadRuntime]
   );
 
+  const renderResponse = (pair: MessagePair, isLast: boolean, extra: Partial<React.ComponentProps<typeof ChatResponse>> = {}) => (
+    <ChatResponse
+                  question={pair.question}
+                  answer={pair.answer}
+                  citationMaps={pair.citationMaps}
+                  citationCallbacks={citationCallbacks}
+                  confidence={pair.confidence}
+                  answerMatchType={pair.answerMatchType}
+                  answeredVia={pair.answeredVia}
+                  isStreaming={pair.isStreaming}
+                  modelInfo={pair.modelInfo}
+                  collections={pair.collections}
+                  appliedFilters={pair.appliedFilters}
+                  attachments={pair.attachments}
+                  messageId={pair.messageId}
+                  isLastMessage={isLast}
+                  citationMessageRowKey={pair.key}
+                  createdAt={pair.createdAt}
+                  streamingContent={pair.isStreaming ? streamingContent : undefined}
+                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
+                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
+                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
+                  streamingParts={pair.isStreaming ? streamingParts : undefined}
+                  latestArtifactVersions={latestArtifactVersions}
+                  persistedParts={pair.persistedParts}
+                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
+                  persistedAgentDraft={pair.persistedAgentDraft}
+                  agentDraftAuthor={pair.agentDraftAuthor}
+                  agentDraftMessageId={pair.agentDraftMessageId}
+                  supersededDraftIds={supersededDraftIds}
+                  feedbackInfo={pair.feedbackInfo}
+                  status={pair.status}
+                  failed={pair.failed}
+                  onRetry={handleAskMoreClick}
+                  unanswered={pair.unanswered}
+                  author={pair.author}
+                  requestedBy={pair.requestedBy}
+                  respondingAgent={pair.respondingAgent}
+      {...extra}
+    />
+  );
+
+  // Flag on: every chat gets the timeline, so a solo chat splits you from the AI too. Flag off: only a chat with a
+  // note or with a message someone else wrote (a tag in an unshared chat posts a note) does.
+  const timelineActive = useMemo(
+    () =>
+      collabActive ||
+      collabAccess.collabEnabled ||
+      messagePairs.some(
+        (p) => p.note === true || (p.author != null && meUserId != null && p.author.userId !== meUserId),
+      ),
+    [collabActive, collabAccess.collabEnabled, messagePairs, meUserId],
+  );
+  // Someone else's turn is running on the server: this viewer has the question but no stream to draw the reply from.
+  const othersRunPending =
+    timelineActive &&
+    !isStreaming &&
+    activeRun !== null &&
+    activeRun.userId !== meUserId &&
+    messagePairs[messagePairs.length - 1]?.unanswered === true;
+  const timelineGroups = useMemo(() => (timelineActive ? buildTimeline(messagePairs) : []), [timelineActive, messagePairs]);
+
   return (
     <Box
       ref={scrollContainerRef}
@@ -1047,41 +1136,68 @@ export function MessageList() {
             </Flex>
           )}
 
-          {messagePairs.map((pair, index) => {
+          {timelineActive ? (
+            <div
+              role="log"
+              aria-live="polite"
+              aria-relevant="additions"
+              aria-label={t('chat.collab.timeline.logLabel')}
+              data-testid="message-timeline"
+              style={{ display: 'flex', flexDirection: 'column' }}
+            >
+              {timelineGroups.map((group) => (
+                <div key={group.key} ref={group.refKey ? (el) => setMessageRef(group.refKey as string, el) : undefined}>
+                  {group.rows.map((row) => {
+                    const isLast = row.pair === messagePairs[messagePairs.length - 1];
+                    return (
+                      <React.Fragment key={row.key}>
+                        {row.dayDivider ? <DayDivider iso={row.dayDivider} /> : null}
+                        {row.kind === 'human'
+                          ? renderResponse(row.pair, isLast, {
+                              rowMode: 'human',
+                              showHeader: row.showHeader,
+                              streamingContent: undefined,
+                              currentStatusMessage: undefined,
+                              streamingCitationMaps: undefined,
+                              streamingArtifacts: undefined,
+                              streamingParts: undefined,
+                            })
+                          : renderResponse(row.pair, isLast, {
+                              rowMode: 'reply',
+                              answeredAt: row.pair.answeredAt,
+                              replyingTo: row.replyingTo,
+                            })}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
+              ))}
+              {othersRunPending ? (
+                <ReplyMessage meUserId={meUserId}>
+                  <AnsweringLine name={activeRun?.displayName || t('chat.collab.attribution.formerMember')} />
+                </ReplyMessage>
+              ) : null}
+            </div>
+          ) : messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
+            if (pair.note) {
+              return (
+                <div key={pair.key} ref={(el) => setMessageRef(pair.key, el)}>
+                  <NoteBubble
+                    content={pair.question}
+                    author={pair.author}
+                    meUserId={meUserId}
+                    timeLabel={pair.createdAt ? formatMessageTime(pair.createdAt) : undefined}
+                  />
+                </div>
+              );
+            }
             return (
               <div
                 key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
-                <ChatResponse
-                  question={pair.question}
-                  answer={pair.answer}
-                  citationMaps={pair.citationMaps}
-                  citationCallbacks={citationCallbacks}
-                  confidence={pair.confidence}
-                  isStreaming={pair.isStreaming}
-                  modelInfo={pair.modelInfo}
-                  collections={pair.collections}
-                  appliedFilters={pair.appliedFilters}
-                  attachments={pair.attachments}
-                  messageId={pair.messageId}
-                  isLastMessage={isLast}
-                  citationMessageRowKey={pair.key}
-                  createdAt={pair.createdAt}
-                  streamingContent={pair.isStreaming ? streamingContent : undefined}
-                  currentStatusMessage={pair.isStreaming ? currentStatusMessage : undefined}
-                  streamingCitationMaps={pair.isStreaming ? streamingCitationMaps : undefined}
-                  streamingArtifacts={pair.isStreaming ? streamingArtifacts : undefined}
-                  streamingParts={pair.isStreaming ? streamingParts : undefined}
-                  latestArtifactVersions={latestArtifactVersions}
-                  persistedParts={pair.persistedParts}
-                  persistedAskUserQuestion={pair.persistedAskUserQuestion}
-                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
-                  feedbackInfo={pair.feedbackInfo}
-                  status={pair.status}
-                  unanswered={pair.unanswered}
-                />
+                {renderResponse(pair, isLast)}
 
                 {/* Ask More — follow-up suggestions after the last bot response.
                     Placed inside the last message wrapper so the ResizeObserver

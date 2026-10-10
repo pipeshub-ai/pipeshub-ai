@@ -31,6 +31,13 @@ class CONFIG:
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    # Chat mentions (composer @-mentions, notes, `@assistant help`). Defaults
+    # to disabled; the Node API owns the flag and registers it in Labs.
+    ENABLE_CHAT_MENTIONS = "ENABLE_CHAT_MENTIONS"
+    # Lets the default assistant draft an agent from a chat; Node owns it.
+    ENABLE_CHAT_AGENT_BUILDER = "ENABLE_CHAT_AGENT_BUILDER"
+    # Collaborative chats; Node owns it. Mentions only work with it on.
+    ENABLE_COLLABORATIVE_CHATS = "ENABLE_COLLABORATIVE_CHATS"
     # Deleting a record moves it to the trash (kept, hidden, vectors removed)
     # instead of removing it; a scheduled purge removes it later. Defaults to
     # disabled; admins opt in from Labs.

@@ -19,6 +19,10 @@ anything when pushed past its limits (the stress run).
 | `bench_stress.py` | Uploads far faster than the stack can index, then checks nothing was lost. |
 | `scale_metrics.py` | The arithmetic behind those two: slices of a run, drift, overload verdicts. |
 | `compare.py` | Judges a result against a committed baseline. Reports only. |
+| `collab_seed.py` | Deterministic seed for collaborative chats: `COLLAB_SEED_SESSIONS` (200,000 here, 5M by hand) and `COLLAB_SEED_TEAMS` (2,000), with a user in "All" plus 20 teams and one in 300 teams. |
+| `collab_explain.py` | Runs the real shared-with-me, by-id and 304-poll queries under `explain('executionStats')` and checks the plans (PH12-01). Writes `results/collab-explain-<sessions>.json`. |
+| `bench_collab_poll.py` | 200 viewers polling the chat feed with the browser's cadence; compared with `baselines/ci-collab-neo4j-4cpu.json` (a placeholder until a trusted run). Runs from `perf-load.yml` with `suite: collab`. |
+| `results/` | Committed reference runs of the two collab scripts from a developer host. Not baselines. |
 | `baselines/<label>.json` | Committed results, one per environment and benchmark. |
 | `../../.github/workflows/perf-indexing.yml` | Runs the indexing benchmark every week on the CI stack. |
 | `../../.github/workflows/perf-query.yml` | Runs the query benchmark every week on the CI stack. |

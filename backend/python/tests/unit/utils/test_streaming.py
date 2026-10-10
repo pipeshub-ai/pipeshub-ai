@@ -331,7 +331,43 @@ class TestAppendTaskMarkers:
         assert "::download_conversation_task[report.csv](https://example.com/report.csv)" in result
         assert "::download_conversation_task[data.xlsx](https://example.com/data.xlsx)" in result
 
-    def test_none_tasks(self):
+    def test_artifact_without_record_id_emits_no_marker(self) -> None:
+        tasks = [{"type": "artifacts", "artifacts": [
+            {"fileName": "a.csv", "signedUrl": "https://x.blob.core.windows.net/c/a.csv?sv=2024&sig=abc"},
+            {"fileName": "b.csv", "downloadUrl": "https://example.com/b.csv"},
+        ]}]
+        assert _append_task_markers("Answer text", tasks) == "Answer text"
+
+    def test_artifact_with_record_id_emits_record_marker_even_with_signed_url(self) -> None:
+        tasks = [{"type": "artifacts", "artifacts": [
+            {"fileName": "a.csv", "recordId": "r1", "mimeType": "text/csv",
+             "signedUrl": "https://x?sig=abc"},
+        ]}]
+        result = _append_task_markers("Answer text", tasks)
+        assert "::artifact[a.csv](record:r1)" in result
+        assert "sig=" not in result
+
+    @pytest.mark.parametrize("url", [
+        "https://s.blob.core.windows.net/c/f.csv?sv=2024-11-04&sig=abc%3D&se=2026",
+        "https://b.s3.amazonaws.com/f.csv?X-Amz-Signature=deadbeef&X-Amz-Expires=600",
+        "https://storage.googleapis.com/b/f.csv?X-Goog-Signature=abcd",
+        "https://b.s3.amazonaws.com/f.csv?Signature=abc&Expires=1",
+        "https://h/f.csv?a=1&SIG=abc",
+    ])
+    def test_legacy_task_with_signature_url_dropped(self, url) -> None:
+        tasks = [{"type": "csv_download", "fileName": "f.csv", "signedUrl": url}]
+        assert _append_task_markers("Answer text", tasks) == "Answer text"
+
+    @pytest.mark.parametrize("url", [
+        "https://example.com/report.csv",
+        "http://localhost:3000/api/v1/document/abc/download?token_type=x&design=1",
+        "https://example.com/f?signed=true&sigma=2",
+    ])
+    def test_legacy_task_without_signature_kept(self, url) -> None:
+        tasks = [{"type": "csv_download", "fileName": "f.csv", "downloadUrl": url}]
+        assert f"::download_conversation_task[f.csv]({url})" in _append_task_markers("A", tasks)
+
+    def test_none_tasks(self) -> None:
         result = _append_task_markers("Answer text", None)
         assert result == "Answer text"
 
@@ -531,30 +567,25 @@ class TestAppendTaskMarkers:
         assert "https://trusted.example/chart" not in result
         assert "::artifact[chart.png](record:r1){image/png|d1|r1||1}" in result
 
-    def test_artifact_without_record_id_still_embeds_signed_url(self):
-        """No recordId means no stream-through path exists at all — the real
-        URL is the only way this artifact is ever downloadable, so the
-        ~10 min TTL trade-off is accepted rather than making it permanently
-        unreachable."""
+    def test_artifact_without_record_id_is_skipped(self):
         tasks = [
             {"type": "artifacts", "artifacts": [{
                 "fileName": "chart.png",
                 "signedUrl": "https://trusted.example/chart?sig=abc",
                 "mimeType": "image/png",
-                "documentId": "",
+                "documentId": "d1",
                 "recordId": "",
             }]},
         ]
-        result = _append_task_markers("Answer", tasks)
-        assert "::artifact[chart.png](https://trusted.example/chart?sig=abc)" in result
+        assert _append_task_markers("Answer", tasks) == "Answer"
 
     def test_multiple_markers_joined_with_double_newline(self):
         tasks = [
             {"type": "artifacts", "artifacts": [
-                {"fileName": "a.png", "signedUrl": "https://u/a", "mimeType": "image/png",
-                 "documentId": "", "recordId": ""},
-                {"fileName": "b.csv", "signedUrl": "https://u/b", "mimeType": "text/csv",
-                 "documentId": "", "recordId": ""},
+                {"fileName": "a.png", "mimeType": "image/png",
+                 "documentId": "", "recordId": "ra"},
+                {"fileName": "b.csv", "mimeType": "text/csv",
+                 "documentId": "", "recordId": "rb"},
             ]},
         ]
         result = _append_task_markers("Answer", tasks)

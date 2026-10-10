@@ -13,6 +13,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatSectionElement } from './chat-section-element';
+import { useHideAccessLost } from '@/chat/hooks/use-hide-access-lost';
 import { AGENT_CONVERSATIONS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
 import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
@@ -57,6 +58,8 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
     page: number;
     hasNextPage: boolean;
   } | null>(null);
+
+  const visibleRows = useHideAccessLost(rows);
 
   const sentinelRef = useRef<HTMLDivElement>(null);
   const paginationRef = useRef(pagination);
@@ -190,8 +193,8 @@ export const AgentMoreChatsSidebar = React.memo(function AgentMoreChatsSidebar({
             <Flex align="center" justify="center" style={{ padding: 'var(--space-5) var(--space-3)' }}>
               <LottieLoader variant="loader" size={28} showLabel />
             </Flex>
-          ) : rows.length > 0 ? (
-            rows.map((conv) => (
+          ) : visibleRows.length > 0 ? (
+            visibleRows.map((conv) => (
               <ChatSectionElement
                 key={conv.id}
                 conversation={conv}

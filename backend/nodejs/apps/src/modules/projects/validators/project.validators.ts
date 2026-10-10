@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  PROJECT_CHAT_ACCESS_VALUES,
   PROJECT_CHAT_SHARING_VALUES,
   PROJECT_DESCRIPTION_MAX_LENGTH,
   PROJECT_INSTRUCTIONS_MAX_LENGTH,
@@ -9,10 +10,7 @@ import {
   PROJECT_PRINCIPAL_TYPE_VALUES,
   PROJECT_VISIBILITY_VALUES,
 } from '../constants/constants';
-
-const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
-const objectId = (label: string): z.ZodString =>
-  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
+import { objectId, teamId } from '../../../libs/validators/zod-primitives';
 
 const pageSchema = z.preprocess(
   (arg) => (arg === undefined || arg === '' ? undefined : Number(arg)),
@@ -78,6 +76,7 @@ export const updateProjectSchema = z.object({
       ...projectBodyFieldsSchema,
       visibility: z.enum(PROJECT_VISIBILITY_VALUES).optional(),
       chatSharing: z.enum(PROJECT_CHAT_SHARING_VALUES).optional(),
+      projectChatAccess: z.enum(PROJECT_CHAT_ACCESS_VALUES).optional(),
     })
     .partial(),
 });
@@ -116,11 +115,28 @@ export const upsertProjectMembersSchema = z.object({
   body: z.object({
     members: z
       .array(
-        z.object({
-          principalId: objectId('principal ID'),
-          principalType: z.enum(PROJECT_PRINCIPAL_TYPE_VALUES).optional(),
-          role: z.enum(PROJECT_MEMBER_ROLE_VALUES),
-        }),
+        z
+          .object({
+            principalId: z.string(),
+            principalType: z.enum(PROJECT_PRINCIPAL_TYPE_VALUES).optional(),
+            role: z.enum(PROJECT_MEMBER_ROLE_VALUES),
+          })
+          .superRefine((member, ctx) => {
+            const schema =
+              member.principalType === 'team'
+                ? teamId('Invalid principal ID format')
+                : objectId('principal ID');
+            const parsed = schema.safeParse(member.principalId);
+            if (!parsed.success) {
+              ctx.addIssue({
+                code: 'custom',
+                path: ['principalId'],
+                message:
+                  parsed.error.issues[0]?.message ??
+                  'Invalid principal ID format',
+              });
+            }
+          }),
       )
       .min(1, { message: 'At least one member is required' })
       .max(PROJECT_MEMBERS_BATCH_MAX, {
@@ -132,7 +148,11 @@ export const upsertProjectMembersSchema = z.object({
 export const removeProjectMemberParamsSchema = z.object({
   params: z.object({
     projectId: objectId('project ID'),
-    memberUserId: objectId('member ID'),
+    // A user's ObjectId or a team key; the controller checks it against `principalType`.
+    memberUserId: z.union([
+      objectId('member ID'),
+      teamId('Invalid member ID format'),
+    ]),
   }),
   query: z.object({
     principalType: z.enum(PROJECT_PRINCIPAL_TYPE_VALUES).optional(),

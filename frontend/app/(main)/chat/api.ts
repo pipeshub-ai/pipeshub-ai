@@ -1,5 +1,6 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
+import { isGoneError } from '@/lib/api/api-error';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   Conversation,
@@ -19,6 +20,7 @@ import {
   type AgentCapabilities,
   SSEArtifactEvent,
   SSEAskUserQuestionEvent,
+  AgentDraft,
   MessagePart,
   AvailableLlmModel,
   SearchRequest,
@@ -26,8 +28,13 @@ import {
   streamChatModeToAgentApiChatMode,
   AttachmentRef,
 } from './types';
+import type { ApiAccess } from './collaboration-types';
+import { conversationApiPath } from './collaboration-api';
+import { normalizeAccessView } from './utils/conversation-access';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
+import { pickCollabSendFields } from './utils/collab-send-fields';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { displayTitle } from '@/lib/utils/display-title';
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -47,6 +54,8 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /** The assistant drafted an agent (AG-UI `CUSTOM agent_draft`). */
+  onAgentDraft?: (data: AgentDraft) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
@@ -68,6 +77,8 @@ export interface StreamMessageCallbacks {
    */
   onParts?: (parts: MessagePart[]) => void;
   onError?: (error: Error) => void;
+  /** The `X-Run-Id` response header, when the server sends one. */
+  onRunId?: (runId: string) => void;
   signal?: AbortSignal;
 }
 
@@ -86,6 +97,10 @@ async function runChatStream(
   let transportFailed = false;
   await streamSSERequest(endpoint, body, {
     onEvent: createAGUIEventHandler(callbacks, tracking),
+    onResponse: (response) => {
+      const runId = response.headers.get('X-Run-Id');
+      if (runId) callbacks.onRunId?.(runId);
+    },
     onError: (error) => {
       transportFailed = true;
       callbacks.onError?.(error);
@@ -103,7 +118,7 @@ async function runChatStream(
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
     id: conv._id,
-    title: conv.title,
+    title: displayTitle(conv.title) ?? conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     isShared: conv.isShared,
@@ -113,10 +128,18 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     sharedBy: conv.sharedBy,
+    ...(conv.access ? { access: normalizeAccessView(conv.access) ?? undefined } : {}),
+    ...(conv.unreadCount !== undefined ? { unreadCount: conv.unreadCount } : {}),
+    ...(conv.collaboratorCount !== undefined ? { collaboratorCount: conv.collaboratorCount } : {}),
   };
 }
 
 const transformConversation = mapApiConversationToConversation;
+
+/** A row of an archive list: membership means the caller archived it (see `Conversation.archivedForMe`). */
+export function mapArchivedConversation(conv: ConversationApiResponse): Conversation {
+  return { ...mapApiConversationToConversation(conv), archivedForMe: true };
+}
 
 export interface FetchConversationsOptions {
   /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
@@ -215,6 +238,7 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    options?: { quietWhenGone?: boolean },
   ): Promise<{
     conversation: {
       id: string;
@@ -225,10 +249,9 @@ export const ChatApi = {
       modelInfo: ModelInfo;
       isShared: boolean;
       sharedWith: SharedWithEntry[];
-      access: {
-        isOwner: boolean;
-        accessLevel: string;
-      };
+      access: ApiAccess;
+      projectId?: string;
+      projectVisibility?: 'private' | 'project';
     };
     messages: ConversationMessage[];
     pagination: ConversationPagination;
@@ -246,15 +269,15 @@ export const ChatApi = {
         modelInfo: ModelInfo;
         /** Optional: older API versions may not include this field. */
         pagination?: ConversationPagination;
-        access: {
-          isOwner: boolean;
-          accessLevel: string;
-        };
+        access: ApiAccess;
+        projectId?: string;
+        projectVisibility?: 'private' | 'project';
       };
       filters: Record<string, unknown>;
       meta: Record<string, unknown>;
     }>(`/api/v1/conversations/${conversationId}/`, {
       params: { page, limit },
+      ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
     });
 
     const pagination = data.conversation.pagination ?? {
@@ -287,7 +310,7 @@ export const ChatApi = {
     if (request.agentId) {
       const agentChatMode = streamChatModeToAgentApiChatMode(request.chatMode);
       endpoint = request.conversationId
-        ? `/api/v1/agents/${request.agentId}/conversations/${request.conversationId}/messages/stream`
+        ? `${conversationApiPath({ kind: 'agent', agentKey: request.agentId, id: request.conversationId })}/messages/stream`
         : `/api/v1/agents/${request.agentId}/conversations/stream`;
       const f = request.filters;
       payload = {
@@ -311,10 +334,12 @@ export const ChatApi = {
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
+        ...(request.mentions?.length ? { mentions: request.mentions } : {}),
+        ...pickCollabSendFields(request),
       };
     } else {
       endpoint = request.conversationId
-        ? `/api/v1/conversations/${request.conversationId}/messages/stream`
+        ? `${conversationApiPath({ kind: 'chat', id: request.conversationId })}/messages/stream`
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
@@ -568,7 +593,7 @@ export const ChatApi = {
     });
 
     return {
-      conversations: raw.map(transformConversation),
+      conversations: raw.map(mapArchivedConversation),
       messagesMap,
       pagination: data.pagination,
     };
@@ -616,7 +641,7 @@ export const ChatApi = {
 
     return {
       conversations: (data.conversations ?? []).map((c) => ({
-        ...transformConversation(c),
+        ...mapArchivedConversation(c),
         source: c.source,
         agentKey: c.agentKey,
       })),

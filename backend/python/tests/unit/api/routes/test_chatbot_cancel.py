@@ -9,12 +9,16 @@ and mapping the registry's `CancelOutcome` to an HTTP response."""
 from __future__ import annotations
 
 import uuid
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
 
-from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
+from app.agents.agent_loop.cancellation.policy import CancelRequester
+
+if TYPE_CHECKING:
+    from app.agents.agent_loop.cancellation.registry import CancelOutcome, RunOwner
 
 
 class _FakeRegistry:
@@ -54,7 +58,7 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": True}
-        assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
+        assert registry.calls == [(run_id, CancelRequester(user_id="user-1", org_id="org-1"))]
 
     async def test_conversation_id_from_the_body_is_forwarded_into_run_owner(self) -> None:
         """Node's cancel routes forward the already-ownership-checked path
@@ -70,7 +74,7 @@ class TestCancelChatStream:
 
         assert result == {"cancelled": True}
         assert registry.calls == [
-            (run_id, RunOwner(user_id="user-1", org_id="org-1", conversation_id="conv-1"))
+            (run_id, CancelRequester(user_id="user-1", org_id="org-1", conversation_id="conv-1"))
         ]
 
     async def test_missing_conversation_id_builds_a_run_owner_with_none(self) -> None:
@@ -86,7 +90,7 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": True}
-        assert registry.calls == [(run_id, RunOwner(user_id="user-1", org_id="org-1"))]
+        assert registry.calls == [(run_id, CancelRequester(user_id="user-1", org_id="org-1"))]
 
     async def test_not_found_or_already_finished_returns_cancelled_false_not_a_4xx(self) -> None:
         from app.api.routes.chatbot import cancel_chat_stream
@@ -158,4 +162,135 @@ class TestCancelChatStream:
         result = await cancel_chat_stream(request, registry)
 
         assert result == {"cancelled": False}
-        assert registry.calls[0][1] == RunOwner(user_id="", org_id="")
+        assert registry.calls[0][1] == CancelRequester(user_id="", org_id="")
+
+
+def _participant_request(body: dict, **claims: object) -> MagicMock:
+    run_id = body["runId"]
+    user = {
+        "userId": "user-b",
+        "orgId": "org-1",
+        "conversationId": body.get("conversationId"),
+        "runId": run_id,
+        "iat": 1000,
+        "exp": 1060,
+        "token_type": "scoped",
+        "scopes": ["conversation:cancel"],
+        **claims,
+    }
+    return _mock_request(body, user=user)
+
+
+class TestCancelAsParticipant:
+    async def test_bound_token_cancels_with_a_participant_requester(self) -> None:
+        from app.api.routes.chatbot import cancel_chat_stream_as_participant
+
+        run_id = str(uuid.uuid4())
+        registry = _FakeRegistry()
+        request = _participant_request({"runId": run_id, "conversationId": "conv-1"})
+
+        result = await cancel_chat_stream_as_participant(request, request.state.user, registry)
+
+        assert result == {"cancelled": True}
+        assert registry.calls == [
+            (
+                run_id,
+                CancelRequester(
+                    user_id="user-b", org_id="org-1", conversation_id="conv-1", via_participant_grant=True
+                ),
+            )
+        ]
+
+    @pytest.mark.parametrize(
+        "override",
+        [
+            {"conversationId": "conv-other"},
+            {"conversationId": None},
+            {"runId": str(uuid.uuid4())},
+            {"runId": None},
+            {"exp": 1121},
+            {"exp": None},
+            {"iat": None},
+        ],
+    )
+    async def test_token_not_bound_to_the_body_is_refused_and_registry_untouched(self, override: dict) -> None:
+        from app.api.routes.chatbot import cancel_chat_stream_as_participant
+
+        registry = _FakeRegistry()
+        request = _participant_request({"runId": str(uuid.uuid4()), "conversationId": "conv-1"}, **override)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await cancel_chat_stream_as_participant(request, request.state.user, registry)
+
+        assert exc_info.value.status_code == 403
+        assert registry.calls == []
+
+    async def test_body_without_conversation_id_is_400(self) -> None:
+        from app.api.routes.chatbot import cancel_chat_stream_as_participant
+
+        registry = _FakeRegistry()
+        request = _participant_request({"runId": str(uuid.uuid4())})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await cancel_chat_stream_as_participant(request, request.state.user, registry)
+
+        assert exc_info.value.status_code == 400
+
+    async def test_registry_forbidden_is_403(self) -> None:
+        from app.api.routes.chatbot import cancel_chat_stream_as_participant
+
+        registry = _FakeRegistry(outcome="forbidden")
+        request = _participant_request({"runId": str(uuid.uuid4()), "conversationId": "conv-1"})
+
+        with pytest.raises(HTTPException) as exc_info:
+            await cancel_chat_stream_as_participant(request, request.state.user, registry)
+
+        assert exc_info.value.status_code == 403
+
+    async def test_finished_run_is_cancelled_false(self) -> None:
+        from app.api.routes.chatbot import cancel_chat_stream_as_participant
+
+        registry = _FakeRegistry(outcome="not_found")
+        request = _participant_request({"runId": str(uuid.uuid4()), "conversationId": "conv-1"})
+
+        assert await cancel_chat_stream_as_participant(request, request.state.user, registry) == {
+            "cancelled": False
+        }
+
+
+class TestParticipantRouteAuth:
+    """The dependency wiring, which the direct calls above bypass."""
+
+    def _policies(self, path: str) -> list:
+        from fastapi.routing import APIRoute
+
+        from app.api.middlewares.auth import AUTH_POLICY_ATTR
+        from app.api.routes.chatbot import router
+
+        route = next(r for r in router.routes if isinstance(r, APIRoute) and r.path == path)
+        found, pending = [], [route.dependant]
+        while pending:
+            d = pending.pop()
+            policy = getattr(d.call, AUTH_POLICY_ATTR, None)
+            if policy is not None:
+                found.append(policy)
+            pending.extend(d.dependencies)
+        return found
+
+    def test_participant_route_admits_only_the_cancel_scope(self) -> None:
+        (policy,) = self._policies("/chat/cancel/participant")
+        assert policy.kind == "service"
+        assert policy.service_scopes == {"conversation:cancel"}
+
+    def test_user_cancel_route_admits_no_service_scope(self) -> None:
+        (policy,) = self._policies("/chat/cancel")
+        assert policy.service_scopes == frozenset()
+
+    async def test_a_user_session_token_is_refused_by_the_participant_route(self) -> None:
+        from app.api.middlewares.auth import require_service_token
+        from app.config.constants.service import TokenScopes
+
+        request = _mock_request({}, user={"userId": "u", "orgId": "o", "token_type": "regular"})
+        with pytest.raises(HTTPException) as exc_info:
+            await require_service_token(TokenScopes.CONVERSATION_CANCEL)(request)
+        assert exc_info.value.status_code == 403

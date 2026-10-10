@@ -15,6 +15,7 @@ from app.api.routes.entity import (
     get_services,
     get_team,
     get_team_users,
+    get_user_team_ids,
     get_user_teams,
     get_users,
     update_team,
@@ -519,6 +520,23 @@ class TestCreateTeam:
         assert graph.read_back == [team_key]
 
 
+class TestTeamWritesRequireOrgId:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("handler,args", [(create_team, ()), (update_team, ("team-1",))])
+    async def test_missing_org_id_is_401_before_any_write(self, handler, args):
+        req = _make_request({"name": "X"})
+        req.state.user = {"userId": "user-1"}
+        gp = _graph_provider(req)
+
+        with pytest.raises(HTTPException) as exc:
+            await handler(req, *args)
+
+        assert exc.value.status_code == 401
+        gp.get_user_by_user_id.assert_not_called()
+        gp.batch_upsert_nodes.assert_not_called()
+        gp.update_node.assert_not_called()
+
+
 class _Conflict(RuntimeError):
     pass
 
@@ -569,12 +587,39 @@ class _TeamGraph:
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
-    async def get_team_with_users(self, team_id: str, user_key: str) -> dict:
+    async def get_team_with_users(self, team_id: str, user_key: str, org_id: str | None = None) -> dict:
         self.read_back.append(team_id)
         return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
 
 
 class TestGetTeam:
+    @pytest.mark.asyncio
+    async def test_lookup_is_scoped_to_caller_org(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_team_with_users.return_value = None
+
+        with pytest.raises(HTTPException) as exc:
+            await get_team(req, "all_org-2")
+        assert exc.value.status_code == 404
+        assert exc.value.detail == "Team not found"
+        gp.get_team_with_users.assert_awaited_once_with(
+            team_id="all_org-2", user_key="uk", org_id="org-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_caller_without_org_gets_401(self) -> None:
+        req = _make_request()
+        req.state.user = {"userId": "user-1"}
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+
+        with pytest.raises(HTTPException) as exc:
+            await get_team(req, "team-1")
+        assert exc.value.status_code == 401
+        gp.get_team_with_users.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_success(self):
         req = _make_request()
@@ -1229,6 +1274,73 @@ class TestGetUserTeams:
         assert content["pagination"]["pages"] == 3
         assert content["pagination"]["hasNext"] is True
         assert content["pagination"]["hasPrev"] is True
+
+class TestGetUserTeamIds:
+    @pytest.mark.asyncio
+    async def test_returns_ids_with_org_from_token(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_team_ids.return_value = ["t1", "t2"]
+
+        resp = await get_user_team_ids(req)
+
+        assert resp.status_code == 200
+        assert json.loads(resp.body.decode()) == {"teamIds": ["t1", "t2"]}
+        gp.get_user_team_ids.assert_awaited_once_with(user_key="uk", org_id="org-1")
+
+    @pytest.mark.asyncio
+    async def test_user_in_no_teams_is_200_empty(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_team_ids.return_value = []
+
+        resp = await get_user_team_ids(req)
+        assert json.loads(resp.body.decode()) == {"teamIds": []}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, ""])
+    async def test_missing_org_id_gets_401_without_provider_call(self, org) -> None:
+        req = _make_request()
+        req.state.user = {"userId": "user-1", "orgId": org}
+        gp = _graph_provider(req)
+
+        with pytest.raises(HTTPException) as exc:
+            await get_user_team_ids(req)
+
+        assert exc.value.status_code == 401
+        gp.get_user_team_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_user_not_found(self) -> None:
+        req = _make_request()
+        _graph_provider(req).get_user_by_user_id.return_value = None
+        with pytest.raises(HTTPException) as exc:
+            await get_user_team_ids(req)
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_provider_error_is_500(self) -> None:
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_user_team_ids.side_effect = RuntimeError("db")
+        with pytest.raises(HTTPException) as exc:
+            await get_user_team_ids(req)
+        assert exc.value.status_code == 500
+
+    def test_unauthenticated_gets_401(self) -> None:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from app.api.routes.entity import router
+
+        app = FastAPI()
+        app.include_router(router)
+        resp = TestClient(app).get("/api/v1/entity/user/team-ids")
+        assert resp.status_code == 401
+
 
 class TestGetUsers:
     @pytest.mark.asyncio

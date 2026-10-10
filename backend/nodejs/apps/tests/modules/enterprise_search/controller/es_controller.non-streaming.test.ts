@@ -1,3 +1,4 @@
+import { turnDeps } from '../helpers/turn-deps'
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
@@ -17,6 +18,7 @@ import {
   fakeReplicaSetSession,
   oid,
 } from './chat-test-harness'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
 import { AGENT_KEY, ORG, OWNER, appConfig, seedConversation } from './streaming-flows'
 
 /**
@@ -40,7 +42,7 @@ interface Flow {
 const flows: Flow[] = [
   {
     name: 'createConversation',
-    handler: () => controller.createConversation(appConfig) as Handler,
+    handler: () => controller.createConversation(appConfig, turnDeps()) as Handler,
     agent: false,
     create: true,
     aiPath: '/api/v1/chat',
@@ -48,7 +50,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessage',
-    handler: () => controller.addMessage(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
     agent: false,
     create: false,
     aiPath: '/api/v1/chat',
@@ -59,7 +61,7 @@ const flows: Flow[] = [
   },
   {
     name: 'createAgentConversation',
-    handler: () => controller.createAgentConversation(appConfig) as Handler,
+    handler: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
     agent: true,
     create: true,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -67,7 +69,7 @@ const flows: Flow[] = [
   },
   {
     name: 'addMessageToAgentConversation',
-    handler: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+    handler: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
     agent: true,
     create: false,
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
@@ -157,6 +159,24 @@ describe('es_controller non-streaming chat routes', () => {
         expect(saved.at(-1)).to.include({ messageType: 'bot_response', content: 'Release 2.1 shipped SSO.' })
         expect(r.conversation().status).to.equal('Complete')
         expect(r.res.headers[CONVERSATION_ID_HEADER.toLowerCase()]).to.equal(String(r.conversation()._id))
+      })
+
+      it('PH01-04c stores and forwards only the attachments the AI service validates', async () => {
+        const r = await run(
+          flow,
+          (ai) => {
+            ai.reply(/\/api\/v1\/chat\/attachments\/validate$/, 200, { recordIds: ['r1'] })
+            ai.reply(exactPath(flow.aiPath), 200, answer('ok'))
+          },
+          { body: { attachments: [{ recordId: 'r1', recordName: 'a.pdf' }, { recordId: 'foreign' }] } },
+        )
+
+        expect(r.next.called, String(r.error()?.message)).to.be.false
+        const userMsg = r.messages().filter((m) => m.messageType === 'user_query').at(-1)
+        expect(userMsg?.attachments).to.deep.equal([{ recordId: 'r1', recordName: 'a.pdf' }])
+        const chatCall = r.ai.calls.find((c) => c.url.endsWith(flow.aiPath))
+        expect(chatCall?.body.attachments).to.deep.equal([{ recordId: 'r1', recordName: 'a.pdf' }])
+        expect(JSON.stringify(chatCall?.body)).to.not.include('foreign')
       })
 
       it('calls the non-streaming AI route once, with the conversation and its history', async () => {
@@ -297,15 +317,15 @@ describe('es_controller non-streaming chat routes', () => {
     const chains = [
       {
         name: 'assistant',
-        create: () => controller.createConversation(appConfig) as Handler,
-        followUp: () => controller.addMessage(appConfig) as Handler,
+        create: () => controller.createConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler),
         params: {} as Record<string, string>,
         aiPath: '/api/v1/chat',
       },
       {
         name: 'agent',
-        create: () => controller.createAgentConversation(appConfig) as Handler,
-        followUp: () => controller.addMessageToAgentConversation(appConfig) as Handler,
+        create: () => controller.createAgentConversation(appConfig, turnDeps()) as Handler,
+        followUp: () => behindGuard(realGuards(), 'send', controller.addMessageToAgentConversation(appConfig, turnDeps()) as Handler, 'agent'),
         params: { agentKey: AGENT_KEY } as Record<string, string>,
         aiPath: `/api/v1/agent/${AGENT_KEY}/chat`,
       },
@@ -443,7 +463,7 @@ describe('es_controller non-streaming chat routes', () => {
       const { session } = seedConversation(store, true)
       const next = sinon.stub()
 
-      await (controller.addMessage(appConfig) as Handler)(
+      await behindGuard(realGuards(), 'send', controller.addMessage(appConfig, turnDeps()) as Handler)(
         {
           headers: {},
           params: { conversationId: String(session._id) },

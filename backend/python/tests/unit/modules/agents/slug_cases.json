@@ -1,0 +1,113 @@
+{
+  "_comment": "Name -> handle. Shared by backend/python/tests/unit/modules/agents/test_handles.py (handles.slugify) and frontend agent-handle-utils.test.ts (slugifyAgentName) so the two slugs cannot drift.",
+  "cases": [
+    [
+      "Offer drafter",
+      "offer-drafter"
+    ],
+    [
+      "  Sales   Bot!!  ",
+      "sales-bot"
+    ],
+    [
+      "Sales_Bot v2.0",
+      "sales-bot-v2-0"
+    ],
+    [
+      "Crème Brûlée Bot",
+      "creme-brulee-bot"
+    ],
+    [
+      "Ünïcödé Ägent",
+      "unicode-agent"
+    ],
+    [
+      "日本語エージェント",
+      "new-agent"
+    ],
+    [
+      "🚀🚀🚀",
+      "new-agent"
+    ],
+    [
+      "🚀 Launch Bot 🚀",
+      "launch-bot"
+    ],
+    [
+      "---",
+      "new-agent"
+    ],
+    [
+      "",
+      "new-agent"
+    ],
+    [
+      "X",
+      "x-agent"
+    ],
+    [
+      "7",
+      "7-agent"
+    ],
+    [
+      "Assistant",
+      "assistant-agent"
+    ],
+    [
+      "PipesHub",
+      "pipeshub-agent"
+    ],
+    [
+      "Everyone",
+      "everyone-agent"
+    ],
+    [
+      "here",
+      "here-agent"
+    ],
+    [
+      "ALL",
+      "all-agent"
+    ],
+    [
+      "ﬁnance Bot",
+      "finance-bot"
+    ],
+    [
+      "Ｓａｌｅｓ Ｂｏｔ",
+      "sales-bot"
+    ],
+    [
+      "Straße Bot",
+      "strae-bot"
+    ],
+    [
+      "Ørsted Ænergy",
+      "rsted-nergy"
+    ],
+    [
+      "İstanbul Bot",
+      "istanbul-bot"
+    ],
+    [
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx-yz",
+      "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    ],
+    [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa--b",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    ],
+    [
+      "① Help Desk",
+      "1-help-desk"
+    ],
+    [
+      "Résumé ½ Reviewer",
+      "resume-12-reviewer"
+    ],
+    [
+      "\tTabs\nand lines",
+      "tabs-and-lines"
+    ]
+  ]
+}

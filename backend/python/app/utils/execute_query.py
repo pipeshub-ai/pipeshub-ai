@@ -680,6 +680,7 @@ def create_execute_query_tool(
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
     user_id: Optional[str] = None,
+    run_id: str | None = None,
     *,
     allowed_connector_ids: Collection[str],
 ) -> Callable:
@@ -693,6 +694,8 @@ def create_execute_query_tool(
         blob_store: Optional blob storage for saving full result CSVs
         user_id: Optional owner of the CSV export; without it the export has
             no artifact record and so no download link on local storage
+        run_id: Node-minted runId of the turn; stamped on the CSV artifact so
+            collaborators can be authorized by the turn's shareToolResults
         allowed_connector_ids: The only connector instance IDs the tool may
             query. The query runs with the connector's stored credentials, so
             any other ID (or none) is rejected before a client is built.
@@ -816,6 +819,7 @@ def create_execute_query_tool(
                     rows=raw_rows,
                     file_name=f"query_result_{int(time.time())}.csv",
                     source_tool="sql.execute_sql_query",
+                    run_id=run_id,
                 ))
                 register_task(conversation_id, task)
             

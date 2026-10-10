@@ -5,6 +5,8 @@ from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
+from app.modules.agents.service.agent_service import AgentService
+from app.modules.authz.node_pdp_client import AiohttpPdpHttp, NodePdpClient
 from app.modules.reranker.reranker import RerankerService
 from app.services.vector_db.const.const import VECTOR_DB_ENTITIES_COLLECTION_NAME
 from app.utils.logger import create_logger
@@ -65,6 +67,12 @@ class QueryAppContainer(BaseAppContainer):
         blob_store=blob_store,
         collection_registry=collection_registry,
     )
+    agent_service = providers.Factory(
+        AgentService,
+        graph=graph_provider,
+        config=config_service,
+        logger=logger,
+    )
     reranker_service = providers.Singleton(
         RerankerService,
         model_name="BAAI/bge-reranker-base",  # Choose model based on speed/accuracy needs
@@ -76,6 +84,12 @@ class QueryAppContainer(BaseAppContainer):
     # configured (always, in practice), else in-process-only — see
     # `agents/agent_loop/cancellation/factory.py`.
     run_cancellation_registry = providers.Singleton(build_run_cancellation_registry)
+
+    # Chat-content PDP client (Node `authz/internal/check`); installed as the
+    # process accessor in `initialize_container`.
+    node_pdp_client = providers.Singleton(
+        NodePdpClient, config_service=config_service, http=providers.Singleton(AiohttpPdpHttp),
+    )
     # EntityVectorStore — backs the knowledgegraph search_entities tool
     entity_vector_store = providers.Resource(
         container_utils.create_entity_vector_store,

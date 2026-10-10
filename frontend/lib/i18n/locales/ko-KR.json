@@ -301,7 +301,7 @@
   "nav": {
     "collections": "컬렉션",
     "allRecords": "모든 레코드",
-    "allArtifacts": "모든 아티팩트",
+    "allArtifacts": "내 아티팩트",
     "workspace": "워크스페이스",
     "shared": "나와 공유됨",
     "private": "내 컬렉션",
@@ -317,7 +317,7 @@
     "notifications": "알림"
   },
   "artifacts": {
-    "title": "모든 아티팩트",
+    "title": "내 아티팩트",
     "empty": "아직 아티팩트가 없습니다",
     "emptyHint": "에이전트가 채팅에서 만든 파일이 여기에 표시됩니다.",
     "loadFailed": "아티팩트를 불러오지 못했습니다",
@@ -360,7 +360,62 @@
     "filterTooltip": "필터: {{filter}}",
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
-    "removeFailed": "알림을 제거할 수 없습니다"
+    "removeFailed": "알림을 제거할 수 없습니다",
+    "mention": {
+      "title": "회원님이 멘션되었습니다",
+      "body": "누군가 채팅에서 회원님을 멘션했습니다.",
+      "bodyNamed": "{{actor}}님이 “{{chat}}”에서 회원님을 멘션했습니다.",
+      "bodyNamedChat": "“{{chat}}” 채팅에서 회원님이 멘션되었습니다.",
+      "bodyNamedActor": "{{actor}}님이 채팅에서 회원님을 멘션했습니다."
+    },
+    "collab": {
+      "note": "메시지: {{note}}",
+      "mute": "이 채팅 알림 끄기",
+      "unmute": "이 채팅 알림 켜기",
+      "shared": {
+        "title": "회원님에게 채팅이 공유되었습니다",
+        "read": "회원님에게 채팅이 공유되었습니다. 채팅을 볼 수 있습니다.",
+        "write": "회원님에게 채팅이 공유되었습니다. 대화를 이어갈 수 있습니다.",
+        "readNamed": "{{actor}}님이 “{{chat}}” 채팅을 회원님에게 공유했습니다. 채팅을 볼 수 있습니다.",
+        "writeNamed": "{{actor}}님이 “{{chat}}” 채팅을 회원님에게 공유했습니다. 대화를 이어갈 수 있습니다.",
+        "readNamedChat": "“{{chat}}” 채팅이 회원님에게 공유되었습니다. 채팅을 볼 수 있습니다.",
+        "writeNamedChat": "“{{chat}}” 채팅이 회원님에게 공유되었습니다. 대화를 이어갈 수 있습니다.",
+        "readNamedActor": "{{actor}}님이 회원님에게 채팅을 공유했습니다. 채팅을 볼 수 있습니다.",
+        "writeNamedActor": "{{actor}}님이 회원님에게 채팅을 공유했습니다. 대화를 이어갈 수 있습니다."
+      },
+      "accessChanged": {
+        "title": "채팅 접근 권한이 변경되었습니다",
+        "read": "이제 공유된 채팅을 볼 수 있습니다.",
+        "write": "이제 공유된 채팅에서 대화를 이어갈 수 있습니다.",
+        "readNamedChat": "이제 “{{chat}}” 채팅을 볼 수 있습니다.",
+        "writeNamedChat": "이제 “{{chat}}” 채팅에서 대화를 이어갈 수 있습니다."
+      },
+      "ownershipTransferred": {
+        "title": "채팅 소유권이 이전되었습니다",
+        "body": "이제 회원님이 채팅의 소유자입니다.",
+        "bodyNamedChat": "이제 “{{chat}}” 채팅의 소유자입니다."
+      },
+      "deleted": {
+        "title": "채팅이 삭제되었습니다",
+        "body": "참여했던 채팅이 삭제되었습니다."
+      },
+      "activity": {
+        "title": "공유 채팅에 새 활동이 있습니다",
+        "body": "공유 채팅의 새 활동: {{total}}",
+        "bodyNamedChat": "“{{chat}}”의 새 활동: {{total}}"
+      },
+      "preferences": {
+        "title": "채팅 알림",
+        "description": "공유 채팅 알림을 받는 방법을 선택하세요.",
+        "emailChatShared": "채팅이 공유되면 이메일 받기",
+        "emailOwnershipTransferred": "채팅 소유자가 되면 이메일 받기",
+        "inAppChatActivity": "공유 채팅의 활동 알림 받기",
+        "loadFailed": "알림 설정을 불러올 수 없습니다.",
+        "updateFailed": "알림 설정을 저장할 수 없습니다.",
+        "emailChatMentioned": "누군가 채팅에서 나를 멘션하면 이메일 받기",
+        "inAppChatMentioned": "누군가 채팅에서 나를 멘션하면 알림 받기"
+      }
+    }
   },
   "action": {
     "find": "찾기",
@@ -659,6 +714,70 @@
     "record": "레코드"
   },
   "chat": {
+    "mentions": {
+      "assistant": "어시스턴트",
+      "unknownAgent": "알 수 없는 에이전트",
+      "unknownUser": "알 수 없는 사용자",
+      "unknownTeam": "알 수 없는 팀",
+      "groupAssistant": "어시스턴트",
+      "groupAgent": "에이전트",
+      "groupPeople": "이 채팅의 참여자",
+      "groupOthers": "조직의 다른 구성원",
+      "groupTeams": "팀",
+      "kindAgent": "에이전트",
+      "kindTeam": "팀",
+      "notInChat": "이 채팅에 없음",
+      "oneAgentHint": "메시지 하나에는 에이전트를 한 명만 멘션할 수 있습니다.",
+      "addPeople": "이 채팅에 사람 추가…",
+      "listLabel": "멘션 추천",
+      "loading": "검색 중…",
+      "empty": "일치하는 항목 없음",
+      "resolve": {
+        "title": "@{{typed}}은(는) 누구인가요?",
+        "hint": "보낼 대상을 하나 선택하세요. 아직 아무것도 전송되지 않았습니다.",
+        "team": "팀",
+        "person": "사용자",
+        "cancel": "계속 편집",
+        "addPrompt": "{{name}}님을 이 채팅에 추가할까요?",
+        "askOwner": "{{name}}님은 이 채팅에 참여하고 있지 않습니다. 소유자에게 추가를 요청하세요.",
+        "addView": "보기 가능",
+        "addContinue": "이어서 대화 가능",
+        "dismiss": "나중에",
+        "added": "이 채팅에 추가됨"
+      },
+      "note": {
+        "label": "메모",
+        "aria": "메모, 어시스턴트에게 전송되지 않음",
+        "noAttachments": "메모에는 첨부 파일을 넣을 수 없습니다. 파일에 대해 물으려면 @assistant를 멘션하세요."
+      },
+      "tips": {
+        "intro": "입력하여 필터링하세요. ↑ ↓로 이동, Enter로 선택, Esc로 닫기.",
+        "noteOnly": "팀원만 멘션하면 AI에게 묻지 않고 메모를 남길 수 있습니다",
+        "assistantAnywhere": "@assistant는 어디서나 사용할 수 있습니다",
+        "agentAccess": "에이전트는 내 접근 권한으로 답변합니다",
+        "agentAnywhere": "사용할 수 있는 에이전트는 어떤 채팅에서든 멘션할 수 있습니다",
+        "gotIt": "확인",
+        "coachmarkLabel": "팁",
+        "firstSharedSend_other": "내 메시지와 답변이 {{count}}명에게 표시됩니다",
+        "firstSharedSendUnknown": "내 메시지와 답변이 이 채팅의 모든 사람에게 표시됩니다",
+        "firstNote": "메모는 AI에게 질문하지 않습니다. 질문하려면 @assistant를 멘션하세요.",
+        "firstAgentMention": "이 에이전트는 내 접근 권한으로 답변합니다. 이 채팅의 모든 사람이 답변을 볼 수 있습니다.",
+        "emptyTitle": "이 공유 채팅 활용 아이디어",
+        "emptyExample1": "@assistant 지금까지 결정한 내용을 요약해 주세요",
+        "emptyExample2": "@assistant 아직 해결되지 않은 질문은 무엇인가요?",
+        "emptyExample3": "@팀원 이것 좀 검토해 주시겠어요? (메모만 남기고 AI는 답하지 않음)",
+        "emptyMentionAction": "@ 팀원 멘션하기"
+      },
+      "help": {
+        "hint": "“@assistant help”를 입력하면 어시스턴트가 내 권한으로 접근할 수 있는 항목을 볼 수 있습니다."
+      },
+      "placeholder": {
+        "solo": "무엇이든 물어보세요 · @를 입력해 에이전트 선택",
+        "shared": "PipesHub에 질문하거나 @를 입력해 팀원이나 에이전트를 멘션하세요"
+      },
+      "you": "나",
+      "mentionsYou": "나를 멘션함"
+    },
     "recordActions": {
       "preview": "미리보기",
       "open": "{{source}} 열기",
@@ -740,6 +859,11 @@
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
+    "answeredVia": {
+      "coding_agent": "코딩 에이전트를 통해",
+      "web_agent": "웹 조사를 통해",
+      "other": "{{name}}을(를) 통해"
+    },
     "thankYouForFeedback": "피드백을 보내 주셔서 감사합니다",
     "feedbackHelpsImprove": "보내 주신 피드백은 개선에 큰 도움이 됩니다",
     "feedbackError": "피드백을 제출하지 못했습니다",
@@ -1208,7 +1332,293 @@
       "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
-    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다."
+    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다.",
+    "collab": {
+      "readOnlyBanner": "이 채팅을 볼 수는 있지만 대화를 이어갈 수는 없습니다.",
+      "readOnlyBannerOwner": "이 채팅을 볼 수 있습니다. {{name}}님은 내용을 추가할 수 있습니다.",
+      "accessLostBanner": "더 이상 이 채팅에 접근할 수 없습니다. 지금 보이는 내용은 이 페이지를 벗어나기 전까지 유지됩니다.",
+      "busy": {
+        "someone": "누군가",
+        "asking": "{{name}}님이 질문하는 중…",
+        "announce": "{{name}}님이 질문하는 중",
+        "askingOtherTab": "다른 탭에서 질문하는 중…",
+        "waiting": "{{name}}님의 질문이 끝나기를 기다리는 중입니다. 메시지는 자동으로 전송됩니다.",
+        "cancelQueued": "취소",
+        "stop": "중지"
+      },
+      "sync": {
+        "newMessages_other": "위에 새 메시지 {{count}}개가 있습니다. 확인한 후 다시 보내세요.",
+        "sendAgain": "다시 보내기",
+        "edit": "메시지 편집"
+      },
+      "errors": {
+        "GENERIC": "문제가 발생했습니다. 다시 시도해 주세요.",
+        "CONVERSATION_NOT_FOUND": "더 이상 이 채팅에 접근할 수 없습니다.",
+        "CONVERSATION_READ_ONLY": "이 채팅을 볼 수는 있지만 내용을 추가할 수는 없습니다.",
+        "CONVERSATION_OWNER_ONLY": "소유자만 할 수 있습니다.",
+        "REGENERATE_NOT_ALLOWED": "질문한 사람만 이 답변을 다시 생성할 수 있습니다.",
+        "RESUME_NOT_ALLOWED": "질문을 받은 사람만 이 질문에 답할 수 있습니다.",
+        "OWNER_INACTIVE": "이 채팅의 소유자 계정이 비활성화되어 대화를 이어갈 수 없습니다. 관리자에게 문의하세요.",
+        "OWNER_STATUS_UNAVAILABLE": "소유자 계정을 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.",
+        "PROJECT_ACCESS_REQUIRED": "계속하려면 이 채팅의 프로젝트에 대한 접근 권한이 필요합니다.",
+        "TEAM_RESOLUTION_UNAVAILABLE": "지금은 팀 접근 권한을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "CONVERSATION_BUSY": "다른 사람이 이 채팅에서 질문 중입니다. 끝나면 보낼 수 있습니다.",
+        "CONVERSATION_CHANGED": "이 채팅에 새 메시지가 있습니다. 확인한 후 다시 보내 주세요.",
+        "DUPLICATE_MESSAGE": "이미 전송된 메시지입니다.",
+        "RUN_LOST": "실행이 중단되어 답변이 사라졌습니다. 메시지를 다시 보내 주세요.",
+        "COLLABORATOR_LIMIT": "이 채팅에 추가할 수 있는 사람과 팀 수가 한도에 도달했습니다.",
+        "MUTED_SESSIONS_LIMIT": "알림을 끈 채팅 수가 한도에 도달했습니다.",
+        "CONNECTOR_SETUP_REQUIRED": "계속하기 전에 이 에이전트에 필요한 도구를 연결하세요.",
+        "INVALID_PRINCIPAL": "추가할 수 없는 사람 또는 팀이 있습니다.",
+        "RATE_LIMITED": "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+        "ORG_WIDE_CONFIRMATION_REQUIRED": "이 채팅을 조직 전체와 공유할지 확인해 주세요.",
+        "AGENT_UNAVAILABLE": "이 에이전트를 더 이상 사용할 수 없어 채팅을 계속할 수 없습니다.",
+        "MENTION_NOT_ALLOWED": "멘션한 사람 또는 에이전트 중 일부는 이 채팅에서 멘션할 수 없습니다.",
+        "MENTION_SA_AGENT_SHARED": "이 에이전트는 서비스 계정으로 실행되어 공유 채팅에서 멘션할 수 없습니다.",
+        "MENTION_DIRECTORY_UNAVAILABLE": "지금은 멘션한 에이전트를 확인할 수 없습니다. 잠시 후 다시 시도해 주세요.",
+        "MESSAGE_IS_NOTE": "이 메시지는 AI에게 전송되지 않았습니다. 이 채팅에서는 누군가 @assistant를 멘션할 때만 AI가 답합니다. AI에게 질문하려면 @assistant를 멘션하세요.",
+        "MESSAGE_NOT_NOTE": "메모로는 AI에게 질문할 수 없습니다. 메모로 게시하려면 @assistant 멘션을 제거하세요.",
+        "TOO_MANY_AGENT_MENTIONS": "메시지 하나에는 에이전트를 한 명만 멘션할 수 있습니다. 나머지 멘션을 삭제한 후 다시 보내세요."
+      },
+      "share": {
+        "title": "채팅 공유",
+        "makeOwner": "소유자로 지정",
+        "notice": "추가한 사람은 이전 답변을 포함해 채팅 전체를 읽을 수 있습니다. 이들이 여는 출처는 각자의 접근 권한에 따라 확인됩니다.",
+        "searchLabel": "사람 또는 팀 추가",
+        "noteLabel": "받는 사람에게 보낼 메시지(선택)",
+        "noteCount": "{{used}}/{{max}}",
+        "formerMember": "이전 멤버",
+        "deletedTeam": "삭제된 팀",
+        "removeOnly": "더 이상 존재하지 않습니다. 이 항목을 제거할 수 있습니다.",
+        "summaryOwner": "소유자: {{name}}",
+        "summaryCount": "접근 권한이 있는 사람과 팀: {{total}}",
+        "summaryAccess": "내 접근 권한: {{access}}",
+        "roleWrite": "이어서 대화 가능",
+        "roleWriteDescription": "이 채팅을 읽고 대화를 이어갈 수 있음",
+        "roleRead": "보기 가능",
+        "roleReadDescription": "이 채팅을 읽을 수 있음",
+        "settingEditorsCanInvite": "편집자가 초대 가능",
+        "settingEditorsCanInviteDescription": "이 채팅에서 대화를 이어갈 수 있는 사람은 다른 사람과 팀을 추가할 수 있지만, 누구도 제거할 수는 없습니다.",
+        "settingOwnerContentShared": "내 파일과 도구 결과 공유",
+        "settingOwnerContentSharedDescription": "내가 보낸 메시지의 파일과 도구 결과가 이 채팅의 모든 사람에게 표시됩니다.",
+        "orgWideTitle": "조직 전체와 공유할까요?",
+        "orgWideMessage": "조직의 모든 사람이 이 채팅을 읽을 수 있게 됩니다. 이들에게 알림은 전송되지 않습니다.",
+        "orgWideConfirm": "모두와 공유",
+        "largeTeamTitle": "규모가 큰 팀과 공유할까요?",
+        "largeTeamMessage": "{{name}} 팀의 멤버는 {{members}}명입니다. 모두 이 채팅에 접근할 수 있게 됩니다.",
+        "largeTeamConfirm": "공유",
+        "transferTitle": "{{name}}님을 소유자로 지정할까요?",
+        "transferMessage": "{{name}}님이 이 채팅의 소유자가 되어 접근 권한을 관리하게 됩니다. 회원님은 대화를 이어갈 수 있는 사람으로 남습니다.",
+        "transferred": "소유권이 이전되었습니다",
+        "transferredDescription": "{{name}}님이 이제 소유자입니다",
+        "rateLimited": "변경이 너무 많습니다. {{retryAfter}}초 후에 다시 시도해 주세요.",
+        "limitReached": "이 채팅에 추가할 수 있는 사람과 팀은 최대 {{max}}개입니다.",
+        "draftNotice": "아직 아무것도 공유되지 않았습니다. 여기에 추가한 사람은 첫 메시지를 보내면 접근 권한을 받습니다.",
+        "draftAdd": "추가"
+      },
+      "sidebar": {
+        "roleRead": "보기 가능",
+        "roleWrite": "이어서 대화 가능",
+        "sharedWith": "{{total}}명과 공유됨",
+        "unread": "읽지 않은 메시지 {{total}}개",
+        "menu": "채팅 옵션",
+        "archive": "보관",
+        "unarchive": "보관 해제",
+        "leave": "나가기",
+        "leaving": "나가는 중…",
+        "leaveTitle": "이 채팅에서 나갈까요?",
+        "leaveDescription": "이 채팅에 대한 접근 권한을 잃게 됩니다. 소유자가 다시 추가할 수 있습니다.",
+        "muted": "알림 꺼짐"
+      },
+      "attribution": {
+        "you": "나",
+        "formerMember": "이전 멤버",
+        "sentBy": "{{name}}님이 보냄",
+        "askedByAnswered": "{{name}}님이 질문 · {{name}}님의 권한으로 답변",
+        "askedByYouAnswered": "내가 질문 · 내 권한으로 답변",
+        "waitingFor": "{{name}}님의 답변을 기다리는 중",
+        "respondingAgent": "에이전트",
+        "respondingAgentAria": "{{name}}의 답변",
+        "forPerson": "{{name}}님을 위해 · 해당 권한 사용",
+        "answeringPerson": "{{name}}님에게 답변 중…"
+      },
+      "timeline": {
+        "today": "오늘",
+        "yesterday": "어제",
+        "replyingTo": "{{name}}님에게 답변",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}, {{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "대화",
+        "answerViews": "답변 보기",
+        "answerFailedTitle": "이 답변을 생성하지 못했습니다",
+        "answerFailedRetry": "다시 시도"
+      },
+      "consent": {
+        "audience_other": "{{count}}명에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",
+        "audienceUnknown": "이 채팅의 모든 사람에게 표시됨 · 소유자가 더 추가할 수 있음 · 추가한 파일은 공유됨",
+        "shareToolResults": "이 메시지의 도구 결과 공유"
+      },
+      "access": {
+        "button": "볼 수 있는 사람",
+        "buttonLabel": "이 채팅에 접근할 수 있는 사람",
+        "title": "이 채팅 접근 권한",
+        "subjectLabel": "접근 권한 확인 대상",
+        "subjectMe": "나",
+        "loading": "접근 권한을 확인하는 중…",
+        "loadFailed": "접근 권한 정보를 불러오지 못했습니다.",
+        "forbidden": "다른 사람의 접근 권한은 볼 수 없습니다.",
+        "retry": "다시 시도",
+        "summarySelf": "내 접근 권한: {{role}}",
+        "summaryOther": "{{name}}님의 접근 권한: {{role}}",
+        "noneSelf": "이 채팅에 접근할 수 없습니다.",
+        "noneOther": "{{name}}님은 이 채팅에 접근할 수 없습니다.",
+        "unknownUser": "알 수 없는 사용자",
+        "unknownTeam": "팀",
+        "action": {
+          "viewer": "볼",
+          "editor": "이어 갈",
+          "owner": "관리할"
+        },
+        "role": {
+          "viewer": "보기 가능",
+          "editor": "이어서 대화 가능",
+          "owner": "소유자",
+          "none": "접근 권한 없음"
+        },
+        "via": {
+          "owner": {
+            "self": "회원님이 이 채팅의 소유자입니다.",
+            "other": "{{name}}님이 이 채팅의 소유자입니다."
+          },
+          "direct": {
+            "self": "이 채팅을 직접 공유받았으므로 채팅을 {{action}} 수 있습니다.",
+            "other": "{{name}}님은 이 채팅을 직접 공유받았으므로 채팅을 {{action}} 수 있습니다."
+          },
+          "team": {
+            "self": "{{team}} 팀을 통해 이 채팅을 {{action}} 수 있습니다.",
+            "other": "{{name}}님은 {{team}} 팀을 통해 이 채팅을 {{action}} 수 있습니다."
+          },
+          "teamUnnamed": {
+            "self": "소속 팀 중 하나를 통해 이 채팅을 {{action}} 수 있습니다.",
+            "other": "{{name}}님은 소속 팀 중 하나를 통해 이 채팅을 {{action}} 수 있습니다."
+          },
+          "teamRedacted": {
+            "self": "내가 속하지 않은 팀을 통해 이 채팅을 {{action}} 수 있습니다.",
+            "other": "{{name}}님은 내가 속하지 않은 팀을 통해 이 채팅을 {{action}} 수 있습니다."
+          },
+          "project": {
+            "self": "접근 권한이 있는 프로젝트에 속한 채팅이므로 이 채팅을 {{action}} 수 있습니다.",
+            "other": "{{name}}님은 이 채팅이 속한 프로젝트를 통해 채팅을 {{action}} 수 있습니다."
+          }
+        },
+        "visibilityLabel": "프로젝트 멤버에게 표시",
+        "visibilityHelp": "켜면 프로젝트에 접근할 수 있는 모든 사람이 이 채팅을 열 수 있습니다. 끄면 내가 공유한 사람만 열 수 있습니다.",
+        "shareLimit": "한 번에 사람 또는 팀을 최대 {{max}}개까지 추가할 수 있습니다. 계속하려면 {{over}}개를 제거하세요.",
+        "dialog": {
+          "title": "접근 권한 변경 검토",
+          "descriptionLink": "이 채팅을 프로젝트로 옮기면 채팅을 열 수 있는 사람이 바뀝니다.",
+          "descriptionUnlink": "이 채팅을 프로젝트에서 빼면 채팅을 열 수 있는 사람이 바뀝니다.",
+          "descriptionVisibilityProject": "프로젝트 멤버가 이 채팅을 열 수 있게 됩니다.",
+          "descriptionVisibilityPrivate": "나와, 내가 이 채팅을 공유한 사람만 열 수 있게 됩니다.",
+          "loading": "영향을 받는 사람을 확인하는 중…",
+          "previewFailed": "영향을 받는 사람을 확인하지 못해 아무것도 변경하지 않았습니다. 이 창을 닫고 다시 시도하세요.",
+          "projectUnavailable": "이 프로젝트를 사용할 수 없어 아무것도 변경되지 않았습니다.",
+          "applyFailed": "변경 사항을 적용하지 못했습니다. 아무것도 변경되지 않았습니다.",
+          "apply": "적용",
+          "applying": "적용하는 중…",
+          "gains": "접근 권한을 얻게 됨",
+          "loses": "접근 권한을 잃게 됨",
+          "becomesReadOnly": "읽기 전용으로 전환됨",
+          "noChanges": "접근 권한이 바뀌는 사람이 없습니다.",
+          "truncated": "목록이 일부만 표시됩니다. 처음 일부 사람과 팀만 확인했습니다.",
+          "row": "{{name}} · {{role}}"
+        },
+        "removeSelection": "{{name}} 제거"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}}명이 이 채팅을 볼 수 있음"
+      },
+      "accessLostBannerEmpty": "이 채팅은 사용할 수 없습니다. 삭제되었거나 접근 권한이 제거되었을 수 있습니다.",
+      "draft": {
+        "willShare": "공유 대상",
+        "edit": "이 채팅을 공유할 대상 변경",
+        "remove": "{{name}} 제거",
+        "entry": "{{name}}({{level}})"
+      }
+    },
+    "agentDraft": {
+      "label": "에이전트 초안",
+      "draftedBy": "{{name}}님이 에이전트 초안을 작성했습니다",
+      "someone": "누군가",
+      "name": "이름",
+      "handle": "핸들",
+      "handleChecking": "사용 가능 여부 확인 중…",
+      "handleAvailable": "사용 가능",
+      "handleTaken": "@{{handle}}은(는) 이미 사용 중입니다",
+      "handleReserved": "@{{handle}}은(는) 예약된 핸들입니다",
+      "handleInvalid": "소문자, 숫자, 하이픈 2~40자를 사용하세요",
+      "useSuggestion": "@{{suggestion}} 사용",
+      "description": "설명",
+      "instructions": "지침",
+      "knowledge": "지식",
+      "knowledgeFallback": "지식 소스 {{id}}",
+      "unavailable": "더 이상 사용할 수 없습니다",
+      "tools": "도구",
+      "toolsHint": "선택하기 전에는 아무것도 켜지지 않습니다.",
+      "toolNotSetUp": "설정되어 있지 않습니다",
+      "contentBanner": "문서 내용에서 제안됨",
+      "contentBannerBody": "이 초안의 일부는 문서나 다른 사람의 메시지에서 가져왔습니다. 에이전트를 만들기 전에 확인하세요.",
+      "private": "비공개 - 나만 사용할 수 있습니다",
+      "savingDraft": "초안 저장 중…",
+      "create": "에이전트 만들기",
+      "createdTitle": "@{{handle}} 생성됨 (비공개)",
+      "openAgentChat": "에이전트 채팅 열기",
+      "builderOff": "에이전트 빌더가 꺼져 있습니다",
+      "errorGeneric": "에이전트를 만들 수 없습니다. 다시 시도해 주세요.",
+      "showInstructions": "지침 보기",
+      "hideInstructions": "지침 숨기기",
+      "actions": "작업",
+      "allActionsOf": "{{name}}의 모든 작업",
+      "showAll": "{{count}}개 모두 보기",
+      "showFewer": "간단히 보기",
+      "webSearch": "웹 검색",
+      "webSearchProvider": "{{provider}} 사용",
+      "unresolvedTitle": "추가하지 못함",
+      "unresolvedNotFound": "사용할 수 있는 항목에서 \"{{query}}\"을(를) 찾을 수 없습니다.",
+      "unresolvedAmbiguous": "\"{{query}}\"에 해당하는 항목이 여러 개입니다: {{candidates}}. 추가를 눌러 원하는 항목을 선택하세요.",
+      "unresolvedNotConnected": "\"{{query}}\"은(는) 아직 연결되어 있지 않습니다.",
+      "unresolvedUnavailable": "\"{{query}}\"은(는) 지금 사용할 수 없습니다.",
+      "connect": "연결",
+      "addKnowledge": "지식 추가",
+      "addActions": "작업 추가",
+      "pickerKnowledgeTitle": "지식 추가",
+      "pickerActionsTitle": "작업 추가",
+      "pickerHint": "접근 권한이 있는 항목만 표시됩니다.",
+      "pickerSearch": "검색",
+      "pickerLoading": "불러오는 중…",
+      "pickerEmpty": "추가할 항목이 없습니다.",
+      "pickerNoMatch": "검색 결과가 없습니다.",
+      "pickerError": "이 목록을 불러오지 못했습니다.",
+      "pickerRetry": "다시 시도",
+      "pickerCancel": "취소",
+      "pickerAdd": "추가",
+      "pickerAddCount": "추가({{count}})",
+      "pickerAdded": "추가됨",
+      "kindCollection": "컬렉션",
+      "kindConnector": "커넥터",
+      "summaryKnowledge_one": "지식 소스 {{count}}개",
+      "summaryKnowledge_other": "지식 소스 {{count}}개",
+      "summaryActions_one": "작업 {{count}}개",
+      "summaryActions_other": "작업 {{count}}개",
+      "summaryWebSearch": "웹 검색({{provider}})",
+      "summaryNothing": "아직 지식, 작업, 웹 검색이 없습니다",
+      "attached": "첨부됨: {{summary}}",
+      "editAgent": "에이전트 편집",
+      "superseded": "아래의 새 초안에서 업데이트됨",
+      "supersededShow": "보기",
+      "supersededHide": "숨기기"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -3674,6 +4084,21 @@
     "agentName": "이름",
     "createdBy": "작성자",
     "agentNamePlaceholder": "예: 지원 봇",
+    "handle": {
+      "label": "핸들",
+      "hint": "채팅에서 이 에이전트를 @멘션할 때 사용합니다.",
+      "derivedHint": "이름에서 생성되었습니다. 직접 정하려면 편집하세요.",
+      "edit": "핸들 편집",
+      "placeholder": "예: support-bot",
+      "inputAria": "에이전트 핸들",
+      "done": "핸들 적용",
+      "cancel": "핸들 편집 취소",
+      "invalid": "소문자, 숫자, 하이픈 2~40자를 사용하세요.",
+      "reserved": "@{{handle}}은(는) 예약되어 있습니다. 다른 핸들을 선택하세요.",
+      "taken": "@{{handle}}은(는) 조직에서 이미 사용 중입니다.",
+      "takenSuggestion": "@{{handle}}은(는) 이미 사용 중입니다. @{{suggestion}}을(를) 사용해 보세요.",
+      "useSuggestion": "@{{suggestion}} 사용"
+    },
     "serviceAccountBadge": "서비스 에이전트",
     "serviceAccountBadgeTooltip": "이 서비스 에이전트는 전용 툴셋 자격 증명을 사용하며, 사용하는 모든 사람에게 조직 전체의 지식 접근 권한이 적용됩니다.",
     "convertToServiceAccount": "서비스 에이전트로 전환",
@@ -4038,6 +4463,7 @@
     "openExternal": "열기",
     "previewUnavailable": "이 레코드 유형에는 미리보기를 사용할 수 없습니다.",
     "permissionOwner": "소유자",
+    "permissionCommenter": "댓글 작성자",
     "permissionReader": "읽기 권한자",
     "permissionWriter": "쓰기 권한자",
     "labels": {
@@ -4350,6 +4776,10 @@
         "label": "편집 가능",
         "description": "파일과 폴더의 편집 및 정리만 가능"
       },
+      "commenter": {
+        "label": "댓글 가능",
+        "description": "보기 및 댓글 작성, 편집 불가"
+      },
       "reader": {
         "label": "보기 가능",
         "description": "보기 권한만"
@@ -4357,7 +4787,8 @@
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",
-    "invite": "Pipeshub에 초대"
+    "invite": "Pipeshub에 초대",
+    "andMore": "외 {{count}}명"
   },
   "demoData": {
     "badge": {

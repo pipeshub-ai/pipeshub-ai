@@ -19,9 +19,10 @@ export interface ShareUsersPaginatedParams {
   search?: string;
 }
 
-/** Paginated org user list via GET /api/v1/users (Mongo-backed). */
+/** Paginated org user list via GET /api/v1/users (Mongo-backed). `exclude` drops users an adapter cannot share with. */
 export async function fetchShareUsersPaginated(
-  params: ShareUsersPaginatedParams
+  params: ShareUsersPaginatedParams,
+  options?: { exclude?: (user: User) => boolean },
 ): Promise<{ users: ShareUser[]; totalCount: number }> {
   const result = await UsersApi.fetchMergedUsers({
     page: params.page,
@@ -29,7 +30,7 @@ export async function fetchShareUsersPaginated(
     search: params.search,
   });
   return {
-    users: toShareUsers(result.users),
+    users: toShareUsers(options?.exclude ? result.users.filter((u) => !options.exclude!(u)) : result.users),
     totalCount: result.totalCount,
   };
 }

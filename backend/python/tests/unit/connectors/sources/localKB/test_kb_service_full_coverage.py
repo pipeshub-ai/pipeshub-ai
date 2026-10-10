@@ -1021,15 +1021,16 @@ class TestCreateKbPermissions:
         service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
             side_effect=_mock_mongo_to_graph
         )
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={"success": True, "grantedCount": 2}
         )
 
         result = await service.create_kb_permissions("kb1", "req1", ["u1", "u2"], [], "READER")
         assert result["success"] is True
         assert result["grantedCount"] == 2
-        call_args = service.graph_provider.create_kb_permissions.call_args
-        assert call_args.kwargs["user_ids"] == ["gk_u1", "gk_u2"]
+        call_args = service.graph_provider.create_kb_principal_permissions.call_args
+        assert [g["principalId"] for g in call_args.kwargs["grants"]] == ["gk_u1", "gk_u2"]
 
     @pytest.mark.asyncio
     async def test_success_teams_only(self, service):
@@ -1040,7 +1041,7 @@ class TestCreateKbPermissions:
         service.graph_provider.get_nodes_by_field_in = AsyncMock(
             return_value=[{"id": "t1", "orgId": "org-1"}]
         )
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={"success": True, "grantedCount": 1}
         )
 
@@ -1068,14 +1069,15 @@ class TestCreateKbPermissions:
         service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
             side_effect=_mock_mongo_to_graph
         )
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={"success": True, "grantedCount": 1}
         )
 
         result = await service.create_kb_permissions("kb1", "req1", ["u1", "u1"], [], "READER")
         assert result["success"] is True
-        call_args = service.graph_provider.create_kb_permissions.call_args
-        assert call_args.kwargs["user_ids"] == ["gk_u1"]
+        call_args = service.graph_provider.create_kb_principal_permissions.call_args
+        assert [g["principalId"] for g in call_args.kwargs["grants"]] == ["gk_u1"]
 
     @pytest.mark.asyncio
     async def test_resolve_mongo_user_not_found(self, service):
@@ -1102,7 +1104,8 @@ class TestCreateKbPermissions:
         service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
             side_effect=_mock_mongo_to_graph
         )
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={"success": False, "reason": "denied"}
         )
 
@@ -1118,7 +1121,8 @@ class TestCreateKbPermissions:
         service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
             side_effect=_mock_mongo_to_graph
         )
-        service.graph_provider.create_kb_permissions = AsyncMock(side_effect=Exception("err"))
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(side_effect=Exception("err"))
         result = await service.create_kb_permissions("kb1", "req1", ["u1"], [], "READER")
         assert result["success"] is False
         assert result["code"] == 500
@@ -1128,7 +1132,7 @@ class TestCreateKbPermissions:
     async def test_exception_text_from_the_provider_never_reaches_the_person(self, service):
         """The providers return their failures, so this service's `except` never sees them."""
         _setup_kb_owner_resolve(service)
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={"success": False, "reason": "Transaction 7c1b-41 not found"}
         )
 
@@ -1140,7 +1144,7 @@ class TestCreateKbPermissions:
     @pytest.mark.asyncio
     async def test_a_refusal_the_provider_worded_is_kept(self, service):
         _setup_kb_owner_resolve(service)
-        service.graph_provider.create_kb_permissions = AsyncMock(
+        service.graph_provider.create_kb_principal_permissions = AsyncMock(
             return_value={
                 "success": False,
                 "reason": "Requester not found or not owner",
@@ -1161,6 +1165,7 @@ def _setup_kb_owner_resolve(service):
     service.graph_provider.get_graph_user_keys_by_mongo_user_ids = AsyncMock(
         side_effect=_mock_mongo_to_graph
     )
+    service.graph_provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
 
 
 class TestUpdateKbPermission:
@@ -1171,10 +1176,13 @@ class TestUpdateKbPermission:
         assert result["code"] == 400
 
     @pytest.mark.asyncio
-    async def test_teams_cannot_be_updated(self, service):
-        result = await service.update_kb_permission("kb1", "req1", [], ["t1"], "READER")
+    @pytest.mark.parametrize("role", ["OWNER", "ORGANIZER", "FILEORGANIZER", "bogus"])
+    async def test_team_role_update_rejects_roles_outside_team_allow_list(self, service, role):
+        service.graph_provider.update_kb_permission = AsyncMock()
+        result = await service.update_kb_permission("kb1", "req1", [], ["t1"], role)
         assert result["success"] is False
         assert result["code"] == 400
+        service.graph_provider.update_kb_permission.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_requester_not_found(self, service):

@@ -928,6 +928,41 @@ describe('Knowledge Base Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
+    it('should reject OWNER for a team before calling the connector', async () => {
+      const handler = updateKBPermission(createMockAppConfig())
+      const execute = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: [], teamIds: ['t1'], role: 'OWNER' },
+      })
+      const next = createMockNext()
+
+      await handler(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(execute.called).to.be.false
+    })
+
+    it('should forward a team role update to the connector', async () => {
+      const handler = updateKBPermission(createMockAppConfig())
+      const execute = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { userIds: [], teamIds: ['t1'], newRole: 'COMMENTER' },
+      })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: [], teamIds: ['t1'], role: 'COMMENTER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(execute.calledOnce).to.be.true
+      expect(res.json.firstCall.args[0]).to.include({ newRole: 'COMMENTER' })
+    })
+
     it('should call next with BadRequestError for invalid role', async () => {
       const handler = updateKBPermission(createMockAppConfig())
       const req = createMockRequest({
@@ -1644,6 +1679,50 @@ describe('Knowledge Base Controller', () => {
   })
 
   describe('createKBPermission (happy path)', () => {
+    it('forwards principals with per-principal roles to the connector unchanged', async () => {
+      const handler = createKBPermission(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, grantedCount: 2 },
+      })
+      const principals = [
+        { principalType: 'user', principalId: 'u1', role: 'OWNER' },
+        { principalType: 'team', principalId: 't1', role: 'WRITER' },
+      ]
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { principals },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      const sent = executeStub.firstCall.thisValue.body
+      expect(typeof sent === 'string' ? JSON.parse(sent) : sent).to.deep.equal({ principals })
+    })
+
+    it('rejects principals combined with legacy fields without calling the connector', async () => {
+      const handler = createKBPermission(createMockAppConfig())
+      const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: {
+          principals: [{ principalType: 'team', principalId: 't1', role: 'READER' }],
+          teamIds: ['t2'],
+        },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(executeStub.called).to.be.false
+    })
+
     it('should create permission for users with role', async () => {
       const handler = createKBPermission(createMockAppConfig())
       sinon.stub(ConnectorServiceCommand.prototype, 'execute').resolves({

@@ -1,4 +1,5 @@
 import 'reflect-metadata';
+import { bindCollaborationStubs } from './modules/enterprise_search/helpers/collaboration-world';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
@@ -24,6 +25,7 @@ import { ConfigurationManagerContainer } from '../src/modules/configuration_mana
 import { StorageContainer } from '../src/modules/storage/container/storage.container';
 import { UserManagerContainer } from '../src/modules/user_management/container/userManager.container';
 import { AuthServiceContainer } from '../src/modules/auth/container/authService.container';
+import { COLLAB_TYPES } from '../src/modules/enterprise_search/services/collaboration/collab.types';
 import { EnterpriseSearchAgentContainer } from '../src/modules/enterprise_search/container/es.container';
 import { KnowledgeBaseContainer } from '../src/modules/knowledge_base/container/kb_container';
 import { MailServiceContainer } from '../src/modules/mail/container/mailService.container';
@@ -44,6 +46,7 @@ import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.route
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
 import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
+import * as authzRoutes from '../src/modules/authz/routes/authz.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
@@ -64,6 +67,7 @@ import * as serviceAccountsRoutes from '../src/modules/user_management/routes/se
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
+import { OutboxDispatcher } from '../src/libs/services/outbox/outbox.dispatcher';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -167,6 +171,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
+  sandbox.stub(authzRoutes, 'createAuthzRouter').returns(dummyRouter);
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
@@ -248,6 +253,20 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     revokeAllForServiceAccount: sandbox.stub().resolves(),
   } as any);
 
+  // configureRoutes shares the ES container's guards with the projects
+  // container, so the binding has to resolve here as it does in production.
+  containers.es!.bind(COLLAB_TYPES.ConversationGuards).toConstantValue({
+    authorize: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    listScope: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    caller: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+    runLease: () => (_req: unknown, _res: unknown, next: () => void) => next(),
+  } as any);
+  containers.es!.bind(COLLAB_TYPES.ChatNotificationContext).toConstantValue({ resolve: async () => new Map() } as any);
+  containers.es!.bind(COLLAB_TYPES.ConversationTurnDeps).toConstantValue({} as any);
+  bindCollaborationStubs(containers.es!);
+  containers.es!.bind('AuthMiddleware').toConstantValue({ scopedTokenValidator: () => (_req: unknown, _res: unknown, next: () => void) => next() } as any);
+  containers.es!.bind(COLLAB_TYPES.ChatContentCheckService).toConstantValue({ check: sandbox.stub() } as any);
+
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
     initialize: sandbox.stub(),
@@ -304,6 +323,9 @@ describe('Application', () => {
     sandbox.stub(Logger.prototype, 'error');
     sandbox.stub(Logger.prototype, 'warn');
     sandbox.stub(Logger.prototype, 'debug');
+    // A started dispatcher polls the outbox every 2 s for the rest of the worker's life and would
+    // claim the rows of a later real-Mongo test file in the same mocha worker.
+    sandbox.stub(OutboxDispatcher.prototype, 'start');
   });
 
   afterEach(() => {

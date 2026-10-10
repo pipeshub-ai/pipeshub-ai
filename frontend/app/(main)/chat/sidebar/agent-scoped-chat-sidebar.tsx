@@ -11,6 +11,9 @@ import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
+import type { Conversation } from '@/chat/types';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { hideAccessLost } from '@/chat/utils/hide-access-lost';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { openFreshAgentChat } from '@/chat/build-chat-url';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
@@ -53,12 +56,22 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
   const setAgentContextAccess = useChatStore((s) => s.setAgentContextAccess);
 
-  const agentConversations = useChatStore((s) => s.agentConversations);
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
+  const [sharedWithMe, setSharedWithMe] = useState<Conversation[]>([]);
+  const allAgentConversations = useChatStore((s) => s.agentConversations);
   const agentConversationsPagination = useChatStore((s) => s.agentConversationsPagination);
   const isAgentConversationsLoading = useChatStore((s) => s.isAgentConversationsLoading);
   const agentConversationsError = useChatStore((s) => s.agentConversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);
   const slots = useChatStore((s) => s.slots);
+  const agentConversations = useMemo(
+    () => hideAccessLost(allAgentConversations, slots, collabEnabled),
+    [allAgentConversations, slots, collabEnabled],
+  );
+  const visibleShared = useMemo(
+    () => (collabEnabled ? hideAccessLost(sharedWithMe, slots, true) : []),
+    [sharedWithMe, slots, collabEnabled],
+  );
 
   const isAgentsSidebarOpen = useChatStore((s) => s.isAgentsSidebarOpen);
   const closeAgentsSidebar = useChatStore((s) => s.closeAgentsSidebar);
@@ -87,8 +100,10 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
         agentRes.agent ? getAgentSidebarRowMenuAccess(agentRes.agent) : null,
       );
       setAgentConversations(conv.conversations);
+      setSharedWithMe(conv.sharedConversations);
       setAgentConversationsPagination(conv.pagination);
     } catch {
+      setSharedWithMe([]);
       setAgentConversationsError(t('chat.failedToLoad'));
       setAgentConversations([]);
       setAgentConversationsPagination(null);
@@ -223,6 +238,19 @@ export const AgentScopedChatSidebar = React.memo(function AgentScopedChatSidebar
 
           {!recentsCollapsed && (
             <Flex direction="column" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {visibleShared.length > 0 && (
+                <ChatSection
+                  title={t('chat.sharedChats')}
+                  conversations={visibleShared}
+                  isLoading={isAgentConversationsLoading}
+                  hasError={false}
+                  currentConversationId={currentConversationId}
+                  onSelectConversation={handleSelectConversation}
+                  onNewChat={handleNewAgentChat}
+                  skeletonCount={YOUR_CHATS_SKELETON_COUNT}
+                  agentId={agentId}
+                />
+              )}
               <ChatSection
                 timeGroups={yourTimeGroups}
                 isLoading={isAgentConversationsLoading}

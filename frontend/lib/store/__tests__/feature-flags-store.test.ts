@@ -15,6 +15,8 @@ import {
   selectVectorStoreRebuildEnabled,
   selectSkillsEnabled,
   selectUserContextEnabled,
+  selectChatMentionsEnabled,
+  selectCollaborativeChatsEnabled,
   selectSoftDeleteEnabled,
 } from '../feature-flags-store';
 
@@ -124,6 +126,37 @@ describe('feature-flags-store selectors', () => {
     it('is false only when explicitly false', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_USER_CONTEXT: false } });
       expect(selectUserContextEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+  });
+
+  describe('selectCollaborativeChatsEnabled', () => {
+    it('is off while flags are not loaded, absent or false', () => {
+      expect(selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: {} });
+      expect(selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: false } });
+      expect(selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+    });
+
+    it('is on only when the flag is true', () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true } });
+      expect(selectCollaborativeChatsEnabled(useFeatureFlagsStore.getState())).toBe(true);
+    });
+  });
+
+  describe('selectChatMentionsEnabled', () => {
+    it('is off while flags are not loaded, absent or false, on only when it and collaborative chats are true', () => {
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: {} });
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_CHAT_MENTIONS: false } });
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_CHAT_MENTIONS: true } });
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState()), 'needs collaborative chats too').toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: false, ENABLE_CHAT_MENTIONS: true } });
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      useFeatureFlagsStore.setState({ flags: { ENABLE_COLLABORATIVE_CHATS: true, ENABLE_CHAT_MENTIONS: true } });
+      expect(selectChatMentionsEnabled(useFeatureFlagsStore.getState())).toBe(true);
     });
   });
 });

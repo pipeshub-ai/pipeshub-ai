@@ -55,6 +55,22 @@ class TokenScopes(Enum):
     # Node -> query: grant/revoke permission edges on a conversation's attachments
     # and artifacts, after Node has checked ownership/sharing in Mongo.
     CONVERSATION_PERMISSIONS = "conversation:permissions"
+    # Node -> connectors: resolve one user's team ids after Node has authorized the
+    # lookup (explain for a collaborator). Read-only; carries the target userId/orgId.
+    TEAM_IDS_READ = "team:ids:read"
+
+    # Python -> Node: ask the chat-content PDP whether a user may read a chat
+    # attachment or artifact they do not own.
+    AUTHZ_CHECK = "authz:check"
+
+    # Node -> query: stop a run the caller did not start, after Node has checked the
+    # caller may cancel in that conversation. Bound to one {conversationId, runId}.
+    CONVERSATION_CANCEL = "conversation:cancel"
+
+    # Node -> query: create an agent from a chat draft. Minted per request after Node has
+    # checked the draft belongs to the caller; carries the conversationId and messageId
+    # that become the agent's provenance. A user token can never set that provenance.
+    AGENT_CREATE_FROM_CHAT = "agent:create:chat"
     # Python -> Node caller-role lookups, so Node's rate limiter can tell them from
     # client traffic. Never accepted by the Python services.
     CALLER_ROLE = "caller:role"
@@ -74,6 +90,7 @@ class OAuthScopes(str, Enum):
     CONVERSATION_READ = "conversation:read"
     CONVERSATION_WRITE = "conversation:write"
     CONVERSATION_CHAT = "conversation:chat"
+    CONVERSATION_SHARE = "conversation:share"
 
     # Agents
     AGENT_READ = "agent:read"

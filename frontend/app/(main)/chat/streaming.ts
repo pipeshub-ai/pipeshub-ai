@@ -13,6 +13,8 @@
  *   silently — no React component subscribes to those fields.
  */
 
+import { useDraftShareStore } from './draft-share-store';
+import { stampGuestAgent } from './utils/guest-agent';
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
@@ -48,6 +50,18 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { OWNER_ACCESS_VIEW } from './utils/conversation-access';
+import { isConversationError } from './collaboration-api';
+import { conversationErrorKey, conversationErrorParams } from './utils/conversation-errors';
+import {
+  adoptBusyRunFromError,
+  handleRejectedSend,
+  mergeCompletedTurn,
+  optimisticRowCustom,
+  prepareCollabSend,
+} from './utils/collab-send';
+import { clearDraft } from './utils/draft-storage';
+import { displayTitle } from '@/lib/utils/display-title';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -234,7 +248,13 @@ function pendingAfterStreamFailure(
 /** A failed resume keeps the card (with its selections) instead of an error
  *  row, and the pending card hides that row's text — so the only place left
  *  to tell the user the answers never reached the model is a toast. */
-function notifyAskUserQuestionResumeFailed(detail: string): void {
+function notifyAskUserQuestionResumeFailed(detail: string, error?: unknown): void {
+  for (const code of ['RESUME_NOT_ALLOWED', 'CONVERSATION_BUSY'] as const) {
+    if (isConversationError(error, code)) {
+      toast.error(i18n.t(conversationErrorKey(code), conversationErrorParams(error)));
+      return;
+    }
+  }
   toast.error(i18n.t('chatStream.askQuestionResumeFailed'), {
     ...(detail ? { description: detail } : {}),
   });
@@ -248,12 +268,20 @@ function withStreamingErrorMessage(
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }] },
+      {
+        ...last,
+        content: [{ type: 'text' as const, text: errorText }],
+        metadata: { ...last.metadata, custom: { ...last.metadata?.custom, failed: true, createdAt: new Date().toISOString() } },
+      },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }] },
+    {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: errorText }],
+      metadata: { custom: { failed: true, createdAt: new Date().toISOString() } },
+    },
   ];
 }
 
@@ -488,8 +516,15 @@ export async function streamMessageForSlot(
   // Client-generated run identifier so a later Stop can target this exact
   // run (see `ChatApi.cancelStream` / `cancelStreamForSlot`).
   const runId = generateRunId();
-  const streamRunId = runId ?? null;
+  let streamRunId = runId ?? null;
   if (runId) request.runId = runId;
+  const collabSend = prepareCollabSend(slot, request);
+  const adoptServerRunId = (serverRunId: string | undefined) => {
+    if (!collabSend || !serverRunId || serverRunId === streamRunId) return;
+    if (!slotIsOnRun(slotId, streamRunId)) return;
+    streamRunId = serverRunId;
+    useChatStore.getState().updateSlot(slotId, { runId: serverRunId });
+  };
 
   // Ephemeral empty assistant so the in-progress turn has a dedicated "last
   // assistant" message. Pairs with MessageList: only the last assistant whose
@@ -560,6 +595,7 @@ export async function streamMessageForSlot(
             ? {
                 metadata: {
                   custom: {
+                    ...(collabSend ? optimisticRowCustom(collabSend.clientMessageId) : {}),
                     filters: request.filters,
                     createdAt: new Date().toISOString(),
                     ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
@@ -570,6 +606,7 @@ export async function streamMessageForSlot(
             : {
                 metadata: {
                   custom: {
+                    ...(collabSend ? optimisticRowCustom(collabSend.clientMessageId) : {}),
                     createdAt: new Date().toISOString(),
                     ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
                     ...(request.attachments?.length ? { attachments: request.attachments } : {}),
@@ -581,12 +618,14 @@ export async function streamMessageForSlot(
           role: 'assistant' as const,
           id: pendingAssistantId,
           content: [{ type: 'text' as const, text: '' }],
+          ...(collabSend ? { metadata: { custom: { pending: true } } } : {}),
         },
       ];
 
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
+    liveAgentDraft: null,
     streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
@@ -595,6 +634,7 @@ export async function streamMessageForSlot(
     abortController,
     runId: streamRunId,
     stopping: false,
+    ...(collabSend ? { changedNotice: null } : {}),
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -719,8 +759,11 @@ export async function streamMessageForSlot(
 
   try {
     await ChatApi.streamMessage(request, {
+      onRunId: adoptServerRunId,
+
       onConnected: (data) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
+        adoptServerRunId(data?.runId);
         if (isNewConversation) {
           const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
           const earlyId = typeof raw === 'string' ? raw.trim() : '';
@@ -739,6 +782,16 @@ export async function streamMessageForSlot(
               useChatStore.getState().updatePendingConversationTitle(slotId, connectedTitle);
             }
           }
+        }
+        // The server answered that nobody was asked: no thinking state, the stored note follows.
+        if ((data as SSEConnectedEvent | undefined)?.note) {
+          cancelPendingStatus();
+          stopIdleStatus();
+          useChatStore.getState().updateSlot(slotId, {
+            currentStatusMessage: null,
+            streamingParts: [],
+          });
+          return;
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));
       },
@@ -862,6 +915,11 @@ export async function streamMessageForSlot(
         applyAskUserQuestionSse(slotId, data, rowId);
       },
 
+      onAgentDraft: (draft) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
+        useChatStore.getState().updateSlot(slotId, { liveAgentDraft: draft });
+      },
+
       onAnswerFinal: () => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         stopIdleStatus();
@@ -877,6 +935,7 @@ export async function streamMessageForSlot(
 
         // Build finalized messages from API response
         const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
+        stampGuestAgent(finalMessages, request, newConvId || slot.convId || 'new');
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
@@ -993,14 +1052,21 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: finalMessages,
+            messages:
+              collabSend && slotBeforeComplete?.access?.isCollaborative
+                ? mergeCompletedTurn(
+                    slotBeforeComplete.messages,
+                    finalMessages,
+                    { pendingAssistantId, clientMessageId: collabSend.clientMessageId },
+                  )
+                : finalMessages,
             hasLoaded: true,
             abortController: null,
             runId: null,
             stopping: false,
             conversationModelInfo: data.conversation.modelInfo,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
-            ...(isNewConversation ? { isOwner: true } : {}),
+            ...(isNewConversation ? { access: OWNER_ACCESS_VIEW } : {}),
             pendingAskUserQuestion: (
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {
@@ -1035,7 +1101,7 @@ export async function streamMessageForSlot(
             slotId,
             {
               id: newConvId,
-              title: data.conversation.title,
+              title: displayTitle(data.conversation.title) ?? data.conversation.title,
               createdAt: data.conversation.createdAt,
               updatedAt: data.conversation.updatedAt,
               isShared: data.conversation.isShared,
@@ -1062,6 +1128,8 @@ export async function streamMessageForSlot(
           }
         }
 
+        if (collabSend && (newConvId || slot.convId)) clearDraft(newConvId || slot.convId!);
+        if (request.share) useDraftShareStore.getState().clear();
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 
@@ -1075,6 +1143,20 @@ export async function streamMessageForSlot(
         }
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
+        if (
+          collabSend &&
+          !resumeAskUserQuestion &&
+          handleRejectedSend(slotId, error, {
+            baseMessages: messagesWithPreviousCard,
+            query,
+            attachments: request.attachments,
+            mentions: request.mentions,
+            clientMessageId: collabSend.clientMessageId,
+          })
+        ) {
+          debugLog.flush('stream-rejected', { slotId });
+          return;
+        }
         console.error('[streaming] Stream error for slot', slotId, error);
         const slotNow = useChatStore.getState().slots[slotId];
         const pendingNow = slotNow?.pendingAskUserQuestion;
@@ -1097,7 +1179,8 @@ export async function streamMessageForSlot(
             : withStreamingErrorMessage(currentMessages, err),
         });
         if (resumeAskUserQuestion) {
-          notifyAskUserQuestionResumeFailed(err);
+          if (collabSend) adoptBusyRunFromError(slotId, error);
+          notifyAskUserQuestionResumeFailed(err, error);
         }
         if (isNewConversation) {
           useChatStore.getState().clearPendingConversation(slotId);
@@ -1169,7 +1252,7 @@ export async function streamMessageForSlot(
         : withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (resumeAskUserQuestion) {
-      notifyAskUserQuestionResumeFailed(errorMessage);
+      notifyAskUserQuestionResumeFailed(errorMessage, error);
     }
     if (isNewConversation) {
       useChatStore.getState().clearPendingConversation(slotId);
@@ -1230,6 +1313,7 @@ export async function streamRegenerateForSlot(
 
   store.updateSlot(slotId, {
     isStreaming: true,
+    liveAgentDraft: null,
     regenerateMessageId: messageId,
     streamingContent: '',
     currentStatusMessage: null,
@@ -1390,6 +1474,11 @@ export async function streamRegenerateForSlot(
         data,
         assistantRowIdForBackendMessage(liveMessages, messageId),
       );
+    },
+
+    onAgentDraft: (draft) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
+      useChatStore.getState().updateSlot(slotId, { liveAgentDraft: draft });
     },
 
     onAnswerFinal: () => {

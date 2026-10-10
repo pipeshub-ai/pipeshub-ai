@@ -3588,7 +3588,7 @@ class TestCleanSchemaForResponseAdditional:
 
 class TestStreamRecordAccessDenied:
     @pytest.mark.asyncio
-    async def test_no_access_raises_403(self):
+    async def test_no_access_raises_404(self):
         gp = AsyncMock()
         gp.get_document = AsyncMock(return_value={"_key": "org-1"})
         record = _mock_record(org_id="org-1")
@@ -3600,7 +3600,7 @@ class TestStreamRecordAccessDenied:
 
         with pytest.raises(HTTPException) as exc_info:
             await stream_record(req, "rec-1", graph_provider=gp, config_service=config_service)
-        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_record_not_found_raises_404(self):

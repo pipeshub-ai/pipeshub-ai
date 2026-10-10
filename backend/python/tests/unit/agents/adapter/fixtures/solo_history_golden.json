@@ -1,0 +1,203 @@
+{
+  "messages": [
+    {
+      "content": "What is the revenue?",
+      "injected": false,
+      "pinned": false,
+      "role": "user"
+    },
+    {
+      "content": [],
+      "role": "assistant",
+      "tool_calls": [
+        {
+          "arguments": {
+            "query": "revenue"
+          },
+          "id": "t1",
+          "name": "knowledgebase.search"
+        },
+        {
+          "arguments": {},
+          "id": "t2",
+          "name": "x.y"
+        },
+        {
+          "arguments": {
+            "a": 1
+          },
+          "id": "t3",
+          "name": "art.tool"
+        }
+      ],
+      "truncated": false
+    },
+    {
+      "artifact_meta": null,
+      "content": "found 3",
+      "is_error": false,
+      "role": "tool",
+      "step_footer": "",
+      "tool_call_id": "t1"
+    },
+    {
+      "artifact_meta": null,
+      "content": "{\"k\": 1}",
+      "is_error": true,
+      "role": "tool",
+      "step_footer": "",
+      "tool_call_id": "t2"
+    },
+    {
+      "artifact_meta": {
+        "artifact_id": "art-1",
+        "original_token_count": 0,
+        "result_schema": null,
+        "summary": "sum",
+        "tool_args": {
+          "a": 1
+        },
+        "tool_name": "art.tool",
+        "turn_index": -1
+      },
+      "content": "[artifact:art-1]\ntool: art.tool\nargs: {\"a\": 1}\nsummary: sum\nhint: Use retrieve_artifact_content(artifact_id=\"art-1\") to read, filter, and curate this data before using it",
+      "is_error": false,
+      "role": "tool",
+      "step_footer": "",
+      "tool_call_id": "t3"
+    },
+    {
+      "content": [
+        {
+          "text": "Revenue was $5M [1].",
+          "type": "text"
+        }
+      ],
+      "role": "assistant",
+      "tool_calls": null,
+      "truncated": false
+    },
+    {
+      "content": "[bracket start]",
+      "injected": false,
+      "pinned": false,
+      "role": "user"
+    },
+    {
+      "content": "None",
+      "injected": false,
+      "pinned": false,
+      "role": "user"
+    },
+    {
+      "content": "42",
+      "injected": false,
+      "pinned": false,
+      "role": "user"
+    },
+    {
+      "content": [
+        {
+          "text": "System note",
+          "type": "text"
+        }
+      ],
+      "role": "assistant",
+      "tool_calls": null,
+      "truncated": false
+    },
+    {
+      "content": "User selections: EU",
+      "injected": false,
+      "pinned": false,
+      "role": "user"
+    }
+  ],
+  "previous_conversations": [
+    {
+      "attachments": [
+        {
+          "recordId": "r1",
+          "recordName": "q2.pdf"
+        }
+      ],
+      "content": "What is the revenue?",
+      "referenceData": [
+        {
+          "id": "x"
+        }
+      ],
+      "role": "user_query"
+    },
+    {
+      "citations": [
+        {
+          "id": "c1"
+        }
+      ],
+      "content": "Revenue was $5M [1].",
+      "role": "bot_response",
+      "tool_results": [
+        {
+          "args": {
+            "query": "revenue"
+          },
+          "result": "found 3",
+          "status": "success",
+          "tool_id": "t1",
+          "tool_name": "knowledgebase.search"
+        },
+        {
+          "args": "not-json",
+          "result": {
+            "k": 1
+          },
+          "status": "error",
+          "tool_id": "t2",
+          "tool_name": "x.y"
+        },
+        {
+          "args": {
+            "a": 1
+          },
+          "artifact_id": "art-1",
+          "result": "big",
+          "result_summary": "sum",
+          "status": "success",
+          "tool_id": "t3",
+          "tool_name": "art.tool"
+        }
+      ]
+    },
+    {
+      "content": "  [bracket start]  ",
+      "role": "user_query"
+    },
+    {
+      "content": null,
+      "role": "user_query"
+    },
+    {
+      "content": 42,
+      "role": "user_query"
+    },
+    {
+      "content": "System note",
+      "futureField": {
+        "nested": [
+          1,
+          2
+        ]
+      },
+      "role": "bot_response"
+    },
+    {
+      "content": "timeline row",
+      "role": "system"
+    },
+    {
+      "content": "User selections: EU",
+      "role": "user_query"
+    }
+  ]
+}

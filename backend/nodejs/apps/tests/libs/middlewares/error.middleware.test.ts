@@ -10,8 +10,18 @@ import {
   NotFoundError,
   InternalServerError,
   ServiceUnavailableError,
+  HttpError,
+  GoneError,
+  LargePayloadError,
+  ConflictError,
+  TooManyRequestsError,
+  BadGatewayError,
+  GatewayTimeoutError,
+  UnprocessableEntityError,
+  NotImplementedError,
 } from '../../../src/libs/errors/http.errors'
 import { ValidationError } from '../../../src/libs/errors/validation.error'
+import { DomainHttpError, PublicDetailValue } from '../../../src/libs/errors/domain-http.error'
 import { markClientSafe } from '../../../src/libs/errors/reader-friendly'
 import { KafkaError } from '../../../src/libs/errors/kafka.errors'
 import { RedisServiceNotInitializedError } from '../../../src/libs/errors/redis.errors'
@@ -53,6 +63,18 @@ function createMockResponse(): any {
 
 function createMockNext(): sinon.SinonStub {
   return sinon.stub()
+}
+
+class TestDomainError extends DomainHttpError {
+  constructor(
+    status: number,
+    code: string,
+    details?: Readonly<Record<string, PublicDetailValue>>,
+    metadata?: Record<string, unknown>,
+  ) {
+    super(code, 'This conversation is busy. Try again shortly.', status, details)
+    if (metadata) (this as { metadata?: unknown }).metadata = metadata
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -550,6 +572,123 @@ describe('ErrorMiddleware', () => {
 
       // Logger should have been called - verify it was called
       expect(loggerErrorStub.called).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // PH02-11 characterization: today's bodies carry no `details` key
+  // -----------------------------------------------------------------------
+  describe('error bodies today (no details key)', () => {
+    const wording = 'We could not do that. Please try again.'
+    const cases: Array<[string, () => Error, number, string, string]> = [
+      ['BadRequestError', () => new BadRequestError(wording, { details: 'x' }), 400, 'HTTP_BAD_REQUEST', wording],
+      ['UnauthorizedError', () => new UnauthorizedError(wording), 401, 'HTTP_UNAUTHORIZED', wording],
+      ['ForbiddenError', () => new ForbiddenError(wording), 403, 'HTTP_FORBIDDEN', wording],
+      ['NotFoundError', () => new NotFoundError(wording), 404, 'HTTP_NOT_FOUND', wording],
+      ['ConflictError', () => new ConflictError(wording, { details: { a: 1 } }), 409, 'HTTP_CONFLICT', wording],
+      ['GoneError', () => new GoneError(wording), 410, 'HTTP_GONE', wording],
+      ['LargePayloadError', () => new LargePayloadError(wording), 413, 'HTTP_PAYLOAD_TOO_LARGE', wording],
+      ['UnprocessableEntityError', () => new UnprocessableEntityError(wording), 422, 'HTTP_UNPROCESSABLE_ENTITY', wording],
+      ['TooManyRequestsError', () => new TooManyRequestsError(wording), 429, 'HTTP_TOO_MANY_REQUESTS', wording],
+      ['InternalServerError', () => new InternalServerError(wording), 500, 'HTTP_INTERNAL_SERVER_ERROR', wording],
+      ['NotImplementedError', () => new NotImplementedError(wording), 501, 'HTTP_NOT_IMPLEMENTED', wording],
+      ['BadGatewayError', () => new BadGatewayError(wording), 502, 'HTTP_BAD_GATEWAY', wording],
+      ['ServiceUnavailableError', () => new ServiceUnavailableError(wording), 503, 'HTTP_SERVICE_UNAVAILABLE', wording],
+      ['GatewayTimeoutError', () => new GatewayTimeoutError(wording), 504, 'HTTP_GATEWAY_TIMEOUT', wording],
+      ['HttpError', () => new HttpError('CUSTOM', wording, 418), 418, 'HTTP_CUSTOM', wording],
+      ['ValidationError', () => new ValidationError('Bad input', []), 400, 'VALIDATION_ERROR', 'Bad input'],
+      ['KafkaError', () => new KafkaError('Error publishing'), 503, 'INTERNAL_ERROR', "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help."],
+      ['ConnectionError', () => new ConnectionError('Failed to connect'), 503, 'INTERNAL_ERROR', "Something went wrong on PipesHub's side. Please try again; if it keeps happening, ask your admin for help."],
+    ]
+
+    for (const nodeEnv of ['development', 'production']) {
+      for (const [label, make, status, code, message] of cases) {
+        it(`${label} in ${nodeEnv}: same status, code and message, no details key`, () => {
+          process.env.NODE_ENV = nodeEnv
+          const res = createMockResponse()
+          handler(make(), createMockRequest({ context: { requestId: 'r-1' } }), res, createMockNext())
+
+          expect(res.status.firstCall.args[0]).to.equal(status)
+          const body = res.json.firstCall.args[0]
+          expect(Object.keys(body)).to.deep.equal(['error'])
+          expect(body.error).to.not.have.property('details')
+          expect(body.error.code).to.equal(code)
+          expect(body.error.message).to.equal(message)
+          expect(body.error.requestId).to.equal('r-1')
+          const allowed = nodeEnv === 'development'
+            ? ['code', 'message', 'requestId', 'metadata']
+            : ['code', 'message', 'requestId']
+          expect(Object.keys(body.error).every((k) => allowed.includes(k))).to.equal(true)
+        })
+      }
+    }
+  })
+
+  describe('DomainHttpError', () => {
+    const details = { activeRun: { userId: 'u1', startedAt: '2026-10-01T00:00:00.000Z' } }
+
+    it('PH02-09 sends the unprefixed code and details in production, without metadata', () => {
+      process.env.NODE_ENV = 'production'
+      const res = createMockResponse()
+      handler(
+        new TestDomainError(409, 'CONVERSATION_BUSY', details, { internal: 'x' }),
+        createMockRequest({ context: { requestId: 'r-9' } }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.firstCall.args[0]).to.equal(409)
+      expect(res.json.firstCall.args[0]).to.deep.equal({
+        error: {
+          code: 'CONVERSATION_BUSY',
+          message: 'This conversation is busy. Try again shortly.',
+          requestId: 'r-9',
+          details,
+        },
+      })
+    })
+
+    it('sends details and metadata in development', () => {
+      process.env.NODE_ENV = 'development'
+      const res = createMockResponse()
+      handler(
+        new TestDomainError(409, 'CONVERSATION_BUSY', details, { internal: 'x' }),
+        createMockRequest(),
+        res,
+        createMockNext(),
+      )
+      const body = res.json.firstCall.args[0].error
+      expect(body.details).to.deep.equal(details)
+      expect(body.metadata).to.deep.equal({ internal: 'x' })
+    })
+
+    it('omits details when the error has none', () => {
+      process.env.NODE_ENV = 'production'
+      const res = createMockResponse()
+      handler(new TestDomainError(409, 'CONVERSATION_BUSY'), createMockRequest(), res, createMockNext())
+      expect(res.json.firstCall.args[0].error).to.not.have.property('details')
+    })
+
+    it('PH02-10 keeps code and message of a 503 domain error; a 503 HttpError behaves as today', () => {
+      process.env.NODE_ENV = 'production'
+      const res = createMockResponse()
+      handler(
+        new TestDomainError(503, 'TEAM_RESOLUTION_UNAVAILABLE', { retryable: true }),
+        createMockRequest(),
+        res,
+        createMockNext(),
+      )
+      const body = res.json.firstCall.args[0].error
+      expect(res.status.firstCall.args[0]).to.equal(503)
+      expect(body.code).to.equal('TEAM_RESOLUTION_UNAVAILABLE')
+      expect(body.message).to.equal('This conversation is busy. Try again shortly.')
+      expect(body.details).to.deep.equal({ retryable: true })
+
+      const res2 = createMockResponse()
+      handler(new ServiceUnavailableError('down'), createMockRequest(), res2, createMockNext())
+      const body2 = res2.json.firstCall.args[0].error
+      expect(body2.code).to.equal('HTTP_SERVICE_UNAVAILABLE')
+      expect(body2).to.not.have.property('details')
     })
   })
 })

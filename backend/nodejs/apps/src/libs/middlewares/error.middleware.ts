@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 import { Logger } from '../services/logger.service';
 import { BaseError } from '../errors/base.error';
 import { HttpError } from '../errors/http.errors';
+import { DomainHttpError } from '../errors/domain-http.error';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import { jsonResponse, logError } from '../utils/error.middleware.utils';
 
@@ -121,6 +122,9 @@ export class ErrorMiddleware {
           ? INFRASTRUCTURE_FAILURE_MESSAGE
           : error.message,
         ...(requestId && { requestId }),
+        ...(error instanceof DomainHttpError &&
+          error.publicDetails &&
+          !isInternalPlumbing && { details: error.publicDetails }),
         // Only include metadata in development, and never for a failure whose
         // details describe our internals.
         ...(isDevelopment &&

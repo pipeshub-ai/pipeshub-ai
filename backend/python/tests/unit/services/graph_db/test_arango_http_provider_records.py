@@ -2048,15 +2048,15 @@ class TestBatchUpsertAppUsers:
 
 class TestAddUserToAllTeam:
     async def test_already_exists(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         connected_provider.get_edge = AsyncMock(return_value={"_key": "edge1"})
         await connected_provider.add_user_to_all_team("org1", "u1")
         # Should not create edge
 
     async def test_first_user_gets_owner(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         connected_provider.get_edge = AsyncMock(return_value=None)
-        connected_provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        connected_provider._count_team_permission_edges = AsyncMock(return_value=0)
         connected_provider.update_node = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
         await connected_provider.add_user_to_all_team("org1", "u1")
@@ -2064,11 +2064,9 @@ class TestAddUserToAllTeam:
         assert edge_call["role"] == "OWNER"
 
     async def test_subsequent_user_gets_reader(self, connected_provider):
-        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1"})
+        connected_provider.get_document = AsyncMock(return_value={"_key": "all_org1", "orgId": "org1"})
         connected_provider.get_edge = AsyncMock(return_value=None)
-        connected_provider.get_team_with_users = AsyncMock(
-            return_value={"members": [{"userEmail": "first@example.com"}]}
-        )
+        connected_provider._count_team_permission_edges = AsyncMock(return_value=1)
         connected_provider.batch_create_edges = AsyncMock()
         await connected_provider.add_user_to_all_team("org1", "u2")
         edge_call = connected_provider.batch_create_edges.call_args[0][0][0]
@@ -2078,7 +2076,7 @@ class TestAddUserToAllTeam:
         connected_provider.get_document = AsyncMock(return_value=None)
         connected_provider.batch_upsert_nodes = AsyncMock()
         connected_provider.get_edge = AsyncMock(return_value=None)
-        connected_provider.get_team_with_users = AsyncMock(return_value={"members": []})
+        connected_provider._count_team_permission_edges = AsyncMock(return_value=0)
         connected_provider.update_node = AsyncMock()
         connected_provider.batch_create_edges = AsyncMock()
         await connected_provider.add_user_to_all_team("org1", "u1")

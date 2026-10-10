@@ -112,6 +112,7 @@ from app.agents.agent_loop.domain_agents import (
 from app.agents.agent_loop.hooks import (
     CitationCollector,
     ToolErrorTracker,
+    agent_draft_sse,
     artifact_context_reminder,
     ask_user_question_sse,
     attachment_rehydration,
@@ -184,7 +185,24 @@ from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
-from app.services.featureflag.platform_settings import is_skills_enabled
+from app.modules.agents.collaboration import (
+    CollaborationContext,
+    MentionRef,
+    build_provenance,
+    collaboration_write_guard,
+    render_note_turn,
+    render_user_turn,
+)
+from app.modules.agents.collaboration.resume import (  # noqa: F401  (re-exported)
+    ASK_USER_QUESTION_RESUME_PREFIX,
+    is_ask_user_question_resume_query,
+    last_real_user_query,
+    resolve_resume,
+)
+from app.services.featureflag.platform_settings import (
+    is_chat_agent_builder_enabled,
+    is_skills_enabled,
+)
 from app.utils.image_policy import resolve_image_policy
 
 
@@ -261,11 +279,28 @@ _AUTO_COMPACT_PHASE1_TAIL_RATIO = 0.70
 _AUTO_COMPACT_PHASE2_TAIL_RATIO = 0.40
 
 
+AGENT_BUILDER_APPS = frozenset({"agent_builder", "agentbuilder"})
+
+
+async def agent_builder_skip_apps(context: "AgentContext") -> set[str]:
+    """`agent_builder` loads only for the default assistant with the flag on."""
+    if context.invocation == "assistant" and await is_chat_agent_builder_enabled(context.config_service):
+        return set()
+    return set(AGENT_BUILDER_APPS)
+
+
 def _composed_agents_enabled() -> bool:
     """Kill-switch for domain-agent composition (see `domain_agents.py`) —
     customer-facing setting, exists so a deployment can fall back to the
     flat all-tools agent without a code change."""
     return os.getenv("PIPESHUB_USE_COMPOSED_AGENTS", "true").strip().lower() == "true"
+
+
+def _delegate_handoff_enabled() -> bool:
+    """Lets the calling model hand a delegate's result to the user as the
+    answer (`final=true`, see `domain_agents.py`) instead of paying for a
+    second generation that restates it. Off by default."""
+    return os.getenv("PIPESHUB_DELEGATE_HANDOFF", "false").strip().lower() == "true"
 
 
 def _initial_entity_tool_grant(tool_names: list[str], context: "AgentContext") -> list[str]:
@@ -440,6 +475,7 @@ class PipesHubAgentFactory:
         skip_apps: set[str] = {"coding_sandbox", "database_sandbox"}
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
+        skip_apps |= await agent_builder_skip_apps(context)
         _mark("f:transports")
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
@@ -577,14 +613,21 @@ class PipesHubAgentFactory:
             composition_plan.top_level_names if composition_plan is not None else tool_registry.names()
         )
 
-        resume_answers = query if is_ask_user_question_resume_query(query) else None
-        goal_query = (
-            last_real_user_query(context.previous_conversations, query)
-            if resume_answers
-            else query
+        decision = resolve_resume(
+            query, context.previous_conversations, context.collaboration, context.resume,
         )
+        resume_answers = decision.answers
+        goal_query = decision.goal
         if resume_answers:
             context.tool_state["ask_user_question_resume"] = resume_answers
+
+        if context.collaboration is not None:
+            provenance = build_provenance(
+                context.previous_conversations or [], query, context.collaboration, resume_answers,
+                sender_email=context.user_email,
+            )
+            context.tool_state["provenance_index"] = provenance
+            hooks.on(HookEvent.PRE_TOOL_USE).use(collaboration_write_guard(provenance))
 
         loop, goal, clarifying_questions, mode = await select_loop_and_goal(
             chat_mode=chat_mode,
@@ -762,6 +805,10 @@ class PipesHubAgentFactory:
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
                 ),
+                # Only the react loop's root agent writes the user's answer
+                # straight from a tool result; plan/orchestrator steps feed a
+                # later stage.
+                delegate_handoff=_delegate_handoff_enabled() and mode.loop_kind == "react",
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(
@@ -1070,6 +1117,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
+        hooks.on(HookEvent.POST_TOOL_USE).use(agent_draft_sse(context))
 
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
@@ -1133,7 +1181,7 @@ class PipesHubAgentFactory:
 
         ctx = ContextManager()
         for turn in previous_conversations:
-            messages = _convert_conversation_turn(turn)
+            messages = _convert_conversation_turn(turn, collaboration=context.collaboration)
 
             if (
                 turn.get("role") == "user_query"
@@ -1150,6 +1198,8 @@ class PipesHubAgentFactory:
                         user_id=context.user_id,
                         graph_provider=context.graph_provider,
                         is_service_account=context.is_service_account,
+                        conversation_id=context.conversation_id,
+                        acl_version=context.acl_version,
                     )
                     msg = messages[0]
                     if extra_text:
@@ -1222,12 +1272,7 @@ _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
 
-ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
 _EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
-
-
-def is_ask_user_question_resume_query(text: str | None) -> bool:
-    return isinstance(text, str) and text.lstrip().startswith(ASK_USER_QUESTION_RESUME_PREFIX)
 
 
 def _is_empty_fallback_assistant(msg: Message) -> bool:
@@ -1236,17 +1281,6 @@ def _is_empty_fallback_assistant(msg: Message) -> bool:
         and not msg.tool_calls
         and (msg.text or "").strip() == _EMPTY_ANSWER_FALLBACK
     )
-
-
-def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
-    """Original user goal when this request is an ask_user_question resume."""
-    for turn in reversed(previous_conversations or []):
-        if turn.get("role") != "user_query":
-            continue
-        content = str(turn.get("content") or "").strip()
-        if content and not is_ask_user_question_resume_query(content):
-            return content
-    return fallback
 
 
 async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
@@ -1315,7 +1349,22 @@ def _scrub_legacy_system_note(text: str) -> str:
     return text.replace(_V2_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
 
 
-def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
+def _mentions_of(turn: dict[str, Any]) -> list[MentionRef]:
+    raw = turn.get("mentions")
+    if not isinstance(raw, list):
+        return []
+    out: list[MentionRef] = []
+    for item in raw:
+        try:
+            out.append(MentionRef.model_validate(item))
+        except ValueError:
+            continue
+    return out
+
+
+def _convert_conversation_turn(
+    turn: dict[str, Any], *, collaboration: CollaborationContext | None = None,
+) -> list[Message]:
     """One `previousConversations` entry -> zero or more agent-loop
     `Message`s. `user_query` is always a single `UserMessage`.
 
@@ -1344,7 +1393,17 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
     content = str(turn.get("content", "")).strip()
 
     if role == "user_query":
-        return [UserMessage(content=content)] if content else []
+        if not content:
+            return []
+        rendered = render_user_turn(
+            content, turn.get("authorRef"), collaborative=collaboration is not None,
+        )
+        return [UserMessage(content=rendered)]
+
+    if role == "note":
+        if not content or collaboration is None:
+            return []
+        return [UserMessage(content=render_note_turn(content, turn.get("authorRef"), _mentions_of(turn)))]
 
     if role != "bot_response":
         return []
@@ -1409,7 +1468,11 @@ def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:
         messages.append(AssistantMessage(content=[], tool_calls=tool_calls))
         messages.extend(tool_messages)
     if content:
-        messages.append(AssistantMessage(content=_scrub_legacy_system_note(content)))
+        answer = _scrub_legacy_system_note(content)
+        agent_ref = turn.get("agentRef")
+        if agent_ref:
+            answer = f"[{agent_ref}]: {answer}"
+        messages.append(AssistantMessage(content=answer))
     return messages
 
 

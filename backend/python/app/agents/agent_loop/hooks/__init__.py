@@ -12,6 +12,7 @@ process-global kernel, so none of this state leaks across concurrent
 requests.
 """
 
+from app.agents.agent_loop.hooks.agent_draft import agent_draft_sse
 from app.agents.agent_loop.hooks.artifact_context import artifact_context_reminder
 from app.agents.agent_loop.hooks.ask_user_question import ask_user_question_sse
 from app.agents.agent_loop.hooks.attachment_resolver import (
@@ -51,6 +52,7 @@ __all__ = [
     "PROGRESSIVE_FIND_RECORDS_TOOL_NAME",
     "PROGRESSIVE_TOOL_NAMES",
     "ToolErrorTracker",
+    "agent_draft_sse",
     "artifact_context_reminder",
     "ask_user_question_sse",
     "attachment_rehydration",

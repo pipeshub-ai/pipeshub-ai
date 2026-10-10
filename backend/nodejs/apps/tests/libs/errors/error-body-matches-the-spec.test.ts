@@ -7,6 +7,13 @@ import yaml from 'js-yaml'
 import type { NextFunction, Request, Response } from 'express'
 import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
 import { UnauthorizedError } from '../../../src/libs/errors/http.errors'
+import { DomainHttpError } from '../../../src/libs/errors/domain-http.error'
+
+class TestDomainError extends DomainHttpError {
+  constructor() {
+    super('CONVERSATION_BUSY', 'Busy', 409, { activeRun: { userId: 'u1', startedAt: '2026-10-01T00:00:00.000Z' } })
+  }
+}
 
 /**
  * What the middleware sends must be what the published spec promises.
@@ -155,5 +162,21 @@ describe('the error body matches the published spec', () => {
   it('still names the request when one was assigned', () => {
     const sent = bodyFromMiddleware(new UnauthorizedError('No token provided'), 'req-123')
     expect(sent.requestId).to.equal('req-123')
+  })
+
+  it('PH02-12 accepts a domain error body (details, unprefixed code) in every error schema', () => {
+    const body = bodyFromMiddleware(new TestDomainError(), 'req-9')
+    expect(body).to.have.property('details')
+
+    const schemas = errorPayloadSchemas()
+    const rejected = schemas.flatMap(({ where, schema }) =>
+      Object.entries(body)
+        .filter(([key, value]) => {
+          const declared = schema.properties?.[key]
+          return declared === undefined || (declared.type !== undefined && declared.type !== typeof value)
+        })
+        .map(([key]) => `${where}: ${key}`),
+    )
+    expect(rejected).to.deep.equal([])
   })
 })

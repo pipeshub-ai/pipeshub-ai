@@ -10,6 +10,9 @@ import { SidebarBase, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useUserStore } from '@/lib/store/user-store';
+import { useFeatureFlagsStore, selectCollaborativeChatsEnabled } from '@/lib/store/feature-flags-store';
+import { normalizeAccessView } from '@/chat/utils/conversation-access';
+import { hideAccessLost } from '@/chat/utils/hide-access-lost';
 import { useChatStore, selectPendingForSidebar } from '@/chat/store';
 import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
@@ -20,6 +23,7 @@ import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';
 import { SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE } from '../constants';
+import { displayTitle } from '@/lib/utils/display-title';
 
 const YOUR_CHATS_SKELETON_COUNT = 3;
 
@@ -44,14 +48,17 @@ function toConversation(
 ): Conversation {
   return {
     id: row._id,
-    title: row.title || '',
+    title: displayTitle(row.title) || '',
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     isShared: row.isShared,
     sharedWith: [],
     lastActivityAt: row.lastActivityAt,
     status: row.status,
-    isOwner: row.userId === currentUserId || row.initiator === currentUserId,
+    isOwner: row.access?.isOwner ?? (row.userId === currentUserId || row.initiator === currentUserId),
+    access: row.access ? normalizeAccessView(row.access) ?? undefined : undefined,
+    unreadCount: row.unreadCount,
+    collaboratorCount: row.collaboratorCount,
     projectId: row.sessionType === 'agent' ? undefined : projectId,
     projectVisibility: row.projectVisibility,
   };
@@ -160,9 +167,15 @@ export const ProjectConversationsSidebar = React.memo(function ProjectConversati
     return selectPendingForSidebar(pendingConversations, slots, convIds, { projectId });
   }, [pendingConversations, slots, conversations, projectId]);
 
+  const collabEnabled = useFeatureFlagsStore(selectCollaborativeChatsEnabled);
   const rows = useMemo(
-    () => conversations.map((row) => ({ row, conversation: toConversation(row, currentUserId, projectId) })),
-    [conversations, currentUserId, projectId],
+    () =>
+      hideAccessLost(
+        conversations.map((row) => ({ row, id: row._id, conversation: toConversation(row, currentUserId, projectId) })),
+        slots,
+        collabEnabled,
+      ),
+    [conversations, currentUserId, projectId, slots, collabEnabled],
   );
   const timeGroups = getNonEmptyGroups(groupByTime(rows, ({ row }) => row.lastActivityAt));
 

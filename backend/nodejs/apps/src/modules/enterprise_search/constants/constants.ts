@@ -62,8 +62,8 @@ export const REASONING_EFFORT_VALUES = [
 
 export type ReasoningEffort = (typeof REASONING_EFFORT_VALUES)[number];
 
-// `chatSessions` discriminator predicates. Applied at buildFilter /
-// buildAgentConversationFilter call sites and at every id-only mutation
+// `chatSessions` discriminator predicates. Applied at buildFilter call
+// sites and at every id-only mutation
 // (findByIdAndUpdate → findOneAndUpdate) now that both session types share
 // one collection — without this, a plain-chat route could mutate an agent
 // session (or vice versa) purely by guessing/reusing an _id.
@@ -82,3 +82,12 @@ export const PIPESHUB_CHAT_MODE = {
   VERIFICATION: 'verification',
   AUTO: 'auto',
 } as const;
+
+/** Total `chatSessions.sharedWith` entries (users + teams) per session. */
+export const SHARED_WITH_MAX = 200;
+export const OWNERSHIP_HISTORY_MAX = 20;
+export const CLIENT_MESSAGE_ID_MAX_LENGTH = 64;
+export const COLLABORATOR_PRINCIPAL_TYPES = ['user', 'team'] as const;
+export const COLLABORATOR_ACCESS_LEVELS = ['read', 'write'] as const;
+/** Bump when the stored shape of `chatSessions` / `chatSessionMessages` changes (ADR-004). */
+export const CHAT_SCHEMA_VERSION = 1;

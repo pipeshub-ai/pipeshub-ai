@@ -301,7 +301,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有记录",
-    "allArtifacts": "所有产物",
+    "allArtifacts": "我的产物",
     "workspace": "工作区",
     "shared": "与我共享",
     "private": "我的集合",
@@ -317,7 +317,7 @@
     "notifications": "通知"
   },
   "artifacts": {
-    "title": "所有产物",
+    "title": "我的产物",
     "empty": "暂无产物",
     "emptyHint": "智能体在聊天中创建的文件会显示在这里。",
     "loadFailed": "无法加载产物",
@@ -360,7 +360,62 @@
     "filterTooltip": "筛选：{{filter}}",
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知"
+    "removeFailed": "无法移除通知",
+    "mention": {
+      "title": "有人提及了您",
+      "body": "有人在聊天中提及了您。",
+      "bodyNamed": "{{actor}} 在“{{chat}}”中提及了您。",
+      "bodyNamedChat": "您在“{{chat}}”中被提及。",
+      "bodyNamedActor": "{{actor}} 在聊天中提及了您。"
+    },
+    "collab": {
+      "note": "留言：{{note}}",
+      "mute": "静音此聊天",
+      "unmute": "取消静音此聊天",
+      "shared": {
+        "title": "有聊天与您共享",
+        "read": "有人与您共享了一个聊天，您可以查看。",
+        "write": "有人与您共享了一个聊天，您可以继续对话。",
+        "readNamed": "{{actor}} 与您共享了“{{chat}}”，您可以查看。",
+        "writeNamed": "{{actor}} 与您共享了“{{chat}}”，您可以继续对话。",
+        "readNamedChat": "“{{chat}}”已与您共享，您可以查看。",
+        "writeNamedChat": "“{{chat}}”已与您共享，您可以继续对话。",
+        "readNamedActor": "{{actor}} 与您共享了一个聊天，您可以查看。",
+        "writeNamedActor": "{{actor}} 与您共享了一个聊天，您可以继续对话。"
+      },
+      "accessChanged": {
+        "title": "聊天访问权限已更改",
+        "read": "您现在可以查看一个共享聊天。",
+        "write": "您现在可以在一个共享聊天中继续对话。",
+        "readNamedChat": "您现在可以查看“{{chat}}”。",
+        "writeNamedChat": "您现在可以在“{{chat}}”中继续对话。"
+      },
+      "ownershipTransferred": {
+        "title": "聊天所有权已转移",
+        "body": "您现在是一个聊天的拥有者。",
+        "bodyNamedChat": "您现在是“{{chat}}”的拥有者。"
+      },
+      "deleted": {
+        "title": "聊天已删除",
+        "body": "您参与过的一个聊天已被删除。"
+      },
+      "activity": {
+        "title": "共享聊天有新动态",
+        "body": "共享聊天的新动态：{{total}}",
+        "bodyNamedChat": "“{{chat}}”有新动态：{{total}}"
+      },
+      "preferences": {
+        "title": "聊天通知",
+        "description": "选择接收共享聊天通知的方式。",
+        "emailChatShared": "有聊天与我共享时给我发邮件",
+        "emailOwnershipTransferred": "我成为聊天拥有者时给我发邮件",
+        "inAppChatActivity": "通知我共享聊天中的动态",
+        "loadFailed": "无法加载您的通知设置。",
+        "updateFailed": "无法保存您的通知设置。",
+        "emailChatMentioned": "有人在聊天中提及我时给我发邮件",
+        "inAppChatMentioned": "有人在聊天中提及我时通知我"
+      }
+    }
   },
   "action": {
     "find": "查找",
@@ -659,6 +714,70 @@
     "record": "记录"
   },
   "chat": {
+    "mentions": {
+      "assistant": "助手",
+      "unknownAgent": "未知智能体",
+      "unknownUser": "未知用户",
+      "unknownTeam": "未知团队",
+      "groupAssistant": "助手",
+      "groupAgent": "智能体",
+      "groupPeople": "此聊天中的人员",
+      "groupOthers": "组织中的其他人",
+      "groupTeams": "团队",
+      "kindAgent": "智能体",
+      "kindTeam": "团队",
+      "notInChat": "不在此聊天中",
+      "oneAgentHint": "一条消息只能提及一个智能体。",
+      "addPeople": "添加人员到此聊天…",
+      "listLabel": "提及建议",
+      "loading": "正在搜索…",
+      "empty": "无匹配项",
+      "resolve": {
+        "title": "@{{typed}} 是谁？",
+        "hint": "请选择一项后再发送。消息尚未发送。",
+        "team": "团队",
+        "person": "人员",
+        "cancel": "继续编辑",
+        "addPrompt": "将 {{name}} 添加到此聊天？",
+        "askOwner": "{{name}} 不在此聊天中。请让拥有者添加对方。",
+        "addView": "可查看",
+        "addContinue": "可继续对话",
+        "dismiss": "暂不",
+        "added": "已添加到此聊天"
+      },
+      "note": {
+        "label": "备注",
+        "aria": "备注，不会发送给助手",
+        "noAttachments": "备注不能包含附件。如需询问文件，请提及 @assistant。"
+      },
+      "tips": {
+        "intro": "输入以筛选。↑ ↓ 移动，Enter 选择，Esc 关闭。",
+        "noteOnly": "只提及同事即可留下备注，不会向 AI 提问",
+        "assistantAnywhere": "@assistant 随处可用",
+        "agentAccess": "智能体会使用您的权限回答",
+        "agentAnywhere": "在任何聊天中都可以提及您有权使用的智能体",
+        "gotIt": "知道了",
+        "coachmarkLabel": "提示",
+        "firstSharedSend_other": "您的消息和回答对 {{count}} 人可见",
+        "firstSharedSendUnknown": "您的消息和回答对此聊天中的所有人可见",
+        "firstNote": "备注不会向 AI 提问。如需提问，请提及 @assistant。",
+        "firstAgentMention": "此智能体会使用您的权限回答，此聊天中的所有人都能看到其回复。",
+        "emptyTitle": "此共享聊天的使用建议",
+        "emptyExample1": "@assistant 总结一下我们目前已决定的事项",
+        "emptyExample2": "@assistant 还有哪些未解决的问题？",
+        "emptyExample3": "@同事 能帮忙看一下吗？（仅留下备注，AI 不回复）",
+        "emptyMentionAction": "@ 提及同事"
+      },
+      "help": {
+        "hint": "输入“@assistant help”，查看助手可以替您访问哪些内容。"
+      },
+      "placeholder": {
+        "solo": "随便问点什么 · 输入 @ 选择智能体",
+        "shared": "向 PipesHub 提问，或输入 @ 提及同事或智能体"
+      },
+      "you": "您",
+      "mentionsYou": "提及了您"
+    },
     "recordActions": {
       "preview": "预览",
       "open": "打开 {{source}}",
@@ -740,6 +859,11 @@
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "通过编程智能体",
+      "web_agent": "通过网络调研",
+      "other": "通过 {{name}}"
+    },
     "thankYouForFeedback": "感谢您的反馈",
     "feedbackHelpsImprove": "您的反馈有助于我们改进",
     "feedbackError": "提交反馈失败",
@@ -1208,7 +1332,293 @@
       "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
-    "mobileProfileComingSoon": "移动端个人资料页面即将推出。"
+    "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
+    "collab": {
+      "readOnlyBanner": "您可以阅读此聊天，但无法继续对话。",
+      "readOnlyBannerOwner": "您可以查看此聊天。{{name}} 可以在其中添加内容。",
+      "accessLostBanner": "您已无法访问此聊天。在您离开此页面之前，这里显示的内容会一直保留。",
+      "busy": {
+        "someone": "有人",
+        "asking": "{{name}} 正在提问…",
+        "announce": "{{name}} 正在提问",
+        "askingOtherTab": "您正在另一个标签页中提问…",
+        "waiting": "正在等待 {{name}} 完成。您的消息将自动发送。",
+        "cancelQueued": "取消",
+        "stop": "停止"
+      },
+      "sync": {
+        "newMessages_other": "上方有 {{count}} 条新消息。请先查看，然后重新发送。",
+        "sendAgain": "重新发送",
+        "edit": "编辑消息"
+      },
+      "errors": {
+        "GENERIC": "出了点问题，请重试。",
+        "CONVERSATION_NOT_FOUND": "您已无法访问此聊天。",
+        "CONVERSATION_READ_ONLY": "您可以阅读此聊天，但无法添加内容。",
+        "CONVERSATION_OWNER_ONLY": "只有拥有者可以执行此操作。",
+        "REGENERATE_NOT_ALLOWED": "只有提问的人可以重新生成此回答。",
+        "RESUME_NOT_ALLOWED": "只有被询问的人可以回答此问题。",
+        "OWNER_INACTIVE": "此聊天的拥有者账号已停用，因此无法继续。请联系管理员。",
+        "OWNER_STATUS_UNAVAILABLE": "无法检查拥有者的账号，请稍后重试。",
+        "PROJECT_ACCESS_REQUIRED": "您需要拥有此聊天所属项目的访问权限才能继续。",
+        "TEAM_RESOLUTION_UNAVAILABLE": "目前无法检查您的团队访问权限，请稍后重试。",
+        "CONVERSATION_BUSY": "其他人正在此聊天中提问，待对方完成后您即可发送。",
+        "CONVERSATION_CHANGED": "此聊天有新消息。请先查看，然后重新发送。",
+        "DUPLICATE_MESSAGE": "该消息已发送。",
+        "RUN_LOST": "运行被中断，回答已丢失。请重新发送您的消息。",
+        "COLLABORATOR_LIMIT": "此聊天的人员和团队数量已达上限。",
+        "MUTED_SESSIONS_LIMIT": "您静音的聊天数量已达上限。",
+        "CONNECTOR_SETUP_REQUIRED": "继续之前，请先连接此智能体所需的工具。",
+        "INVALID_PRINCIPAL": "部分人员或团队无法添加。",
+        "RATE_LIMITED": "请求过多，请稍后重试。",
+        "ORG_WIDE_CONFIRMATION_REQUIRED": "请确认要与整个组织共享此聊天。",
+        "AGENT_UNAVAILABLE": "此智能体已不可用，因此无法继续聊天。",
+        "MENTION_NOT_ALLOWED": "您提及的人员或智能体中，有一项无法在此聊天中提及。",
+        "MENTION_SA_AGENT_SHARED": "此智能体以服务账号运行，无法在共享聊天中提及。",
+        "MENTION_DIRECTORY_UNAVAILABLE": "暂时无法检查您提及的智能体，请稍后重试。",
+        "MESSAGE_IS_NOTE": "此消息未发送给 AI：在此聊天中，只有提及 @assistant 时 AI 才会回答。如需向 AI 提问，请提及 @assistant。",
+        "MESSAGE_NOT_NOTE": "备注不能向 AI 提问。请移除 @assistant 提及，以备注形式发布。",
+        "TOO_MANY_AGENT_MENTIONS": "一条消息只能提及一个智能体。请删除多余的提及后重新发送。"
+      },
+      "share": {
+        "title": "共享聊天",
+        "makeOwner": "设为拥有者",
+        "notice": "您添加的人员可以阅读整个聊天，包括之前的回答。他们打开来源时，将按其自身的权限进行检查。",
+        "searchLabel": "添加人员或团队",
+        "noteLabel": "给接收者的留言（可选）",
+        "noteCount": "{{used}}/{{max}}",
+        "formerMember": "前成员",
+        "deletedTeam": "已删除的团队",
+        "removeOnly": "已不存在。您可以移除此条目。",
+        "summaryOwner": "拥有者：{{name}}",
+        "summaryCount": "有权访问的人员和团队：{{total}}",
+        "summaryAccess": "您的权限：{{access}}",
+        "roleWrite": "可继续对话",
+        "roleWriteDescription": "可阅读并继续此聊天",
+        "roleRead": "可查看",
+        "roleReadDescription": "可阅读此聊天",
+        "settingEditorsCanInvite": "编辑者可邀请",
+        "settingEditorsCanInviteDescription": "可继续此聊天的人可以添加更多人员和团队，但不能移除任何人。",
+        "settingOwnerContentShared": "共享我的文件和工具结果",
+        "settingOwnerContentSharedDescription": "您所发消息中的文件和工具结果对此聊天中的所有人可见。",
+        "orgWideTitle": "与整个组织共享？",
+        "orgWideMessage": "您组织中的所有人都将能够阅读此聊天，但他们不会收到通知。",
+        "orgWideConfirm": "与所有人共享",
+        "largeTeamTitle": "与大型团队共享？",
+        "largeTeamMessage": "{{name}} 有 {{members}} 名成员，他们都将获得此聊天的访问权限。",
+        "largeTeamConfirm": "共享",
+        "transferTitle": "将 {{name}} 设为拥有者？",
+        "transferMessage": "{{name}} 将成为此聊天的拥有者，并决定谁有访问权限。您将保留“可继续对话”的权限。",
+        "transferred": "所有权已转移",
+        "transferredDescription": "{{name}} 现在是拥有者",
+        "rateLimited": "更改过于频繁，请在 {{retryAfter}} 秒后重试。",
+        "limitReached": "此聊天最多可添加 {{max}} 个人员和团队。",
+        "draftNotice": "目前尚未共享任何内容。您在此添加的人员将在您发送第一条消息时获得访问权限。",
+        "draftAdd": "添加"
+      },
+      "sidebar": {
+        "roleRead": "可查看",
+        "roleWrite": "可继续对话",
+        "sharedWith": "已与 {{total}} 人共享",
+        "unread": "{{total}} 条未读消息",
+        "menu": "聊天选项",
+        "archive": "归档",
+        "unarchive": "取消归档",
+        "leave": "退出",
+        "leaving": "正在退出…",
+        "leaveTitle": "退出此聊天？",
+        "leaveDescription": "您将失去对此聊天的访问权限。拥有者可以重新添加您。",
+        "muted": "通知已静音"
+      },
+      "attribution": {
+        "you": "您",
+        "formerMember": "前成员",
+        "sentBy": "发送者：{{name}}",
+        "askedByAnswered": "提问者：{{name}} · 使用 {{name}} 的权限回答",
+        "askedByYouAnswered": "由您提问 · 使用您的权限回答",
+        "waitingFor": "正在等待 {{name}} 回答",
+        "respondingAgent": "智能体",
+        "respondingAgentAria": "由 {{name}} 回答",
+        "forPerson": "为 {{name}} · 使用其权限",
+        "answeringPerson": "正在回答 {{name}}…"
+      },
+      "timeline": {
+        "today": "今天",
+        "yesterday": "昨天",
+        "replyingTo": "回复 {{name}}",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}，{{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "对话",
+        "answerViews": "回答视图",
+        "answerFailedTitle": "此回答失败",
+        "answerFailedRetry": "重试"
+      },
+      "consent": {
+        "audience_other": "{{count}} 人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",
+        "audienceUnknown": "此聊天中的所有人可见 · 拥有者可添加更多人 · 您添加的文件将被共享",
+        "shareToolResults": "共享此消息的工具结果"
+      },
+      "access": {
+        "button": "谁能看到",
+        "buttonLabel": "谁可以访问此聊天",
+        "title": "此聊天的访问权限",
+        "subjectLabel": "查看访问权限的对象",
+        "subjectMe": "我",
+        "loading": "正在检查访问权限…",
+        "loadFailed": "无法加载访问权限详情。",
+        "forbidden": "您无法查看其他人的访问权限。",
+        "retry": "重试",
+        "summarySelf": "您的权限：{{role}}",
+        "summaryOther": "{{name}} 的权限：{{role}}",
+        "noneSelf": "您无权访问此聊天。",
+        "noneOther": "{{name}} 无权访问此聊天。",
+        "unknownUser": "未知用户",
+        "unknownTeam": "某个团队",
+        "action": {
+          "viewer": "查看",
+          "editor": "继续",
+          "owner": "管理"
+        },
+        "role": {
+          "viewer": "可查看",
+          "editor": "可继续对话",
+          "owner": "拥有者",
+          "none": "无权限"
+        },
+        "via": {
+          "owner": {
+            "self": "您是此聊天的拥有者。",
+            "other": "{{name}} 是此聊天的拥有者。"
+          },
+          "direct": {
+            "self": "此聊天已直接共享给您，因此您可以{{action}}此聊天。",
+            "other": "此聊天已直接共享给 {{name}}，因此对方可以{{action}}此聊天。"
+          },
+          "team": {
+            "self": "您可以通过“{{team}}”团队{{action}}此聊天。",
+            "other": "{{name}} 可以通过“{{team}}”团队{{action}}此聊天。"
+          },
+          "teamUnnamed": {
+            "self": "您可以通过您所在的某个团队{{action}}此聊天。",
+            "other": "{{name}} 可以通过其所在的某个团队{{action}}此聊天。"
+          },
+          "teamRedacted": {
+            "self": "您可以通过一个您不在其中的团队{{action}}此聊天。",
+            "other": "{{name}} 可以通过一个您不在其中的团队{{action}}此聊天。"
+          },
+          "project": {
+            "self": "此聊天属于您有权访问的项目，因此您可以{{action}}此聊天。",
+            "other": "{{name}} 可以通过此聊天所属的项目{{action}}此聊天。"
+          }
+        },
+        "visibilityLabel": "对项目成员可见",
+        "visibilityHelp": "开启后，所有有权访问该项目的人都可以打开此聊天。关闭后，只有您共享给的人员才能打开。",
+        "shareLimit": "一次最多可添加 {{max}} 个人员或团队。请移除 {{over}} 个后继续。",
+        "dialog": {
+          "title": "确认访问权限变更",
+          "descriptionLink": "将此聊天移入项目会改变可以打开它的人员。",
+          "descriptionUnlink": "将此聊天移出其项目会改变可以打开它的人员。",
+          "descriptionVisibilityProject": "项目成员将可以打开此聊天。",
+          "descriptionVisibilityPrivate": "只有您以及您共享给的人员才能打开此聊天。",
+          "loading": "正在检查受影响的人员…",
+          "previewFailed": "无法检查受影响的人员，因此未做任何更改。请关闭后重试。",
+          "projectUnavailable": "您无法使用此项目，因此未做任何更改。",
+          "applyFailed": "无法应用此更改。未做任何更改。",
+          "apply": "应用",
+          "applying": "正在应用…",
+          "gains": "将获得访问权限",
+          "loses": "将失去访问权限",
+          "becomesReadOnly": "将变为只读",
+          "noChanges": "没有人的访问权限发生变化。",
+          "truncated": "此列表不完整：仅检查了前面的部分人员和团队。",
+          "row": "{{name}} · {{role}}"
+        },
+        "removeSelection": "移除 {{name}}"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}} 人可以查看此聊天"
+      },
+      "accessLostBannerEmpty": "此聊天对您不可用。它可能已被删除，或您的访问权限已被移除。",
+      "draft": {
+        "willShare": "将共享给",
+        "edit": "更改此聊天的共享对象",
+        "remove": "移除 {{name}}",
+        "entry": "{{name}}（{{level}}）"
+      }
+    },
+    "agentDraft": {
+      "label": "智能体草稿",
+      "draftedBy": "{{name}} 起草了一个智能体",
+      "someone": "有人",
+      "name": "名称",
+      "handle": "标识",
+      "handleChecking": "正在检查是否可用…",
+      "handleAvailable": "可用",
+      "handleTaken": "@{{handle}} 已被占用",
+      "handleReserved": "@{{handle}} 为保留标识",
+      "handleInvalid": "请使用 2-40 个小写字母、数字或连字符",
+      "useSuggestion": "使用 @{{suggestion}}",
+      "description": "描述",
+      "instructions": "指令",
+      "knowledge": "知识",
+      "knowledgeFallback": "知识来源 {{id}}",
+      "unavailable": "您已无法使用",
+      "tools": "工具",
+      "toolsHint": "在您勾选之前，不会启用任何工具。",
+      "toolNotSetUp": "尚未为您设置",
+      "contentBanner": "根据文档内容建议",
+      "contentBannerBody": "此草稿的部分内容来自文档或他人的消息。创建智能体之前请先检查。",
+      "private": "私有 - 仅您可以使用",
+      "savingDraft": "正在保存草稿…",
+      "create": "创建智能体",
+      "createdTitle": "已创建 @{{handle}}（私有）",
+      "openAgentChat": "打开智能体聊天",
+      "builderOff": "智能体构建器已关闭",
+      "errorGeneric": "无法创建智能体，请重试。",
+      "showInstructions": "显示指令",
+      "hideInstructions": "隐藏指令",
+      "actions": "操作",
+      "allActionsOf": "{{name}} 的全部操作",
+      "showAll": "显示全部 {{count}} 项",
+      "showFewer": "收起",
+      "webSearch": "搜索网页",
+      "webSearchProvider": "使用 {{provider}}",
+      "unresolvedTitle": "未能添加",
+      "unresolvedNotFound": "在你可用的内容中未找到“{{query}}”。",
+      "unresolvedAmbiguous": "“{{query}}”可能指多个项目：{{candidates}}。请使用“添加”选择你想要的那一个。",
+      "unresolvedNotConnected": "“{{query}}”尚未为你连接。",
+      "unresolvedUnavailable": "“{{query}}”目前不可用。",
+      "connect": "连接",
+      "addKnowledge": "添加知识",
+      "addActions": "添加操作",
+      "pickerKnowledgeTitle": "添加知识",
+      "pickerActionsTitle": "添加操作",
+      "pickerHint": "仅列出你有权访问的内容。",
+      "pickerSearch": "搜索",
+      "pickerLoading": "加载中…",
+      "pickerEmpty": "没有可添加的内容。",
+      "pickerNoMatch": "没有匹配项。",
+      "pickerError": "无法加载此列表。",
+      "pickerRetry": "重试",
+      "pickerCancel": "取消",
+      "pickerAdd": "添加",
+      "pickerAddCount": "添加（{{count}}）",
+      "pickerAdded": "已添加",
+      "kindCollection": "集合",
+      "kindConnector": "连接器",
+      "summaryKnowledge_one": "{{count}} 个知识来源",
+      "summaryKnowledge_other": "{{count}} 个知识来源",
+      "summaryActions_one": "{{count}} 项操作",
+      "summaryActions_other": "{{count}} 项操作",
+      "summaryWebSearch": "网页搜索（{{provider}}）",
+      "summaryNothing": "尚未添加知识、操作或网页搜索",
+      "attached": "已附加：{{summary}}",
+      "editAgent": "编辑智能体",
+      "superseded": "已在下方更新的草稿中修订",
+      "supersededShow": "显示",
+      "supersededHide": "隐藏"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -3674,6 +4084,21 @@
     "agentName": "名称",
     "createdBy": "创建者",
     "agentNamePlaceholder": "例如：支持机器人",
+    "handle": {
+      "label": "标识",
+      "hint": "用于在聊天中通过 @ 提及此智能体。",
+      "derivedHint": "根据名称生成。可编辑以自定义。",
+      "edit": "编辑标识",
+      "placeholder": "例如：support-bot",
+      "inputAria": "智能体标识",
+      "done": "应用标识",
+      "cancel": "取消编辑标识",
+      "invalid": "请使用 2-40 个小写字母、数字或连字符。",
+      "reserved": "@{{handle}} 为保留标识，请选择其他标识。",
+      "taken": "@{{handle}} 在您的组织中已被使用。",
+      "takenSuggestion": "@{{handle}} 已被使用。试试 @{{suggestion}}。",
+      "useSuggestion": "使用 @{{suggestion}}"
+    },
     "serviceAccountBadge": "服务智能体",
     "serviceAccountBadgeTooltip": "此服务智能体使用专用的工具集凭据，并为所有使用者提供全组织范围的知识访问权限。",
     "convertToServiceAccount": "转换为服务智能体",
@@ -4038,6 +4463,7 @@
     "openExternal": "打开",
     "previewUnavailable": "此记录类型不支持预览。",
     "permissionOwner": "所有者",
+    "permissionCommenter": "评论者",
     "permissionReader": "读者",
     "permissionWriter": "编辑者",
     "labels": {
@@ -4350,6 +4776,10 @@
         "label": "可编辑",
         "description": "仅可编辑和整理文件与文件夹"
       },
+      "commenter": {
+        "label": "可评论",
+        "description": "可查看和评论，不可编辑"
+      },
       "reader": {
         "label": "可查看",
         "description": "仅有查看权限"
@@ -4357,7 +4787,8 @@
     },
     "team": "团队",
     "teamsNoRoles": "团队没有角色",
-    "invite": "邀请加入 Pipeshub"
+    "invite": "邀请加入 Pipeshub",
+    "andMore": "还有 {{count}} 位"
   },
   "demoData": {
     "badge": {

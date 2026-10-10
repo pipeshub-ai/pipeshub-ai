@@ -46,6 +46,18 @@ function serializeValueWithTrace(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function buildStreamFields<T>(message: StreamMessage<T>): string[] {
+  const fields: string[] = [];
+  if (message.key !== undefined) {
+    fields.push(REDIS_STREAM_FIELDS.key, message.key);
+  }
+  fields.push(REDIS_STREAM_FIELDS.value, serializeValueWithTrace(message.value));
+  if (message.headers) {
+    fields.push(REDIS_STREAM_FIELDS.headers, JSON.stringify(message.headers));
+  }
+  return fields;
+}
+
 /** Rebuild trace context from a consumed message value (fresh root if absent). */
 function contextFromValue(value: unknown): { rootId: string } {
   const env = (value ?? {}) as Record<string, unknown>;
@@ -199,19 +211,7 @@ export abstract class BaseRedisStreamsProducerConnection
   async publish<T>(topic: string, message: StreamMessage<T>): Promise<void> {
     await this.ensureConnection();
     try {
-      const fields: string[] = [
-        REDIS_STREAM_FIELDS.key,
-        message.key,
-        REDIS_STREAM_FIELDS.value,
-        serializeValueWithTrace(message.value),
-      ];
-
-      if (message.headers) {
-        fields.push(
-          REDIS_STREAM_FIELDS.headers,
-          JSON.stringify(message.headers),
-        );
-      }
+      const fields = buildStreamFields(message);
 
       await this.redis.xadd(
         topic,
@@ -244,18 +244,7 @@ export abstract class BaseRedisStreamsProducerConnection
     const pipeline = this.redis.pipeline();
 
     for (const message of messages) {
-      const fields: string[] = [
-        REDIS_STREAM_FIELDS.key,
-        message.key,
-        REDIS_STREAM_FIELDS.value,
-        serializeValueWithTrace(message.value),
-      ];
-      if (message.headers) {
-        fields.push(
-          REDIS_STREAM_FIELDS.headers,
-          JSON.stringify(message.headers),
-        );
-      }
+      const fields = buildStreamFields(message);
 
       pipeline.xadd(
         topic,

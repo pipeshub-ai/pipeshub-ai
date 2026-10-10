@@ -25,7 +25,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.types import Source
-from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.base import Tag, ToolOutput
 from app.agents.actions.util.tool_summaries import parse_json_maybe
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from app.utils.tool_handlers import ToolHandlerRegistry
@@ -106,6 +106,11 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
     ) -> None:
         super().__init__(structured_tool, app_name, tool_name)
         self._context = context
+
+    @property
+    def tags(self) -> list[Tag]:
+        # Outbound GET: the collaborative-chat write guard treats the URL as data leaving the box.
+        return [Tag("category", "egress")] if self._tool_name == "fetch_url" else []
 
     @property
     def short_description(self) -> str:

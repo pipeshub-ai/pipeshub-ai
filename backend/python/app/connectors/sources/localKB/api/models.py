@@ -1,7 +1,7 @@
 """Knowledge Base Request and Response Models"""
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -69,12 +69,25 @@ class UpdateFolderRequest(BaseModel):
     name: str = Field(..., description="Name of the folder", min_length=1, max_length=255)
 
 
+MAX_PERMISSION_PRINCIPALS = 500
+
+
+class PermissionPrincipal(BaseModel):
+    """One grantee with its own role."""
+    principalType: Literal["user", "team"] = Field(..., description="Kind of grantee")
+    principalId: str = Field(..., description="User or team ID", min_length=1)
+    role: PermissionRole = Field(..., description="Role granted to this principal")
+
+
 class CreatePermissionRequest(BaseModel):
-    """Request model for creating permissions"""
+    """Request model for creating permissions. Prefer `principals`; userIds/teamIds/role is the legacy shape."""
     requesterId : str = Field(..., description ="User id granting others access", min_length=1)
-    userIds: Optional[List[str]] = Field(None, description="List of user IDs to grant permissions to", min_items=0)
-    teamIds: Optional[List[str]] = Field(None, description="List of team IDs to grant permissions to", min_items=0)
-    role: PermissionRole = Field(..., description="Role to grant")
+    principals: Optional[List[PermissionPrincipal]] = Field(
+        None, description="Grantees with per-principal roles", max_length=MAX_PERMISSION_PRINCIPALS
+    )
+    userIds: Optional[List[str]] = Field(None, description="Legacy: user IDs to grant `role` to", min_items=0)
+    teamIds: Optional[List[str]] = Field(None, description="Legacy: team IDs to grant `role` to", min_items=0)
+    role: Optional[PermissionRole] = Field(None, description="Legacy: role for userIds/teamIds")
 
 
 class UpdatePermissionRequest(BaseModel):

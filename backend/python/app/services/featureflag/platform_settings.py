@@ -131,3 +131,18 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_chat_mentions_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Gate for chat mentions on the query path (`@assistant help`). Like the Node API
+    and the UI it needs both ``ENABLE_COLLABORATIVE_CHATS`` and ``ENABLE_CHAT_MENTIONS``;
+    both default to DISABLED so a deployment without them behaves exactly as before."""
+    return await _platform_flag(
+        config_service, CONFIG.ENABLE_COLLABORATIVE_CHATS, default=False
+    ) and await _platform_flag(config_service, CONFIG.ENABLE_CHAT_MENTIONS, default=False)
+
+
+async def is_chat_agent_builder_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Gate for the assistant's ``draft_agent`` tool. Defaults to DISABLED so a
+    deployment without the flag behaves exactly as before."""
+    return await _platform_flag(config_service, CONFIG.ENABLE_CHAT_AGENT_BUILDER, default=False)

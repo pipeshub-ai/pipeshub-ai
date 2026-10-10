@@ -16,8 +16,21 @@ from app.core.celery_app import CeleryApp
 from app.core.signed_url import SignedUrlConfig, SignedUrlHandler
 from app.edition_services import bootstrap_guard
 from app.health.health import Health
+from app.migrations.agent_handles_migration import run_agent_handles_migration
 from app.migrations.all_team_migration import run_all_team_migration
+from app.migrations.chat_grant_edges_cleanup_migration import (
+    run_chat_grant_edges_cleanup_migration,
+)
+from app.modules.authz.node_pdp_client import (
+    AiohttpPdpHttp,
+    NodePdpClient,
+    set_node_pdp_client,
+)
+from app.migrations.team_org_id_migration import run_team_org_id_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
+from app.migrations.kb_team_edge_role_migration import (
+    run_kb_team_edge_role_migration,
+)
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -102,6 +115,12 @@ class ConnectorAppContainer(BaseAppContainer):
 
     feature_flag_service = providers.Singleton(container_utils.create_feature_flag_service, config_service=config_service)
 
+    # Chat-content PDP client (Node `authz/internal/check`); installed as the
+    # process accessor in `initialize_container`.
+    node_pdp_client = providers.Singleton(
+        NodePdpClient, config_service=config_service, http=providers.Singleton(AiohttpPdpHttp),
+    )
+
     # For the startup health check (Health.health_check_vector_db). Entity
     # cleanup on connector and Collection deletion runs in the indexing
     # service (deleteConnectorEntities).
@@ -146,6 +165,7 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
 
     logger.info("🚀 Initializing application resources")
     try:
+        set_node_pdp_client(container.node_pdp_client())
         await Health.system_health_check(container)
 
         if not bootstrap:
@@ -195,6 +215,18 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
             logger.info("✅ Container initialization completed successfully")
 
 
+            # Must precede the All team migration: team lookups are org-scoped.
+            try:
+                team_org_result = await run_team_org_id_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if not team_org_result.get("success"):
+                    logger.error(f"❌ Team orgId migration failed: {team_org_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.error(f"❌ Team orgId migration error: {e}")
+
             # Run All Team migration (DB-agnostic, runs for both ArangoDB and Neo4j)
             try:
                 logger.info("🔄 Running All team migration...")
@@ -220,6 +252,29 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                     logger.error(f"❌ All team migration failed: {error_msg}")
             except Exception as e:
                 logger.error(f"❌ All team migration error: {e}")
+
+            # Ships in the same release as the PDP read path (PR-7.1-7.3); without the PDP
+            # live, deleting these edges would briefly cut recipients off from shared chat files.
+            try:
+                chat_cleanup_result = await run_chat_grant_edges_cleanup_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if chat_cleanup_result.get("success"):
+                    if chat_cleanup_result.get("skipped"):
+                        logger.info("✅ Chat grant edges cleanup already completed")
+                    else:
+                        logger.info(
+                            f"✅ Chat grant edges cleanup completed: "
+                            f"{chat_cleanup_result.get('deleted', 0)} edge(s) deleted"
+                        )
+                else:
+                    logger.error(
+                        f"❌ Chat grant edges cleanup failed: {chat_cleanup_result.get('error', 'Unknown error')}"
+                    )
+            except Exception as e:
+                logger.error(f"❌ Chat grant edges cleanup error: {e}")
 
             # Run KB apps migration (legacy recordGroup-based KBs -> per-KB app
             # instances). Must run after the graph provider/schema are ready;
@@ -250,6 +305,51 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                     logger.error(f"❌ KB apps migration failed: {error_msg}")
             except Exception as e:
                 logger.error(f"❌ KB apps migration error: {e}")
+
+            try:
+                handles_result = await run_agent_handles_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+                if handles_result.get("success"):
+                    if handles_result.get("skipped"):
+                        logger.info("✅ Agent handles migration already completed")
+                    else:
+                        logger.info(
+                            f"✅ Agent handles migration completed: {handles_result.get('agents_updated', 0)} agent(s) updated"
+                        )
+                else:
+                    logger.error(f"❌ Agent handles migration failed: {handles_result.get('error', 'Unknown error')}")
+            except Exception as e:
+                logger.error(f"❌ Agent handles migration error: {e}")
+
+            try:
+                role_migration_result = await run_kb_team_edge_role_migration(
+                    graph_provider=data_store.graph_provider,
+                    config_service=config_service,
+                    logger=logger,
+                )
+
+                if role_migration_result.get("success"):
+                    if role_migration_result.get("skipped"):
+                        logger.info("✅ KB team-edge role migration already completed")
+                    else:
+                        logger.info(
+                            f"✅ KB team-edge role migration completed: "
+                            f"{role_migration_result.get('stamped', 0)} edge(s) stamped, "
+                            f"{role_migration_result.get('remaining_role_less', 0)} role-less"
+                        )
+                elif role_migration_result.get("skipped"):
+                    logger.warning(
+                        f"⚠️ KB team-edge role migration deferred: {role_migration_result.get('reason')}"
+                    )
+                else:
+                    logger.error(
+                        f"❌ KB team-edge role migration failed: {role_migration_result.get('error', 'Unknown error')}"
+                    )
+            except Exception as e:
+                logger.error(f"❌ KB team-edge role migration error: {e}")
 
             return True
 

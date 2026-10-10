@@ -221,7 +221,7 @@
   "nav": {
     "collections": "Sammlungen",
     "allRecords": "Alle Datensätze",
-    "allArtifacts": "Alle Artefakte",
+    "allArtifacts": "Meine Artefakte",
     "workspace": "Arbeitsbereich",
     "shared": "Mit mir geteilt",
     "private": "Meine Sammlungen",
@@ -237,7 +237,7 @@
     "notifications": "Benachrichtigungen"
   },
   "artifacts": {
-    "title": "Alle Artefakte",
+    "title": "Meine Artefakte",
     "empty": "Noch keine Artefakte",
     "emptyHint": "Dateien, die Ihre Agenten im Chat erstellen, erscheinen hier.",
     "loadFailed": "Artefakte konnten nicht geladen werden",
@@ -280,7 +280,62 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
+    "mention": {
+      "title": "Sie wurden erwähnt",
+      "body": "Jemand hat Sie in einem Chat erwähnt.",
+      "bodyNamed": "{{actor}} hat Sie in „{{chat}}“ erwähnt.",
+      "bodyNamedChat": "Sie wurden in „{{chat}}“ erwähnt.",
+      "bodyNamedActor": "{{actor}} hat Sie in einem Chat erwähnt."
+    },
+    "collab": {
+      "note": "Nachricht: {{note}}",
+      "mute": "Chat stummschalten",
+      "unmute": "Stummschaltung aufheben",
+      "shared": {
+        "title": "Chat mit Ihnen geteilt",
+        "read": "Ein Chat wurde mit Ihnen geteilt. Sie können ihn ansehen.",
+        "write": "Ein Chat wurde mit Ihnen geteilt. Sie können ihn fortsetzen.",
+        "readNamed": "{{actor}} hat „{{chat}}“ mit Ihnen geteilt. Sie können ihn ansehen.",
+        "writeNamed": "{{actor}} hat „{{chat}}“ mit Ihnen geteilt. Sie können ihn fortsetzen.",
+        "readNamedChat": "„{{chat}}“ wurde mit Ihnen geteilt. Sie können ihn ansehen.",
+        "writeNamedChat": "„{{chat}}“ wurde mit Ihnen geteilt. Sie können ihn fortsetzen.",
+        "readNamedActor": "{{actor}} hat einen Chat mit Ihnen geteilt. Sie können ihn ansehen.",
+        "writeNamedActor": "{{actor}} hat einen Chat mit Ihnen geteilt. Sie können ihn fortsetzen."
+      },
+      "accessChanged": {
+        "title": "Chat-Zugriff geändert",
+        "read": "Sie können einen geteilten Chat jetzt ansehen.",
+        "write": "Sie können einen geteilten Chat jetzt fortsetzen.",
+        "readNamedChat": "Sie können „{{chat}}“ jetzt ansehen.",
+        "writeNamedChat": "Sie können „{{chat}}“ jetzt fortsetzen."
+      },
+      "ownershipTransferred": {
+        "title": "Chat-Eigentum übertragen",
+        "body": "Sie sind jetzt Eigentümer eines Chats.",
+        "bodyNamedChat": "Sie sind jetzt Eigentümer von „{{chat}}“."
+      },
+      "deleted": {
+        "title": "Chat gelöscht",
+        "body": "Ein Chat, an dem Sie beteiligt waren, wurde gelöscht."
+      },
+      "activity": {
+        "title": "Neue Aktivität in einem geteilten Chat",
+        "body": "Neue Aktivität in einem geteilten Chat: {{total}}",
+        "bodyNamedChat": "Neue Aktivität in „{{chat}}“: {{total}}"
+      },
+      "preferences": {
+        "title": "Chat-Benachrichtigungen",
+        "description": "Legen Sie fest, wie Sie über geteilte Chats informiert werden.",
+        "emailChatShared": "E-Mail senden, wenn ein Chat mit mir geteilt wird",
+        "emailOwnershipTransferred": "E-Mail senden, wenn ich Eigentümer eines Chats werde",
+        "inAppChatActivity": "Über Aktivität in geteilten Chats benachrichtigen",
+        "loadFailed": "Ihre Benachrichtigungseinstellungen konnten nicht geladen werden.",
+        "updateFailed": "Ihre Benachrichtigungseinstellungen konnten nicht gespeichert werden.",
+        "emailChatMentioned": "E-Mail senden, wenn mich jemand in einem Chat erwähnt",
+        "inAppChatMentioned": "Benachrichtigen, wenn mich jemand in einem Chat erwähnt"
+      }
+    }
   },
   "action": {
     "find": "Finden",
@@ -574,6 +629,71 @@
     "record": "Datensatz"
   },
   "chat": {
+    "mentions": {
+      "assistant": "Assistent",
+      "unknownAgent": "Unbekannter Agent",
+      "unknownUser": "Unbekannter Benutzer",
+      "unknownTeam": "Unbekanntes Team",
+      "groupAssistant": "Assistent",
+      "groupAgent": "Agenten",
+      "groupPeople": "Personen in diesem Chat",
+      "groupOthers": "Weitere Personen in Ihrer Organisation",
+      "groupTeams": "Teams",
+      "kindAgent": "Agent",
+      "kindTeam": "Team",
+      "notInChat": "Nicht in diesem Chat",
+      "oneAgentHint": "Eine Nachricht kann nur einen Agenten erwähnen.",
+      "addPeople": "Personen zu diesem Chat hinzufügen …",
+      "listLabel": "Erwähnungsvorschläge",
+      "loading": "Suche läuft…",
+      "empty": "Keine Treffer",
+      "resolve": {
+        "title": "Wer ist @{{typed}}?",
+        "hint": "Wählen Sie einen Eintrag aus, um zu senden. Es wurde noch nichts gesendet.",
+        "team": "Team",
+        "person": "Person",
+        "cancel": "Weiter bearbeiten",
+        "addPrompt": "{{name}} zu diesem Chat hinzufügen?",
+        "askOwner": "{{name}} ist nicht in diesem Chat. Bitten Sie den Eigentümer, die Person hinzuzufügen.",
+        "addView": "Kann ansehen",
+        "addContinue": "Kann fortsetzen",
+        "dismiss": "Nicht jetzt",
+        "added": "Zum Chat hinzugefügt"
+      },
+      "note": {
+        "label": "Notiz",
+        "aria": "Notiz, wird nicht an den Assistenten gesendet",
+        "noAttachments": "Eine Notiz kann keine Anhänge enthalten. Erwähnen Sie @assistant, um nach einer Datei zu fragen."
+      },
+      "tips": {
+        "intro": "Zum Filtern tippen. ↑ ↓ zum Wechseln, Enter zum Auswählen, Esc zum Schließen.",
+        "noteOnly": "Erwähnen Sie nur eine Person aus Ihrem Team, um eine Notiz zu hinterlassen, ohne die KI zu fragen",
+        "assistantAnywhere": "@assistant funktioniert überall",
+        "agentAccess": "Agenten antworten mit Ihrem Zugriff",
+        "agentAnywhere": "Erwähnen Sie in jedem Chat einen beliebigen Agenten, den Sie nutzen dürfen",
+        "gotIt": "Verstanden",
+        "coachmarkLabel": "Tipp",
+        "firstSharedSend_one": "Ihre Nachricht und die Antwort sind für {{count}} Person sichtbar",
+        "firstSharedSend_other": "Ihre Nachricht und die Antwort sind für {{count}} Personen sichtbar",
+        "firstSharedSendUnknown": "Ihre Nachricht und die Antwort sind für alle in diesem Chat sichtbar",
+        "firstNote": "Notizen gehen nicht an die KI. Erwähnen Sie @assistant, um eine Frage zu stellen.",
+        "firstAgentMention": "Dieser Agent antwortet mit Ihrem Zugriff. Alle in diesem Chat sehen seine Antwort.",
+        "emptyTitle": "Ideen für diesen geteilten Chat",
+        "emptyExample1": "@assistant fasse zusammen, was wir bisher entschieden haben",
+        "emptyExample2": "@assistant welche Fragen sind noch offen?",
+        "emptyExample3": "@kollege kannst du dir das ansehen? (hinterlässt eine Notiz, keine KI-Antwort)",
+        "emptyMentionAction": "@ Teammitglied erwähnen"
+      },
+      "help": {
+        "hint": "Schreiben Sie „@assistant help“, um zu sehen, worauf der Assistent für Sie zugreifen kann."
+      },
+      "placeholder": {
+        "solo": "Fragen Sie etwas · @ für Agenten",
+        "shared": "PipesHub fragen oder @ eingeben, um Teammitglieder oder Agenten zu erwähnen"
+      },
+      "you": "Sie",
+      "mentionsYou": "erwähnt Sie"
+    },
     "recordActions": {
       "preview": "Vorschau",
       "open": "{{source}} öffnen",
@@ -654,6 +774,11 @@
     "answer": "Antwort",
     "sources": "Quellen",
     "citation": "Zitat",
+    "answeredVia": {
+      "coding_agent": "über den Coding-Agenten",
+      "web_agent": "über Web-Recherche",
+      "other": "über {{name}}"
+    },
     "thankYouForFeedback": "Vielen Dank für Ihr Feedback",
     "feedbackHelpsImprove": "Ihr Feedback hilft uns, uns zu verbessern",
     "feedbackError": "Feedback konnte nicht gesendet werden",
@@ -1125,7 +1250,296 @@
     "sendMessage": "Nachricht senden",
     "demoHide": "Demodaten ausblenden",
     "demoRestrictedHint": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. So wirken Berechtigungen.",
-    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen."
+    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen.",
+    "collab": {
+      "readOnlyBanner": "Sie können diesen Chat lesen, aber nicht fortsetzen.",
+      "readOnlyBannerOwner": "Sie können diesen Chat ansehen. {{name}} kann ihn ergänzen.",
+      "accessLostBanner": "Sie haben keinen Zugriff mehr auf diesen Chat. Was Sie hier sehen, bleibt erhalten, bis Sie ihn verlassen.",
+      "busy": {
+        "someone": "Jemand",
+        "asking": "{{name}} fragt gerade…",
+        "announce": "{{name}} fragt gerade",
+        "askingOtherTab": "Sie fragen gerade in einem anderen Tab…",
+        "waiting": "Warten, bis {{name}} fertig ist. Ihre Nachricht wird automatisch gesendet.",
+        "cancelQueued": "Abbrechen",
+        "stop": "Stopp"
+      },
+      "sync": {
+        "newMessages_one": "{{count}} neue Nachricht oben. Lesen Sie sie und senden Sie dann erneut.",
+        "newMessages_other": "{{count}} neue Nachrichten oben. Lesen Sie sie und senden Sie dann erneut.",
+        "sendAgain": "Erneut senden",
+        "edit": "Nachricht bearbeiten"
+      },
+      "errors": {
+        "GENERIC": "Etwas ist schiefgelaufen. Bitte versuchen Sie es erneut.",
+        "CONVERSATION_NOT_FOUND": "Dieser Chat ist für Sie nicht mehr verfügbar.",
+        "CONVERSATION_READ_ONLY": "Sie können diesen Chat lesen, aber nichts hinzufügen.",
+        "CONVERSATION_OWNER_ONLY": "Das kann nur der Eigentümer tun.",
+        "REGENERATE_NOT_ALLOWED": "Nur die Person, die gefragt hat, kann diese Antwort neu generieren.",
+        "RESUME_NOT_ALLOWED": "Nur die Person, die gefragt wurde, kann diese Frage beantworten.",
+        "OWNER_INACTIVE": "Der Eigentümer dieses Chats ist nicht mehr aktiv, daher kann der Chat nicht fortgesetzt werden. Wenden Sie sich an einen Administrator.",
+        "OWNER_STATUS_UNAVAILABLE": "Das Konto des Eigentümers konnte nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+        "PROJECT_ACCESS_REQUIRED": "Sie benötigen Zugriff auf das Projekt dieses Chats, um fortzufahren.",
+        "TEAM_RESOLUTION_UNAVAILABLE": "Ihr Teamzugriff konnte gerade nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+        "CONVERSATION_BUSY": "Jemand anderes stellt gerade eine Frage in diesem Chat. Sie können senden, sobald die Person fertig ist.",
+        "CONVERSATION_CHANGED": "Dieser Chat enthält neue Nachrichten. Lesen Sie sie und senden Sie dann erneut.",
+        "DUPLICATE_MESSAGE": "Diese Nachricht wurde bereits gesendet.",
+        "RUN_LOST": "Die Antwort ging verloren, weil der Lauf unterbrochen wurde. Bitte senden Sie Ihre Nachricht erneut.",
+        "COLLABORATOR_LIMIT": "Dieser Chat hat sein Limit an Personen und Teams erreicht.",
+        "MUTED_SESSIONS_LIMIT": "Sie haben das Limit für stummgeschaltete Chats erreicht.",
+        "CONNECTOR_SETUP_REQUIRED": "Verbinden Sie die Tools, die dieser Agent benötigt, bevor Sie fortfahren.",
+        "INVALID_PRINCIPAL": "Eine der Personen oder eines der Teams kann nicht hinzugefügt werden.",
+        "RATE_LIMITED": "Zu viele Anfragen. Versuchen Sie es gleich noch einmal.",
+        "ORG_WIDE_CONFIRMATION_REQUIRED": "Bestätigen Sie, dass Sie diesen Chat mit der gesamten Organisation teilen möchten.",
+        "AGENT_UNAVAILABLE": "Dieser Agent ist nicht mehr verfügbar, daher kann der Chat nicht fortgesetzt werden.",
+        "MENTION_NOT_ALLOWED": "Eine der erwähnten Personen oder einer der erwähnten Agenten kann in diesem Chat nicht erwähnt werden.",
+        "MENTION_SA_AGENT_SHARED": "Dieser Agent läuft mit einem Dienstkonto und kann in einem geteilten Chat nicht erwähnt werden.",
+        "MENTION_DIRECTORY_UNAVAILABLE": "Die erwähnten Agenten konnten gerade nicht geprüft werden. Versuchen Sie es gleich noch einmal.",
+        "MESSAGE_IS_NOTE": "Diese Nachricht wurde nicht an die KI gesendet: In diesem Chat antwortet sie nur, wenn jemand @assistant erwähnt. Erwähnen Sie @assistant, um sie etwas zu fragen.",
+        "MESSAGE_NOT_NOTE": "Eine Notiz kann keine Frage an die KI stellen. Entfernen Sie die Erwähnung von @assistant, um sie als Notiz zu senden.",
+        "TOO_MANY_AGENT_MENTIONS": "Eine Nachricht kann nur einen Agenten erwähnen. Entfernen Sie die überzähligen Erwähnungen und senden Sie die Nachricht erneut."
+      },
+      "share": {
+        "title": "Chat teilen",
+        "makeOwner": "Zum Eigentümer machen",
+        "notice": "Hinzugefügte Personen können den gesamten Chat lesen, auch frühere Antworten. Quellen, die sie öffnen, werden anhand ihres eigenen Zugriffs geprüft.",
+        "searchLabel": "Personen oder Teams hinzufügen",
+        "noteLabel": "Nachricht an Empfänger (optional)",
+        "noteCount": "{{used}}/{{max}}",
+        "formerMember": "Ehemaliges Mitglied",
+        "deletedTeam": "Gelöschtes Team",
+        "removeOnly": "Existiert nicht mehr. Sie können diesen Eintrag entfernen.",
+        "summaryOwner": "Eigentümer: {{name}}",
+        "summaryCount": "Personen und Teams mit Zugriff: {{total}}",
+        "summaryAccess": "Ihr Zugriff: {{access}}",
+        "roleWrite": "Kann fortsetzen",
+        "roleWriteDescription": "Kann diesen Chat lesen und ergänzen",
+        "roleRead": "Kann ansehen",
+        "roleReadDescription": "Kann diesen Chat lesen",
+        "settingEditorsCanInvite": "Bearbeiter können einladen",
+        "settingEditorsCanInviteDescription": "Personen, die diesen Chat fortsetzen können, dürfen weitere Personen und Teams hinzufügen, aber niemanden entfernen.",
+        "settingOwnerContentShared": "Meine Dateien und Tool-Ergebnisse teilen",
+        "settingOwnerContentSharedDescription": "Dateien und Tool-Ergebnisse aus Ihren eigenen Beiträgen sind für alle in diesem Chat sichtbar.",
+        "orgWideTitle": "Mit der gesamten Organisation teilen?",
+        "orgWideMessage": "Alle in Ihrer Organisation können diesen Chat lesen. Sie werden nicht benachrichtigt.",
+        "orgWideConfirm": "Mit allen teilen",
+        "largeTeamTitle": "Mit einem großen Team teilen?",
+        "largeTeamMessage": "{{name}} hat {{members}} Mitglieder. Alle erhalten Zugriff auf diesen Chat.",
+        "largeTeamConfirm": "Teilen",
+        "transferTitle": "{{name}} zum Eigentümer machen?",
+        "transferMessage": "{{name}} wird Eigentümer dieses Chats und entscheidet, wer Zugriff hat. Sie bleiben im Chat und können ihn weiterhin fortsetzen.",
+        "transferred": "Eigentum übertragen",
+        "transferredDescription": "{{name}} ist jetzt Eigentümer",
+        "rateLimited": "Zu viele Änderungen. Versuchen Sie es in {{retryAfter}} Sekunden erneut.",
+        "limitReached": "Dieser Chat kann höchstens {{max}} Personen und Teams haben.",
+        "draftNotice": "Noch wird nichts geteilt. Personen, die Sie hier hinzufügen, erhalten Zugriff, sobald Sie Ihre erste Nachricht senden.",
+        "draftAdd": "Hinzufügen"
+      },
+      "sidebar": {
+        "roleRead": "Kann ansehen",
+        "roleWrite": "Kann fortsetzen",
+        "sharedWith": "Geteilt mit {{total}}",
+        "unread": "{{total}} ungelesene Nachrichten",
+        "menu": "Chat-Optionen",
+        "archive": "Archivieren",
+        "unarchive": "Archivierung aufheben",
+        "leave": "Verlassen",
+        "leaving": "Wird verlassen…",
+        "leaveTitle": "Diesen Chat verlassen?",
+        "leaveDescription": "Sie verlieren den Zugriff auf diesen Chat. Der Eigentümer kann Sie erneut hinzufügen.",
+        "muted": "Benachrichtigungen stummgeschaltet"
+      },
+      "attribution": {
+        "you": "Sie",
+        "formerMember": "Ehemaliges Mitglied",
+        "sentBy": "Gesendet von {{name}}",
+        "askedByAnswered": "Gefragt von {{name}} · beantwortet mit dem Zugriff von {{name}}",
+        "askedByYouAnswered": "Von Ihnen gefragt · mit Ihrem Zugriff beantwortet",
+        "waitingFor": "Warten auf die Antwort von {{name}}",
+        "respondingAgent": "Agent",
+        "respondingAgentAria": "Beantwortet von {{name}}",
+        "forPerson": "Für {{name}} · mit deren Zugriff",
+        "answeringPerson": "Antwortet {{name}} …"
+      },
+      "timeline": {
+        "today": "Heute",
+        "yesterday": "Gestern",
+        "replyingTo": "Antwort an {{name}}",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}, {{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "Unterhaltung",
+        "answerViews": "Ansichten der Antwort",
+        "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
+        "answerFailedRetry": "Erneut versuchen"
+      },
+      "consent": {
+        "audience_one": "Sichtbar für {{count}} Person · der Eigentümer kann weitere hinzufügen · von Ihnen hinzugefügte Dateien werden geteilt",
+        "audience_other": "Sichtbar für {{count}} Personen · der Eigentümer kann weitere hinzufügen · von Ihnen hinzugefügte Dateien werden geteilt",
+        "audienceUnknown": "Sichtbar für alle in diesem Chat · der Eigentümer kann weitere hinzufügen · von Ihnen hinzugefügte Dateien werden geteilt",
+        "shareToolResults": "Tool-Ergebnisse dieser Nachricht teilen"
+      },
+      "access": {
+        "button": "Wer kann das sehen",
+        "buttonLabel": "Wer auf diesen Chat zugreifen kann",
+        "title": "Zugriff auf diesen Chat",
+        "subjectLabel": "Zugriff prüfen für",
+        "subjectMe": "Ich",
+        "loading": "Zugriff wird geprüft…",
+        "loadFailed": "Die Zugriffsdetails konnten nicht geladen werden.",
+        "forbidden": "Sie können den Zugriff anderer Personen nicht einsehen.",
+        "retry": "Erneut versuchen",
+        "summarySelf": "Ihr Zugriff: {{role}}",
+        "summaryOther": "Zugriff von {{name}}: {{role}}",
+        "noneSelf": "Sie haben keinen Zugriff auf diesen Chat.",
+        "noneOther": "{{name}} hat keinen Zugriff auf diesen Chat.",
+        "unknownUser": "Unbekannter Benutzer",
+        "unknownTeam": "Ein Team",
+        "action": {
+          "viewer": "ansehen",
+          "editor": "fortsetzen",
+          "owner": "verwalten"
+        },
+        "role": {
+          "viewer": "Kann ansehen",
+          "editor": "Kann fortsetzen",
+          "owner": "Eigentümer",
+          "none": "Kein Zugriff"
+        },
+        "via": {
+          "owner": {
+            "self": "Sie sind Eigentümer dieses Chats.",
+            "other": "{{name}} ist Eigentümer dieses Chats."
+          },
+          "direct": {
+            "self": "Sie können diesen Chat {{action}}, weil er direkt mit Ihnen geteilt wurde.",
+            "other": "{{name}} kann diesen Chat {{action}}, weil er direkt mit der Person geteilt wurde."
+          },
+          "team": {
+            "self": "Sie können diesen Chat über das Team {{team}} {{action}}.",
+            "other": "{{name}} kann diesen Chat über das Team {{team}} {{action}}."
+          },
+          "teamUnnamed": {
+            "self": "Sie können diesen Chat über eines Ihrer Teams {{action}}.",
+            "other": "{{name}} kann diesen Chat über eines ihrer Teams {{action}}."
+          },
+          "teamRedacted": {
+            "self": "Sie können diesen Chat über ein Team {{action}}, dem Sie nicht angehören.",
+            "other": "{{name}} kann diesen Chat über ein Team {{action}}, dem Sie nicht angehören."
+          },
+          "project": {
+            "self": "Sie können diesen Chat {{action}}, weil er zu einem Projekt gehört, auf das Sie Zugriff haben.",
+            "other": "{{name}} kann diesen Chat über das Projekt {{action}}, zu dem er gehört."
+          }
+        },
+        "visibilityLabel": "Für Projektmitglieder sichtbar",
+        "visibilityHelp": "Wenn aktiviert, kann jeder mit Zugriff auf das Projekt diesen Chat öffnen. Wenn deaktiviert, nur die Personen, mit denen Sie ihn geteilt haben.",
+        "shareLimit": "Sie können höchstens {{max}} Personen oder Teams auf einmal hinzufügen. Entfernen Sie {{over}}, um fortzufahren.",
+        "dialog": {
+          "title": "Zugriffsänderungen prüfen",
+          "descriptionLink": "Wenn Sie diesen Chat in ein Projekt verschieben, ändert sich, wer ihn öffnen kann.",
+          "descriptionUnlink": "Wenn Sie diesen Chat aus seinem Projekt entfernen, ändert sich, wer ihn öffnen kann.",
+          "descriptionVisibilityProject": "Projektmitglieder können diesen Chat öffnen.",
+          "descriptionVisibilityPrivate": "Nur Sie und die Personen, mit denen Sie diesen Chat geteilt haben, können ihn öffnen.",
+          "loading": "Betroffene Personen werden ermittelt…",
+          "previewFailed": "Die Betroffenen konnten nicht ermittelt werden, daher wurde nichts geändert. Schließen Sie das Fenster und versuchen Sie es erneut.",
+          "projectUnavailable": "Dieses Projekt ist für Sie nicht verfügbar, daher wurde nichts geändert.",
+          "applyFailed": "Die Änderung konnte nicht angewendet werden. Es wurde nichts geändert.",
+          "apply": "Anwenden",
+          "applying": "Wird angewendet…",
+          "gains": "Erhalten Zugriff",
+          "loses": "Verlieren Zugriff",
+          "becomesReadOnly": "Nur noch Lesezugriff",
+          "noChanges": "Der Zugriff ändert sich für niemanden.",
+          "truncated": "Diese Liste ist unvollständig: Es wurden nur die ersten Personen und Teams geprüft.",
+          "row": "{{name}} · {{role}}"
+        },
+        "removeSelection": "{{name}} entfernen"
+      },
+      "header": {
+        "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
+        "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen"
+      },
+      "accessLostBannerEmpty": "Dieser Chat ist für Sie nicht verfügbar. Er wurde möglicherweise gelöscht oder Ihr Zugriff wurde entfernt.",
+      "draft": {
+        "willShare": "Wird geteilt mit",
+        "edit": "Ändern, mit wem dieser Chat geteilt wird",
+        "remove": "{{name}} entfernen",
+        "entry": "{{name}} ({{level}})"
+      }
+    },
+    "agentDraft": {
+      "label": "Agentenentwurf",
+      "draftedBy": "{{name}} hat einen Agenten entworfen",
+      "someone": "Jemand",
+      "name": "Name",
+      "handle": "Handle",
+      "handleChecking": "Verfügbarkeit wird geprüft…",
+      "handleAvailable": "Verfügbar",
+      "handleTaken": "@{{handle}} ist bereits vergeben",
+      "handleReserved": "@{{handle}} ist reserviert",
+      "handleInvalid": "2–40 Kleinbuchstaben, Ziffern oder Bindestriche verwenden",
+      "useSuggestion": "@{{suggestion}} verwenden",
+      "description": "Beschreibung",
+      "instructions": "Anweisungen",
+      "knowledge": "Wissen",
+      "knowledgeFallback": "Wissensquelle {{id}}",
+      "unavailable": "Für Sie nicht mehr verfügbar",
+      "tools": "Tools",
+      "toolsHint": "Nichts wird aktiviert, solange Sie es nicht auswählen.",
+      "toolNotSetUp": "Für Sie nicht eingerichtet",
+      "contentBanner": "Aus Dokumentinhalt vorgeschlagen",
+      "contentBannerBody": "Ein Teil dieses Entwurfs stammt aus einem Dokument oder der Nachricht einer anderen Person. Prüfen Sie ihn, bevor Sie den Agenten erstellen.",
+      "private": "Privat – nur Sie können ihn nutzen",
+      "savingDraft": "Entwurf wird gespeichert…",
+      "create": "Agent erstellen",
+      "createdTitle": "@{{handle}} erstellt (privat)",
+      "openAgentChat": "Agent-Chat öffnen",
+      "builderOff": "Der Agent-Builder ist deaktiviert",
+      "errorGeneric": "Der Agent konnte nicht erstellt werden. Bitte versuchen Sie es erneut.",
+      "showInstructions": "Anweisungen anzeigen",
+      "hideInstructions": "Anweisungen ausblenden",
+      "actions": "Aktionen",
+      "allActionsOf": "Alle Aktionen von {{name}}",
+      "showAll": "Alle {{count}} anzeigen",
+      "showFewer": "Weniger anzeigen",
+      "webSearch": "Im Web suchen",
+      "webSearchProvider": "Mit {{provider}}",
+      "unresolvedTitle": "Nicht hinzugefügt",
+      "unresolvedNotFound": "„{{query}}“ wurde unter dem, was Sie nutzen können, nicht gefunden.",
+      "unresolvedAmbiguous": "„{{query}}“ kann mehrere Treffer bedeuten: {{candidates}}. Wählen Sie über „Hinzufügen“ den gewünschten aus.",
+      "unresolvedNotConnected": "„{{query}}“ ist für Sie noch nicht verbunden.",
+      "unresolvedUnavailable": "„{{query}}“ ist derzeit nicht verfügbar.",
+      "connect": "Verbinden",
+      "addKnowledge": "Wissen hinzufügen",
+      "addActions": "Aktionen hinzufügen",
+      "pickerKnowledgeTitle": "Wissen hinzufügen",
+      "pickerActionsTitle": "Aktionen hinzufügen",
+      "pickerHint": "Es werden nur Inhalte angezeigt, auf die Sie Zugriff haben.",
+      "pickerSearch": "Suchen",
+      "pickerLoading": "Wird geladen…",
+      "pickerEmpty": "Es gibt nichts zum Hinzufügen.",
+      "pickerNoMatch": "Keine Treffer.",
+      "pickerError": "Diese Liste konnte nicht geladen werden.",
+      "pickerRetry": "Erneut versuchen",
+      "pickerCancel": "Abbrechen",
+      "pickerAdd": "Hinzufügen",
+      "pickerAddCount": "Hinzufügen ({{count}})",
+      "pickerAdded": "Hinzugefügt",
+      "kindCollection": "Sammlung",
+      "kindConnector": "Konnektor",
+      "summaryKnowledge_one": "{{count}} Wissensquelle",
+      "summaryKnowledge_other": "{{count}} Wissensquellen",
+      "summaryActions_one": "{{count}} Aktion",
+      "summaryActions_other": "{{count}} Aktionen",
+      "summaryWebSearch": "Websuche ({{provider}})",
+      "summaryNothing": "Noch kein Wissen, keine Aktionen und keine Websuche",
+      "attached": "Angehängt: {{summary}}",
+      "editAgent": "Agent bearbeiten",
+      "superseded": "Im neueren Entwurf weiter unten aktualisiert",
+      "supersededShow": "Anzeigen",
+      "supersededHide": "Ausblenden"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -3600,6 +4014,21 @@
     "agentName": "Agentenname",
     "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
+    "handle": {
+      "label": "Handle",
+      "hint": "Damit wird dieser Agent in Chats per @ erwähnt.",
+      "derivedHint": "Aus dem Namen erzeugt. Bearbeiten Sie ihn, um einen eigenen zu wählen.",
+      "edit": "Handle bearbeiten",
+      "placeholder": "z. B. support-bot",
+      "inputAria": "Agent-Handle",
+      "done": "Handle übernehmen",
+      "cancel": "Bearbeiten des Handles abbrechen",
+      "invalid": "Verwenden Sie 2–40 Kleinbuchstaben, Ziffern oder Bindestriche.",
+      "reserved": "@{{handle}} ist reserviert. Wählen Sie einen anderen Handle.",
+      "taken": "@{{handle}} ist in Ihrer Organisation bereits vergeben.",
+      "takenSuggestion": "@{{handle}} ist bereits vergeben. Versuchen Sie @{{suggestion}}.",
+      "useSuggestion": "@{{suggestion}} verwenden"
+    },
     "serviceAccountBadge": "Service-Agent",
     "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt dedizierte Toolset-Anmeldedaten und organisationsweiten Wissenszugriff für alle Nutzer.",
     "convertToServiceAccount": "In Service-Agent umwandeln",
@@ -3963,6 +4392,7 @@
     "openExternal": "Öffnen",
     "previewUnavailable": "Vorschau für diesen Datensatztyp nicht verfügbar.",
     "permissionOwner": "Inhaber",
+    "permissionCommenter": "Kommentator",
     "permissionReader": "Leser",
     "permissionWriter": "Bearbeiter",
     "labels": {
@@ -4202,8 +4632,8 @@
     "somethingElse": "Etwas anderes",
     "questionAskedSingular": "Gestellte Frage:",
     "questionAskedPlural": "Gestellte Fragen:",
-    "quickQuestionSingular": "Kurze Frage :",
-    "quickQuestionPlural": "Kurze Fragen :",
+    "quickQuestionSingular": "Kurze Frage:",
+    "quickQuestionPlural": "Kurze Fragen:",
     "stepOf": "Schritt {{step}} von {{total}}",
     "selectedCount": "{{count}} ausgewählt",
     "describeYourAnswer": "Beschreiben Sie Ihre Antwort…",
@@ -4364,6 +4794,10 @@
         "label": "Kann bearbeiten",
         "description": "Darf Dateien und Ordner nur bearbeiten und organisieren"
       },
+      "commenter": {
+        "label": "Kann kommentieren",
+        "description": "Ansehen und kommentieren, ohne zu bearbeiten"
+      },
       "reader": {
         "label": "Kann ansehen",
         "description": "Nur Lesezugriff"
@@ -4371,7 +4805,8 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
-    "invite": "Zu PipesHub einladen"
+    "invite": "Zu PipesHub einladen",
+    "andMore": "und {{count}} weitere"
   },
   "demoData": {
     "badge": {

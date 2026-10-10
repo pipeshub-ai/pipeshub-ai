@@ -361,6 +361,31 @@ class TestBuildPriorRoutingMessages:
         blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_access_check_is_scoped_to_this_chat(self) -> None:
+        """A collaborator's history attachment goes to the PDP for this chat and its aclVersion."""
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock(return_value=None)
+        check = AsyncMock(return_value=False)
+        with patch("app.utils.record_access.caller_can_read_virtual_record", check):
+            await _build_prior_routing_messages(
+                {
+                    "conversationId": "conv-7",
+                    "aclVersion": 4,
+                    "previous_conversations": [{
+                        "role": "user_query",
+                        "content": "read this",
+                        "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-b"}],
+                    }],
+                },
+                blob_store=blob, org_id="org-x", user_id="u1", graph_provider=_readable_graph(),
+                is_multimodal_llm=False,
+            )
+        assert check.await_args.kwargs["conversation_id"] == "conv-7"
+        assert check.await_args.kwargs["acl_version"] == 4
+        blob.get_record_from_storage.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_skips_pdf_row_when_vrid_missing(self) -> None:
         from app.api.routes.agent import _build_prior_routing_messages
         blob = MagicMock()

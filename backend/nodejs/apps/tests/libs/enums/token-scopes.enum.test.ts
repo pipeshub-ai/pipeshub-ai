@@ -37,6 +37,25 @@ describe('TokenScopes', () => {
   it('should have CONVERSATION_PERMISSIONS as "conversation:permissions"', () => {
     expect(TokenScopes.CONVERSATION_PERMISSIONS).to.equal('conversation:permissions');
   });
+  it('should have TEAM_IDS_READ as "team:ids:read"', () => {
+    expect(TokenScopes.TEAM_IDS_READ).to.equal('team:ids:read');
+  });
+
+  it('should have CONVERSATION_CANCEL as "conversation:cancel" and keep it off the user-action scopes', () => {
+    expect(TokenScopes.CONVERSATION_CANCEL).to.equal('conversation:cancel');
+    expect(isUserActionScope(TokenScopes.CONVERSATION_CANCEL)).to.be.false;
+  });
+
+  it('should have AGENT_CREATE_FROM_CHAT as "agent:create:chat" and keep it off the user-action scopes', () => {
+    expect(TokenScopes.AGENT_CREATE_FROM_CHAT).to.equal('agent:create:chat');
+    expect(isUserActionScope(TokenScopes.AGENT_CREATE_FROM_CHAT)).to.be.false;
+  });
+
+  it('should have AUTHZ_CHECK as "authz:check" and keep it off the user-action scopes', () => {
+    expect(TokenScopes.AUTHZ_CHECK).to.equal('authz:check');
+    expect(isUserActionScope(TokenScopes.AUTHZ_CHECK)).to.be.false;
+  });
+
   it('should have VALIDATE_EMAIL as "email:validate"', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
@@ -61,8 +80,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
   });
 
-  it('should have exactly 14 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(14);
+  it('should have exactly 18 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(18);
   });
 
   it('should contain only the expected keys', () => {
@@ -75,6 +94,10 @@ describe('TokenScopes', () => {
       'STORAGE_TOKEN',
       'CONVERSATION_CREATE',
       'CONVERSATION_PERMISSIONS',
+      'TEAM_IDS_READ',
+      'AUTHZ_CHECK',
+      'CONVERSATION_CANCEL',
+      'AGENT_CREATE_FROM_CHAT',
       'VALIDATE_EMAIL',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',

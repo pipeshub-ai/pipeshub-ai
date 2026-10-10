@@ -33,6 +33,11 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
+import {
+  getParsedSmtpConfig,
+  invalidateSmtpStatusCache,
+  isSmtpConfigured,
+} from '../utils/smtp-status';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import {
@@ -494,6 +499,7 @@ export const createSmtpConfig =
         configPaths.smtp,
         encryptedSmtpConfig,
       );
+      invalidateSmtpStatusCache();
       const config = {
         method: 'post' as const,
         url: `${communicationBackend}/api/v1/mail/updateSmtpConfig`,
@@ -517,25 +523,6 @@ export const createSmtpConfig =
       next(error);
     }
   };
-
-/** Loads, decrypts, and parses the stored SMTP config. Returns `null` when none is set. */
-const getParsedSmtpConfig = async (
-  keyValueStoreService: KeyValueStoreService,
-): Promise<Record<string, unknown> | null> => {
-  const configManagerConfig = loadConfigurationManagerConfig();
-  const encryptedSmtpConfig = await keyValueStoreService.get<string>(
-    configPaths.smtp,
-  );
-  if (!encryptedSmtpConfig) {
-    return null;
-  }
-  return JSON.parse(
-    EncryptionService.getInstance(
-      configManagerConfig.algorithm,
-      configManagerConfig.secretKey,
-    ).decrypt(encryptedSmtpConfig),
-  ) as Record<string, unknown>;
-};
 
 export const getSmtpConfig =
   (keyValueStoreService: KeyValueStoreService) =>
@@ -569,10 +556,7 @@ export const getSmtpConfigStatus =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
-      const configured = Boolean(
-        smtpConfig?.host && smtpConfig?.port && smtpConfig?.fromEmail,
-      );
+      const configured = await isSmtpConfigured(keyValueStoreService);
       res.status(200).json({ configured }).end();
     } catch (error: any) {
       logger.error('Error getting smtp config status', { error });
@@ -871,6 +855,10 @@ export const setPlatformSettings =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { fileUploadMaxSizeBytes, featureFlags } = req.body;
+      // Merge over the stored flags: a client that sends only the flags it knows about (Labs lists
+      // only non-hidden ones) must not reset every other flag to its default.
+      const stored = await getPlatformSettingsFromStore(keyValueStoreService);
+      const mergedFlags = { ...stored.featureFlags, ...(featureFlags ?? {}) };
       const configManagerConfig = loadConfigurationManagerConfig();
       const encryptedPlatformSettings = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -878,7 +866,7 @@ export const setPlatformSettings =
       ).encrypt(
         JSON.stringify({
           fileUploadMaxSizeBytes,
-          featureFlags,
+          featureFlags: mergedFlags,
           updatedAt: new Date().toISOString(),
         }),
       );

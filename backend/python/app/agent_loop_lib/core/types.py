@@ -195,3 +195,7 @@ class AgentResult(BaseModel):
     confidence: Confidence | None = None
     record_ids: list[str] = Field(default_factory=list)
     needs_input: str | None = None
+    # Name of the tool whose result became `output` verbatim (see
+    # `DirectAnswerTool` in `agent/tool_loop.py`); `None` for an answer the
+    # run wrote itself.
+    answered_by: str | None = None

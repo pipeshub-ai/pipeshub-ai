@@ -180,6 +180,29 @@ class TestConnect:
 
     @pytest.mark.asyncio
     @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_connect_dials_the_stored_grpc_port(self, mock_client_cls):
+        """The stored config has `grpcPort`; without passing it the client dials 6334 whatever the deployment maps."""
+        mock_client_cls.return_value = MagicMock()
+        svc = QdrantService(QdrantConfig(host="localhost", port=6333, api_key="k", prefer_grpc=True, grpc_port=7334))
+        await svc.connect()
+        assert mock_client_cls.call_args[1]["grpc_port"] == 7334
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_connect_without_a_grpc_port_keeps_the_client_default(self, mock_client_cls, qdrant_config):
+        mock_client_cls.return_value = MagicMock()
+        await QdrantService(qdrant_config).connect()
+        assert "grpc_port" not in mock_client_cls.call_args[1]
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
+    async def test_connect_over_rest_ignores_the_grpc_port(self, mock_client_cls):
+        mock_client_cls.return_value = MagicMock()
+        await QdrantService(QdrantConfig(host="localhost", port=6333, prefer_grpc=False, grpc_port=7334)).connect()
+        assert "grpc_port" not in mock_client_cls.call_args[1]
+
+    @pytest.mark.asyncio
+    @patch("app.services.vector_db.qdrant.qdrant.AsyncQdrantClient")
     async def test_connect_with_config_service(self, mock_client_cls, mock_config_service):
         mock_client_cls.return_value = MagicMock()
 

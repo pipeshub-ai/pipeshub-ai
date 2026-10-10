@@ -63,6 +63,14 @@ export interface AIServiceResponse {
   msg?: string;
 }
 
+export const COLLAB_FLAG_KEYS = {
+  collaborativeChats: 'ENABLE_COLLABORATIVE_CHATS',
+  chatMentions: 'ENABLE_CHAT_MENTIONS',
+  chatAgentBuilder: 'ENABLE_CHAT_AGENT_BUILDER',
+  chatShareEmails: 'ENABLE_CHAT_SHARE_EMAILS',
+  orgWideChatWrite: 'ALLOW_ORG_WIDE_CHAT_WRITE',
+} as const;
+
 // Platform feature flags (maintainable list)
 export interface PlatformFeatureFlagDef {
   key: string;
@@ -82,7 +90,8 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
   {
     key: 'ENABLE_BETA_CONNECTORS',
     label: 'Enable Beta Connectors',
-    description: 'Allow usage of beta connector integrations that may be unstable.',
+    description:
+      'Allow usage of beta connector integrations that may be unstable.',
     defaultEnabled: false,
     hidden: true,
   },
@@ -141,5 +150,40 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
     defaultEnabled: true,
+  },
+  {
+    key: COLLAB_FLAG_KEYS.collaborativeChats,
+    label: 'Enable Collaborative Chats',
+    description:
+      'Share chats with people and teams, who can read them or continue them with their own access. Turn on only once the API, the Python services and the graph migrations run the same release.',
+    defaultEnabled: false,
+  },
+  {
+    key: COLLAB_FLAG_KEYS.chatMentions,
+    label: 'Enable Chat Mentions',
+    description:
+      'Notes and @mentions of people and agents inside shared chats. Needs Collaborative Chats on.',
+    defaultEnabled: false,
+  },
+  {
+    key: COLLAB_FLAG_KEYS.chatAgentBuilder,
+    label: 'Enable Chat Agent Builder',
+    description:
+      'Let the assistant draft an agent from a chat, which the user then creates. Needs Collaborative Chats and Chat Mentions on.',
+    defaultEnabled: false,
+  },
+  {
+    key: COLLAB_FLAG_KEYS.chatShareEmails,
+    label: 'Enable Chat Share Emails',
+    description:
+      'Email people when a chat is shared with them or ownership is transferred to them. Only applies while Collaborative Chats is on and email is configured.',
+    defaultEnabled: true,
+  },
+  {
+    key: COLLAB_FLAG_KEYS.orgWideChatWrite,
+    label: 'Allow Org-wide Chat Write Access',
+    description:
+      'Allow sharing a chat with the whole organization at the continue level. When off, organization-wide shares are view-only.',
+    defaultEnabled: false,
   },
 ];

@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Background,
@@ -23,14 +23,8 @@ import { FlowNode } from './flow-node';
 import CustomEdge from './custom-edge';
 import { handleFlowCanvasDrop } from './canvas-drop-handler';
 import { FLOW_EDGE } from '../flow-theme';
-
-/** Framing when the flow first loads (existing agents start from an empty graph, then hydrate). */
-const AGENT_BUILDER_FLOW_FIT = {
-  padding: 0.08,
-  minZoom: 0.25,
-  maxZoom: 1.38,
-  duration: 0,
-} as const;
+import { AGENT_BUILDER_FLOW_FIT, initialFitOptions } from './canvas-fit';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 function CanvasControlsInner() {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
@@ -106,6 +100,8 @@ export function AgentBuilderCanvas(props: {
 
   const { t } = useTranslation();
   const rfRef = useRef<ReactFlowInstance<Node<FlowNodeData>> | null>(null);
+  const [flowReady, setFlowReady] = useState(false);
+  const isMobile = useIsMobile();
   /** After `nodes` hydrate from the server, fit once (initial `fitView` on an empty graph does not update). */
   const needsInitialFlowFitRef = useRef(true);
 
@@ -170,6 +166,11 @@ export function AgentBuilderCanvas(props: {
     ]
   );
 
+  // `useIsMobile` reports false until mount, so the first desktop-style fit must be redone at phone width.
+  useEffect(() => {
+    needsInitialFlowFitRef.current = true;
+  }, [isMobile]);
+
   useEffect(() => {
     if (nodes.length === 0) {
       needsInitialFlowFitRef.current = true;
@@ -183,7 +184,7 @@ export function AgentBuilderCanvas(props: {
     let didFit = false;
     const run = () => {
       if (cancelled) return;
-      inst.fitView({ ...AGENT_BUILDER_FLOW_FIT });
+      inst.fitView(initialFitOptions(inst.getNodes(), isMobile));
       didFit = true;
       needsInitialFlowFitRef.current = false;
     };
@@ -198,7 +199,7 @@ export function AgentBuilderCanvas(props: {
       if (innerRaf) cancelAnimationFrame(innerRaf);
       if (!didFit) needsInitialFlowFitRef.current = true;
     };
-  }, [nodes.length]);
+  }, [nodes.length, flowReady, isMobile]);
 
   return (
     <Box
@@ -213,6 +214,7 @@ export function AgentBuilderCanvas(props: {
       <ReactFlow
         onInit={(instance) => {
           rfRef.current = instance;
+          setFlowReady(true);
         }}
         nodes={nodes}
         edges={edges}
@@ -236,8 +238,8 @@ export function AgentBuilderCanvas(props: {
         }}
         style={{ width: '100%', height: '100%' }}
         panOnScroll
-        selectionOnDrag={!readOnly}
-        panOnDrag={readOnly ? true : [1, 2]}
+        selectionOnDrag={!readOnly && !isMobile}
+        panOnDrag={readOnly || isMobile ? true : [1, 2]}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
         proOptions={{ hideAttribution: true }}

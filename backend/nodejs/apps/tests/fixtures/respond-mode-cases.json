@@ -1,0 +1,484 @@
+[
+  {
+    "name": "smart/chat: no mentions",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [],
+    "expected": "assistant"
+  },
+  {
+    "name": "smart/chat: user",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/chat: team",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/chat: user+team",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/chat: assistant",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "smart/chat: agent",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "agent",
+        "id": "agent-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "smart/chat: user+assistant",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "assistant",
+        "id": "assistant-1"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "smart/chat: team+agent",
+    "respondMode": "smart",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      },
+      {
+        "type": "agent",
+        "id": "agent-1"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "mention_only/chat: no mentions",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/chat: user",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/chat: user+team",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/chat: assistant",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "mention_only/chat: agent",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "agent",
+        "id": "agent-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "mention_only/chat: user+assistant",
+    "respondMode": "mention_only",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "assistant",
+        "id": "assistant-1"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "always/chat: no mentions",
+    "respondMode": "always",
+    "sessionKind": "chat",
+    "mentions": [],
+    "expected": "assistant"
+  },
+  {
+    "name": "always/chat: user",
+    "respondMode": "always",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "always/chat: team",
+    "respondMode": "always",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "always/chat: assistant",
+    "respondMode": "always",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "always/chat: user+team+agent",
+    "respondMode": "always",
+    "sessionKind": "chat",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      },
+      {
+        "type": "agent",
+        "id": "agent-2"
+      }
+    ],
+    "expected": "assistant"
+  },
+  {
+    "name": "smart/agent: no mentions",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [],
+    "expected": "own_agent"
+  },
+  {
+    "name": "smart/agent: user",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/agent: team",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/agent: user+team",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "smart/agent: assistant",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "smart/agent: agent",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "agent",
+        "id": "agent-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "smart/agent: user+assistant",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "assistant",
+        "id": "assistant-1"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "smart/agent: team+agent",
+    "respondMode": "smart",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      },
+      {
+        "type": "agent",
+        "id": "agent-1"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "mention_only/agent: no mentions",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/agent: user",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/agent: user+team",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      }
+    ],
+    "expected": "note"
+  },
+  {
+    "name": "mention_only/agent: assistant",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "mention_only/agent: agent",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "agent",
+        "id": "agent-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "mention_only/agent: user+assistant",
+    "respondMode": "mention_only",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "assistant",
+        "id": "assistant-1"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "always/agent: no mentions",
+    "respondMode": "always",
+    "sessionKind": "agent",
+    "mentions": [],
+    "expected": "own_agent"
+  },
+  {
+    "name": "always/agent: user",
+    "respondMode": "always",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "always/agent: team",
+    "respondMode": "always",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "team",
+        "id": "team-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "always/agent: assistant",
+    "respondMode": "always",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "assistant",
+        "id": "assistant-0"
+      }
+    ],
+    "expected": "own_agent"
+  },
+  {
+    "name": "always/agent: user+team+agent",
+    "respondMode": "always",
+    "sessionKind": "agent",
+    "mentions": [
+      {
+        "type": "user",
+        "id": "user-0"
+      },
+      {
+        "type": "team",
+        "id": "team-1"
+      },
+      {
+        "type": "agent",
+        "id": "agent-2"
+      }
+    ],
+    "expected": "own_agent"
+  }
+]

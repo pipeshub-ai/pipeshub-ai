@@ -646,6 +646,7 @@ class ImageGenerator:
                             graph_provider=graph_provider,
                             connector_name=Connectors.IMAGE_GENERATION,
                             source_tool="image_generator.generate_image",
+                            run_id=(self.chat_state or {}).get("run_id"),
                         )
                 except Exception:
                     logger.exception(

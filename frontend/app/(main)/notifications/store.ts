@@ -63,6 +63,9 @@ interface NotificationState {
   loadMore: () => Promise<void>;
   ensureBackfill: () => Promise<void>;
   addNotification: (item: NotificationListItem) => void;
+  upsertNotification: (item: NotificationListItem) => void;
+  mutedSessionIds: string[];
+  setMutedSessionIds: (ids: string[]) => void;
   markRead: (id: string) => void;
   markUnread: (id: string) => void;
   markAllRead: () => void;
@@ -78,7 +81,10 @@ function dedupeAppend(
   const seen = new Set(existing.map((n) => n._id));
   const merged = [...existing];
   for (const item of incoming) {
-    if (item._id && !seen.has(item._id)) {
+    if (item._id && seen.has(item._id)) {
+      const at = merged.findIndex((n) => n._id === item._id);
+      if (item.context && !merged[at].context) merged[at] = { ...merged[at], context: item.context };
+    } else if (item._id) {
       seen.add(item._id);
       merged.push(item);
     }
@@ -160,12 +166,28 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
     const prev = get().notifications;
     const isDuplicate = prev.some((n) => n._id === item._id);
     const wasUnread = item.status === 'unread';
-    const next = [item, ...prev.filter((n) => n._id !== item._id)];
+    const kept = prev.find((n) => n._id === item._id);
+    const row = !item.context && kept?.context ? { ...item, context: kept.context } : item;
+    const next = [row, ...prev.filter((n) => n._id !== item._id)];
     set({
       notifications: next,
       unreadCount: !isDuplicate && wasUnread ? get().unreadCount + 1 : get().unreadCount,
     });
   },
+
+  upsertNotification: (item) => {
+    const prev = get().notifications;
+    const existing = prev.find((n) => n._id === item._id);
+    const gainsUnread = item.status === 'unread' && existing?.status !== 'unread';
+    const row = !item.context && existing?.context ? { ...item, context: existing.context } : item;
+    set({
+      notifications: [row, ...prev.filter((n) => n._id !== item._id)],
+      unreadCount: gainsUnread ? get().unreadCount + 1 : get().unreadCount,
+    });
+  },
+
+  mutedSessionIds: [],
+  setMutedSessionIds: (ids) => set({ mutedSessionIds: ids }),
 
   markRead: (id) => {
     const next = get().notifications.map((n) =>

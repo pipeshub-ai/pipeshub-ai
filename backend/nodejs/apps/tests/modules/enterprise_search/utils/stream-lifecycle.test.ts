@@ -232,4 +232,29 @@ describe('stream-lifecycle', () => {
       expect(acc.getText()).to.equal('full running text so far and more')
     })
   })
+
+  describe('abort (server-initiated stop)', () => {
+    it('aborts the signal and destroys the bound stream without calling it a client disconnect', () => {
+      const handle = attachUpstreamAbort(createMockRes(), 'req-1')
+      const stream = new Readable({ read() {} })
+      handle.bindStream(stream)
+
+      handle.abort()
+
+      expect(handle.signal.aborted).to.equal(true)
+      expect(handle.isAborted()).to.equal(true)
+      expect(handle.isClientDisconnected()).to.equal(false)
+      expect(stream.destroyed).to.equal(true)
+    })
+
+    it('destroys a stream that is bound after the abort', () => {
+      const handle = attachUpstreamAbort(createMockRes(), 'req-1')
+      handle.abort()
+      const stream = new Readable({ read() {} })
+
+      handle.bindStream(stream)
+
+      expect(stream.destroyed).to.equal(true)
+    })
+  })
 })

@@ -8,6 +8,7 @@ const context = (extra: Record<string, unknown> = {}) => ({
   conversationId: 'c1',
   previousConversations: [{ role: 'user_query', content: 'earlier' }],
   isNewConversation: false,
+  aclVersion: 0,
   ...extra,
 })
 
@@ -44,8 +45,16 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
         currentTime: null,
         conversationId: 'c1',
         runId: null,
+        aclVersion: 0,
         chatMode: 'internal_search',
       })
+    })
+
+    it('PH07-12: carries the session aclVersion so Python keys its decision cache by it', () => {
+      const search = buildAiChatRequest({ kind: 'assistant' }, { query: 'q' }, context({ aclVersion: 7 }))
+      const agent = buildAiChatRequest({ kind: 'agent', agentKey: 'a1' }, { query: 'q' }, context({ aclVersion: 7 }))
+      expect(search.payload.aclVersion).to.equal(7)
+      expect(agent.payload.aclVersion).to.equal(7)
     })
 
     it('adds recordIds only when the turn creates the conversation', () => {

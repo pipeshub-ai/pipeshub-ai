@@ -9,6 +9,7 @@ import mongoose from 'mongoose';
 import { createNotificationRouter } from '../../../../src/modules/notification/routes/notification.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema';
+import { COLLAB_TYPES } from '../../../../src/modules/enterprise_search/services/collaboration/collab.types';
 import { encodeCursor } from '../../../../src/modules/notification/utils/notification-api.utils';
 
 // Mimics the subset of Mongo query semantics buildRetentionFilter relies on
@@ -75,6 +76,10 @@ describe('notification/routes/notification.routes', () => {
       }),
     };
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(authMiddleware as any);
+    container.bind(COLLAB_TYPES.FeatureFlags).toConstantValue({ isEnabled: async () => true })
+    container
+      .bind(COLLAB_TYPES.ConversationGuards)
+      .toConstantValue({ authorize: () => sinon.stub() });
 
     const router = createNotificationRouter(container);
     app = express();

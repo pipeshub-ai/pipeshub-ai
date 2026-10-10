@@ -33,6 +33,7 @@ export const OAuthScopeNames = Object.freeze({
   CONVERSATION_READ: 'conversation:read',
   CONVERSATION_WRITE: 'conversation:write',
   CONVERSATION_CHAT: 'conversation:chat',
+  CONVERSATION_SHARE: 'conversation:share',
 
   // Agents
   AGENT_READ: 'agent:read',

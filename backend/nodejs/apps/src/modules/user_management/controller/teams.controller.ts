@@ -15,6 +15,9 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { inject, injectable } from 'inversify';
 import { UserDisplayPicture } from '../schema/userDp.schema';
+import { ChatCollaboratorCleanup } from '../../enterprise_search/services/collaboration/persistence/chat-collaborator-cleanup';
+import { ProjectService } from '../../projects/services/project.service';
+import { bumpTeamsVersion } from '../services/cached-team-directory';
 import type {
   TeamCreatedByUser,
   TeamResponse,
@@ -47,6 +50,18 @@ const handleAIServiceResponse = (
     throw new NotFoundError(`${operation} failed: ${failureMessage}`);
   }
   res.status(successStatus).json(responseData);
+};
+
+const isSuccess = (statusCode: number): boolean =>
+  statusCode >= 200 && statusCode < 300;
+
+const changesMembership = (body: unknown): boolean => {
+  if (typeof body !== 'object' || body === null) return false;
+  const { addUserRoles, removeUserIds } = body as Record<string, unknown>;
+  return (
+    (Array.isArray(addUserRoles) && addUserRoles.length > 0) ||
+    (Array.isArray(removeUserIds) && removeUserIds.length > 0)
+  );
 };
 
 // The team service wraps the team it returns: `{ data: team }` from create,
@@ -127,6 +142,10 @@ export class TeamsController {
   constructor(
     @inject('AppConfig') private config: AppConfig,
     @inject('Logger') private logger: Logger,
+    private readonly bumpVersion: (
+      orgId: string,
+      logger: Logger,
+    ) => Promise<void> = bumpTeamsVersion,
   ) {}
 
   async createTeam(
@@ -169,6 +188,7 @@ export class TeamsController {
       ) {
         throw handleBackendError(aiResponse, 'Creating team');
       }
+      await this.bumpVersion(orgId, this.logger);
       const teamData = aiResponse.data as TeamResponse | undefined;
       if (!teamData) {
         throw new NotFoundError('Creating team failed: Team not found');
@@ -274,6 +294,9 @@ export class TeamsController {
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         throw handleBackendError(aiResponse, 'Updating team');
       }
+      if (changesMembership(req.body)) {
+        await this.bumpVersion(orgId, this.logger);
+      }
       const teamData = aiResponse.data as TeamResponse | undefined;
       if (!teamData) {
         throw new NotFoundError('Updating team failed: Team not found');
@@ -320,6 +343,10 @@ export class TeamsController {
       };
       const aiCommand = new AIServiceCommand(aiCommandOptions);
       const aiResponse = await aiCommand.execute();
+      if (isSuccess(aiResponse.statusCode)) {
+        await this.bumpVersion(orgId, this.logger);
+        await this.cleanupDeletedTeam(String(orgId), teamId, requestId);
+      }
       handleAIServiceResponse(
         aiResponse,
         res,
@@ -334,6 +361,25 @@ export class TeamsController {
       });
       const handledError = handleBackendError(error, 'delete team');
       next(handledError);
+    }
+  }
+
+  // The team is already gone upstream, so a failure here is logged rather than
+  // surfaced as a failed delete; stale rows render as `deleted_team` (LC-13).
+  private async cleanupDeletedTeam(
+    orgId: string,
+    teamId: string,
+    requestId: unknown,
+  ): Promise<void> {
+    try {
+      await ChatCollaboratorCleanup.removeTeam(orgId, teamId);
+      await ProjectService.removeTeamFromAllProjects(orgId, teamId);
+    } catch (error) {
+      this.logger.error('Failed to clean up deleted team references', {
+        requestId,
+        teamId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 

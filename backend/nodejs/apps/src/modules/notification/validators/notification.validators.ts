@@ -1,9 +1,9 @@
 import { z } from 'zod';
+import { objectId as objectIdFormat } from '../../../libs/validators/zod-primitives';
+import { TIP_IDS } from '../schema/user-notification-preferences.schema';
 
-const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
-
-const objectId = (label: string) =>
-  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label}` });
+const objectId = (label: string): z.ZodString =>
+  objectIdFormat(label, `Invalid ${label}`);
 
 /** Coerce a query-string value to an integer page-size (1–100, default 20). */
 const pageSizeSchema = z.preprocess(
@@ -47,3 +47,47 @@ export const unarchiveNotificationSchema = notificationIdParams;
 
 /** `DELETE /:id` */
 export const deleteNotificationSchema = notificationIdParams;
+
+/** `GET /preferences` */
+export const getPreferencesSchema = z.object({});
+
+/** `PATCH /preferences` — a partial update of the boolean switches; unknown keys are rejected. */
+export const updatePreferencesSchema = z.object({
+  body: z
+    .object({
+      email: z
+        .object({
+          chatShared: z.boolean().optional(),
+          ownershipTransferred: z.boolean().optional(),
+          chatMentioned: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
+      inApp: z
+        .object({
+          chatActivity: z.boolean().optional(),
+          chatMentioned: z.boolean().optional(),
+        })
+        .strict()
+        .optional(),
+    })
+    .strict()
+    .refine(
+      ({ email, inApp }) =>
+        Object.values(email ?? {}).length + Object.values(inApp ?? {}).length >
+        0,
+      { message: 'At least one preference is required' },
+    ),
+});
+
+/** `PUT|DELETE /preferences/muted-sessions/:sessionId` */
+export const mutedSessionParamsSchema = z.object({
+  params: z.object({
+    sessionId: objectId('session id'),
+  }),
+});
+
+/** `PATCH /preferences/tips` */
+export const markTipSeenSchema = z.object({
+  body: z.object({ tipId: z.enum(TIP_IDS) }).strict(),
+});

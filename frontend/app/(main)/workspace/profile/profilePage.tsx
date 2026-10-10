@@ -11,7 +11,9 @@ import {
   RolesPermissionsSection,
   PasswordSecuritySection,
   DemoDataSection,
+  ChatNotificationPreferencesSection,
 } from "./components";
+import { useIsMobile } from "@/lib/hooks/use-is-mobile";
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
 import { USER_ROLES } from "../constants";
@@ -22,6 +24,7 @@ import { USER_ROLES } from "../constants";
 
 export default function ProfilePage() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     avatarInputRef,
     userId,
@@ -65,7 +68,7 @@ export default function ProfilePage() {
   }
 
   return (
-    <Box style={{ height: "100%", overflowY: "auto", position: "relative" }}>
+    <Box style={{ height: "100%", overflowY: "auto", overflowX: "hidden", position: "relative" }}>
       {/* Hidden avatar file input */}
       <input
         ref={avatarInputRef}
@@ -76,7 +79,7 @@ export default function ProfilePage() {
       />
 
       {/* Page content */}
-      <Box style={{ padding: "64px 100px" }}>
+      <Box style={{ padding: isMobile ? "var(--space-8) var(--space-4) var(--space-5)" : "64px 100px" }}>
         {/* ── Page header ── */}
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -116,6 +119,8 @@ export default function ProfilePage() {
 
         {/* ── Demo data section (only while the Acme Corp demo exists) ── */}
         <DemoDataSection isAdmin={role === USER_ROLES.ADMIN} />
+
+        <ChatNotificationPreferencesSection />
 
         {/* ── Password & Security section ── */}
         {/* Extra bottom padding so save bar doesn't overlap last section */}

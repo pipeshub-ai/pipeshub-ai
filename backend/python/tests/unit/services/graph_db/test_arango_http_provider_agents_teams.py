@@ -2011,19 +2011,19 @@ class TestGetTeamWithUsers:
             "canEdit": True, "canDelete": True, "canManageMembers": True
         }])
         connected_provider._enrich_created_by_user = AsyncMock()
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "u1", "org-1")
         assert result["id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "u1", "org-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "u1", "org-1")
         assert result is None
 
 
@@ -2054,9 +2054,46 @@ class TestGetUserTeams:
         assert count == 0
 
 
+class TestGetUserTeamIds:
+    @pytest.mark.asyncio
+    async def test_org_scoped_ids(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=["t1", "t2"])
+        assert await connected_provider.get_user_team_ids("u1", "org1", limit=5) == ["t1", "t2"]
+        bind = connected_provider.execute_query.call_args.kwargs["bind_vars"]
+        assert bind["orgId"] == "org1"
+        assert bind["limit"] == 6
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("org", [None, ""])
+    async def test_no_org_id_returns_empty_without_query(self, connected_provider, org) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=["legacy"])
+        assert await connected_provider.get_user_team_ids("u1", org) == []
+        connected_provider.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_distinct_applied_before_limit(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.get_user_team_ids("u1", "org1")
+        q = connected_provider.execute_query.call_args.args[0]
+        assert q.index("COLLECT id = team._key") < q.index("LIMIT @limit")
+
+    @pytest.mark.asyncio
+    async def test_truncation_warns_and_caps(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=["t1", "t2", "t3"])
+        connected_provider.logger = MagicMock()
+        assert await connected_provider.get_user_team_ids("u1", "org1", limit=2) == ["t1", "t2"]
+        connected_provider.logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_error_propagates(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_team_ids("u1", "org1")
+
+
 class TestGetTeamUsers:
     @pytest.mark.asyncio
-    async def test_success(self, connected_provider):
+    async def test_success(self, connected_provider) -> None:
         connected_provider.execute_query = AsyncMock(return_value=[{
             "id": "t1", "name": "Team1", "members": [{"id": "u1"}], "memberCount": 1,
             "canEdit": True, "canDelete": True, "canManageMembers": True

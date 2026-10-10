@@ -76,13 +76,30 @@ export const hydrateScopedRequestAsUser = async (
     throw new UnauthorizedError('Email not found in scoped token');
   }
 
-  const orgId = await resolveSoleOrgId();
+  const tokenOrgId = (req as AuthenticatedServiceRequest).tokenPayload?.orgId;
+  // A scoped token names its org; only a token without one falls back to the sole org.
+  const orgId = tokenOrgId ?? (await resolveSoleOrgId());
 
   const user = await Users.findOne({
     email,
     orgId,
     isDeleted: false,
   });
+
+  if (!user && tokenOrgId) {
+    const otherOrgUser = await Users.findOne({ email, isDeleted: false });
+    if (otherOrgUser) {
+      logger.warn('Scoped token rejected', { reason: 'org_mismatch' });
+      throw new UnauthorizedError('Unauthorized');
+    }
+  }
+
+  if (user?.isDisabled) {
+    throw new UnauthorizedError('This account is disabled');
+  }
+  if (user?.kind === 'service') {
+    throw new UnauthorizedError('Service accounts cannot sign in');
+  }
 
   const authTokenService = new AuthTokenService(
     appConfig.jwtSecret,

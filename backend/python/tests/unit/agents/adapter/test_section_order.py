@@ -286,3 +286,16 @@ class TestCacheSplit:
         original = dict(extra)
         _run_build_blocks(ctx, extra_sections=extra)
         assert extra == original
+
+
+class TestCollaborationSections:
+    def test_rules_is_conv_before_user_context(self) -> None:
+        vol = dict(PIPESHUB_SECTION_ORDER)
+        assert vol["collaboration_rules"] == Volatility.CONV
+        assert SECTION_NAMES.index("collaboration_rules") < SECTION_NAMES.index("user_context")
+        assert SECTION_NAMES.index("collaboration_rules") > SECTION_NAMES.index("capability_summary")
+
+    def test_sender_is_turn_after_request_context(self) -> None:
+        vol = dict(PIPESHUB_SECTION_ORDER)
+        assert vol["collaboration_sender"] == Volatility.TURN
+        assert SECTION_NAMES.index("collaboration_sender") == SECTION_NAMES.index("request_context") + 1

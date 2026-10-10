@@ -8,6 +8,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
 import { BadRequestError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+import { turnDeps } from '../helpers/turn-deps'
 
 const CONTROLLER = '../../../../src/modules/enterprise_search/controller/es_controller'
 const USER_ID = new mongoose.Types.ObjectId('aaaaaaaaaaaaaaaaaaaaaaaa')
@@ -92,10 +93,10 @@ describe('es_controller on a replica set: a failed answer is saved, not rolled b
   afterEach(() => sinon.restore())
 
   const cases = [
-    { name: 'createConversation', handler: () => controller.createConversation(appConfig as never), mark: 'markConversationFailed' as const, req: request() },
+    { name: 'createConversation', handler: () => controller.createConversation(appConfig as never, turnDeps()), mark: 'markConversationFailed' as const, req: request() },
     {
       name: 'createAgentConversation',
-      handler: () => controller.createAgentConversation(appConfig as never),
+      handler: () => controller.createAgentConversation(appConfig as never, turnDeps()),
       mark: 'markAgentConversationFailed' as const,
       req: request({ params: { agentKey: 'agent-1' } }),
     },

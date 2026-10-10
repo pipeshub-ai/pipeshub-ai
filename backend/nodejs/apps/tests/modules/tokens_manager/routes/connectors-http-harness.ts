@@ -1,4 +1,5 @@
 import 'reflect-metadata'
+import { bindCollaborationStubs } from '../../enterprise_search/helpers/collaboration-world'
 import { expect } from 'chai'
 import http, { IncomingHttpHeaders } from 'http'
 import { AddressInfo } from 'net'
@@ -6,6 +7,8 @@ import express, { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import sinon from 'sinon'
 import { Container } from 'inversify'
+import { COLLAB_TYPES } from '../../../../src/modules/enterprise_search/services/collaboration/collab.types'
+import { markingGuards } from '../../enterprise_search/helpers/guarded-chat'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
@@ -239,6 +242,9 @@ export const startHarness = async ({
   const container = new Container()
   container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(authMiddleware)
   container.bind<AppConfig>('AppConfig').toConstantValue(config)
+  container.bind(COLLAB_TYPES.ConversationGuards).toConstantValue(markingGuards())
+  container.bind(COLLAB_TYPES.ConversationTurnDeps).toConstantValue({})
+  bindCollaborationStubs(container)
   container.bind('EntitiesEventProducer').toConstantValue(entityEvents)
   container.bind('SyncEventProducer').toConstantValue(syncEvents)
   const crawlingContainer = new Container()

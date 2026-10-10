@@ -13,6 +13,7 @@ import {
 import { PROJECT_NAME_MAX_LENGTH } from '../../../../src/modules/projects/constants/constants'
 
 const VALID_OID = new mongoose.Types.ObjectId().toString()
+const TEAM_UUID = '3f2b8c1e-5a4d-4e6f-8a9b-0c1d2e3f4a5b'
 
 describe('projects/validators/project.validators', () => {
   describe('createProjectSchema', () => {
@@ -157,6 +158,15 @@ describe('projects/validators/project.validators', () => {
         body: { chatSharing: 'members' },
       })
       expect(result.success).to.equal(true)
+    })
+
+    it('accepts the projectChatAccess ceilings and rejects anything else (PH07-21)', () => {
+      const parse = (projectChatAccess: unknown) =>
+        updateProjectSchema.safeParse({ params: { projectId: VALID_OID }, body: { projectChatAccess } })
+      expect(parse('viewer').success).to.equal(true)
+      expect(parse('editor').success).to.equal(true)
+      expect(parse('owner').success).to.equal(false)
+      expect(parse('').success).to.equal(false)
     })
 
     it('rejects an empty name in a patch (name explicitly provided but blank)', () => {
@@ -329,12 +339,36 @@ describe('projects/validators/project.validators', () => {
       expect(result.success).to.equal(false)
     })
 
-    it('accepts an explicit principalType of "team"', () => {
+    it('accepts a UUID team key for principalType "team"', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: TEAM_UUID, principalType: 'team', role: 'editor' }] },
+      })
+      expect(result.success).to.equal(true)
+    })
+
+    it('accepts the all_<orgId> team key for principalType "team"', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: `all_${VALID_OID}`, principalType: 'team', role: 'viewer' }] },
+      })
+      expect(result.success).to.equal(true)
+    })
+
+    it('rejects an ObjectId as a team key (teams are string-keyed; was accepted before)', () => {
       const result = upsertProjectMembersSchema.safeParse({
         params: { projectId: VALID_OID },
         body: { members: [{ principalId: VALID_OID, principalType: 'team', role: 'editor' }] },
       })
-      expect(result.success).to.equal(true)
+      expect(result.success).to.equal(false)
+    })
+
+    it('rejects a team UUID as a user principal', () => {
+      const result = upsertProjectMembersSchema.safeParse({
+        params: { projectId: VALID_OID },
+        body: { members: [{ principalId: TEAM_UUID, role: 'editor' }] },
+      })
+      expect(result.success).to.equal(false)
     })
 
     it('rejects an invalid principalType', () => {
@@ -407,6 +441,14 @@ describe('projects/validators/project.validators', () => {
         query: { principalType: 'group' },
       })
       expect(result.success).to.equal(false)
+    })
+
+    it('accepts a team UUID as memberUserId with principalType=team', () => {
+      const result = removeProjectMemberParamsSchema.safeParse({
+        params: { projectId: VALID_OID, memberUserId: TEAM_UUID },
+        query: { principalType: 'team' },
+      })
+      expect(result.success).to.equal(true)
     })
 
     it('rejects a malformed memberUserId', () => {

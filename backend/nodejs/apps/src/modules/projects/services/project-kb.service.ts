@@ -1,5 +1,9 @@
+import { ClientSession } from 'mongoose';
+import { memberPrincipalKey } from '../../authz/loaders/project.loader';
+import { fromCanonical, toCanonical } from '../../authz/domain/role-mapper';
 import { NotFoundError, InternalServerError } from '../../../libs/errors/http.errors';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { OutboxEvent } from '../../../libs/services/outbox/outbox.schema';
 import {
   executeConnectorCommand,
   handleBackendError,
@@ -8,17 +12,53 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { Project } from '../schema/project.schema';
 import { IProjectDocument } from '../types/project.interfaces';
 
-type KbRole = 'OWNER' | 'WRITER' | 'READER';
+const ENTITY_EVENTS_TOPIC = 'entity-events';
+export const PROJECT_KB_SYNC_EVENT = 'projectKbSync';
 
-/** Maps a project member's role to the KB role granted on the linked hidden Collection — mirrors Collection sharing's own OWNER/WRITER/READER ladder. */
-const KB_ROLE_BY_PROJECT_ROLE: Record<'editor' | 'viewer', KbRole> = {
-  editor: 'WRITER',
-  viewer: 'READER',
-};
+/** Wire contract of the `projectKbSync` entity event; the Python consumer is `ProjectKbSyncPayload`. Ids are Mongo user ids and graph team keys. */
+export interface ProjectKbSyncPayload {
+  orgId: string;
+  projectId: string;
+  kbId: string;
+  ownerUserId: string;
+  editorUserIds: string[];
+  viewerUserIds: string[];
+  teams: { teamId: string; role: 'WRITER' | 'READER' }[];
+  orgVisible: boolean;
+}
 
-/** Deterministic id of the synthetic "every org member" team — see `ensure_all_team_with_users` (neo4j_provider.py ~6168). No lookup call needed; the id is a fixed `all_{orgId}` string. */
-function allOrgTeamId(orgId: string): string {
-  return `all_${orgId}`;
+/** The KB membership a project implies, with roles taken from the shared role table so Node and Python agree. */
+export function desiredKbState(
+  project: IProjectDocument,
+  kbId: string,
+  excludeUserId?: string,
+): ProjectKbSyncPayload {
+  const ownerUserId = project.userId.toString();
+  const payload: ProjectKbSyncPayload = {
+    orgId: project.orgId.toString(),
+    projectId: project._id.toString(),
+    kbId,
+    ownerUserId,
+    editorUserIds: [],
+    viewerUserIds: [],
+    teams: [],
+    orgVisible: project.visibility === 'org',
+  };
+  for (const member of project.members) {
+    const kbRole = fromCanonical('kb', toCanonical('project', member.role));
+    const principalId = memberPrincipalKey(member);
+    if (principalId === '') continue;
+    if (kbRole !== 'WRITER' && kbRole !== 'READER') continue;
+    if (member.principalType === 'team') {
+      payload.teams.push({ teamId: principalId, role: kbRole });
+    } else if (principalId !== ownerUserId && principalId !== excludeUserId) {
+      (kbRole === 'WRITER'
+        ? payload.editorUserIds
+        : payload.viewerUserIds
+      ).push(principalId);
+    }
+  }
+  return payload;
 }
 
 /**
@@ -29,56 +69,12 @@ function allOrgTeamId(orgId: string): string {
  * Mongo-only; this is the only place in the projects module that talks to
  * the Python `/api/v1/kb` HTTP surface.
  *
- * Every method that mutates graph permissions propagates failures instead
- * of swallowing them (a silently-failed revoke leaves a stale READER/WRITER
- * edge that this codebase has been bitten by before — see
- * `project.controller.ts`'s removed `syncFilePermissions` helper). Callers
- * that want best-effort behavior should catch explicitly at the call site.
+ * Permission changes are not sent to the graph from the request: they
+ * are queued as a `projectKbSync` outbox event carrying the full desired
+ * membership, and the Python reconcile makes the graph match it (adds,
+ * removals and role changes alike), retrying until it succeeds.
  */
 export class ProjectKnowledgeBaseService {
-  private static async grantUsers(
-    appConfig: AppConfig,
-    headers: Record<string, string>,
-    kbId: string,
-    userIds: string[],
-    role: KbRole,
-  ): Promise<void> {
-    if (userIds.length === 0) return;
-    const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
-      HttpMethod.POST,
-      headers,
-      { userIds, teamIds: [], role },
-    );
-    if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base user permissions');
-    }
-  }
-
-  private static async grantTeams(
-    appConfig: AppConfig,
-    headers: Record<string, string>,
-    kbId: string,
-    teamIds: string[],
-  ): Promise<void> {
-    if (teamIds.length === 0) return;
-    const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
-      HttpMethod.POST,
-      headers,
-      // No `role` — the KB permission model has no concept of a team role
-      // (`update_kb_permission` rejects one outright); every team
-      // PERMISSION edge grants the same read access via
-      // `_get_kb_virtual_ids`, regardless of the project's editor/viewer
-      // distinction for that team. A known platform-level limitation, not
-      // something this service can fix.
-      { userIds: [], teamIds },
-    );
-    if (response.statusCode !== 200 && response.statusCode !== 201) {
-      throw handleBackendError(response, 'sync project knowledge base team permissions');
-    }
-  }
-
   /**
    * Lazily creates the project's hidden linked Collection on first use and
    * returns its id — a no-op returning the existing id on every call after
@@ -153,99 +149,48 @@ export class ProjectKnowledgeBaseService {
       return winner.linkedKnowledgeBaseId;
     }
 
-    // The KB creator (whoever's headers/identity made the call above) is
-    // its implicit OWNER — grant the project's real owner and every
-    // current member their role too, in the same call that just won the
-    // race, so a lazily-created-by-an-editor KB still ends up owned by
-    // the project owner as well (documented in the plan as acceptable).
-    await this.syncMemberPermissions(appConfig, headers, won);
+    // The reconcile makes the project owner the KB's owner and demotes the
+    // lazy creator (possibly an editor) to the role their membership implies.
+    await this.enqueueSync(won);
     return kbId;
   }
 
   /**
-   * Grants (never revokes) the KB permissions implied by a project's
-   * *current* member list — the project owner as KB `OWNER`, editor/viewer
-   * users as `WRITER`/`READER`, every team member (regardless of role, see
-   * `grantTeams`) as a role-less team PERMISSION, and the synthetic
-   * `all_{orgId}` team as `READER` when `visibility === 'org'`. Idempotent:
-   * the underlying graph write is a `MERGE`, so calling this repeatedly
-   * with the same members is a safe no-op. Does not revoke a since-removed
-   * member's stale edge — callers must pair a removal with
-   * `revokePrincipalPermission`.
+   * Queues a reconcile of the project's linked KB to the project's *current*
+   * members, visibility and owner. No-op without a linked KB. The row is
+   * written in `session` when the caller has a transaction, so it commits or
+   * rolls back with the membership change. Call it after the Mongo change it
+   * reflects; a removed member is revoked simply by no longer being in the
+   * desired state. `excludeUserId` is for a caller that queues the sync
+   * before pulling that user from `members`.
    */
-  static async syncMemberPermissions(
-    appConfig: AppConfig,
-    headers: Record<string, string>,
+  static async enqueueSync(
     project: IProjectDocument,
+    session?: ClientSession,
+    excludeUserId?: string,
   ): Promise<void> {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
-
-    await this.grantUsers(appConfig, headers, kbId, [project.userId.toString()], 'OWNER');
-
-    const editorUserIds: string[] = [];
-    const viewerUserIds: string[] = [];
-    const teamIds: string[] = [];
-    for (const member of project.members) {
-      const principalId = member.principalId.toString();
-      if (member.principalType === 'team') {
-        teamIds.push(principalId);
-        continue;
-      }
-      (member.role === 'editor' ? editorUserIds : viewerUserIds).push(principalId);
-    }
-
-    await this.grantUsers(appConfig, headers, kbId, editorUserIds, KB_ROLE_BY_PROJECT_ROLE.editor);
-    await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
-    await this.grantTeams(appConfig, headers, kbId, teamIds);
-
-    if (project.visibility === 'org') {
-      await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId.toString())]);
-    }
-  }
-
-  /** Revokes one principal's KB permission — pair with every `ProjectService.removeMember` call so a removed member doesn't keep a stale READER/WRITER edge. No-op if the project has no linked KB yet, or if the principal never had a KB-level permission (upstream 404). */
-  static async revokePrincipalPermission(
-    appConfig: AppConfig,
-    headers: Record<string, string>,
-    project: IProjectDocument,
-    principalId: string,
-    principalType: 'user' | 'team',
-  ): Promise<void> {
-    const kbId = project.linkedKnowledgeBaseId;
-    if (!kbId) return;
-    const body =
-      principalType === 'team'
-        ? { userIds: [], teamIds: [principalId] }
-        : { userIds: [principalId], teamIds: [] };
-    const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
-      HttpMethod.DELETE,
-      headers,
-      body,
+    const payload = desiredKbState(project, kbId, excludeUserId);
+    await OutboxEvent.create(
+      [
+        {
+          topic: ENTITY_EVENTS_TOPIC,
+          key: PROJECT_KB_SYNC_EVENT,
+          orderingKey: `project:${payload.projectId}`,
+          value: JSON.stringify({
+            eventType: PROJECT_KB_SYNC_EVENT,
+            timestamp: Date.now(),
+            payload,
+          }),
+          headers: { eventType: PROJECT_KB_SYNC_EVENT },
+          status: 'pending' as const,
+          attempts: 0,
+          nextAttemptAt: new Date(),
+        },
+      ],
+      session ? { session } : {},
     );
-    if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base permission');
-    }
-  }
-
-  /** Revokes the `all_{orgId}` team's READER edge — call when a project's `visibility` changes away from `'org'`. No-op without a linked KB, or if the edge was never granted (upstream 404). */
-  static async revokeOrgVisibility(
-    appConfig: AppConfig,
-    headers: Record<string, string>,
-    project: IProjectDocument,
-  ): Promise<void> {
-    const kbId = project.linkedKnowledgeBaseId;
-    if (!kbId) return;
-    const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
-      HttpMethod.DELETE,
-      headers,
-      { userIds: [], teamIds: [allOrgTeamId(project.orgId.toString())] },
-    );
-    if (response.statusCode !== 200 && response.statusCode !== 404) {
-      throw handleBackendError(response, 'revoke project knowledge base org visibility');
-    }
   }
 
   /** Deletes the project's linked KB (cascades its records/vectors upstream) — idempotent; a 404 (already gone) is treated as success so a retried `softDelete` never fails on this step. No-op without a linked KB. */

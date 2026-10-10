@@ -8,6 +8,8 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createTeamsRouter } from '../../../../src/modules/user_management/routes/teams.routes'
 import { TeamsController } from '../../../../src/modules/user_management/controller/teams.controller'
+import { ChatCollaboratorCleanup } from '../../../../src/modules/enterprise_search/services/collaboration/persistence/chat-collaborator-cleanup'
+import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
@@ -177,6 +179,8 @@ describe('Teams over HTTP', () => {
             (filter.orgId === undefined || String(filter.orgId) === u.orgId),
         ) ?? null,
       )) as unknown as typeof Users.findOne)
+    sinon.stub(ChatCollaboratorCleanup, 'removeTeam').resolves({ removedFrom: 0 })
+    sinon.stub(ProjectService, 'removeTeamFromAllProjects').resolves()
     sinon.stub(UserActivities, 'findOne').callsFake((() => query(null)) as unknown as typeof UserActivities.findOne)
     sinon.stub(UserDisplayPicture, 'find').callsFake(((filter: Record<string, unknown>) => {
       pictureLookups.push(filter)

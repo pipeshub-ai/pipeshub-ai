@@ -1,65 +1,35 @@
-import { Types } from 'mongoose';
+import { displayTitle } from '../../enterprise_search/services/collaboration/mentions/mention.parser';
+import { FilterQuery, Types } from 'mongoose';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
-import { ProjectService } from '../../projects/services/project.service';
+import { IChatSession } from '../../enterprise_search/types/conversation.interfaces';
 
 /**
- * Display-only conversation titles for the artifacts gallery.
- * Authorization for the files themselves lives on the graph record ACL;
- * this join never grants access and omits titles the caller cannot see.
- *
- * The access predicate matches `buildFilter`: owner, a chat that is both
- * `isShared` and listed in `sharedWith` for this user, or a project-visible
- * chat in a project the caller can view. `isShared` alone is not enough —
- * unshare removes the viewer from `sharedWith` while leaving the chat shared
- * with others.
+ * Display-only conversation titles for the artifacts gallery. The join never
+ * grants access: a title is returned only for a conversation `readFilter`
+ * matches, which is the conversation guards' list filter for the caller (owner,
+ * share rows including teams, project chats under the project ceiling).
  */
 export class ConversationTitleService {
   static async batchTitles(
     conversationIds: string[],
-    orgId: string,
-    userId: string,
+    readFilter: FilterQuery<IChatSession>,
   ): Promise<Map<string, string>> {
-    const uniqueIds = [...new Set(conversationIds.filter(Boolean))];
-    const objectIds = uniqueIds
+    const objectIds = [...new Set(conversationIds.filter(Boolean))]
       .filter((id) => Types.ObjectId.isValid(id))
       .map((id) => new Types.ObjectId(id));
     if (!objectIds.length) {
       return new Map();
     }
 
-    const userObjectId = new Types.ObjectId(userId);
-    const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
-      orgId,
-      userId,
-    );
-
     const sessions = await ChatSession.find(
-      {
-        _id: { $in: objectIds },
-        orgId: new Types.ObjectId(orgId),
-        isDeleted: { $ne: true },
-        $or: [
-          { userId: userObjectId },
-          {
-            $and: [{ isShared: true }, { 'sharedWith.userId': userObjectId }],
-          },
-          ...(accessibleProjectIds.length > 0
-            ? [
-                {
-                  projectId: { $in: accessibleProjectIds },
-                  projectVisibility: 'project' as const,
-                },
-              ]
-            : []),
-        ],
-      },
+      { $and: [readFilter, { _id: { $in: objectIds } }] },
       { _id: 1, title: 1 },
     ).lean();
 
     return new Map(
       (sessions || []).map((session) => [
         String(session._id),
-        session.title ?? 'Untitled',
+        displayTitle(session.title) ?? 'Untitled',
       ]),
     );
   }

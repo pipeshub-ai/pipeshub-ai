@@ -250,6 +250,53 @@ elsewhere and use this only to collect:
 
 ---
 
+## Collaborative chats
+
+`locustfile_collab.py` is the manual 2k-viewer run for the collaborative-chats feed poll (PERF-02). The CI
+version (200 viewers, one Node) is `integration-tests/perf/bench_collab_poll.py`; this one answers whether
+five replicas behind a load balancer keep `GET /api/v1/conversations/:id/feed` under 50 ms p95 with 2,000
+people watching, and whether the team-id cache and the per-user limiter behave across replicas.
+
+What a simulated viewer does: log in as a real account, list the chats it owns and the ones shared with it,
+keep one to eight of them open, and poll each one every ~4 s (active window) or ~15 s (the rest), +-20%
+jitter, sending the `rev` it last saw. A 304 is a success; any other status, a 429 included, is a failure.
+`PIPESHUB_USERS` is required, not optional: the team-id cache and the limiter are keyed by user.
+
+1. **Stack.** Five Node replicas behind one load balancer, on a graph database that holds real teams. Turn
+   `ENABLE_COLLABORATIVE_CHATS` on. Give the stack as many accounts as viewers: `./seed_users.py --count 2000`
+   prints the `PIPESHUB_USERS` line.
+2. **Data.** Seed the sessions with `integration-tests/perf/collab_seed.py`:
+
+   ```bash
+   cd integration-tests
+   python perf/collab_seed.py --mongo-uri "$MONGO_URI" --db "$MONGO_DB_NAME" --org-id <org ObjectId> \
+       --sessions 5000000 --teams 2000 --output /tmp/collab-seed.json
+   ```
+
+   It writes `chatSessions` and `chatSessionMessages` directly (about 5 GB of documents at 5M sessions, plus indexes;
+   200,000 sessions seeded in 25 s on a developer host). Teams cannot be written to Mongo: the file written by `--output` lists the memberships the
+   plan expects (`team_membership`), to create in the graph. The accounts in `PIPESHUB_USERS` only see chats
+   that are theirs or shared with them, so also share some of the seeded chats with those accounts, directly and
+   through teams, or the run stops at "An account can reach no chat".
+3. **Run.**
+
+   ```bash
+   export PIPESHUB_USERS='u1@example.com:Pass1!,u2@example.com:Pass2!,...'
+   cd loadtest
+   locust -f locustfile_collab.py --headless -u 2000 -r 25 -t 15m -H https://<load balancer>
+   ```
+
+   `-r 25` ramps 2,000 viewers in under two minutes. `PIPESHUB_COLLAB_ACTIVE_FRACTION` (0.5) sets how many of a
+   viewer's windows poll at 4 s, `PIPESHUB_COLLAB_P95_MS` (50) the budget.
+4. **Read.** The run prints one line with the 200 / 304 / 429 counts and one PERF-02 verdict, and exits 1 if the
+   feed p95 is over budget or any poll failed. A user with five or more active windows exceeds the 60/min
+   `collab:feed` limit, so 429s are expected until the shared rate-limit store (PR-12.7) is in. Python
+   team-id calls are not visible to locust: count `GET /api/v1/entity/user/team-ids` in the connectors service
+   log over the same window. Expect none for owners and direct collaborators and at most one per team-only
+   viewer per cache TTL.
+
+---
+
 ## Files
 
 | file | what it does |
@@ -261,6 +308,7 @@ elsewhere and use this only to collect:
 | `set_workers.sh` | change the uvicorn worker count (restarts the container) |
 | `restart_query.sh` | restart only the query process, leaving the container up |
 | `locustfile_play.py` | optional locust scenario, if you prefer locust's latency percentiles |
+| `locustfile_collab.py` | collaborative-chats feed poll for the manual 2k-viewer run (see "Collaborative chats") |
 | `queries.txt` | the query set users draw from — **edit this for your corpus** |
 | `aggregate.py` | rolls many runs' `summary.json` into one table + `matrix.csv` |
 | `_common.sh` | sourced by the rest: finds docker (with/without sudo), finds Python, checks the container is up |

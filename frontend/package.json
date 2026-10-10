@@ -51,10 +51,15 @@
     "@lottiefiles/dotlottie-react": "^0.18.3",
     "@radix-ui/themes": "^3.2.1",
     "@react-oauth/google": "^0.13.4",
+    "@tiptap/core": "^2.27.3",
+    "@tiptap/extension-document": "^2.27.3",
     "@tiptap/extension-link": "^2.27.2",
+    "@tiptap/extension-mention": "^2.27.3",
     "@tiptap/extension-placeholder": "^2.27.2",
+    "@tiptap/pm": "^2.27.3",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
+    "@tiptap/suggestion": "^2.27.3",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vis.gl/react-google-maps": "^1.6.1",
     "@xyflow/react": "^12.10.2",
@@ -91,6 +96,7 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.59.1",
     "@testing-library/react": "^16.3.0",
     "@types/dompurify": "^3.0.5",

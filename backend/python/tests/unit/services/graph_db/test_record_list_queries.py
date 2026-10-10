@@ -133,5 +133,6 @@ async def test_a_user_on_two_teams_is_deduplicated_to_one_grant_per_kb() -> None
     await provider.list_all_records("uk1", "org1", 0, 10, None, None, None, None, None, None, None, None,
                                     "recordName", "asc", "all")
     query = provider.execute_query.await_args.args[0]
-    assert "COLLECT kb_id = access.kb_id" in query
+    # One row per KB however many teams reach it (the PH-01 S5 role query groups as `a`).
+    assert "COLLECT kb_id = a.kb_id INTO grouped" in query
     assert "FOR access IN allKbAccess" in query

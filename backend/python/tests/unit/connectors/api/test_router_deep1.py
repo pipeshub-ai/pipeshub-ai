@@ -1469,15 +1469,15 @@ class TestStreamRecordDeepPaths:
         gp.check_record_access_with_details.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_access_denied_raises_403(self):
-        """User has no access to record -> 403."""
+    async def test_access_denied_raises_404(self):
+        """User has no access to record -> 404."""
         req, record, gp, cs, conn_obj = self._setup()
         gp.check_record_access_with_details = AsyncMock(return_value=False)
 
         from app.connectors.api.router import stream_record
         with pytest.raises(HTTPException) as exc:
             await stream_record(req, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=cs)
-        assert exc.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
     async def test_connector_disabled_raises_unhealthy(self):

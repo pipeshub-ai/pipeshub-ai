@@ -301,7 +301,7 @@
   "nav": {
     "collections": "集合",
     "allRecords": "所有記錄",
-    "allArtifacts": "所有產物",
+    "allArtifacts": "我的產物",
     "workspace": "工作區",
     "shared": "與我共用",
     "private": "我的集合",
@@ -317,7 +317,7 @@
     "notifications": "通知"
   },
   "artifacts": {
-    "title": "所有產物",
+    "title": "我的產物",
     "empty": "尚無產物",
     "emptyHint": "代理程式在對話中建立的檔案會顯示在這裡。",
     "loadFailed": "無法載入產物",
@@ -360,7 +360,62 @@
     "filterTooltip": "篩選：{{filter}}",
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
-    "removeFailed": "無法移除通知"
+    "removeFailed": "無法移除通知",
+    "mention": {
+      "title": "有人提及了您",
+      "body": "有人在對話中提及了您。",
+      "bodyNamed": "{{actor}} 在「{{chat}}」中提及了您。",
+      "bodyNamedChat": "您在「{{chat}}」中被提及。",
+      "bodyNamedActor": "{{actor}} 在對話中提及了您。"
+    },
+    "collab": {
+      "note": "留言：{{note}}",
+      "mute": "將此對話設為靜音",
+      "unmute": "取消此對話的靜音",
+      "shared": {
+        "title": "有人與您共用了對話",
+        "read": "有人與您共用了一則對話，您可以檢視。",
+        "write": "有人與您共用了一則對話，您可以繼續對話。",
+        "readNamed": "{{actor}} 與您共用了「{{chat}}」，您可以檢視。",
+        "writeNamed": "{{actor}} 與您共用了「{{chat}}」，您可以繼續對話。",
+        "readNamedChat": "「{{chat}}」已與您共用，您可以檢視。",
+        "writeNamedChat": "「{{chat}}」已與您共用，您可以繼續對話。",
+        "readNamedActor": "{{actor}} 與您共用了一則對話，您可以檢視。",
+        "writeNamedActor": "{{actor}} 與您共用了一則對話，您可以繼續對話。"
+      },
+      "accessChanged": {
+        "title": "對話存取權已變更",
+        "read": "您現在可以檢視一則共用對話。",
+        "write": "您現在可以在一則共用對話中繼續對話。",
+        "readNamedChat": "您現在可以檢視「{{chat}}」。",
+        "writeNamedChat": "您現在可以在「{{chat}}」中繼續對話。"
+      },
+      "ownershipTransferred": {
+        "title": "對話擁有權已轉移",
+        "body": "您現在是一則對話的擁有者。",
+        "bodyNamedChat": "您現在是「{{chat}}」的擁有者。"
+      },
+      "deleted": {
+        "title": "對話已刪除",
+        "body": "您參與過的一則對話已被刪除。"
+      },
+      "activity": {
+        "title": "共用對話有新動態",
+        "body": "共用對話的新動態：{{total}}",
+        "bodyNamedChat": "「{{chat}}」有新動態：{{total}}"
+      },
+      "preferences": {
+        "title": "對話通知",
+        "description": "選擇接收共用對話通知的方式。",
+        "emailChatShared": "有對話與我共用時寄信給我",
+        "emailOwnershipTransferred": "我成為對話擁有者時寄信給我",
+        "inAppChatActivity": "通知我共用對話中的動態",
+        "loadFailed": "無法載入您的通知設定。",
+        "updateFailed": "無法儲存您的通知設定。",
+        "emailChatMentioned": "有人在對話中提及我時寄信給我",
+        "inAppChatMentioned": "有人在對話中提及我時通知我"
+      }
+    }
   },
   "action": {
     "find": "尋找",
@@ -659,6 +714,70 @@
     "record": "記錄"
   },
   "chat": {
+    "mentions": {
+      "assistant": "助理",
+      "unknownAgent": "未知代理",
+      "unknownUser": "未知使用者",
+      "unknownTeam": "未知團隊",
+      "groupAssistant": "助理",
+      "groupAgent": "代理",
+      "groupPeople": "此對話中的人員",
+      "groupOthers": "組織中的其他人員",
+      "groupTeams": "團隊",
+      "kindAgent": "代理",
+      "kindTeam": "團隊",
+      "notInChat": "不在此對話中",
+      "oneAgentHint": "一則訊息只能提及一個代理。",
+      "addPeople": "將人員加入此對話…",
+      "listLabel": "提及建議",
+      "loading": "搜尋中…",
+      "empty": "沒有符合的項目",
+      "resolve": {
+        "title": "@{{typed}} 是誰？",
+        "hint": "請選擇一項後再傳送。訊息尚未傳送。",
+        "team": "團隊",
+        "person": "人員",
+        "cancel": "繼續編輯",
+        "addPrompt": "將 {{name}} 加入此對話？",
+        "askOwner": "{{name}} 不在此對話中。請要求擁有者將對方加入。",
+        "addView": "可檢視",
+        "addContinue": "可繼續對話",
+        "dismiss": "稍後",
+        "added": "已加入此對話"
+      },
+      "note": {
+        "label": "備註",
+        "aria": "備註，不會傳送給助理",
+        "noAttachments": "備註不能包含附件。若要詢問檔案，請提及 @assistant。"
+      },
+      "tips": {
+        "intro": "輸入以篩選。↑ ↓ 移動，Enter 選取，Esc 關閉。",
+        "noteOnly": "只提及同事即可留下備註，不會詢問 AI",
+        "assistantAnywhere": "@assistant 隨處都能使用",
+        "agentAccess": "代理會使用您的權限回答",
+        "agentAnywhere": "在任何對話中都可以提及您有權使用的代理",
+        "gotIt": "知道了",
+        "coachmarkLabel": "提示",
+        "firstSharedSend_other": "您的訊息和回答會顯示給 {{count}} 人",
+        "firstSharedSendUnknown": "您的訊息和回答會顯示給此對話中的所有人",
+        "firstNote": "備註不會詢問 AI。若要提問，請提及 @assistant。",
+        "firstAgentMention": "此代理會使用您的權限回答，此對話中的所有人都看得到它的回覆。",
+        "emptyTitle": "此共用對話的使用建議",
+        "emptyExample1": "@assistant 摘要目前為止我們已決定的事項",
+        "emptyExample2": "@assistant 還有哪些問題尚未解決？",
+        "emptyExample3": "@同事 可以幫忙看一下嗎？（僅留下備註，AI 不回覆）",
+        "emptyMentionAction": "@ 提及同事"
+      },
+      "help": {
+        "hint": "輸入「@assistant help」，查看助理可以代您存取哪些內容。"
+      },
+      "placeholder": {
+        "solo": "隨時提問 · 輸入 @ 選擇代理",
+        "shared": "向 PipesHub 提問，或輸入 @ 提及同事或代理"
+      },
+      "you": "您",
+      "mentionsYou": "提及了您"
+    },
     "recordActions": {
       "preview": "預覽",
       "open": "開啟 {{source}}",
@@ -740,6 +859,11 @@
     "answer": "回答",
     "sources": "來源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "透過程式設計代理",
+      "web_agent": "透過網路研究",
+      "other": "透過 {{name}}"
+    },
     "thankYouForFeedback": "感謝您的意見回饋",
     "feedbackHelpsImprove": "您的意見回饋有助於我們改進",
     "feedbackError": "無法送出意見回饋",
@@ -1208,7 +1332,293 @@
       "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
-    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。"
+    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
+    "collab": {
+      "readOnlyBanner": "您可以閱讀此對話，但無法繼續對話。",
+      "readOnlyBannerOwner": "您可以檢視此對話。{{name}} 可以在其中新增內容。",
+      "accessLostBanner": "您已無法存取此對話。在您離開此頁面之前，這裡顯示的內容會一直保留。",
+      "busy": {
+        "someone": "有人",
+        "asking": "{{name}} 正在提問…",
+        "announce": "{{name}} 正在提問",
+        "askingOtherTab": "您正在另一個分頁中提問…",
+        "waiting": "正在等待 {{name}} 完成。您的訊息將自動傳送。",
+        "cancelQueued": "取消",
+        "stop": "停止"
+      },
+      "sync": {
+        "newMessages_other": "上方有 {{count}} 則新訊息。請先查看，然後重新傳送。",
+        "sendAgain": "重新傳送",
+        "edit": "編輯訊息"
+      },
+      "errors": {
+        "GENERIC": "發生問題，請再試一次。",
+        "CONVERSATION_NOT_FOUND": "您已無法存取此對話。",
+        "CONVERSATION_READ_ONLY": "您可以閱讀此對話，但無法新增內容。",
+        "CONVERSATION_OWNER_ONLY": "只有擁有者可以執行此操作。",
+        "REGENERATE_NOT_ALLOWED": "只有提問的人可以重新產生此回答。",
+        "RESUME_NOT_ALLOWED": "只有被詢問的人可以回答此問題。",
+        "OWNER_INACTIVE": "此對話的擁有者帳戶已停用，因此無法繼續。請聯絡管理員。",
+        "OWNER_STATUS_UNAVAILABLE": "無法檢查擁有者的帳戶，請稍後再試。",
+        "PROJECT_ACCESS_REQUIRED": "您需要擁有此對話所屬專案的存取權才能繼續。",
+        "TEAM_RESOLUTION_UNAVAILABLE": "目前無法檢查您的團隊存取權，請稍後再試。",
+        "CONVERSATION_BUSY": "其他人正在此對話中提問，待對方完成後您即可傳送。",
+        "CONVERSATION_CHANGED": "此對話有新訊息。請先查看，然後重新傳送。",
+        "DUPLICATE_MESSAGE": "該訊息已傳送。",
+        "RUN_LOST": "執行遭到中斷，回答已遺失。請重新傳送您的訊息。",
+        "COLLABORATOR_LIMIT": "此對話的人員和團隊數量已達上限。",
+        "MUTED_SESSIONS_LIMIT": "您設為靜音的對話數量已達上限。",
+        "CONNECTOR_SETUP_REQUIRED": "繼續之前，請先連接此代理所需的工具。",
+        "INVALID_PRINCIPAL": "部分人員或團隊無法新增。",
+        "RATE_LIMITED": "要求過多，請稍後再試。",
+        "ORG_WIDE_CONFIRMATION_REQUIRED": "請確認要與整個組織共用此對話。",
+        "AGENT_UNAVAILABLE": "此代理已無法使用，因此無法繼續對話。",
+        "MENTION_NOT_ALLOWED": "您提及的人員或代理中，有一項無法在此對話中提及。",
+        "MENTION_SA_AGENT_SHARED": "此代理以服務帳戶執行，無法在共用對話中提及。",
+        "MENTION_DIRECTORY_UNAVAILABLE": "目前無法檢查您提及的代理，請稍後再試。",
+        "MESSAGE_IS_NOTE": "此訊息未傳送給 AI：在此對話中，只有提及 @assistant 時 AI 才會回答。若要向 AI 提問，請提及 @assistant。",
+        "MESSAGE_NOT_NOTE": "備註無法向 AI 提問。請移除 @assistant 提及，以備註形式發佈。",
+        "TOO_MANY_AGENT_MENTIONS": "一則訊息只能提及一個代理。請移除多餘的提及後重新傳送。"
+      },
+      "share": {
+        "title": "分享對話",
+        "makeOwner": "設為擁有者",
+        "notice": "您新增的人員可以閱讀整個對話，包括先前的回答。他們開啟來源時，會依其自身的權限進行檢查。",
+        "searchLabel": "新增人員或團隊",
+        "noteLabel": "給收件者的留言（選填）",
+        "noteCount": "{{used}}/{{max}}",
+        "formerMember": "前成員",
+        "deletedTeam": "已刪除的團隊",
+        "removeOnly": "已不存在。您可以移除此項目。",
+        "summaryOwner": "擁有者：{{name}}",
+        "summaryCount": "有權存取的人員和團隊：{{total}}",
+        "summaryAccess": "您的權限：{{access}}",
+        "roleWrite": "可繼續對話",
+        "roleWriteDescription": "可閱讀並繼續此對話",
+        "roleRead": "可檢視",
+        "roleReadDescription": "可閱讀此對話",
+        "settingEditorsCanInvite": "編輯者可邀請",
+        "settingEditorsCanInviteDescription": "可繼續此對話的人可以新增更多人員和團隊，但不能移除任何人。",
+        "settingOwnerContentShared": "分享我的檔案和工具結果",
+        "settingOwnerContentSharedDescription": "您所傳訊息中的檔案和工具結果，此對話中的所有人都看得到。",
+        "orgWideTitle": "與整個組織分享？",
+        "orgWideMessage": "您組織中的所有人都將能閱讀此對話，但他們不會收到通知。",
+        "orgWideConfirm": "與所有人分享",
+        "largeTeamTitle": "與大型團隊分享？",
+        "largeTeamMessage": "{{name}} 有 {{members}} 位成員，他們都將取得此對話的存取權。",
+        "largeTeamConfirm": "分享",
+        "transferTitle": "將 {{name}} 設為擁有者？",
+        "transferMessage": "{{name}} 將成為此對話的擁有者，並決定誰有存取權。您將保留「可繼續對話」的權限。",
+        "transferred": "擁有權已轉移",
+        "transferredDescription": "{{name}} 現在是擁有者",
+        "rateLimited": "變更過於頻繁，請在 {{retryAfter}} 秒後再試。",
+        "limitReached": "此對話最多可新增 {{max}} 個人員和團隊。",
+        "draftNotice": "目前尚未分享任何內容。您在此新增的人員會在您傳送第一則訊息時取得存取權。",
+        "draftAdd": "新增"
+      },
+      "sidebar": {
+        "roleRead": "可檢視",
+        "roleWrite": "可繼續對話",
+        "sharedWith": "已與 {{total}} 人共用",
+        "unread": "{{total}} 則未讀訊息",
+        "menu": "對話選項",
+        "archive": "封存",
+        "unarchive": "取消封存",
+        "leave": "離開",
+        "leaving": "正在離開…",
+        "leaveTitle": "離開此對話？",
+        "leaveDescription": "您將失去此對話的存取權。擁有者可以重新加入您。",
+        "muted": "通知已靜音"
+      },
+      "attribution": {
+        "you": "您",
+        "formerMember": "前成員",
+        "sentBy": "傳送者：{{name}}",
+        "askedByAnswered": "提問者：{{name}} · 使用 {{name}} 的權限回答",
+        "askedByYouAnswered": "由您提問 · 使用您的權限回答",
+        "waitingFor": "正在等待 {{name}} 回答",
+        "respondingAgent": "代理",
+        "respondingAgentAria": "由 {{name}} 回答",
+        "forPerson": "為 {{name}} · 使用其權限",
+        "answeringPerson": "正在回答 {{name}}…"
+      },
+      "timeline": {
+        "today": "今天",
+        "yesterday": "昨天",
+        "replyingTo": "回覆 {{name}}",
+        "assistantName": "PipesHub",
+        "messageAria": "{{name}}，{{time}}",
+        "messageAriaNoTime": "{{name}}",
+        "logLabel": "對話",
+        "answerViews": "回答檢視",
+        "answerFailedTitle": "此回答失敗",
+        "answerFailedRetry": "重試"
+      },
+      "consent": {
+        "audience_other": "{{count}} 人可見 · 擁有者可新增更多人 · 您新增的檔案將會共用",
+        "audienceUnknown": "此對話中的所有人可見 · 擁有者可新增更多人 · 您新增的檔案將會共用",
+        "shareToolResults": "共用此訊息的工具結果"
+      },
+      "access": {
+        "button": "誰能看到",
+        "buttonLabel": "誰可以存取此對話",
+        "title": "此對話的存取權限",
+        "subjectLabel": "檢視存取權限的對象",
+        "subjectMe": "我",
+        "loading": "正在檢查存取權限…",
+        "loadFailed": "無法載入存取權限詳細資料。",
+        "forbidden": "您無法檢視其他人的存取權限。",
+        "retry": "再試一次",
+        "summarySelf": "您的權限：{{role}}",
+        "summaryOther": "{{name}} 的權限：{{role}}",
+        "noneSelf": "您沒有此對話的存取權限。",
+        "noneOther": "{{name}} 沒有此對話的存取權限。",
+        "unknownUser": "未知使用者",
+        "unknownTeam": "某個團隊",
+        "action": {
+          "viewer": "檢視",
+          "editor": "繼續",
+          "owner": "管理"
+        },
+        "role": {
+          "viewer": "可檢視",
+          "editor": "可繼續對話",
+          "owner": "擁有者",
+          "none": "無權限"
+        },
+        "via": {
+          "owner": {
+            "self": "您是此對話的擁有者。",
+            "other": "{{name}} 是此對話的擁有者。"
+          },
+          "direct": {
+            "self": "此對話已直接與您共用，因此您可以{{action}}此對話。",
+            "other": "此對話已直接與 {{name}} 共用，因此對方可以{{action}}此對話。"
+          },
+          "team": {
+            "self": "您可以透過「{{team}}」團隊{{action}}此對話。",
+            "other": "{{name}} 可以透過「{{team}}」團隊{{action}}此對話。"
+          },
+          "teamUnnamed": {
+            "self": "您可以透過您所屬的某個團隊{{action}}此對話。",
+            "other": "{{name}} 可以透過其所屬的某個團隊{{action}}此對話。"
+          },
+          "teamRedacted": {
+            "self": "您可以透過一個您不屬於的團隊{{action}}此對話。",
+            "other": "{{name}} 可以透過一個您不屬於的團隊{{action}}此對話。"
+          },
+          "project": {
+            "self": "此對話屬於您有權存取的專案，因此您可以{{action}}此對話。",
+            "other": "{{name}} 可以透過此對話所屬的專案{{action}}此對話。"
+          }
+        },
+        "visibilityLabel": "對專案成員可見",
+        "visibilityHelp": "開啟後，所有有權存取該專案的人都可以開啟此對話。關閉後，只有您共用的對象才能開啟。",
+        "shareLimit": "一次最多可新增 {{max}} 個人員或團隊。請移除 {{over}} 個後繼續。",
+        "dialog": {
+          "title": "確認存取權限變更",
+          "descriptionLink": "將此對話移入專案，會改變可以開啟它的人員。",
+          "descriptionUnlink": "將此對話移出所屬專案，會改變可以開啟它的人員。",
+          "descriptionVisibilityProject": "專案成員將可以開啟此對話。",
+          "descriptionVisibilityPrivate": "只有您以及您共用的對象才能開啟此對話。",
+          "loading": "正在檢查受影響的人員…",
+          "previewFailed": "無法檢查受影響的人員，因此未做任何變更。請關閉後再試一次。",
+          "projectUnavailable": "您無法使用此專案，因此未做任何變更。",
+          "applyFailed": "無法套用此變更。未做任何變更。",
+          "apply": "套用",
+          "applying": "正在套用…",
+          "gains": "將取得存取權限",
+          "loses": "將失去存取權限",
+          "becomesReadOnly": "將變為唯讀",
+          "noChanges": "沒有人的存取權限發生變化。",
+          "truncated": "此清單不完整：僅檢查了前面的部分人員和團隊。",
+          "row": "{{name}} · {{role}}"
+        },
+        "removeSelection": "移除 {{name}}"
+      },
+      "header": {
+        "peopleCanSee_other": "{{count}} 人可以查看此對話"
+      },
+      "accessLostBannerEmpty": "您無法使用此對話。它可能已被刪除，或您的存取權已被移除。",
+      "draft": {
+        "willShare": "將分享給",
+        "edit": "變更此對話的分享對象",
+        "remove": "移除 {{name}}",
+        "entry": "{{name}}（{{level}}）"
+      }
+    },
+    "agentDraft": {
+      "label": "代理草稿",
+      "draftedBy": "{{name}} 起草了一個代理",
+      "someone": "有人",
+      "name": "名稱",
+      "handle": "代稱",
+      "handleChecking": "正在檢查是否可用…",
+      "handleAvailable": "可用",
+      "handleTaken": "@{{handle}} 已被使用",
+      "handleReserved": "@{{handle}} 為保留代稱",
+      "handleInvalid": "請使用 2-40 個小寫字母、數字或連字號",
+      "useSuggestion": "使用 @{{suggestion}}",
+      "description": "說明",
+      "instructions": "指示",
+      "knowledge": "知識",
+      "knowledgeFallback": "知識來源 {{id}}",
+      "unavailable": "您已無法使用",
+      "tools": "工具",
+      "toolsHint": "在您勾選之前，不會啟用任何工具。",
+      "toolNotSetUp": "尚未為您設定",
+      "contentBanner": "根據文件內容建議",
+      "contentBannerBody": "此草稿的部分內容來自文件或他人的訊息。建立代理前請先檢查。",
+      "private": "私人 - 僅限您使用",
+      "savingDraft": "正在儲存草稿…",
+      "create": "建立代理",
+      "createdTitle": "已建立 @{{handle}}（私人）",
+      "openAgentChat": "開啟代理對話",
+      "builderOff": "代理建構器已關閉",
+      "errorGeneric": "無法建立代理，請再試一次。",
+      "showInstructions": "顯示指示",
+      "hideInstructions": "隱藏指示",
+      "actions": "動作",
+      "allActionsOf": "{{name}} 的所有動作",
+      "showAll": "顯示全部 {{count}} 項",
+      "showFewer": "收合",
+      "webSearch": "搜尋網頁",
+      "webSearchProvider": "使用 {{provider}}",
+      "unresolvedTitle": "無法加入",
+      "unresolvedNotFound": "在您可使用的項目中找不到「{{query}}」。",
+      "unresolvedAmbiguous": "「{{query}}」可能指多個項目：{{candidates}}。請使用「加入」選擇您要的項目。",
+      "unresolvedNotConnected": "「{{query}}」尚未為您連線。",
+      "unresolvedUnavailable": "「{{query}}」目前無法使用。",
+      "connect": "連線",
+      "addKnowledge": "加入知識",
+      "addActions": "加入動作",
+      "pickerKnowledgeTitle": "加入知識",
+      "pickerActionsTitle": "加入動作",
+      "pickerHint": "僅列出您有權存取的項目。",
+      "pickerSearch": "搜尋",
+      "pickerLoading": "載入中…",
+      "pickerEmpty": "沒有可加入的項目。",
+      "pickerNoMatch": "沒有符合的項目。",
+      "pickerError": "無法載入此清單。",
+      "pickerRetry": "重試",
+      "pickerCancel": "取消",
+      "pickerAdd": "加入",
+      "pickerAddCount": "加入（{{count}}）",
+      "pickerAdded": "已加入",
+      "kindCollection": "集合",
+      "kindConnector": "連接器",
+      "summaryKnowledge_one": "{{count}} 個知識來源",
+      "summaryKnowledge_other": "{{count}} 個知識來源",
+      "summaryActions_one": "{{count}} 項動作",
+      "summaryActions_other": "{{count}} 項動作",
+      "summaryWebSearch": "網頁搜尋（{{provider}}）",
+      "summaryNothing": "尚未加入知識、動作或網頁搜尋",
+      "attached": "已附加：{{summary}}",
+      "editAgent": "編輯代理",
+      "superseded": "已在下方較新的草稿中更新",
+      "supersededShow": "顯示",
+      "supersededHide": "隱藏"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -3674,6 +4084,21 @@
     "agentName": "名稱",
     "createdBy": "建立者",
     "agentNamePlaceholder": "例如：客服機器人",
+    "handle": {
+      "label": "代稱",
+      "hint": "用於在對話中以 @ 提及此代理。",
+      "derivedHint": "依名稱產生。可編輯以自訂。",
+      "edit": "編輯代稱",
+      "placeholder": "例如：support-bot",
+      "inputAria": "代理代稱",
+      "done": "套用代稱",
+      "cancel": "取消編輯代稱",
+      "invalid": "請使用 2-40 個小寫字母、數字或連字號。",
+      "reserved": "@{{handle}} 為保留代稱，請選擇其他代稱。",
+      "taken": "@{{handle}} 在您的組織中已被使用。",
+      "takenSuggestion": "@{{handle}} 已被使用。試試 @{{suggestion}}。",
+      "useSuggestion": "使用 @{{suggestion}}"
+    },
     "serviceAccountBadge": "服務代理",
     "serviceAccountBadgeTooltip": "此服務代理使用專屬的工具組憑證與全組織知識存取權限，適用於所有使用者。",
     "convertToServiceAccount": "轉換為服務代理",
@@ -4038,6 +4463,7 @@
     "openExternal": "開啟",
     "previewUnavailable": "此記錄類型無法提供預覽。",
     "permissionOwner": "擁有者",
+    "permissionCommenter": "留言者",
     "permissionReader": "讀取者",
     "permissionWriter": "編輯者",
     "labels": {
@@ -4350,6 +4776,10 @@
         "label": "可編輯",
         "description": "僅可編輯與整理檔案和資料夾"
       },
+      "commenter": {
+        "label": "可留言",
+        "description": "可檢視和留言，不可編輯"
+      },
       "reader": {
         "label": "可檢視",
         "description": "僅有檢視權限"
@@ -4357,7 +4787,8 @@
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",
-    "invite": "邀請加入 Pipeshub"
+    "invite": "邀請加入 Pipeshub",
+    "andMore": "另有 {{count}} 位"
   },
   "demoData": {
     "badge": {

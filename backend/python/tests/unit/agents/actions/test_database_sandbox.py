@@ -322,7 +322,24 @@ class TestScheduleCSVExport:
         assert kwargs["source_tool"] == "database_sandbox.sqlite"
 
     @pytest.mark.asyncio
-    async def test_record_creation_failure_still_returns_upload(self):
+    async def test_record_is_stamped_with_the_turn_run_id(self) -> None:
+        from app.agents.actions.database_sandbox import database_sandbox as mod
+
+        mock_blob = MagicMock()
+        mock_blob.save_versioned_artifact_to_storage = AsyncMock(return_value={"documentId": "doc-db-9"})
+        state = _make_state(blob_store=mock_blob, user_id="user-1", run_id="run-9")
+        tasks: list = []
+
+        with patch(
+            "app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="record-9"),
+        ) as create, patch.object(mod, "register_task", lambda conv_id, task: tasks.append(task)):
+            mod.DatabaseSandbox(state)._schedule_csv_export([{"id": "1"}], "sqlite_result")
+            await tasks[0]
+
+        assert create.await_args.kwargs["run_id"] == "run-9"
+
+    @pytest.mark.asyncio
+    async def test_record_creation_failure_drops_the_export(self):
         import asyncio
 
         from app.agents.actions.database_sandbox import database_sandbox as mod
@@ -351,10 +368,7 @@ class TestScheduleCSVExport:
             assert len(captured_tasks) == 1
             result = await captured_tasks[0]
 
-        assert result is not None
-        (entry,) = result["artifacts"]
-        assert "recordId" not in entry and "version" not in entry
-        assert entry["mimeType"] == "text/csv"
+        assert result is None  # no record, no downloadable link
 
     @pytest.mark.asyncio
     async def test_without_a_user_the_export_is_not_registered(self):
@@ -383,9 +397,7 @@ class TestScheduleCSVExport:
 
         create.assert_not_awaited()
         mock_blob.save_versioned_artifact_to_storage.assert_not_awaited()
-        (entry,) = result["artifacts"]
-        assert "recordId" not in entry
-        assert entry["signedUrl"] == "https://blob.example/z"
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_blob_save_raises_resolves_to_none(self):

@@ -21,3 +21,5 @@ export type { PasswordSecuritySectionProps } from './password-security-section';
 
 export { DemoDataSection } from './demo-data-section';
 export type { DemoDataSectionProps } from './demo-data-section';
+
+export { ChatNotificationPreferencesSection } from './chat-notification-preferences-section';

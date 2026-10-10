@@ -465,6 +465,7 @@ class Agent:
         confidence: Confidence | None = None,
         record_ids: list[str] | None = None,
         needs_input: str | None = None,
+        answered_by: str | None = None,
     ) -> AgentResult:
         """Build and persist a successful `AgentResult` from this run's
         recorded turns. The one, shared tail for every "run finished
@@ -481,6 +482,7 @@ class Agent:
             goal=goal, output=output, artifacts=artifacts or [], turns=list(turns),
             success=True, usage=self._usage,
             confidence=confidence, record_ids=record_ids or [], needs_input=needs_input,
+            answered_by=answered_by,
         )
         await self.emit(EventType.AGENT_COMPLETE, {"output": output if not isinstance(output, str) else output[:200]})
         await obs.write_state(self, goal, "completed", turn_index=len(turns), started_at=self.started_at or _now())
@@ -948,6 +950,7 @@ class Agent:
         final_confidence: Confidence | None = None
         final_record_ids: list[str] = []
         final_needs_input: str | None = None
+        final_answered_by: str | None = None
 
         seen_tool_calls = turn_scope.seen_tool_calls
 
@@ -1048,6 +1051,7 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+                    final_answered_by = outcome.answered_by
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision
@@ -1093,11 +1097,15 @@ class Agent:
             result = await self.succeed(
                 goal, final_output, turn_artifacts,
                 event="task_complete",
-                summary="Task completed via task_complete tool",
+                summary=(
+                    f"Task completed by {final_answered_by}'s answer" if final_answered_by
+                    else "Task completed via task_complete tool"
+                ),
                 detail={"output": str(final_output)[:200]},
                 confidence=final_confidence,
                 record_ids=final_record_ids,
                 needs_input=final_needs_input,
+                answered_by=final_answered_by,
             )
             return StepOutcome("stop", result=result)
 

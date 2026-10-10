@@ -131,6 +131,48 @@ class TestChatStreamAccess:
         assert response.status_code == 404
 
 
+class TestGuestAgentTurn:
+    """A guest turn runs an agent inside a conversation that is not its own: Python knows no session, only the payload."""
+
+    _COLLAB = {
+        "participants": [
+            {"ref": "participant_1", "displayName": "Alice"},
+            {"ref": "participant_2", "displayName": "Bob", "isCurrentSender": True},
+        ],
+        "currentSenderRef": "participant_2",
+    }
+
+    def test_runs_in_a_conversation_it_does_not_own_with_the_collaboration_payload(self, graph, loop) -> None:
+        c, _ = make_client(graph)
+        body = {
+            "query": "tell me a joke",
+            "conversationId": "someone-elses-default-chat",
+            "collaboration": self._COLLAB,
+            "mentions": [{"type": "agent", "ref": "agent:self"}],
+            "previousConversations": [
+                {"role": "user_query", "content": "hello", "authorRef": "participant_1"},
+                {"role": "bot_response", "content": "why did the chicken", "agentRef": "agent:joke-buddy"},
+            ],
+        }
+        response = _stream(c, "shared", "bob", body)
+        assert response.status_code == 200
+        (call,) = loop.calls
+        qi = call["query_info"]
+        assert qi["conversationId"] == "someone-elses-default-chat"
+        assert qi["collaboration"]["currentSenderRef"] == "participant_2"
+        assert qi["mentions"] == [{"type": "agent", "ref": "agent:self"}]
+        assert qi["previous_conversations"][1]["agentRef"] == "agent:joke-buddy"
+        # The sender's access, never the creator's: an ordinary agent runs as the caller.
+        assert call["user_info"]["userId"] == "u-bob"
+
+    @pytest.mark.parametrize("ref", ["agent:Joke Buddy", "joke-buddy", "agent:", "agent:" + "a" * 41])
+    def test_an_agent_ref_that_is_not_a_handle_is_refused(self, graph, loop, ref) -> None:
+        c, _ = make_client(graph)
+        body = {"query": "hi", "previousConversations": [{"role": "bot_response", "content": "x", "agentRef": ref}]}
+        assert _stream(c, "shared", "bob", body).status_code in (400, 422)
+        assert not loop.calls
+
+
 class TestChatStreamInput:
     def test_too_many_tools_is_rejected(self, graph, loop) -> None:
         c, _ = make_client(graph)

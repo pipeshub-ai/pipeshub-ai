@@ -1,8 +1,8 @@
 """Compare a benchmark result with a committed baseline.
 
 Handles the benchmarks in ``perf/``: ``indexing`` (bench_indexing.py),
-``query`` (bench_query.py), ``scale`` (bench_scale.py) and ``load``
-(bench_load.py). The result's own ``benchmark`` field picks the checks, and two
+``query`` (bench_query.py), ``scale`` (bench_scale.py), ``load``
+(bench_load.py) and ``collab_poll`` (bench_collab_poll.py). The result's own ``benchmark`` field picks the checks, and two
 results of different benchmarks are never compared.
 
 Reports only: it exits 0 whatever it finds unless ``--fail-on-regression`` is
@@ -83,6 +83,15 @@ LOAD_CHECKS: tuple[Check, ...] = (
     Check("Successful operations/min", lambda m: m.get("succeeded_per_minute"), -1, 0.20, "", gates=False),
 )
 
+# The collaborative-chats feed poll. p95 is what gates; p99 over a few minutes is a handful of requests.
+COLLAB_POLL_CHECKS: tuple[Check, ...] = (
+    Check("Feed poll p95", lambda m: m["latency_seconds"]["p95"], +1, 0.30, " s", min_change=0.010),
+    Check("Feed poll p50", lambda m: m["latency_seconds"]["p50"], +1, 0.30, " s", gates=False, min_change=0.005),
+    Check("Feed poll p99", lambda m: m["latency_seconds"]["p99"], +1, 0.30, " s", gates=False, min_change=0.020),
+    Check("Requests/s served", lambda m: m.get("requests_per_second"), -1, 0.20, "", gates=False),
+    Check("304 share of polls", lambda m: m.get("not_modified_ratio"), -1, 0.05, "", gates=False, min_change=0.02),
+)
+
 # Fields that must match for the numbers to be comparable at all.
 _SHARED_COMPARABLE = (
     ("label", lambda r: r["environment"]["label"]),
@@ -110,10 +119,22 @@ LOAD_COMPARABLE = _SHARED_COMPARABLE + (
     ("operation mix", lambda r: r["profile"]["mix"]),
 )
 
+COLLAB_POLL_COMPARABLE = (
+    ("label", lambda r: r["environment"]["label"]),
+    ("viewers", lambda r: r["profile"]["viewers"]),
+    ("windows", lambda r: r["profile"]["windows"]),
+    ("duration", lambda r: r["profile"]["duration_seconds"]),
+    ("poll cadence", lambda r: r["profile"]["cadence"]),
+    ("population mix", lambda r: r["profile"]["mix"]),
+    ("seeded sessions", lambda r: r["corpus"]["sessions"]),
+    ("seed", lambda r: r["corpus"]["seed"]),
+)
+
 BENCHMARKS: dict[str, tuple[tuple[Check, ...], tuple[Any, ...]]] = {
     "indexing": (INDEXING_CHECKS, INDEXING_COMPARABLE),
     "query": (QUERY_CHECKS, QUERY_COMPARABLE),
     "load": (LOAD_CHECKS, LOAD_COMPARABLE),
+    "collab_poll": (COLLAB_POLL_CHECKS, COLLAB_POLL_COMPARABLE),
     # A scale run measures the same things as an indexing run, on a much larger
     # corpus, so it is judged by the same checks. Corpus size is one of the
     # fields that must match, so a 2,000-file run is never put beside a
@@ -173,7 +194,10 @@ def compare(baseline: dict[str, Any], current: dict[str, Any]) -> tuple[list[Row
         # reports: how often an answer cites a document moves with the model
         # week to week. Whether a search over the seeded corpus finds it does not.
         rows += _rate_rows(baseline["metrics"], current["metrics"], citations_gate=benchmark != "load")
-    rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
+    if benchmark == "collab_poll":
+        rows += _collab_poll_rows(baseline["metrics"], current["metrics"])
+    else:
+        rows.append(_failure_row(benchmark, baseline["metrics"], current["metrics"]))
     return rows, mismatches
 
 
@@ -264,6 +288,24 @@ def _partial_run_mismatches(result: dict[str, Any], side: str) -> list[str]:
     if isinstance(uploaded, int) and isinstance(intended, int) and uploaded < intended:
         reasons.append(f"{side}: only {uploaded} of {intended} documents were uploaded")
     return reasons
+
+
+def _collab_poll_rows(base_m: dict[str, Any], cur_m: dict[str, Any]) -> list[Row]:
+    """Counts that start at zero, so a percentage change means nothing: any rise is shown, none gates."""
+    rows = []
+    for name, read in (
+        ("Polls refused with 429", lambda m: m["status_counts"].get("429", 0)),
+        ("Polls that failed (5xx, timeout)", lambda m: m["errors"]),
+        ("Python team-id calls", lambda m: m["python_team_id_calls"]["total"]),
+        ("Python team-id calls for owner and direct viewers", lambda m: m["python_team_id_calls"]["by_population"].get("owner_direct", 0)),
+    ):
+        try:
+            base, cur = read(base_m), read(cur_m)
+        except (KeyError, TypeError):
+            rows.append(Row(name, None, None, None, False, "not measured on one side", "", False))
+            continue
+        rows.append(Row(name, base, cur, None, cur > base, "flags any increase", "", False))
+    return rows
 
 
 def _failure_row(benchmark: str, base_m: dict[str, Any], cur_m: dict[str, Any]) -> Row:

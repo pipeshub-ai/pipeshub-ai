@@ -68,6 +68,8 @@ describe('MigrationService', () => {
       const connectorStub = sinon.stub(service, 'connectorSyncScheduleMigration' as any).resolves()
       const chatStub = sinon.stub(service, 'chatKbFiltersMigration' as any).resolves()
       const chatSessionsStub = sinon.stub(service, 'chatSessionsMigration' as any).resolves()
+      const aclStub = sinon.stub(service, 'aclVersionMigration' as any).resolves()
+      const collabStub = sinon.stub(service, 'chatCollaboratorsMigration' as any).resolves()
       const adminStub = sinon.stub(service, 'adminRoleMigration' as any).resolves()
       const documentOrgIdStub = sinon.stub(service, 'documentOrgIdMigration' as any).resolves()
       const groupNameIndexStub = sinon.stub(service, 'userGroupNameIndexMigration' as any).resolves()
@@ -79,6 +81,9 @@ describe('MigrationService', () => {
       expect(chatStub.calledOnce).to.be.true
       expect(chatSessionsStub.calledOnce).to.be.true
       expect(chatStub.calledBefore(chatSessionsStub)).to.be.true
+      expect(chatSessionsStub.calledBefore(aclStub)).to.be.true
+      expect(aclStub.calledBefore(collabStub)).to.be.true
+      expect(collabStub.calledOnce).to.be.true
       expect(adminStub.calledOnce).to.be.true
       expect(documentOrgIdStub.calledOnce).to.be.true
       expect(groupNameIndexStub.calledOnce).to.be.true

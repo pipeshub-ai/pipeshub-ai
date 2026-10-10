@@ -19,6 +19,7 @@ import { Spinner } from '@/app/components/ui/spinner';
 import type { Conversation, AgentArchivedGroup } from '../types';
 import { ArchivedChatsApi } from '../api';
 import { DeleteConfirmDialog } from './delete-confirm-dialog';
+import { displayTitle } from '@/lib/utils/display-title';
 
 interface ArchivedChatsSidebarProps {
   conversations: Conversation[];
@@ -324,7 +325,7 @@ function AgentGroupSection({
                       fontWeight: isActive ? 500 : 400,
                     }}
                   >
-                    {conv.title}
+                    {displayTitle(conv.title)}
                   </Text>
                 }
                 rightSlot={
@@ -526,7 +527,7 @@ export function ArchivedChatsSidebar({
                             fontWeight: isActive ? 500 : 400,
                           }}
                         >
-                          {conversation.title}
+                          {displayTitle(conversation.title)}
                         </Text>
                       }
                       rightSlot={

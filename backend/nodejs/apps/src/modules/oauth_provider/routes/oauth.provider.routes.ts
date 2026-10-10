@@ -49,7 +49,7 @@ export function createOAuthProviderRouter(container: Container): Router {
   )
 
   // RFC 9700 / RFC 7662: Rate limit token, revocation, and introspection endpoints
-  const oauthTokenRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute)
+  const oauthTokenRateLimiter = createOAuthClientRateLimiter(logger, appConfig.maxOAuthClientRequestsPerMinute, 'token')
 
   /**
    * GET /authorize

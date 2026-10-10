@@ -48,6 +48,7 @@ from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
+from app.utils.url_redaction import has_signature_query
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -835,28 +836,17 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
                 artifact_type = art.get("artifactType", "")
                 version = art.get("version", "")
 
-                # PERSISTED markers must never carry a signed URL: it expires
-                # in ~10 min, so it would be permanent dead weight (and a
-                # URL-trust surface the frontend already has to defend
-                # against) in every saved message forever. `recordId` is
-                # the durable identity the frontend already prefers for
-                # streaming/download (`parseArtifactMarkers` in
-                # `parse-download-markers.ts`) — a stable placeholder in the
-                # `(url)` slot keeps that parser's regex (which requires a
-                # non-empty segment there) satisfied without a real URL.
-                # Only fall back to embedding a real URL for the rare
-                # artifact that has none (no recordId to stream through) —
-                # otherwise it would be permanently undownloadable.
-                if record_id:
-                    url = f"record:{record_id}"
-                else:
-                    url = art.get("signedUrl") or art.get("downloadUrl", "")
-                    if not url:
-                        continue
+                # Persisted markers must never carry a signed URL (it expires);
+                # recordId is the durable identity the frontend streams through.
+                # The `(url)` slot must be non-empty for the frontend parser.
+                if not record_id:
+                    logger.info("Skipping artifact marker without recordId: %s", fname)
+                    continue
+                url = f"record:{record_id}"
 
                 # One download card per artifact version, even when two
                 # producers (or a re-run) queued the same artifact twice.
-                dedupe_key = f"{record_id or doc_id or url}:{version}"
+                dedupe_key = f"{record_id}:{version}"
                 if dedupe_key in seen_artifacts:
                     continue
                 seen_artifacts.add(dedupe_key)
@@ -865,7 +855,11 @@ def _append_task_markers(answer: str, conversation_tasks: list | None) -> str:
                 )
         else:
             url = t.get("signedUrl") or t.get("downloadUrl", "")
-            if url:
+            if url and has_signature_query(url):
+                logger.info(
+                    "Skipping download marker with signed URL: %s", t.get("fileName", "Download")
+                )
+            elif url:
                 fname = t.get("fileName", "Download")
                 parts.append(f"::download_conversation_task[{fname}]({url})")
 

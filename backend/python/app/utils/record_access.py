@@ -12,6 +12,8 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.authz.chat_content_access import can_read_chat_content_via_pdp
+from app.modules.authz.node_pdp_client import ChatContentPdp, get_node_pdp_client
 
 # The permission type on the org -> record edge that makes a service account's
 # chat upload readable. Distinct from "ORG" (an org-wide share from a
@@ -50,6 +52,9 @@ async def caller_can_read_virtual_record(
     virtual_record_id: str,
     logger: logging.Logger,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
+    pdp: ChatContentPdp | None = None,
 ) -> bool:
     """True when this caller may read some live record that owns the virtual record.
 
@@ -57,6 +62,10 @@ async def caller_can_read_virtual_record(
     A service account has no user node, so the user ACL query cannot succeed
     for it. Its uploads are granted with an org permission edge instead, and
     only that edge is accepted here.
+
+    Chat attachments uploaded by someone else are decided by the Node PDP; pass
+    the chat's `conversation_id` (and `acl_version`, where Node sent one) so a
+    grant on another chat never authorizes this file.
     """
     if not graph_provider or not org_id or not virtual_record_id:
         return False
@@ -90,6 +99,16 @@ async def caller_can_read_virtual_record(
                     record_id,
                     exc_info=True,
                 )
+            if await can_read_chat_content_via_pdp(
+                graph_provider,
+                pdp or get_node_pdp_client(),
+                user_id=user_id,
+                org_id=org_id,
+                record=record_id,
+                conversation_id=conversation_id,
+                acl_version=acl_version,
+            ):
+                return True
         if is_service_account and await _org_permission_grants(
             graph_provider, org_id, record_id, logger,
         ):

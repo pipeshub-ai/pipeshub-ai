@@ -231,14 +231,27 @@ describe('Knowledge base routes over HTTP: who may call what', () => {
       })
     }
 
-    it('refuses to give a team a role, since teams do not have one', async () => {
+    it('refuses to make a team an owner', async () => {
       const r = await call(h, 'PUT', `/${KB_ID}/permissions`, {
         token: sessionToken(h, MEMBER),
         json: { userIds: [], teamIds: ['team-1'], role: 'OWNER' },
       })
       expect(r.status).to.equal(400)
-      expect(errorMessage(r)).to.include('Teams do not have roles')
+      expect(errorMessage(r)).to.include('team role must be one of')
       expect(h.backend.calls).to.deep.equal([])
+    })
+
+    it('passes a team role change on to the connector service', async () => {
+      h.backend.on('PUT', `/api/v1/kb/${KB_ID}/permissions`, {
+        status: 200,
+        body: { userIds: [], teamIds: ['team-1'], newRole: 'COMMENTER', kbId: KB_ID },
+      })
+      const r = await call(h, 'PUT', `/${KB_ID}/permissions`, {
+        token: sessionToken(h, MEMBER),
+        json: { userIds: [], teamIds: ['team-1'], role: 'COMMENTER' },
+      })
+      expect(r.status).to.equal(200)
+      expect(r.body).to.include({ newRole: 'COMMENTER' })
     })
 
     it('refuses to add users without saying which role they get', async () => {

@@ -3,6 +3,8 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import { TeamsController } from '../../../../src/modules/user_management/controller/teams.controller';
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command';
+import { ChatCollaboratorCleanup } from '../../../../src/modules/enterprise_search/services/collaboration/persistence/chat-collaborator-cleanup';
+import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 
 describe('TeamsController', () => {
@@ -48,6 +50,9 @@ describe('TeamsController', () => {
     };
 
     next = sinon.stub();
+
+    sinon.stub(ChatCollaboratorCleanup, 'removeTeam').resolves({ removedFrom: 0 });
+    sinon.stub(ProjectService, 'removeTeamFromAllProjects').resolves();
   });
 
   afterEach(() => {
@@ -254,6 +259,42 @@ describe('TeamsController', () => {
       await controller.deleteTeam(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('removes the team from chats and projects after a 2xx from connectors, keeping the teamsVersion bump', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} });
+      const bump = sinon.stub().resolves();
+      const bumping = new TeamsController(mockConfig, mockLogger, bump);
+      req.params.teamId = 'team1';
+
+      await bumping.deleteTeam(req, res, next);
+
+      expect(bump.calledOnceWith('507f1f77bcf86cd799439012')).to.be.true;
+      expect((ChatCollaboratorCleanup.removeTeam as sinon.SinonStub).calledOnceWith('507f1f77bcf86cd799439012', 'team1')).to.be.true;
+      expect((ProjectService.removeTeamFromAllProjects as sinon.SinonStub).calledOnceWith('507f1f77bcf86cd799439012', 'team1')).to.be.true;
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('does not touch chats or projects when connectors refuse the delete', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 500, data: { detail: 'boom' } });
+      req.params.teamId = 'team1';
+
+      await controller.deleteTeam(req, res, next);
+
+      expect((ChatCollaboratorCleanup.removeTeam as sinon.SinonStub).called).to.be.false;
+      expect((ProjectService.removeTeamFromAllProjects as sinon.SinonStub).called).to.be.false;
+    });
+
+    it('still answers 200 and logs when the cleanup fails after the team is gone upstream', async () => {
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} });
+      (ChatCollaboratorCleanup.removeTeam as sinon.SinonStub).rejects(new Error('mongo down'));
+      req.params.teamId = 'team1';
+
+      await controller.deleteTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(next.called).to.be.false;
+      expect(mockLogger.error.called).to.be.true;
     });
 
     it('should call next with error when orgId is missing', async () => {
@@ -1063,5 +1104,84 @@ describe('TeamsController', () => {
         expect(error.message).to.include('User ID is required');
       }
     });
+  });
+});
+
+describe('TeamsController teams-version bump (TM-03)', () => {
+  const ORG = '507f1f77bcf86cd799439012';
+  let bump: sinon.SinonStub;
+  let controller: TeamsController;
+  let res: any;
+  let next: sinon.SinonStub;
+  let execute: sinon.SinonStub;
+
+  const request = (body: unknown = {}): any => ({
+    user: { userId: '507f1f77bcf86cd799439011', orgId: ORG },
+    params: { teamId: 'team1' },
+    query: {},
+    body,
+    headers: {},
+    context: { requestId: 'r' },
+  });
+
+  beforeEach(() => {
+    bump = sinon.stub().resolves();
+    const logger: any = { debug: sinon.stub(), info: sinon.stub(), error: sinon.stub(), warn: sinon.stub() };
+    controller = new TeamsController({ connectorBackend: 'http://c' } as any, logger, bump);
+    res = { status: sinon.stub().returnsThis(), json: sinon.stub().returnsThis() };
+    next = sinon.stub();
+    execute = sinon.stub(AIServiceCommand.prototype, 'execute');
+    sinon.stub(ChatCollaboratorCleanup, 'removeTeam').resolves({ removedFrom: 0 });
+    sinon.stub(ProjectService, 'removeTeamFromAllProjects').resolves();
+  });
+
+  afterEach(() => sinon.restore());
+
+  it('bumps after a member add via update', async () => {
+    execute.resolves({ statusCode: 200, data: { team: { id: 'team1' } } });
+    await controller.updateTeam(request({ addUserRoles: [{ userId: 'u', role: 'READER' }] }), res, next);
+    expect(bump.calledOnceWith(ORG)).to.equal(true);
+  });
+
+  it('bumps after a member removal via update', async () => {
+    execute.resolves({ statusCode: 200, data: { team: { id: 'team1' } } });
+    await controller.updateTeam(request({ removeUserIds: ['u'] }), res, next);
+    expect(bump.calledOnceWith(ORG)).to.equal(true);
+  });
+
+  it('does not bump for a rename or a role change', async () => {
+    execute.resolves({ statusCode: 200, data: { team: { id: 'team1' } } });
+    await controller.updateTeam(request({ name: 'x' }), res, next);
+    await controller.updateTeam(request({ updateUserRoles: [{ userId: 'u', role: 'OWNER' }] }), res, next);
+    expect(bump.called).to.equal(false);
+  });
+
+  it('does not bump when connectors answers 500 to a member change', async () => {
+    execute.resolves({ statusCode: 500, data: { error: 'boom' } });
+    await controller.updateTeam(request({ addUserRoles: [{ userId: 'u', role: 'READER' }] }), res, next);
+    expect(bump.called).to.equal(false);
+    expect(next.calledOnce).to.equal(true);
+  });
+
+  it('bumps after deleteTeam succeeds and not when connectors fails', async () => {
+    execute.resolves({ statusCode: 200, data: { message: 'ok' } });
+    await controller.deleteTeam(request(), res, next);
+    expect(bump.calledOnceWith(ORG)).to.equal(true);
+
+    bump.resetHistory();
+    execute.resolves({ statusCode: 500, data: { error: 'boom' } });
+    await controller.deleteTeam(request(), res, next);
+    expect(bump.called).to.equal(false);
+  });
+
+  it('bumps after createTeam succeeds and not on a connectors error', async () => {
+    execute.resolves({ statusCode: 201, data: { id: 'team1' } });
+    await controller.createTeam(request({ name: 'n' }), res, next);
+    expect(bump.calledOnceWith(ORG)).to.equal(true);
+
+    bump.resetHistory();
+    execute.resolves({ statusCode: 503, data: null });
+    await controller.createTeam(request({ name: 'n' }), res, next);
+    expect(bump.called).to.equal(false);
   });
 });

@@ -3,7 +3,10 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, screen } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }) }));
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
+  useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }),
+}));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/navigation', () => ({
   Link: ({ href, children, onClick, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (

@@ -287,6 +287,7 @@ class TestAbstractMethodInventory:
         "get_folder_contents",
         "validate_folder_in_kb",
         "create_kb_permissions",
+        "create_kb_principal_permissions",
         "count_kb_owners",
         "remove_kb_permission",
         "get_user_kb_permission",
@@ -436,6 +437,7 @@ class TestAbstractMethodInventory:
         # Team operations
         "get_team_with_users",
         "get_user_teams",
+        "get_user_team_ids",
         "get_team_users",
         "delete_team_member_edges",
         "batch_update_team_member_roles",
@@ -443,7 +445,10 @@ class TestAbstractMethodInventory:
         "get_team_owner_removal_info",
         "get_team_permissions_and_owner_count",
         "add_user_to_all_team",
+        "backfill_team_org_ids",
         "ensure_all_team_with_users",
+        "backfill_kb_team_edge_roles",
+        "delete_chat_content_reader_edges",
         "ensure_team_app_edge",
         # Authenticated-as (creator -> source account)
         "upsert_authenticated_as",
@@ -455,6 +460,10 @@ class TestAbstractMethodInventory:
         "check_agent_permission",
         "get_agents_by_web_search_provider",
         "get_agents_by_model_key",
+        # Agent handles
+        "get_agent_by_handle",
+        "search_agent_handles",
+        "list_agents_missing_handle",
         # Upload validation
         "validate_folder_for_upload",
         # Record location / permission-aware trails

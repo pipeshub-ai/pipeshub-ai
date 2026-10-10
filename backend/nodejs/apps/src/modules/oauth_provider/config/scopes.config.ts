@@ -145,6 +145,12 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     category: 'Conversations',
     requiresUserConsent: true,
   },
+  'conversation:share': {
+    name: 'conversation:share',
+    description: 'Share conversations and manage who can access them',
+    category: 'Conversations',
+    requiresUserConsent: true,
+  },
 
   // Agents
   'agent:read': {

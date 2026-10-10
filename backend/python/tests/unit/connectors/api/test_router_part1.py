@@ -3371,7 +3371,7 @@ class TestStreamRecord:
             await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
-    async def test_no_access_raises_403(self):
+    async def test_no_access_raises_404(self):
         from app.connectors.api.router import stream_record
 
         record = _mock_record()
@@ -3388,7 +3388,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await stream_record(request, "rec-1", convertTo=None, version=None, graph_provider=gp, config_service=config_service)
-        assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+        assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     async def test_connector_instance_not_found_raises_404(self):
         from app.connectors.api.router import stream_record
