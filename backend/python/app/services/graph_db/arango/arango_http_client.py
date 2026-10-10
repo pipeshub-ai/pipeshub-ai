@@ -910,6 +910,14 @@ class ArangoHTTPClient:
             body = await resp.json()
         return list(body.get("indexes", []))
 
+    async def drop_index(self, index_id: str) -> None:
+        """Drop the index ``index_id`` ("<collection>/<id>"). Raises when it cannot."""
+        url = f"{self.base_url}/_db/{self.database}/_api/index/{index_id}"
+        session = await self._get_session()
+        async with session.delete(url) as resp:
+            if resp.status not in (HttpStatusCode.OK.value, HttpStatusCode.NOT_FOUND.value):
+                raise Exception(f"Could not drop index {index_id}: {await resp.text()}")
+
     async def ensure_persistent_index(
         self,
         collection_name: str,

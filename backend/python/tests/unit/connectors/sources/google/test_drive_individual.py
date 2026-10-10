@@ -759,3 +759,22 @@ class TestBatchProcessing:
 
         # With batch_size=2 and 5 files: 2 full batches + 1 remainder
         assert connector.data_entities_processor.on_new_records.call_count == 3
+
+
+class TestDriveItemPeople:
+    async def test_my_drive_file_carries_owner_author_and_last_modifier(self, connector) -> None:
+        metadata = _make_file_metadata()
+        metadata["owners"] = [{"displayName": "Alice", "emailAddress": "alice@example.com", "permissionId": "p-alice", "me": True}]
+        metadata["lastModifyingUser"] = {"displayName": "Bob", "emailAddress": "bob@example.com", "permissionId": "p-bob"}
+
+        result = await connector._process_drive_item(
+            metadata=metadata, user_id="u1", user_email="alice@example.com", drive_id="drive-1"
+        )
+
+        record = result.record
+        assert [o.source_id for o in record.owners] == ["p-alice"]
+        assert record.authored_by is not None
+        assert record.authored_by.email == "alice@example.com"
+        assert record.last_modified_by is not None
+        assert record.last_modified_by.source_id == "p-bob"
+        assert record.created_by is None

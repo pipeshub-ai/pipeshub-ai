@@ -1092,10 +1092,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         # org (D1 revisited — Person is now org-scoped like User).
         # Returns False (logged, non-fatal) on a collection that already holds
         # duplicates — dedupe those before the guarantee applies.
+        # Sparse: a person a source names without an email (keyed by
+        # sourceKey) has no email, and a non-sparse unique index counts a
+        # missing email as one value, so only one such person could exist per
+        # org. The sparse index is created before the old one is dropped, so
+        # uniqueness never lapses.
+        if await self.http_client.ensure_persistent_index(
+            CollectionNames.PEOPLE.value, ["orgId", "email"], unique=True, sparse=True,
+        ):
+            for index in await self.http_client.get_indexes(CollectionNames.PEOPLE.value):
+                if index.get("fields") == ["orgId", "email"] and index.get("unique") and not index.get("sparse"):
+                    await self.http_client.drop_index(index["id"])
         await self.http_client.ensure_persistent_index(
-            CollectionNames.PEOPLE.value,
-            ["orgId", "email"],
-            unique=True,
+            CollectionNames.PEOPLE.value, ["orgId", "sourceKey"], unique=True, sparse=True,
         )
 
     async def _ensure_departments_seed(self) -> None:
@@ -1277,7 +1286,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         limit: int = 500,
     ) -> list[str]:
         """See :meth:`IGraphDBProvider.page_record_ids_by_type`."""
-        if not org_id or not record_types:
+        if limit < 0:
+            raise ValueError("limit must be non-negative")
+        if not org_id or not record_types or limit == 0:
             return []
         # The (orgId, _key) index gives the org's keys in order from the cursor
         # (the first page after ""), so a page stops at the limit; the planner
@@ -1294,7 +1305,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 RETURN record._key
             """,
             bind_vars={
-                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": max(1, limit),
+                "org_id": org_id, "types": list(record_types), "after_key": after_key or "", "limit": limit,
             },
         )
         return [str(key) for key in rows or []]
@@ -5555,10 +5566,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN a
             )
 
-            // Then find user connected via userAppRelation with matching sourceUserId
+            // Then find user connected via userAppRelation with matching sourceUserId.
+            // People (external collaborators) hold membership edges too; only a
+            // users/ end is a user, as Neo4j's (u:User) match already requires.
             FOR edge IN {CollectionNames.USER_APP_RELATION.value}
                 FILTER edge._to == app._id
                 FILTER edge.sourceUserId == @source_user_id
+                FILTER IS_SAME_COLLECTION("{CollectionNames.USERS.value}", edge._from)
                 LET user = DOCUMENT(edge._from)
                 FILTER user != null
                 LIMIT 1
@@ -6082,6 +6096,55 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 raise
             return None
 
+
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Person | None:
+        """See :meth:`IGraphDBProvider.get_person_by_source_key`."""
+        try:
+            rows = await self.http_client.execute_aql(
+                f"FOR p IN {CollectionNames.PEOPLE.value} "
+                "FILTER p.orgId == @org_id AND p.sourceKey == @source_key LIMIT 1 RETURN p",
+                bind_vars={"org_id": org_id, "source_key": source_key},
+                txn_id=transaction,
+            )
+            return Person.from_arango_person(rows[0]) if rows else None
+        except Exception as e:
+            self.logger.error(f"❌ Get person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
+
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """See :meth:`IGraphDBProvider.upsert_person_by_source_key`."""
+        try:
+            doc = person.to_arango_person()
+            results = await self.http_client.execute_aql(
+                """
+                UPSERT { sourceKey: @source_key, orgId: @org_id }
+                INSERT @doc
+                UPDATE {}
+                IN @@collection
+                RETURN NEW._key
+                """,
+                bind_vars={
+                    "source_key": doc["sourceKey"], "org_id": doc["orgId"], "doc": doc,
+                    "@collection": CollectionNames.PEOPLE.value,
+                },
+                txn_id=transaction,
+            )
+            return results[0] if results else None
+        except Exception as e:
+            self.logger.error(f"❌ Upsert person by source key failed: {str(e)}")
+            if raise_on_error:
+                raise
+            return None
     async def ensure_app_membership(
         self,
         principal_id: str,
@@ -6217,6 +6280,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         CollectionNames.PEOPLE.value,
                         *PERSON_TRANSFERABLE_EDGES,
                         *PERSON_CRM_EDGES,
+                        CollectionNames.ENTITY_RELATIONS.value,
                     ],
                 )
 
@@ -6288,6 +6352,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 moved += len(mine)
 
+            # Records that name the person (as author, editor, owner) point AT it;
+            # they follow the person to the user whether or not it splits, since
+            # authorship belongs to the human, not to the CRM contact.
+            moved += await self._move_entity_relations_to_user(person_id, user_id, txn)
+
             if not is_crm:
                 await self.http_client.execute_aql(
                     "REMOVE @person_key IN @@collection",
@@ -6317,6 +6386,45 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     self.logger.warning(f"⚠️ Rollback of person migration failed: {rb_err}")
             self.logger.error(f"❌ Migrate person to user failed for {email}: {str(e)}")
             raise
+
+    async def _move_entity_relations_to_user(self, person_id: str, user_id: str, txn: str | None) -> int:
+        """Re-point the ``entityRelations`` edges into ``person_id`` at
+        ``user_id``, keeping one edge per (record, edge type). Returns how many
+        edges pointed at the person."""
+        rows = await self.http_client.execute_aql(
+            """
+            LET mine = (FOR e IN @@collection FILTER e._to == @person_id RETURN e)
+            LET theirs = (
+                FOR e IN @@collection
+                    FILTER e._to == @user_id AND e._from IN mine[*]._from
+                    RETURN CONCAT(e._from, "|", e.edgeType)
+            )
+            RETURN {mine: mine, theirs: theirs}
+            """,
+            bind_vars={"@collection": CollectionNames.ENTITY_RELATIONS.value, "person_id": person_id, "user_id": user_id},
+            txn_id=txn,
+        )
+        mine = (rows[0].get("mine") if rows else None) or []
+        if not mine:
+            return 0
+        theirs = set(rows[0].get("theirs") or [])
+        to_insert = [
+            {**{k: v for k, v in edge.items() if k not in ("_id", "_key", "_rev", "_to")}, "_to": user_id}
+            for edge in mine
+            if f"{edge['_from']}|{edge.get('edgeType')}" not in theirs
+        ]
+        if to_insert:
+            await self.http_client.execute_aql(
+                "FOR e IN @edges INSERT e IN @@collection",
+                bind_vars={"edges": to_insert, "@collection": CollectionNames.ENTITY_RELATIONS.value},
+                txn_id=txn,
+            )
+        await self.http_client.execute_aql(
+            "FOR e IN @@collection FILTER e._to == @person_id REMOVE e IN @@collection",
+            bind_vars={"@collection": CollectionNames.ENTITY_RELATIONS.value, "person_id": person_id},
+            txn_id=txn,
+        )
+        return len(mine)
 
     async def reap_stale_external_app_relations(
         self,
@@ -6369,7 +6477,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not person_keys:
                 return 0
 
-            edge_collections = list(PERSON_TRANSFERABLE_EDGES) + list(PERSON_CRM_EDGES)
+            # entityRelations too: a record naming the person (its author) keeps it.
+            edge_collections = [*PERSON_TRANSFERABLE_EDGES, *PERSON_CRM_EDGES, CollectionNames.ENTITY_RELATIONS.value]
             still_referenced = " + ".join(
                 f'LENGTH(FOR e IN {c} FILTER e._from == pid OR e._to == pid LIMIT 1 RETURN 1)'
                 for c in edge_collections

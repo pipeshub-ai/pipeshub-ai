@@ -260,6 +260,14 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        pass
+
+    @abstractmethod
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> Optional[str]:
         pass
 

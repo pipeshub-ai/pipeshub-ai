@@ -9,19 +9,24 @@ consistent with list.
 # google/drive/individual/connector.py
 DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    "driveId"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    "sha256Checksum, parents, driveId"
 )
 
 DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS = (
     f"nextPageToken, files({DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS})"
 )
 
-# Workspace / delegated Drive connector lists include `owners`.
+DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS = (
+    "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, "
+    "createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, trashed, "
+    "md5Checksum, sha1Checksum, sha256Checksum, parents, driveId, owners, lastModifyingUser, permissions))"
+)
+
 DRIVE_WORKSPACE_SYNC_FILE_RESOURCE_FIELDS = (
     "id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, "
-    "headRevisionId, version, shared, owners, md5Checksum, sha1Checksum, sha256Checksum, parents, "
-    "driveId, sharedWithMeTime, trashed"
+    "headRevisionId, version, shared, owners, lastModifyingUser, md5Checksum, sha1Checksum, "
+    "sha256Checksum, parents, driveId, sharedWithMeTime, trashed"
 )
 
 DRIVE_WORKSPACE_SYNC_FILES_LIST_FIELDS = (

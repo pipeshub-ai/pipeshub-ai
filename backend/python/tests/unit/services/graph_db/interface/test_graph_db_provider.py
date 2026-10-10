@@ -325,6 +325,8 @@ class TestAbstractMethodInventory:
         "batch_upsert_people",
         "get_person_by_email",
         "upsert_person_by_email",
+        "upsert_person_by_source_key",
+        "get_person_by_source_key",
         "ensure_app_membership",
         "migrate_person_to_user",
         "reap_stale_external_app_relations",

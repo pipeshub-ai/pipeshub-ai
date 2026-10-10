@@ -95,6 +95,7 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     prepare_streaming_html,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.people import confluence_people
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
     BlockComment,
@@ -3554,6 +3555,7 @@ class ConfluenceConnector(BaseConnector):
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
                 parent_node_id=None,  # Pages have no parent node
+                **confluence_people(data),
             )
 
         except Exception as e:
@@ -3868,6 +3870,7 @@ class ConfluenceConnector(BaseConnector):
                 source_updated_at=source_updated_at,
                 is_dependent_node=True,  # Attachments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent page
+                **confluence_people(attachment_data),
             )
 
         except Exception as e:

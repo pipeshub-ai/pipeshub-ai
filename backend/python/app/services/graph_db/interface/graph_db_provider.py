@@ -519,9 +519,11 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
         ``record_types``, in key order, after ``after_key``, at most ``limit``.
-        For operator backfills that page through one org's records.
+        For operator backfills that page through one org's records. A zero
+        limit returns no ids.
 
         Raises:
+            ValueError: if ``limit`` is negative.
             Exception: on query failure.
         """
         pass
@@ -3019,6 +3021,31 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+
+    @abstractmethod
+    async def get_person_by_source_key(
+        self, source_key: str, org_id: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> Optional['Person']:
+        """The Person keyed (org_id, source_key) — see ``Person.source_key`` — or
+        None. A read that fails answers None unless ``raise_on_error`` is set."""
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(
+        self,
+        person: Person,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> str | None:
+        """Upsert a Person a source names without an email, keyed on
+        (org_id, source_key), returning the id of the surviving node.
+
+        Same contract as :meth:`upsert_person_by_email`: callers use the
+        returned id, an existing node is never updated, and a failed write
+        answers None unless ``raise_on_error`` is set.
+        """
+        pass
     @abstractmethod
     async def ensure_app_membership(
         self,

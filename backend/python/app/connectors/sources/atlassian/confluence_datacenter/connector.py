@@ -66,6 +66,7 @@ from app.connectors.sources.atlassian.core.confluence_access import (
     v1_next_start,
 )
 from app.connectors.sources.atlassian.core.confluence_html import prepare_streaming_html
+from app.connectors.sources.atlassian.core.people import confluence_people
 from app.connectors.sources.atlassian.core.confluence_dc_removal import (
     ConfluenceDataCenterRemovalMixin,
     ContentListing,
@@ -3832,6 +3833,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
                 parent_node_id=None,  # Pages have no parent node
+                **confluence_people(data),
             )
 
         except Exception as e:
@@ -3987,6 +3989,7 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 source_updated_at=source_updated_at,
                 is_dependent_node=True,  # Attachments are dependent nodes
                 parent_node_id=parent_node_id,  # Internal record ID of parent page/comment
+                **confluence_people(attachment_data),
             )
 
         except Exception as e:

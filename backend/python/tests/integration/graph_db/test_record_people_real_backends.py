@@ -65,7 +65,7 @@ async def _cleanup(provider: Neo4jProvider | ArangoHTTPProvider, org: str, *, di
     await aql(f"REMOVE {{_key: @org}} IN {CollectionNames.ORGS.value} OPTIONS {{ignoreErrors: true}}", {"org": org})
     for docs in (
         CollectionNames.RECORDS.value, CollectionNames.MAILS.value, CollectionNames.TICKETS.value,
-        CollectionNames.USERS.value,
+        CollectionNames.USERS.value, CollectionNames.PEOPLE.value,
     ):
         await aql(f"FOR d IN {docs} FILTER d.orgId == @org REMOVE d IN {docs}", {"org": org})
 
@@ -318,3 +318,243 @@ async def test_a_person_is_reachable_only_through_records_the_viewer_may_read(ba
     assert [r["_key"] for r in seen[("person", f"{org}-bob")]] == [mail_id]
     unseen = await provider.get_permitted_entity_records([ref], org, stranger, app_level_connector_ids=[])
     assert list(unseen[("person", f"{org}-bob")]) == []
+
+
+class TestPeopleWithoutAnEmail:
+    """A person a source names only by its own user id (a Jira account id) is
+    keyed by (org, source key); several can exist in one org, and the same
+    key always resolves to the same node."""
+
+    async def test_source_keyed_people_coexist_and_upsert_to_one_node(self, backend) -> None:
+        from app.models.entities import Person
+
+        provider, org = backend
+        await provider.ensure_schema()
+        first = await provider.upsert_person_by_source_key(
+            Person(source_key="conn-1:acc-1", org_id=org, full_name="Ann"), raise_on_error=True,
+        )
+        second = await provider.upsert_person_by_source_key(
+            Person(source_key="conn-1:acc-2", org_id=org, full_name="Bob"), raise_on_error=True,
+        )
+        again = await provider.upsert_person_by_source_key(
+            Person(source_key="conn-1:acc-1", org_id=org, full_name="Renamed"), raise_on_error=True,
+        )
+        assert first and second and first != second
+        assert again == first
+
+    async def test_email_keyed_people_stay_unique_per_org(self, backend) -> None:
+        from app.models.entities import Person
+
+        provider, org = backend
+        await provider.ensure_schema()
+        first = await provider.upsert_person_by_email(Person(email="Eve@Partner.com", org_id=org), raise_on_error=True)
+        again = await provider.upsert_person_by_email(Person(email="eve@partner.com", org_id=org), raise_on_error=True)
+        assert first and again == first
+
+
+async def test_arango_keeps_no_index_that_counts_a_missing_email(backend) -> None:
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    provider, _ = backend
+    if not isinstance(provider, ArangoHTTPProvider):
+        pytest.skip("ArangoDB only")
+    await provider.ensure_schema()
+    indexes = await provider.http_client.get_indexes(CollectionNames.PEOPLE.value)
+    by_fields = {tuple(i.get("fields", [])): i for i in indexes if i.get("type") == "persistent"}
+    assert by_fields[("orgId", "email")]["unique"] and by_fields[("orgId", "email")]["sparse"]
+    assert by_fields[("orgId", "sourceKey")]["unique"] and by_fields[("orgId", "sourceKey")]["sparse"]
+    assert not [i for i in indexes if i.get("fields") == ["orgId", "email"] and not i.get("sparse")]
+
+
+async def test_a_file_links_its_author_and_last_editor_even_when_they_are_not_members(backend) -> None:
+    """Authorship: a file names a member as owner, an outside author by email
+    and an editor known only by a source id; the outsiders get person nodes,
+    and a second run writes the same edges to the same nodes."""
+    from app.connectors.core.base.data_processor.record_people import link_record_people
+    from app.models.entities import FileRecord, SourcePerson
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    record = FileRecord(
+        id=f"{org}-file", org_id=org, external_record_id=f"{org}-file", record_name="plan.pdf",
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id=f"{org}-conn",
+        record_type=RecordType.FILE, version=1, source_created_at=1000, source_updated_at=2000,
+        is_file=True, extension="pdf",
+        authored_by=SourcePerson(email="eve@partner.test", display_name="Eve"),
+        last_modified_by=SourcePerson(source_id="acc-9", display_name="Finn"),
+        owners=[SourcePerson(email=f"ann@{org}.test")],
+    )
+    await provider.batch_upsert_records([record])
+    store = GraphDataStore(logger, provider)
+
+    async def _targets() -> list[tuple[str, str, str]]:
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        if isinstance(provider, Neo4jProvider):
+            rows = await provider.client.execute_query(
+                "MATCH (:Record {id: $id})-[r]->(n) WHERE r.edgeType IS NOT NULL "
+                "RETURN labels(n)[0] AS kind, coalesce(n.email, n.sourceKey) AS who, r.edgeType AS t",
+                parameters={"id": record.id},
+            )
+            return sorted((r["kind"], r["who"], r["t"]) for r in rows)
+        rows = await provider.http_client.execute_aql(
+            "FOR e IN entityRelations FILTER e._from == @f LET n = DOCUMENT(e._to) "
+            "RETURN [PARSE_IDENTIFIER(e._to).collection, n.email || n.sourceKey, e.edgeType]",
+            {"f": f"records/{record.id}"},
+        )
+        return sorted(tuple(r) for r in rows)
+
+    for _ in range(2):
+        async with store.transaction() as tx:
+            assert await link_record_people(record, tx, logger) == 3
+        kinds = {"users": "User", "person": "Person"}
+        got = [(kinds.get(k, k), who, t) for k, who, t in await _targets()]
+        assert got == [
+            ("Person", "eve@partner.test", "AUTHORED_BY"),
+            ("Person", f"{org}-conn:acc-9", "LAST_MODIFIED_BY"),
+            ("User", f"ann@{org}.test", "OWNED_BY"),
+        ]
+
+
+async def test_an_author_who_signs_up_keeps_their_documents(backend) -> None:
+    """A person promoted to a user (they joined) takes the records naming
+    them along; the person node goes, and no edge is left pointing at it."""
+    from app.connectors.core.base.data_processor.record_people import link_record_people
+    from app.models.entities import FileRecord, SourcePerson
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    record = FileRecord(
+        id=f"{org}-file", org_id=org, external_record_id=f"{org}-file", record_name="plan.pdf",
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id=f"{org}-conn",
+        record_type=RecordType.FILE, version=1, source_created_at=1000, source_updated_at=2000,
+        is_file=True, extension="pdf", authored_by=SourcePerson(email=f"eve@{org}.test"),
+    )
+    await provider.batch_upsert_records([record])
+    store = GraphDataStore(logger, provider)
+    async with store.transaction() as tx:
+        assert await link_record_people(record, tx, logger) == 1
+
+    await provider.batch_upsert_nodes([{
+        "id": f"{org}-eve", "userId": f"{org}-eve", "orgId": org, "email": f"eve@{org}.test", "fullName": "Eve",
+    }], CollectionNames.USERS.value)
+    await provider.migrate_person_to_user(f"eve@{org}.test", f"{org}-eve", org)
+
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    if isinstance(provider, Neo4jProvider):
+        rows = await provider.client.execute_query(
+            "MATCH (:Record {id: $id})-[r]->(n) WHERE r.edgeType IS NOT NULL "
+            "RETURN labels(n)[0] AS kind, n.id AS id, r.edgeType AS t",
+            parameters={"id": record.id},
+        )
+        got = [(r["kind"], r["id"], r["t"]) for r in rows]
+        left = await provider.client.execute_query(
+            "MATCH (p:Person {orgId: $org, email: $email}) RETURN count(p) AS n",
+            parameters={"org": org, "email": f"eve@{org}.test"},
+        )
+        assert left[0]["n"] == 0
+    else:
+        rows = await provider.http_client.execute_aql(
+            "FOR e IN entityRelations FILTER e._from == @f RETURN [PARSE_IDENTIFIER(e._to).collection, "
+            "PARSE_IDENTIFIER(e._to).key, e.edgeType, DOCUMENT(e._to) != null]",
+            {"f": f"records/{record.id}"},
+        )
+        assert all(r[3] for r in rows), "an edge points at a removed node"
+        got = [("User" if r[0] == "users" else r[0], r[1], r[2]) for r in rows]
+    assert got == [("User", f"{org}-eve", "AUTHORED_BY")]
+
+
+async def test_two_open_syncs_naming_the_same_outsider_both_link_them(backend) -> None:
+    """An existing person is only read, so two transactions in flight at once
+    do not collide on its lock and both records keep their author edge."""
+    from app.connectors.core.base.data_processor.record_people import link_record_people
+    from app.models.entities import FileRecord, Person, SourcePerson
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    person_id = await provider.upsert_person_by_email(Person(email="eve@partner.test", org_id=org), raise_on_error=True)
+    records = [
+        FileRecord(
+            id=f"{org}-file-{i}", org_id=org, external_record_id=f"{org}-file-{i}", record_name=f"f{i}.pdf",
+            origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id=f"{org}-conn",
+            record_type=RecordType.FILE, version=1, source_created_at=1000, source_updated_at=2000,
+            is_file=True, extension="pdf", authored_by=SourcePerson(email="eve@partner.test"),
+        )
+        for i in range(2)
+    ]
+    await provider.batch_upsert_records(records)
+    store = GraphDataStore(logger, provider)
+    async with store.transaction() as first, store.transaction() as second:
+        assert await link_record_people(records[0], first, logger) == 1
+        assert await link_record_people(records[1], second, logger) == 1
+
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    for record in records:
+        if isinstance(provider, Neo4jProvider):
+            rows = await provider.client.execute_query(
+                "MATCH (:Record {id: $id})-[r]->(p:Person) RETURN p.id AS id", parameters={"id": record.id},
+            )
+            assert [r["id"] for r in rows] == [person_id]
+        else:
+            rows = await provider.http_client.execute_aql(
+                "FOR e IN entityRelations FILTER e._from == @f RETURN e._to", {"f": f"records/{record.id}"},
+            )
+            assert rows == [f"person/{person_id}"]
+
+
+async def test_a_collaborator_membership_with_a_source_id_is_never_read_as_a_user(backend) -> None:
+    """People hold app membership edges too (external collaborators). A source-id
+    lookup must only ever return a member: a Person read as a User would link a
+    record to users/<person key>, a node that does not exist."""
+    from app.models.entities import Person
+
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    app = f"{org}-conn"
+    await provider.batch_upsert_nodes(
+        [{"id": app, "name": app, "type": "Jira", "appGroup": "Atlassian", "authType": "OAUTH", "scope": "team",
+          "orgId": org, "isActive": True, "createdAtTimestamp": 1, "updatedAtTimestamp": 1}],
+        collection=CollectionNames.APPS.value,
+    )
+    person = await provider.upsert_person_by_email(
+        Person(email=f"guest@{org}.test", org_id=org, full_name="Guest"), raise_on_error=True,
+    )
+    try:
+        await provider.ensure_app_membership(
+            person, CollectionNames.PEOPLE.value, app, is_external=True, source_user_id="src-guest",
+        )
+        await provider.ensure_app_membership(
+            f"{org}-ann", CollectionNames.USERS.value, app, is_external=False, source_user_id="src-ann",
+        )
+
+        assert await provider.get_user_by_source_id("src-guest", app) is None
+        member = await provider.get_user_by_source_id("src-ann", app)
+        assert member is not None and member.id == f"{org}-ann"
+    finally:
+        from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+        if not isinstance(provider, Neo4jProvider):
+            aql = provider.http_client.execute_aql
+            edges = CollectionNames.USER_APP_RELATION.value
+            await aql(f"FOR e IN {edges} FILTER e._to == @app REMOVE e IN {edges}", {"app": f"apps/{app}"})
+            await aql(f"REMOVE {{_key: @app}} IN {CollectionNames.APPS.value} OPTIONS {{ignoreErrors: true}}", {"app": app})
+
+
+async def test_a_page_holds_exactly_the_requested_number_of_ids(backend) -> None:
+    """A zero page is empty: a backfill run with page_size=0 must stop, not walk
+    every record one id at a time."""
+    provider, org = backend
+    await provider.ensure_schema()
+    await _seed(provider, org)
+    types = [RecordType.MAIL.value, RecordType.CASE.value]
+
+    assert await provider.page_record_ids_by_type(org, types, limit=0) == []
+    assert len(await provider.page_record_ids_by_type(org, types, limit=1)) == 1
+    with pytest.raises(ValueError, match="non-negative"):
+        await provider.page_record_ids_by_type(org, types, limit=-1)

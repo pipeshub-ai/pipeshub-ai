@@ -66,6 +66,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    SourcePerson,
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.box.box import (
@@ -82,7 +83,31 @@ from app.connectors.core.base.error.stream_errors import (
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
+ITEM_FIELDS = (
+    'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,'
+    'owned_by,created_by,modified_by'
+)
+# Box service accounts and app users sign in under this domain.
+_BOX_APP_LOGIN_DOMAIN = '@boxdevedition.com'
+
+
 # Helper functions
+def box_person(user: dict | None) -> SourcePerson | None:
+    """A Box mini user ({id, name, login}) as a SourcePerson; None for none or the anonymous user."""
+    if not user:
+        return None
+    source_id = str(user.get('id') or '') or None
+    email = user.get('login') or None
+    if not source_id and not email:
+        return None
+    return SourcePerson(
+        source_id=source_id,
+        email=email,
+        display_name=user.get('name') or None,
+        is_service_account=bool(email and email.lower().endswith(_BOX_APP_LOGIN_DOMAIN)),
+    )
+
+
 def get_parent_path_from_path(path: str) -> Optional[str]:
     """Extracts the parent path from a file/folder path."""
     if not path or path == "/" or "/" not in path.lstrip("/"):
@@ -477,6 +502,9 @@ class BoxConnector(BaseConnector):
                 sha1_hash=entry.get('sha1'),
                 external_revision_id=entry.get('etag'),
                 is_shared=is_shared,
+                authored_by=box_person(entry.get('created_by')),
+                last_modified_by=box_person(entry.get('modified_by')),
+                owners=[owner] if (owner := box_person(owned_by)) else [],
             )
 
             # 1. Fetch explicit API permissions (Collaborators only)
@@ -1116,7 +1144,7 @@ class BoxConnector(BaseConnector):
         offset = 0
         limit = 1000
 
-        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+        fields = ITEM_FIELDS
 
         if not self.current_user_id:
             try:
@@ -2338,7 +2366,7 @@ class BoxConnector(BaseConnector):
         """
         offset = 0
         limit = 1000
-        fields = 'type,id,name,size,created_at,modified_at,path_collection,etag,sha1,shared_link,owned_by'
+        fields = ITEM_FIELDS
         effective_email = user_email or "incremental_sync_user"
 
         while True:

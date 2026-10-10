@@ -35,7 +35,7 @@ from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
 from app.connectors.sources.microsoft.common.msgraph_client import MSGraphClient
 from app.connectors.sources.microsoft.onedrive.connector import OneDriveConnector
-from app.models.entities import RecordGroupType
+from app.models.entities import RecordGroupType, SourcePerson
 from app.models.permission import EntityType, PermissionType
 
 MODULE = "app.connectors.sources.microsoft.onedrive.connector"
@@ -1291,3 +1291,30 @@ class TestReindexAndDownload:
 
         assert err.value.status_code == 429
         assert backoff_sleeps.count(2) == 3, "the SDK waited as asked before each of its three retries"
+
+
+class TestAuthorship:
+    async def test_the_creator_and_last_editor_in_the_delta_payload_name_the_files_people(self, cloud, tenant, db, checkpoints) -> None:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        written = drive_item("f1", "plan.pdf")
+        written["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana", "email": "ana@acme.com"}}
+        written["lastModifiedBy"] = {"user": {"id": "u-ben", "displayName": "Ben"}}
+        automated = drive_item("f2", "report.pdf")
+        automated["createdBy"] = {"user": {"id": "u-ana", "displayName": "Ana"}}
+        automated["lastModifiedBy"] = {"application": {"id": "app-flow", "displayName": "Power Automate"}}
+        feed.by_token[None] = page([written, automated, drive_item("f3", "old.pdf")], delta_link=delta_link("u-ana", "D1"))
+        for item_id in ("f1", "f2", "f3"):
+            tenant.share(item_id, [user_grant("u-ana", "ana@acme.com", "owner")])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        plan, report, old = db.records["f1"], db.records["f2"], db.records["f3"]
+        assert plan.authored_by == SourcePerson(source_id="u-ana", email="ana@acme.com", display_name="Ana")
+        assert plan.last_modified_by == SourcePerson(source_id="u-ben", display_name="Ben")
+        assert report.authored_by == SourcePerson(source_id="u-ana", display_name="Ana")
+        assert report.last_modified_by == SourcePerson(
+            source_id="app-flow", display_name="Power Automate", is_service_account=True
+        )
+        assert (old.authored_by, old.last_modified_by) == (None, None)
+        assert all(r.created_by is None and r.owners == [] for r in (plan, report, old))

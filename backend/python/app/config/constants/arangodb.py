@@ -663,6 +663,8 @@ class EntityRelations(Enum):
     INVOLVED_IN = "INVOLVED_IN"
     # Record -> member edges written by record_people (KG-13)
     AUTHORED_BY = "AUTHORED_BY"
+    # Who last changed the record's current version (source-reported)
+    LAST_MODIFIED_BY = "LAST_MODIFIED_BY"
     ADDRESSED_TO = "ADDRESSED_TO"
     REVIEWED_BY = "REVIEWED_BY"
     OWNED_BY = "OWNED_BY"

@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from logging import Logger
 
     from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
-    from app.models.entities import Record, User
+    from app.models.entities import Person, Record, User
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 # Every record type stored in a type collection whose records record_people
@@ -57,12 +57,33 @@ class _DryRunStore:
     def __init__(self, graph: IGraphDBProvider) -> None:
         self._graph = graph
         self.edges = 0
+        self.people = 0
 
     async def get_user_by_email(self, email: str) -> User | None:
         return await self._graph.get_user_by_email(email)
 
     async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
         return await self._graph.get_user_by_source_id(source_user_id, connector_id)
+
+    async def get_person_by_email(self, email: str, org_id: str) -> Person | None:
+        return await self._graph.get_person_by_email(email, org_id, raise_on_error=True)
+
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        return await self._graph.get_person_by_source_key(source_key, org_id, raise_on_error=True)
+
+    def is_transient_error(self, error: BaseException) -> bool:
+        return self._graph.is_transient_error(error)
+
+    async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return self._would_create(person)
+
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
+        return self._would_create(person)
+
+    def _would_create(self, person: Person) -> str:
+        """A person the run would create (or find): counted, never written."""
+        self.people += 1
+        return f"dry-run-{person.email or person.source_key}"
 
     async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None:
         return await self._graph.get_record_group_organization(record_group_id, org_id)

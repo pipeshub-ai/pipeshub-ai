@@ -64,9 +64,11 @@ from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
 from app.connectors.sources.google.common.drive_file_fields import (
+    DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS,
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
     DRIVE_PERSONAL_SYNC_FILES_LIST_FIELDS,
 )
+from app.connectors.sources.google.common.drive_people import drive_file_people
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
     HELD_FILTER_FOLDERS,
@@ -495,6 +497,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
             parent_external_record_id = (metadata.get("parents") or [None])[0]
 
+            people = drive_file_people(metadata)
             # Create FileRecord directly
             file_record = FileRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -529,6 +532,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 sha256_hash=metadata.get("sha256Checksum", None),
                 md5_hash=metadata.get("md5Checksum", None),
                 is_shared=is_shared,
+                authored_by=people.authored_by,
+                last_modified_by=people.last_modified_by,
+                owners=people.owners,
             )
 
             if existing_record and not content_changed:
@@ -1433,7 +1439,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                     "supportsAllDrives": True,
                     "includeItemsFromAllDrives": True,
                     # Specify fields to retrieve
-                    "fields": "nextPageToken, newStartPageToken, changes(fileId, removed, file(id, name, mimeType, size, createdTime, modifiedTime, webViewLink, fileExtension, headRevisionId, version, shared, trashed, md5Checksum, sha1Checksum, sha256Checksum, parents, owners, permissions))",
+                    "fields": DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS,
                 }
 
                 # Fetch changes
