@@ -10,6 +10,7 @@ Companion documents:
 | --- | --- |
 | [one-way-doors.md](./one-way-doors.md) | Decisions that are expensive or impossible to reverse, with a recommendation for each. Read this first. |
 | [test-scenarios.md](./test-scenarios.md) | The QA and user-perspective catalogue: user journeys, functional, security, performance, chaos, compatibility, evals. About 300 cases with IDs. |
+| [checklist.md](./checklist.md) | Readiness checklist from every angle — control plane, capabilities, configurability (scope/lock matrix), lazy loading, security, performance, ops, compliance — each item traced to tests. |
 | [research.md](./research.md) | Research synthesis with sources: harness protocols, sandboxes, security, context engineering, evals, open-model quirks. |
 
 ---
