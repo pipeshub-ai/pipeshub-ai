@@ -19,6 +19,7 @@ from app.modules.indexing.record_label_repair import (
     RecordLabelRepairState,
     own_label_fields,
 )
+from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.services.graph_db.taxonomy import TaxonomyLink
 from tests.support.fake_entity_graph import FakeGraph
 
@@ -292,6 +293,57 @@ class TestFailures:
         assert blob.reads == []
 
 
+class TestAStoredCopyThatIsGone:
+    """A record can point at a stored copy that no longer exists: deleting the
+    connector that first stored deduplicated content removes it while records
+    of other connectors still use it, until a reindex rebuilds it. Reading it
+    again cannot succeed, so it is not a failure to retry."""
+
+    @staticmethod
+    def _gone(graph: RepairGraph, blob: FakeBlobStore, key: str) -> None:
+        _record(graph, blob, key, {"topics": ["Falcon launch window"]})
+        _link(graph, key, BELONGS_TO_TOPIC, TOPICS, "t-launch", "Product launch window")
+        read = blob.get_record_from_storage
+
+        async def _read(virtual_record_id, org_id, lookup_result=None) -> dict | None:
+            if virtual_record_id == f"vr-{key}":
+                blob.reads.append(virtual_record_id)
+                raise StorageDocumentNotFoundError("Failed to retrieve record from storage: status 404")
+            return await read(virtual_record_id, org_id, lookup_result=lookup_result)
+
+        blob.get_record_from_storage = _read
+
+    async def test_it_is_left_for_its_reindex_and_the_connector_is_not_retried(self, world, caplog) -> None:
+        graph, blob = world
+        self._gone(graph, blob, "g-gone")
+        with caplog.at_level(logging.INFO, logger="label-repair-test"):
+            await _run_until_idle(graph, blob)
+
+        app = graph.apps[CONNECTOR]
+        assert app[RecordLabelRepairState.STATE] == REPAIR_VERSION
+        assert app[RecordLabelRepairState.EXHAUSTED] is False
+        assert app[RecordLabelRepairState.ATTEMPTS] == 0
+        assert app[RecordLabelRepairState.FAILURES] == 0
+        assert app[RecordLabelRepairState.MISSING] == 1
+        assert app[RecordLabelRepairState.REPAIRED] == 1  # b-open is still restored
+        assert blob.reads.count("vr-g-gone") == 1
+        assert any("no stored copy" in r.getMessage() for r in caplog.records)
+
+    async def test_a_copy_removed_between_read_and_write_is_missing_too(self, world) -> None:
+        graph, blob = world
+
+        async def _gone_on_write(*_args, **_kwargs) -> None:
+            raise StorageDocumentNotFoundError("Failed to update record in storage: status 404")
+
+        blob.update_record_buffer = _gone_on_write
+        await _run_until_idle(graph, blob)
+
+        app = graph.apps[CONNECTOR]
+        assert app[RecordLabelRepairState.FAILURES] == 0
+        assert app[RecordLabelRepairState.MISSING] == 1
+        assert app[RecordLabelRepairState.ATTEMPTS] == 0
+
+
 class TestLoop:
     def test_indexing_starts_and_stops_the_repair_loop(self) -> None:
         import inspect
@@ -462,3 +514,12 @@ class TestRewrittenLabelsWhoseSpellingsCollide:
         assert len(blob.writes) == writes
         assert blob.stored["vr-b-open"]["semantic_metadata"]["own_labels"] is True
         assert len(blob.reads) > reads
+
+
+def test_the_strict_arango_app_schema_accepts_every_repair_field() -> None:
+    from app.schema.arango.documents import app_schema
+
+    properties = app_schema["rule"]["properties"]
+    for name, value in vars(RecordLabelRepairState).items():
+        if not name.startswith("_"):
+            assert value in properties, value

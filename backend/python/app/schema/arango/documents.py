@@ -191,6 +191,7 @@ app_schema = {
             "recordLabelRepairAfterKey": {"type": ["string", "null"]},
             "recordLabelRepairRepaired": {"type": ["integer", "null"]},
             "recordLabelRepairSkipped": {"type": ["integer", "null"]},
+            "recordLabelRepairMissing": {"type": ["integer", "null"]},
             "recordLabelRepairFailures": {"type": ["integer", "null"]},
             "recordLabelRepairAttempts": {"type": ["integer", "null"]},
             "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
