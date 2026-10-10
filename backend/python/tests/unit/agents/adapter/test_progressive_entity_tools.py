@@ -15,10 +15,11 @@ import pytest
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
-from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.core.types import Goal, ToolCall
 from app.agent_loop_lib.hooks.middleware.context import ToolResultContext
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.base import ToolOutput
+from app.agent_loop_lib.tools.builtin.lazy_toolsets import FetchToolsTool
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.actions.knowledge_graph.ops.entity_filters import ENTITY_INDEX_CACHE_KEY
 from app.agents.agent_loop.context import AgentContext
@@ -27,6 +28,12 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     SEARCH_ENTITIES_TOOL_NAME,
     entity_tools_used_in_history,
     progressive_entity_tools,
+)
+from app.agents.agent_loop.lazy_tools_wiring import register_lazy_tool_meta_tools
+from tests.unit.agent_loop_lib.tools.test_lazy_toolsets import (
+    _FakeAgent,
+    _FakeRouteContext,
+    _SimpleTool,
 )
 
 _SEARCH_ENTITIES_PATH = "/tools/knowledgegraph/search_entities"
@@ -171,3 +178,55 @@ class TestEntityToolsUsedInHistory:
         history = [{"role": "bot_response", "tool_results": [{"tool_name": "knowledgegraph__search"}]}]
         assert entity_tools_used_in_history(history) is False
         assert entity_tools_used_in_history(None) is False
+
+
+@pytest.mark.asyncio
+class TestWhatDiscoverySaysAboutFindRecords:
+    """fetch_tools must state the condition the hook grants on: after a search that
+    found nothing the tool is still withheld, and a message promising it once the
+    search "has run" would read as unavailable."""
+
+    def _registry(self) -> ToolRegistry:
+        registry = ToolRegistry()
+        registry.register_tool(_SimpleTool(SEARCH_ENTITIES_TOOL_NAME, _SEARCH_ENTITIES_PATH))
+        registry.register_tool(_SimpleTool(
+            PROGRESSIVE_FIND_RECORDS_TOOL_NAME, "/tools/knowledgegraph/find_records_by_entity",
+        ))
+        registry.register_toolset(
+            "knowledgegraph", "Knowledge graph.", [SEARCH_ENTITIES_TOOL_NAME, PROGRESSIVE_FIND_RECORDS_TOOL_NAME],
+        )
+        register_lazy_tool_meta_tools(registry)
+        return registry
+
+    async def _fetch(self, registry: ToolRegistry, spec: AgentSpec) -> dict:
+        agent = _FakeAgent(spec)
+        result = await FetchToolsTool(registry).handle(
+            ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "knowledgegraph"}),
+            _FakeRouteContext(agent=agent, spec=spec),
+        )
+        return result.content
+
+    async def test_after_a_search_that_found_nothing_it_names_the_condition_still_unmet(self) -> None:
+        registry = self._registry()
+        spec = _spec("caller", tool_names=[SEARCH_ENTITIES_TOOL_NAME])
+        ctx = _result_ctx(_tool_scope(spec, registry), tool_path=_SEARCH_ENTITIES_PATH)
+        await progressive_entity_tools(_agent_context(entities_found=False))(ctx, _noop_next)
+
+        content = await self._fetch(registry, spec)
+
+        assert [d["tool"] for d in content["deferred"]] == [PROGRESSIVE_FIND_RECORDS_TOOL_NAME]
+        assert content["deferred"][0]["message"] == (
+            f"{PROGRESSIVE_FIND_RECORDS_TOOL_NAME} is not callable yet. It becomes callable once "
+            f"{SEARCH_ENTITIES_TOOL_NAME} returns at least one entity."
+        )
+
+    async def test_after_a_search_that_found_an_entity_it_is_callable(self) -> None:
+        registry = self._registry()
+        spec = _spec("caller", tool_names=[SEARCH_ENTITIES_TOOL_NAME])
+        ctx = _result_ctx(_tool_scope(spec, registry), tool_path=_SEARCH_ENTITIES_PATH)
+        await progressive_entity_tools(_agent_context(entities_found=True))(ctx, _noop_next)
+
+        content = await self._fetch(registry, spec)
+
+        assert "deferred" not in content
+        assert PROGRESSIVE_FIND_RECORDS_TOOL_NAME in {tool["name"] for tool in content["tools"]}
