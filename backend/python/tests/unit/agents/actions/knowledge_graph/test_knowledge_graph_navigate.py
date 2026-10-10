@@ -422,6 +422,53 @@ class TestNavigateRemembersRecordIds:
         assert state["known_record_ids"] == {"rec1", "child1"}
 
     @pytest.mark.asyncio
+    async def test_rows_cut_by_the_byte_cap_never_reach_a_recovery_reply(self) -> None:
+        """The fetch reply for an unknown id lists remembered records; a row the
+        25KB cap cut was never shown, so it must not be listed there."""
+        from types import SimpleNamespace
+
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+
+        state = _make_state(enable_record_id_shortening=False)
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "Epic", "nodeType": "record", "subType": "TICKET",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        children = []
+        for i in range(200):
+            item = _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}")
+            item.webUrl = "https://example.atlassian.net/browse/" + "x" * 300
+            children.append(item)
+        mock_resp = _make_knowledge_hub_response(items=children, total=200)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            ok, text = await KnowledgeGraph(state=state).navigate(node_id="rec1", limit=200)
+
+        cut = [c.id for c in children if c.id not in text]
+        assert ok is True and cut, "the listing must be long enough to be cut"
+        assert not set(cut) & state["known_record_ids"]
+
+        context = SimpleNamespace(
+            org_id="org-1", user_id="user-1", graph_provider=gp, full_records_fetched=set(),
+            tool_state=state, is_multimodal_llm=False, context_length=128_000, query="",
+            retrieval_service=None,
+        )
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=["deadbeef-0000-4000-8000-000000000000"],
+        )
+        assert "Records returned earlier in this conversation:" in output.error
+        assert not [rid for rid in cut if rid in output.error]
+
+    @pytest.mark.asyncio
     async def test_container_node_ids_are_not_remembered(self):
         """An app or recordGroup id is not fetchable, so offering it as one
         would only produce a failed call."""
