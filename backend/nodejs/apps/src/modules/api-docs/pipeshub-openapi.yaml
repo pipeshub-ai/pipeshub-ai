@@ -24094,6 +24094,128 @@ paths:
           description: The storage scoped token was missing or invalid.
         '503':
           description: A stored file could not be removed; its document was kept so the removal can be retried.
+  /document/internal/records/relocate:
+    post:
+      tags:
+        - Internal Storage
+      summary: Hand a deleted connector's shared content over to another connector (service-to-service)
+      description: |
+        Records with identical content share one virtual record id, and its
+        processed-content documents (`record_{id}`, `metadata_{id}`) are filed
+        under whichever connector indexed it first. Before that connector's
+        storage is deleted, each shared copy is moved to `newPath` and re-tagged
+        with `connectorId`, so the records that remain keep reading it. Only
+        documents the `fromConnectorId` delete would remove are moved; document
+        ids do not change. A copy already at `newPath` with the new tag counts
+        as moved, so the call is safe to repeat. `missing` lists ids with no
+        such document.
+      operationId: internalRelocateVirtualRecords
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromConnectorId, moves]
+              properties:
+                fromConnectorId:
+                  type: string
+                moves:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [virtualRecordId, newPath, connectorId]
+                    properties:
+                      virtualRecordId:
+                        type: string
+                        pattern: '^[A-Za-z0-9_-]{1,128}$'
+                      newPath:
+                        type: string
+                        description: Relative path under `records/`, without `..` segments.
+                      connectorId:
+                        type: string
+                      recordGroupId:
+                        type: string
+      responses:
+        '200':
+          description: Which virtual record ids were handed over, failed, or had nothing to move.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  moved:
+                    type: array
+                    items:
+                      type: string
+                  failed:
+                    type: array
+                    items:
+                      type: string
+                  missing:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: The body is not valid (empty or more than 100 moves, or an unsafe path).
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/connector/{connectorId}/virtual-records:
+    get:
+      tags:
+        - Internal Storage
+      summary: List the virtual records a connector's storage holds (service-to-service)
+      description: |
+        Pages the virtual record ids of the documents that deleting this
+        connector's storage would remove (under its storage prefixes, or tagged
+        with its id), in document-id order.
+      operationId: internalListConnectorVirtualRecords
+      security:
+        - scopedToken: []
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: after
+          in: query
+          required: false
+          description: The `next` value of the previous page.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: limit
+          in: query
+          required: false
+          description: Documents scanned per page (default 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of virtual record ids, and the cursor of the next page (null on the last).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  virtualRecordIds:
+                    type: array
+                    items:
+                      type: string
+                  next:
+                    type: string
+                    nullable: true
+        '400':
+          description: The paging parameters are not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}/download:
     get:
       tags:

@@ -1,5 +1,9 @@
 import { z } from 'zod';
-import { MAX_SIGNED_URL_TTL_SECONDS } from '../constants/constants';
+import {
+  CONNECTOR_VRID_PAGE_MAX,
+  MAX_SIGNED_URL_TTL_SECONDS,
+  RELOCATE_MAX_MOVES,
+} from '../constants/constants';
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
 
@@ -32,11 +36,13 @@ export const PurgeDocumentParams = z.object({
   }),
 });
 
+const virtualRecordIdSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id');
+
 export const PurgeVirtualRecordParams = z.object({
   params: z.object({
-    virtualRecordId: z
-      .string()
-      .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id'),
+    virtualRecordId: virtualRecordIdSchema,
   }),
 });
 
@@ -60,6 +66,44 @@ export const MoveTreeSchema = z.object({
     .refine(({ oldPath, newPath }) => !newPath.startsWith(`${oldPath}/`), {
       message: 'newPath must not be a descendant of oldPath',
     }),
+});
+
+export const RelocateVirtualRecordsSchema = z.object({
+  headers: Headers,
+  body: z.object({
+    fromConnectorId: z.string().min(1),
+    moves: z
+      .array(
+        z.object({
+          virtualRecordId: virtualRecordIdSchema,
+          // Content envelopes only ever live under records/.
+          newPath: treePath.refine(
+            (p) => p.startsWith('records/'),
+            'newPath must be under records/',
+          ),
+          connectorId: z.string().min(1),
+          recordGroupId: z.string().min(1).optional(),
+        }),
+      )
+      .min(1)
+      .max(RELOCATE_MAX_MOVES),
+  }),
+});
+
+export const ConnectorVirtualRecordsSchema = z.object({
+  params: z.object({
+    connectorId: z.string().min(1),
+  }),
+  query: z.object({
+    after: z.string().regex(OBJECT_ID_REGEX, 'Not a document id').optional(),
+    limit: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(CONNECTOR_VRID_PAGE_MAX)
+      .optional(),
+  }),
+  headers: Headers,
 });
 
 export const DocumentIdParamsWithVersion = z.object({

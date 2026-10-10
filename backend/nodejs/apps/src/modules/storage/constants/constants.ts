@@ -10,3 +10,8 @@ export const MAX_SIGNED_URL_TTL_SECONDS = 604800;
 // Shown to the person uploading when the file could not be written to storage.
 export const STORAGE_WRITE_FAILED_MESSAGE =
   "We couldn't save this file right now. Please try again in a moment; if it keeps failing, ask your admin to check the storage settings.";
+
+// Shared-content handover after a connector delete (relocate + list routes).
+export const RELOCATE_MAX_MOVES = 100;
+export const CONNECTOR_VRID_PAGE_DEFAULT = 500;
+export const CONNECTOR_VRID_PAGE_MAX = 1000;
