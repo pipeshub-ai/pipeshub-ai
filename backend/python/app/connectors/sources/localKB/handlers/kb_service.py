@@ -21,7 +21,6 @@ from app.connectors.services.entity_cleanup_intents import (
 from app.connectors.services.kafka_service import KafkaService
 from app.connectors.services.storage_release import (
     StorageReleaseIntentError,
-    clear_pending_storage_release,
     record_pending_storage_release,
     release_connector_storage,
 )
@@ -801,9 +800,11 @@ class KnowledgeBaseService:
                 }
             self.logger.info("Storage release intent recorded | org=%s connector=%s", org_id, kb_id)
 
+            # A failed delete leaves the intent: a concurrent delete of this KB
+            # may have committed and still owe its release, and the reconciler
+            # drops the intent once stale if the KB does still exist.
             refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
             if refused:
-                await self._forget_storage_release(org_id, kb_id)
                 return refused
 
             result = await self.graph_provider.delete_connector_instance(
@@ -811,7 +812,6 @@ class KnowledgeBaseService:
             )
 
             if not result or not result.get("success"):
-                await self._forget_storage_release(org_id, kb_id)
                 # the provider's "error" can be exception text, so it stays in the log
                 self.logger.warning(
                     "⚠️ Failed to delete knowledge base %s: %s",
@@ -959,15 +959,6 @@ class KnowledgeBaseService:
             logger=self.logger,
             description=f"publish {event['eventType']} for KB {kb_id}",
         )
-
-    async def _forget_storage_release(self, org_id: str, kb_id: str) -> None:
-        try:
-            await clear_pending_storage_release(self.config_service, kb_id)
-        except Exception as e:
-            # Harmless: the reconciler drops an intent whose KB still exists.
-            self.logger.warning(
-                "Could not clear the storage release intent | org=%s connector=%s: %s", org_id, kb_id, e,
-            )
 
     async def _cleanup_kb_storage(self, org_id: str, kb_id: str) -> None:
         """Background task: hand shared content over, then delete the KB's

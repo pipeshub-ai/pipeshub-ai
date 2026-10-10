@@ -729,14 +729,28 @@ class TestDeleteKBStorageCleanup:
         ]
 
     @pytest.mark.asyncio
-    async def test_a_failed_graph_delete_owes_no_storage_release(self, service, mock_config_service):
+    async def test_a_failed_graph_delete_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
+        # A concurrent delete of the same KB may have committed; its intent must survive this failure.
         _setup_kb_owner_resolve(service)
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": False})
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": False, "error": "Connector instance kb1 not found"}
+        )
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is False
-        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/kb1")
+        mock_config_service.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_upload_removal_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_uploaded_document_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["code"] == 503
+        service.graph_provider.delete_connector_instance.assert_not_called()
+        mock_config_service.delete_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_storage_intent_that_cannot_be_recorded_stops_the_delete(

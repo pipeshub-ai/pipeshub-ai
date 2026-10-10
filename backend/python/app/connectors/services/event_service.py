@@ -37,7 +37,6 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
 from app.connectors.services.storage_release import (
-    clear_pending_storage_release,
     record_pending_storage_release,
     release_connector_storage,
 )
@@ -1207,18 +1206,6 @@ class EventService:
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
-    async def _forget_storage_release(
-        self, config_service: ConfigurationService, org_id: str, connector_id: str
-    ) -> None:
-        try:
-            await clear_pending_storage_release(config_service, connector_id)
-        except Exception as e:
-            # Harmless: the reconciler drops an intent whose connector still exists.
-            self.logger.warning(
-                f"Could not clear the storage release intent | org={org_id} "
-                f"connector={connector_id}: {e}"
-            )
-
     async def _release_storage(
         self,
         cleanup_helper: StorageCleanupHelper,
@@ -1317,8 +1304,9 @@ class EventService:
             )
 
             if not result.get("success"):
-                # Nothing was deleted, so no storage is owed.
-                await self._forget_storage_release(config_service, org_id, connector_id)
+                # The intent stays: "not found" is a redelivery after this delete
+                # committed, and the reconciler drops it once stale if the
+                # connector does still exist.
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
 
             self.logger.info(
@@ -1397,6 +1385,17 @@ class EventService:
                 exc_info=True
             )
             try:
+                # An upsert would recreate a connector the graph delete already
+                # removed (MERGE on Neo4j), and the reconciler would then treat
+                # its owed storage release as a reverted delete.
+                if await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                ) is None:
+                    self.logger.warning(
+                        f"Connector {connector_id} is already deleted from the graph; "
+                        f"nothing to revert, its storage release stays pending"
+                    )
+                    return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{
                         "id": connector_id,

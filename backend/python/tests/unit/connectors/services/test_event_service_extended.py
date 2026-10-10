@@ -523,6 +523,7 @@ class TestHandleDelete:
     @pytest.mark.asyncio
     async def test_delete_failure_reverts_status(self, service):
         """Failed graph DB delete reverts connector status."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False,
             "error": "test failure",

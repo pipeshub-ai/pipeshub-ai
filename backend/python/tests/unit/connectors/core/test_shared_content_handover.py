@@ -184,6 +184,8 @@ class FakeGraph:
         return [self.records[record_id]["recordName"]]
 
     async def delete_connector_instance(self, connector_id, org_id):
+        if connector_id not in self.apps:
+            return {"success": False, "error": f"Connector instance {connector_id} not found"}
         gone = [k for k, r in self.records.items() if r["connectorId"] == connector_id]
         vrids = sorted({self.records[k]["virtualRecordId"] for k in gone})
         for k in gone:
@@ -194,7 +196,11 @@ class FakeGraph:
     async def update_node(self, *_a, **_kw):
         return True
 
-    async def batch_upsert_nodes(self, *_a, **_kw):
+    async def batch_upsert_nodes(self, nodes, collection, **_kw):
+        # MERGE, as on Neo4j: upserting a missing app creates it.
+        if collection == CollectionNames.APPS.value:
+            for n in nodes:
+                self.apps.setdefault(n["id"], {"_key": n["id"]}).update(n)
         return True
 
     async def delete_nodes(self, keys, collection):
@@ -347,7 +353,12 @@ class TestConnectorDelete:
         assert set(docs.values()) <= set(node.docs)
         assert [k for k in config.kv if "storageRelease" in k]
 
-    async def test_a_connector_whose_graph_delete_failed_leaves_no_release_pending(self, node):
+    async def test_a_failed_graph_delete_leaves_its_intent_to_the_reconciler_to_drop(self, node):
+        from app.connectors.services.storage_release import (
+            STALE_MS,
+            list_pending_storage_releases,
+        )
+
         graph, docs = _world(node)
         graph.delete_connector_instance = AsyncMock(return_value={"success": False, "error": "boom"})
         config = FakeConfig(node.endpoint)
@@ -356,7 +367,44 @@ class TestConnectorDelete:
         assert await _delete_connector(service, "conn-a") is False
 
         assert set(docs.values()) <= set(node.docs)
-        assert not [k for k in config.kv if "storageRelease" in k]
+        assert graph.apps["conn-a"]["status"] is None
+        (intent,) = await list_pending_storage_releases(config)
+        assert await self._reconcile(graph, config, int(intent["requestedAt"]) + STALE_MS + 1) == "dropped"
+        assert set(docs.values()) <= set(node.docs)
+
+    async def test_a_redelivered_delete_keeps_the_release_its_first_attempt_owes(self, node):
+        from app.connectors.services.storage_release import (
+            GRACE_MS,
+            list_pending_storage_releases,
+        )
+
+        graph, docs = _world(node)
+        config = FakeConfig(node.endpoint)
+        service, _ = _event_service(graph, config)
+        with patch(
+            "app.connectors.services.event_service.build_connector_cleanup_events",
+            side_effect=RuntimeError("after the graph delete"),
+        ):
+            assert await _delete_connector(service, "conn-a") is False
+        assert "conn-a" not in graph.apps, "the rollback recreated the deleted connector"
+
+        assert await _delete_connector(service, "conn-a") is False
+
+        assert "conn-a" not in graph.apps
+        (intent,) = await list_pending_storage_releases(config)
+        assert await self._reconcile(graph, config, int(intent["requestedAt"]) + GRACE_MS + 1) == "released"
+        assert node.path(docs["shared_record"]) == "records/conn-b/Drive/Report"
+        assert docs["own"] not in node.docs
+        assert await list_pending_storage_releases(config) == []
+
+    @staticmethod
+    async def _reconcile(graph: FakeGraph, config: FakeConfig, now: int) -> str:
+        from app.connectors.services.storage_release import StorageReleaseReconciler
+
+        lock = SimpleNamespace(try_acquire=AsyncMock(return_value=True))
+        return await StorageReleaseReconciler(
+            logger=MagicMock(), graph_provider=graph, config_service=config, lock=lock, now_ms=lambda: now,
+        ).tick()
 
 
 class TestOwnerChoice:

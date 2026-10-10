@@ -1134,6 +1134,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_graph_delete_fails_reverts(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "DB error"
         })
@@ -1145,6 +1146,36 @@ class TestHandleDelete:
             assert result is False
             # Verify revert was attempted
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
+
+    @pytest.mark.asyncio
+    async def test_a_connector_the_graph_delete_already_removed_is_not_recreated(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "Connector instance c1 not found"
+        })
+        config_svc = AsyncMock()
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        config_svc.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_revert_whose_read_fails_writes_nothing(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "DB error"
+        })
+        service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_kafka_publish_fails(self, service):
@@ -1226,6 +1257,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         config_svc = AsyncMock()
         config_svc.set_config = AsyncMock(return_value=False)
         service.app_container.config_service.return_value = config_svc
