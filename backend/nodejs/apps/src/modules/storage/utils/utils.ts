@@ -119,7 +119,9 @@ async function getDocumentInfoFromDb(
     const document = lean ? await query.lean<Document>().exec() : await query;
 
     if (!document) {
-      throw new NotFoundError('Document not found');
+      // Callers probe for documents that may be gone (deduplicated content
+      // removed with another connector); that is not a server fault.
+      throw new NotFoundError('Document not found', { logLevel: 'warn' });
     }
     return { document };
   } catch (error) {
