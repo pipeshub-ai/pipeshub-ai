@@ -110,7 +110,9 @@ class FakeRecordsDb:
             existing = self.record_groups.get(group.external_group_id)
             group.id = existing.id if existing else str(uuid.uuid4())
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions or [])
+            # None: the grants could not be read, so the stored ones stay (as in the processor).
+            if permissions is not None or group.external_group_id not in self.record_group_permissions:
+                self.record_group_permissions[group.external_group_id] = list(permissions or [])
 
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         for user in users:
@@ -162,7 +164,16 @@ class FakeRecordsDb:
         return {k: r for k, r in self.records.items() if str(getattr(r.record_type, "value", r.record_type)) == record_type}
 
     def group_access(self, external_group_id: str) -> set[str]:
-        return {principal(p) for p in self.record_group_permissions.get(external_group_id, [])}
+        """Principals who can open a group: its own grants plus its parent's, when it inherits."""
+        who: set[str] = set()
+        seen: set[str] = set()
+        current: str | None = external_group_id
+        while current and current not in seen:
+            seen.add(current)
+            who |= {principal(p) for p in self.record_group_permissions.get(current, [])}
+            group = self.record_groups.get(current)
+            current = group.parent_external_group_id if group and group.inherit_permissions else None
+        return who
 
     def access(self, external_record_id: str) -> set[str]:
         """Principals who can open a record: its own grants plus its group's, when it inherits."""
@@ -205,7 +216,7 @@ class FakeDataStore:
         self.db = db
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[FakeDataStore]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any]) -> list[dict[str, Any]]:

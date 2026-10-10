@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, OriginTypes
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, AppGroups, Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -283,7 +283,7 @@ class KnowledgeBaseConnector(BaseConnector):
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex KB records by publishing them to the indexing service."""
         # Exclude folders — they can't be indexed
-        file_records = [r for r in record_results if r.mime_type != "application/vnd.folder"]
+        file_records = [r for r in record_results if r.mime_type not in FOLDER_MIME_TYPES]
         self.logger.info(
             f"Reindexing {len(file_records)} KB records "
             f"({len(record_results) - len(file_records)} folders excluded)"

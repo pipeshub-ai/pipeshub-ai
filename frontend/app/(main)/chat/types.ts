@@ -275,15 +275,36 @@ export interface QueryModeConfig {
 }
 
 /**
- * Assistant chat knowledge scope — **same shape as stream/search `filters`** (`apps` + `kb`).
+ * Assistant chat knowledge scope — **same shape as stream/search `filters`**.
  *
- * - **`apps`** — Ids sent as `filters.apps`: connector hub roots **and** collection/KB hub roots
- *   (whole-subtree scope). Nested record groups do **not** go here.
- * - **`kb`** — Record group ids sent as `filters.kb` (nested picks under an expanded hub root).
+ * - **`apps`** — whole apps: connectors and collections.
+ * - **`kb`** — older name for collection ids; read, no longer written by the picker.
+ * - **`recordGroups`** — record groups, each with the groups nested in it and their records.
+ * - **`records`** — folders and records, each with everything under it.
+ *
+ * Only the topmost selected node is kept: selecting a node drops what was
+ * selected under it (see `utils/tree-selection.ts`).
  */
 export interface ChatKnowledgeFilters {
   apps: string[];
   kb: string[];
+  recordGroups?: string[];
+  records?: string[];
+  /**
+   * Records selected alone, without what is under them. The picker has no
+   * control for it; an API client can start a conversation with it, and the
+   * conversation keeps it when it is opened here.
+   */
+  recordsExact?: string[];
+}
+
+/** What the chat UI remembers about a node it has listed or selected. */
+export interface CollectionMeta {
+  name: string;
+  nodeType: string;
+  connector: string;
+  /** Ids of the nodes above it in the picker tree, root first (absent for a root). */
+  ancestorIds?: string[];
 }
 
 export interface AppliedFilterNode {
@@ -296,16 +317,19 @@ export interface AppliedFilterNode {
 export interface AppliedFilters {
   apps: AppliedFilterNode[];
   kb: AppliedFilterNode[];
+  recordGroups?: AppliedFilterNode[];
+  records?: AppliedFilterNode[];
+  recordsExact?: AppliedFilterNode[];
 }
 
 /** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
-export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): {
-  apps: string[];
-  kb: string[];
-} {
+export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): ChatKnowledgeFilters {
   return {
     apps: [...(filters.apps ?? [])],
     kb: [...(filters.kb ?? [])],
+    ...(filters.recordGroups?.length ? { recordGroups: [...filters.recordGroups] } : {}),
+    ...(filters.records?.length ? { records: [...filters.records] } : {}),
+    ...(filters.recordsExact?.length ? { recordsExact: [...filters.recordsExact] } : {}),
   };
 }
 
@@ -852,10 +876,7 @@ export interface StreamChatRequest {
    * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
-  filters: {
-    apps: string[];
-    kb: string[];
-  };
+  filters: ChatKnowledgeFilters;
   timezone?: string;
   currentTime?: string;
   appliedFilters?: AppliedFilters;
@@ -1117,15 +1138,10 @@ export interface ChatSlot {
 
 // ── Search types ──────────────────────────────────────────────────────
 
-export interface SearchFilters {
-  apps: string[];
-  kb: string[];
-}
-
 export interface SearchRequest {
   query: string;
   limit: number;
-  filters: SearchFilters;
+  filters: ChatKnowledgeFilters;
 }
 
 export interface SearchResultMetadata {

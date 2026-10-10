@@ -34,18 +34,6 @@ def build_graph_data_store(logger_: logging.Logger, graph_provider: Any, org_id:
     return GraphDataStore(logger_, graph_provider)
 
 
-async def lookup_user_for_records(graph_provider: Any, user_id: str, org_id: Optional[str]) -> Any:
-    """OSS: lookup by external userId only. A failed lookup raises, not "user not found"."""
-    del org_id
-    return await graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
-
-
-def records_user_id_arg(user: dict[str, Any], external_user_id: str) -> str:
-    """OSS get_records expects the graph ``_key``."""
-    del external_user_id
-    return user["_key"]
-
-
 async def authorize_connector_stats(
     request: Request,
     graph_provider: Any,
@@ -63,7 +51,7 @@ async def authorize_connector_stats(
 
     app_doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
     # Another org's connector answers like a missing one, so its id is not confirmed.
-    if not app_doc or not await connector_registry.belongs_to_org(app_doc, org_id):
+    if not app_doc or not org_id or not await connector_registry.belongs_to_org(app_doc, org_id):
         raise HTTPException(
             status_code=HttpStatusCode.NOT_FOUND.value,
             detail=not_found("This connector"),

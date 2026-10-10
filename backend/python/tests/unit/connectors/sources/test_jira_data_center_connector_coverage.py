@@ -48,6 +48,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dep.org_id = "org-dc-cov"
     dep.initialize = AsyncMock()
     dep.on_new_app_users = AsyncMock()
+    dep.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
@@ -635,6 +636,43 @@ async def test_run_sync_happy_path_heavy_mock():
                                         await conn.run_sync()
     conn.data_entities_processor.on_new_app_users.assert_awaited()
     conn.data_entities_processor.on_new_record_groups.assert_awaited_with([])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "forbidden, incomplete, withdraws",
+    [(False, False, True), (True, False, False), (False, True, False)],
+    ids=["complete-listing", "bulk-forbidden", "bulk-incomplete"],
+)
+async def test_run_sync_withdraws_the_gate_only_after_a_complete_user_listing(forbidden, incomplete, withdraws):
+    """JPDC-04: a DC user deactivated after a sync kept every "any logged-in user"
+    project. Without the bulk listing, a user missing from the list may just be
+    one whose email lookup failed, so nobody loses access then."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    listed = [AppUser(app_name=Connectors.JIRA_DATA_CENTER, connector_id=conn.connector_id,
+                      source_user_id="a1", org_id="org-dc-cov", email="e@example.com", full_name="E")]
+
+    async def fetch_users():
+        conn._user_bulk_forbidden, conn._user_bulk_incomplete = forbidden, incomplete
+        return listed
+
+    conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[MagicMock()])
+    conn.data_entities_processor.remove_app_users_absent_from_source = AsyncMock(return_value=0)
+    with patch(
+        "app.connectors.sources.atlassian.jira_data_center.connector.load_connector_filters",
+        new_callable=AsyncMock, return_value=(None, None),
+    ), patch.object(conn, "_fetch_users", side_effect=fetch_users), patch.object(
+        conn, "_sync_user_groups", AsyncMock(side_effect=RuntimeError("stop after users")),
+    ):
+        with pytest.raises(RuntimeError, match="stop after users"):
+            await conn.run_sync()
+
+    remove = conn.data_entities_processor.remove_app_users_absent_from_source
+    if withdraws:
+        remove.assert_awaited_once_with(conn.connector_id, listed)
+    else:
+        remove.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1460,6 +1498,60 @@ async def test_build_issue_records_full_sync_keeps_unchanged():
     assert isinstance(rows[0][0], TicketRecord)
 
 
+def _dc_epic_and_story(epic_security):
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    conn._epic_link_field_id = "customfield_10100"
+    conn._issue_key_to_id_cache["PROJ-1"] = "1001"
+    from app.connectors.sources.atlassian.core.jira_issue_security import (
+        IssueSecurityContext,
+        SchemeKnowledge,
+    )
+    conn._issue_security_context = IssueSecurityContext(
+        knowledge=SchemeKnowledge.PRESENT,
+        scheme_id="9",
+        members_by_level={"20": [{"type": "group", "parameter": "holders"}]},
+        members_readable=True,
+    )
+    conn._app_roles_mapping = {}
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Story"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    base = {"updated": "2024-11-15T01:23:45.000+0000", "created": "2024-11-15T01:23:45.000+0000",
+            "project": {"id": "pid", "key": "PROJ"}}
+    epic = {"id": "1001", "key": "PROJ-1", "fields": {
+        **base, "summary": "E", "issuetype": {"name": "Epic", "subtask": False}, "security": epic_security,
+    }}
+    story = {"id": "2002", "key": "PROJ-2", "fields": {
+        **base, "summary": "S", "issuetype": {"name": "Story", "subtask": False}, "security": None,
+        "customfield_10100": "PROJ-1",
+    }}
+    return conn, [story, epic]
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_story_under_a_secured_epic_also_takes_the_project():
+    """JC-02 on Data Center: the Epic Link parent's level does not apply to the story."""
+    conn, issues = _dc_epic_and_story({"id": "20", "name": "Admins"})
+    with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+        rows = await conn._build_issue_records(issues, "pid", [], is_new_project=True)
+    by_id = {rec.external_record_id: rec for rec, _ in rows}
+    assert by_id["2002"].parent_external_record_id == "1001"
+    assert by_id["2002"].inherit_permissions_from_group is True
+
+
+@pytest.mark.asyncio
+async def test_build_issue_records_story_under_an_open_epic_hangs_off_the_epic_only():
+    conn, issues = _dc_epic_and_story(None)
+    with patch.object(conn, "_fetch_issue_attachments", new_callable=AsyncMock, return_value=[]):
+        rows = await conn._build_issue_records(issues, "pid", [], is_new_project=True)
+    by_id = {rec.external_record_id: rec for rec, _ in rows}
+    assert by_id["2002"].inherit_permissions_from_group is False
+
+
 @pytest.mark.asyncio
 async def test_fetch_issue_attachments_builds_file_records():
     conn = _make_connector()
@@ -2043,6 +2135,34 @@ async def test_fetch_project_permission_scheme_scheme_missing_id_returns_none():
     with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
         assert await conn._fetch_project_permission_scheme("P", {}) is None
     ds.get_permission_scheme_grants_v2.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_default_scheme_id_zero_is_read():
+    """Jira's Default Permission Scheme has id 0: its grants are read."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 0})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(
+        return_value={
+            "permissions": [
+                {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "g1"}},
+            ]
+        }
+    )
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("PPC", {})
+
+    assert perms is not None
+    assert [p.external_id for p in perms] == ["g1"]
+    assert ds.get_permission_scheme_grants_v2.await_args.kwargs["schemeId"] == 0
 
 
 @pytest.mark.asyncio

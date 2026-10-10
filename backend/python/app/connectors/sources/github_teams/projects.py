@@ -25,6 +25,8 @@ from app.models.permission import EntityType, Permission, PermissionType
 
 from .constants import AFFILIATION_ALL
 
+_NOT_FOUND = 404
+
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
@@ -102,6 +104,7 @@ class ProjectsSync:
                     "Unhandled error syncing GitHub repo %s (id=%s); continuing: %s",
                     getattr(repo, "full_name", "?"), getattr(repo, "id", "?"), e, exc_info=True,
                 )
+                c.keep_stored_access(f"repo {getattr(repo, 'full_name', '?')} failed to sync: {e}")
 
         # Each repo already flushed its own org, so this is normally a no-op; it
         # exists to retry an org left dirty by a failed mid-sync flush.
@@ -125,15 +128,18 @@ class ProjectsSync:
             await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
         permissions.extend(visibility_permissions)
         permissions = _dedupe_highest_permissions(permissions)
-        self._accumulate_org_permissions(repo.owner, permissions)
-        # Before the repo group, not after every repo: the org group is the only
-        # one the platform links to the App (a group with a parent never gets
-        # that edge), and connector stats count by walking DOWN from the App.
-        # Flushing at the end left every record of the sync unreachable — and so
-        # counted as zero — until the final write. Flushing here also means the
-        # repo group's parent lookup finds a real group instead of creating a
-        # bare placeholder.
-        await self._flush_org_record_groups()
+        # A personal repo hangs directly off the app. The team connector still
+        # puts an org group above the repo and keeps that group's grants.
+        if getattr(c, "scope", None) != "personal":
+            self._accumulate_org_permissions(repo.owner, permissions)
+            # Before the repo group, not after every repo: the org group is the only
+            # one the platform links to the App (a group with a parent never gets
+            # that edge), and connector stats count by walking DOWN from the App.
+            # Flushing at the end left every record of the sync unreachable — and so
+            # counted as zero — until the final write. Flushing here also means the
+            # repo group's parent lookup finds a real group instead of creating a
+            # bare placeholder.
+            await self._flush_org_record_groups()
         await self._create_record_group_hierarchy(repo, permissions)
 
         for step_name, step in (
@@ -189,6 +195,7 @@ class ProjectsSync:
                     continue
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
+                GitHubReadError.raise_unless_absent(f"Repository {full_name}", res)
                 if not res.success or not res.data:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
                     continue
@@ -203,8 +210,9 @@ class ProjectsSync:
                 return []
             for org in orgs:
                 res = await c.runtime.ds_call(c.data_source.list_org_repos, org)
+                GitHubReadError.raise_unless_absent(f"The repositories of org {org}", res)
                 if not res.success:
-                    self.logger.error("Could not list repos for org %s: %s", org, res.error)
+                    self.logger.error("Org %s not found: %s", org, res.error)
                     continue
                 for r in res.data or []:
                     by_id[int(r.id)] = r
@@ -321,6 +329,7 @@ class ProjectsSync:
             "its existing permissions and content are left unchanged.",
             repo.full_name, error, exc_info=True,
         )
+        self.c.keep_stored_access(f"the collaborators of {repo.full_name} could not be read: {error}")
         return None
 
     def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
@@ -415,8 +424,13 @@ class ProjectsSync:
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=str(repo.id),
-            parent_external_group_id=self._org_parent_external_id(repo.owner.id),
+            parent_external_group_id=(
+                None
+                if getattr(c, "scope", None) == "personal"
+                else self._org_parent_external_id(repo.owner.id)
+            ),
             web_url=getattr(repo, "html_url", None),
+            inherit_permissions=getattr(c, "scope", None) == "personal",
         )
         # The ACL lives ONLY on the repo group. The three child groups set
         # inherit_permissions=True, which makes the processor write a
@@ -526,11 +540,23 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=self._org_parent_external_id(org_id),
                 web_url=f"https://github.com/{org_login}",
+                inherit_permissions=getattr(c, "scope", None) == "personal",
             )
             await c.data_entities_processor.on_new_record_groups([(org_rg, list(bucket.values()))])
             # Cleared per org, after its own write: a failure leaves that org
             # dirty so the end-of-sync flush retries it.
             self._dirty_org_ids.discard(org_id)
+
+
+class GitHubReadError(RuntimeError):
+    """GitHub gave no answer about an object (transport error, 5xx, rate limit,
+    401/403). Only a 404 says it is gone; read as "gone", a full sync would
+    sweep the stored access of everything it skipped."""
+
+    @classmethod
+    def raise_unless_absent(cls, what: str, res: Any) -> None:
+        if not res.success and res.status_code != _NOT_FOUND:
+            raise cls(f"{what} could not be read from GitHub (status {res.status_code}): {res.error}")
 
 
 class CollaboratorsUnavailable(Exception):
@@ -573,6 +599,4 @@ def _permission_rank(ptype: PermissionType) -> int:
         PermissionType.OWNER: 3,
         PermissionType.WRITE: 2,
         PermissionType.READ: 1,
-        PermissionType.COMMENT: 1,
-        PermissionType.OTHER: 0,
     }.get(ptype, 0)

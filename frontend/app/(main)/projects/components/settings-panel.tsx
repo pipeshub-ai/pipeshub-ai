@@ -202,7 +202,10 @@ export function ProjectSettingsPanel({
   const [fileSummary, setFileSummary] = useState({ count: 0, totalBytes: 0 });
 
   const hasInstructions = Boolean(project.instructions?.trim());
-  const connectorCount = project.knowledgeScope?.apps?.length ?? 0;
+  const connectorCount =
+    (project.knowledgeScope?.apps?.length ?? 0) +
+    (project.knowledgeScope?.recordGroups?.length ?? 0) +
+    (project.knowledgeScope?.records?.length ?? 0);
   const toolCount = project.tools?.length ?? 0;
   const memberCount = project.members.length; // additional members beyond the owner
 
@@ -362,10 +365,8 @@ export function ProjectSettingsPanel({
           lazy
         >
           <ConnectorsCard
-            selectedAppIds={project.knowledgeScope?.apps ?? []}
-            knowledgeScopeKb={project.knowledgeScope?.kb ?? []}
-            appliedFiltersKb={project.appliedFilters?.kb ?? []}
-            previousAppliedApps={project.appliedFilters?.apps ?? []}
+            knowledgeScope={project.knowledgeScope}
+            appliedFilters={project.appliedFilters}
             canEdit={canEdit}
             onChange={onConnectorsChange}
           />

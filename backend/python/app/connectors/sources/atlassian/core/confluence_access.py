@@ -96,8 +96,9 @@ async def apply_page_access_to_dependents(
             ):
                 continue
             seen.add(child.external_record_id)
-            child.inherit_permissions = inherits_space
-            await processor.on_updated_record_permissions(child, permissions)
+            child.inherit_permissions = True
+            child.rewrite_permissions = True
+            await processor.on_updated_record_permissions(child, [])
             updated += 1
             if child.record_type in _COMMENT_TYPES:
                 parents.append(child.external_record_id)

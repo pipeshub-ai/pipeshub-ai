@@ -19,7 +19,8 @@ from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
 
-from .constants import PSEUDO_USER_GROUP_PREFIX
+from .constants import GITLAB_GUEST_ACCESS_LEVEL, PSEUDO_USER_GROUP_PREFIX
+from .runtime import GitLabReadError
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
@@ -89,6 +90,7 @@ class ProjectsSync:
                         "Unhandled error syncing %s for project %s (%s); continuing: %s",
                         step_name, project_id, project_path, e, exc_info=True,
                     )
+                    self.c.keep_stored_access(f"{step_name} of project {project_path} failed: {e}")
 
     # ------------------------------------------------------------------
     # Project resolution
@@ -129,6 +131,8 @@ class ProjectsSync:
         if proj_in:
             for pth in proj_in:
                 res = await c.runtime.ds_call(c.data_source.get_project, pth)
+                if res.read_failed:
+                    raise GitLabReadError.of(f"Project {pth}", res)
                 if not res.success or not res.data:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", pth, res.error)
                     continue
@@ -140,8 +144,10 @@ class ProjectsSync:
                     include_subgroups=True,
                     progress_label=f"list_group_projects({gp})",
                 )
+                if gres.read_failed:
+                    raise GitLabReadError.of(f"The projects of group {gp}", gres)
                 if not gres.success:
-                    self.logger.error("Could not list projects for group %s: %s", gp, gres.error)
+                    self.logger.error("Group %s not found or inaccessible: %s", gp, gres.error)
                     continue
                 for p in gres.data or []:
                     by_id[int(p.id)] = p
@@ -246,8 +252,15 @@ class ProjectsSync:
         if not c.data_source:
             return
         self.logger.info("Ensuring GitLab group record groups for %s", group_paths)
+        synced_paths = set(group_paths)
         for group_path in group_paths:
             group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
+            if group_res.read_failed:
+                self.logger.error(
+                    "GitLab group %s could not be read (%s); its stored record group stays as it is.",
+                    group_path, group_res.error,
+                )
+                continue
             if not group_res.success or not group_res.data:
                 creator_permission = c.creator_user_permission()
                 if creator_permission is None:
@@ -276,32 +289,44 @@ class ProjectsSync:
             group = group_res.data
             full_path = getattr(group, "full_path", None) or str(getattr(group, "id", group_path))
 
-            group_permissions: list[Permission] = []
-            members_res = await c.runtime.ds_call(
-                c.data_source.list_group_members_all, group_id=group_path, get_all=True,
+            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
+            # Inherited members reach this group through its parent's record group,
+            # so only a group whose parent is synced may drop down to direct members.
+            list_members = (
+                c.data_source.list_group_members if parent_path in synced_paths
+                else c.data_source.list_group_members_all
             )
-            if not members_res.success:
+            group_permissions: list[Permission] | None = []
+            members_res = await c.runtime.ds_call(list_members, group_id=group_path, get_all=True)
+            if members_res.read_failed:
+                self.logger.error(
+                    "Members of GitLab group %s could not be read (%s); it keeps its stored grants.",
+                    group_path, members_res.error,
+                )
+                group_permissions = None
+            elif not members_res.success:
                 self.logger.warning(
                     "Could not list members for GitLab group %s: %s. Attempting child-project union.",
                     group_path, members_res.error,
                 )
             else:
                 for member in members_res.data or []:
-                    if getattr(member, "access_level", 0) == 0:
+                    if not _reads_project_content(member):
                         continue
                     permission = await self._transform_restrictions_to_permissions(member)
                     if permission:
                         group_permissions.append(permission)
 
-            # Tier 1 fallback: union members from child projects
-            if not group_permissions and candidate_projects:
+            # A successful empty list is a group with no direct members. Copying
+            # child-project members onto it would let one project see its siblings.
+            if group_permissions == [] and not members_res.success and candidate_projects:
                 group_permissions = await self._group_permissions_from_child_projects(
                     group_path=group_path, candidate_projects=candidate_projects,
                 )
 
             # Always ensure the creator has access to the group node
             creator_permission = c.creator_user_permission()
-            if creator_permission is not None and not any(
+            if group_permissions is not None and creator_permission is not None and not any(
                 getattr(p, "email", None) == creator_permission.email for p in group_permissions
             ):
                 if not group_permissions and not candidate_projects:
@@ -319,7 +344,9 @@ class ProjectsSync:
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=full_path,
+                parent_external_group_id=parent_path,
                 web_url=getattr(group, "web_url", None),
+                inherit_permissions=parent_path is not None,
             )
             await c.data_entities_processor.on_new_record_groups([(group_rg, group_permissions)])
 
@@ -327,11 +354,13 @@ class ProjectsSync:
         self,
         group_path: str,
         candidate_projects: list[Project],
-    ) -> list[Permission]:
+    ) -> list[Permission] | None:
         """Union child-project members into group-level USER permissions.
 
         Used as a fallback when ``list_group_members_all`` returns nothing usable
-        (403, empty, or EE-Auditor token without group membership).
+        (403, empty, or EE-Auditor token without group membership). ``None`` when
+        a child project's members could not be read: a partial union would
+        replace the group's grants with fewer.
         """
         c = self.c
         child_projects = [
@@ -353,6 +382,13 @@ class ProjectsSync:
             pm_res = await c.runtime.ds_call(
                 c.data_source.list_project_members_all, project_id=proj_key, get_all=True,
             )
+            if pm_res.read_failed:
+                self.logger.error(
+                    "child-project union for group %s: members of %s could not be read (%s); "
+                    "the group keeps its stored grants.",
+                    group_path, proj_key, pm_res.error,
+                )
+                return None
             if not pm_res.success:
                 failed_projects += 1
                 self.logger.debug(
@@ -365,9 +401,9 @@ class ProjectsSync:
                 uid = getattr(m, "id", None)
                 if uid is None:
                     continue
-                m_level = getattr(m, "access_level", 0) or 0
-                if m_level == 0:
+                if not _reads_project_content(m):
                     continue
+                m_level = getattr(m, "access_level", 0) or 0
                 existing = member_map.get(uid)
                 existing_level = getattr(existing, "access_level", 0) or 0
                 if existing is None or m_level > existing_level:
@@ -404,6 +440,16 @@ class ProjectsSync:
         members_res = await c.runtime.ds_call(
             c.data_source.list_project_members_all, project_id=project_id, get_all=True,
         )
+        if members_res.read_failed:
+            self.logger.error(
+                "Members of project %s (%s) could not be read (%s); its record groups keep their "
+                "stored grants.",
+                project_id, project_name, members_res.error,
+            )
+            await c.data_entities_processor.on_new_record_groups(
+                [(group, None) for group in self._build_project_record_groups(project)]
+            )
+            return
         listing_failed = not members_res.success
         listing_empty = members_res.success and not (members_res.data or [])
 
@@ -446,7 +492,27 @@ class ProjectsSync:
                 dict_member[member.id] = member
 
         # Inject creator so Admin/Auditor personas (no membership row) get access
+        member_ids_before_creator = set(dict_member)
         c.users._inject_creator_member_into(dict_member)
+        injected_creator_ids = set(dict_member) - member_ids_before_creator
+        (
+            project_record_group,
+            work_items_record_group,
+            confidential_record_group,
+            merge_requests_record_group,
+            code_repo_record_group,
+        ) = self._build_project_record_groups(project)
+        # Members inherited from the namespace reach the project node through the
+        # namespace's record group; without that parent they need a direct grant.
+        direct_member_ids: set[int] | None = None
+        if project_record_group.parent_external_group_id == _namespace_full_path(project):
+            direct_res = await c.runtime.ds_call(
+                c.data_source.list_project_members, project_id=project_id, get_all=True,
+            )
+            if direct_res.success:
+                direct_member_ids = {
+                    member.id for member in (direct_res.data or []) if getattr(member, "id", None) is not None
+                }
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
@@ -455,32 +521,29 @@ class ProjectsSync:
         permission_merge_requests_level: list[Permission] = []
 
         for member in dict_member.values():
+            if not _reads_project_content(member):
+                continue
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:
                 continue
-            permission_project_level.append(permission)
+            if direct_member_ids is None or member.id in direct_member_ids or member.id in injected_creator_ids:
+                permission_project_level.append(permission)
             level: int = getattr(member, "access_level", 0)
-            if level == 0:
-                self.logger.info("Member %s has no access level, skipping", member.name)
-            elif level == 10:
+            if level == GITLAB_GUEST_ACCESS_LEVEL:
                 permission_work_items_level.append(permission)
-            elif level >= 15:
+            elif level >= 20:
                 permission_work_items_level.append(permission)
                 permission_confidential_level.append(permission)
                 permission_merge_requests_level.append(permission)
                 permission_code_repo_level.append(permission)
+            elif level >= 15:
+                permission_work_items_level.append(permission)
+                permission_confidential_level.append(permission)
             else:
                 self.logger.warning(
                     "Member %s has unrecognized access level %s, skipping", member.name, level
                 )
 
-        (
-            project_record_group,
-            work_items_record_group,
-            confidential_record_group,
-            merge_requests_record_group,
-            code_repo_record_group,
-        ) = self._build_project_record_groups(project)
         await c.data_entities_processor.on_new_record_groups(
             [
                 (project_record_group, permission_project_level),
@@ -517,12 +580,14 @@ class ProjectsSync:
         return (
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
-                name=project.path_with_namespace,
+                name=getattr(project, "name", None) or project.path_with_namespace,
                 group_type=RecordGroupType.PROJECT.value,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=str(project.id),
                 parent_external_group_id=parent_for_project_rg,
+                web_url=getattr(project, "web_url", None),
+                inherit_permissions=parent_for_project_rg is not None,
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
@@ -533,6 +598,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-work-items",
                 parent_external_group_id=str(project.id),
+                inherit_permissions=True,
             ),
             RecordGroup(
                 org_id=c.data_entities_processor.org_id,
@@ -691,6 +757,11 @@ class ProjectsSync:
 # ------------------------------------------------------------------
 # Module-level static helpers (used by both projects.py and users.py)
 # ------------------------------------------------------------------
+
+def _reads_project_content(member: Any) -> bool:
+    """Whether a member's role reads anything in a project (Guest or above)."""
+    return (getattr(member, "access_level", 0) or 0) >= GITLAB_GUEST_ACCESS_LEVEL
+
 
 def _namespace_full_path(project: Project) -> str | None:
     """Return the namespace ``full_path`` for a project, or ``None``."""

@@ -65,6 +65,7 @@ def _make_mock_deps():
     dep = MagicMock()
     dep.org_id = "org-sp-cov"
     dep.on_new_app_users = AsyncMock()
+    dep.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.on_new_record_groups = AsyncMock()

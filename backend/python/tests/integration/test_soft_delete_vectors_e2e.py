@@ -252,7 +252,8 @@ async def _remove(w: _World) -> None:
                 f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
             )
         for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                      CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value):
+                      CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
+                      CollectionNames.RECORD_LINKS.value):
             await graph.http_client.execute_aql(
                 f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
                 f"OR PARSE_IDENTIFIER(e._to).key IN @ids REMOVE e IN {edges}",

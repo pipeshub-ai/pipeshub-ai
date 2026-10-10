@@ -52,7 +52,7 @@ async def _open(w: _World, *names: str) -> dict[str, dict[str, Any]]:
         for name in names
     }
     tool = create_fetch_full_record_tool(
-        retrieved, org_id=w.org_id, graph_provider=w.graph, user_id="agent-user",
+        retrieved, org_id=w.org_id, graph_provider=w.graph, user_id=w.user_id,
     )
     answer = await tool.coroutine(record_ids=[w.ids[name] for name in names])
     assert answer["ok"] is True, answer

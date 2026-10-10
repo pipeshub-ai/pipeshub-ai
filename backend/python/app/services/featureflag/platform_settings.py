@@ -25,16 +25,19 @@ async def read_platform_feature_flag(
     config_service: Any,
     *,
     default: bool,
+    use_cache: bool = False,
 ) -> bool:
     """Return a platform feature flag's boolean value from encrypted settings.
 
-    Reads with ``use_cache=False`` so flipping a flag in Labs takes effect on
-    the next request instead of after a service restart. On missing settings,
-    an absent flag key, or a read failure, returns ``default``.
+    Reads with ``use_cache=False`` by default so flipping a flag in Labs takes
+    effect on the next request instead of after a service restart. A hot path
+    may pass ``use_cache=True``: a save in Labs invalidates the cached key in
+    every process. On missing settings, an absent flag key, or a read failure,
+    returns ``default``.
     """
     try:
         settings = await config_service.get_config(
-            PLATFORM_SETTINGS_KEY, default={}, use_cache=False,
+            PLATFORM_SETTINGS_KEY, default={}, use_cache=use_cache,
         )
         flags = settings.get("featureFlags") if isinstance(settings, dict) else None
         if not isinstance(flags, dict):
@@ -131,3 +134,16 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_kh_scope_listing_enabled(config_service: Optional["ConfigurationService"]) -> bool:
+    """Gate for the knowledge hub's precomputed-scope listing. Source of truth
+    is the ``ENABLE_KH_SCOPE_LISTING`` platform feature flag. Defaults to
+    DISABLED, matching the Labs default. Read on every listing request, so it
+    reads through the config cache; a save in Labs invalidates it everywhere.
+    """
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_KH_SCOPE_LISTING, config_service, default=False, use_cache=True,
+    )

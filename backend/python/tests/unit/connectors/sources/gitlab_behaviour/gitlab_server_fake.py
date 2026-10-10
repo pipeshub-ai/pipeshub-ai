@@ -156,6 +156,7 @@ class Fault:
     body: Any
     body_contains: bytes = b""
     raw: bytes | None = None
+    error: type[Exception] | None = None
     seen: int = 0
     fired: int = 0
 
@@ -307,6 +308,14 @@ class FakeGitLab:
             self._faults.append(fault)
         return fault
 
+    def break_transport(self, method: str, path_regex: str, error: type[Exception], *, times: int | None = None,
+                        skip: int = 0) -> Fault:
+        """Raise ``error`` (e.g. ``requests.ReadTimeout``) for matching requests instead of answering:
+        the request never reached GitLab, as on a connection the network path dropped."""
+        fault = self.fail(method, path_regex, 0, times=times, skip=skip)
+        fault.error = error
+        return fault
+
     def hold(self, method: str, path_regex: str, until: Callable[[], bool]) -> None:
         """Keep matching requests in flight until ``until()`` is true (at most 10s), then answer normally."""
         self._holds.append((method.upper(), re.compile(path_regex), until))
@@ -358,6 +367,8 @@ class FakeGitLab:
                 if fault.times is not None and fault.fired >= fault.times:
                     continue
                 fault.fired += 1
+                if fault.error is not None:
+                    raise fault.error(f"{seen.method} {path} injected transport failure")
                 if fault.raw is not None:
                     return Reply(fault.status, fault.raw, {"Content-Type": "application/json", **fault.headers})
                 return _json(fault.body, fault.status, fault.headers)
@@ -484,6 +495,8 @@ class FakeGitLab:
             return _json(group.to_json())
         if rest[1:] == ["members", "all"]:
             return self._offset_page(self._member_rows(self.group_members_all(group)), req, raw_path)
+        if rest[1:] == ["members"]:
+            return self._offset_page(self._member_rows(group.members), req, raw_path)
         if rest[1:] == ["projects"]:
             include_sub = _flag(req.params, "include_subgroups")
             projects = [p for p in sorted(self.projects.values(), key=lambda p: p.path_with_namespace)
@@ -532,6 +545,8 @@ class FakeGitLab:
             return _json(project.to_json())
         if tail == ["members", "all"]:
             return self._offset_page(self._member_rows(self.project_members_all(project)), req, raw_path)
+        if tail == ["members"]:
+            return self._offset_page(self._member_rows(project.members), req, raw_path)
         if tail[0] in ("issues", "merge_requests"):
             return self._work_items(req, project, tail, raw_path)
         if tail[0] == "repository":

@@ -20,12 +20,23 @@ from app.config.constants.arangodb import CollectionNames
 SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE = "ORGANIZATION"
 
 
+def is_chat_attachment(record: dict | None, org_id: str) -> bool:
+    """Whether ``record`` is a file uploaded to a chat of this org."""
+    return (
+        bool(record)
+        and record.get("orgId") == org_id
+        and record.get("origin") == "UPLOAD"
+        and record.get("connectorId") == f"attachments_{org_id}"
+    )
+
+
 def service_account_upload_permission_edges(
-    org_id: str, record_keys: list[str], timestamp: int,
+    org_id: str, record_keys: list[str], timestamp: int, uploaded_by: str,
 ) -> list[dict[str, Any]]:
     """The org -> record READER edges written for a service account's upload.
 
     A service account has no user node, so its uploads are granted to the org.
+    ``uploaded_by`` names the caller, since every such upload carries the same grant.
     """
     return [
         {
@@ -35,6 +46,7 @@ def service_account_upload_permission_edges(
             "to_collection": CollectionNames.RECORDS.value,
             "type": SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE,
             "role": "READER",
+            "uploadedBy": uploaded_by,
             "createdAtTimestamp": timestamp,
             "updatedAtTimestamp": timestamp,
         }
@@ -56,11 +68,9 @@ async def caller_can_read_virtual_record(
     No user, no graph, a lookup error, or no accessible record all deny.
     A service account has no user node, so the user ACL query cannot succeed
     for it. Its uploads are granted with an org permission edge instead, and
-    only that edge is accepted here.
+    only that edge, written for this caller's own upload, is accepted here.
     """
-    if not graph_provider or not org_id or not virtual_record_id:
-        return False
-    if not user_id and not is_service_account:
+    if not graph_provider or not org_id or not virtual_record_id or not user_id:
         return False
 
     try:
@@ -78,35 +88,37 @@ async def caller_can_read_virtual_record(
     for record_id in record_ids or []:
         if not record_id:
             continue
-        if user_id:
-            try:
-                if await graph_provider.check_record_access_with_details(
-                    user_id, org_id, record_id,
-                ):
-                    return True
-            except Exception:
-                logger.warning(
-                    "Attachment access check failed for record %s",
-                    record_id,
-                    exc_info=True,
-                )
-        if is_service_account and await _org_permission_grants(
-            graph_provider, org_id, record_id, logger,
+        try:
+            if await graph_provider.check_record_access_with_details(
+                user_id, org_id, record_id,
+            ):
+                return True
+        except Exception:
+            logger.warning(
+                "Attachment access check failed for record %s",
+                record_id,
+                exc_info=True,
+            )
+        if is_service_account and await org_permission_grants(
+            graph_provider, org_id, record_id, logger, uploaded_by=user_id,
         ):
             return True
     return False
 
 
-async def _org_permission_grants(
+async def org_permission_grants(
     graph_provider: Any,
     org_id: str,
     record_id: str,
     logger: logging.Logger,
+    *,
+    uploaded_by: str | None = None,
 ) -> bool:
     """True when this org holds a permission edge on the record.
 
     That is the grant `upload_chat_attachments` writes for a service account,
     which has no user node for `check_record_access_with_details` to match.
+    With ``uploaded_by``, only the grant written for that caller's own upload.
     """
     try:
         edge = await graph_provider.get_edge(
@@ -127,4 +139,5 @@ async def _org_permission_grants(
         bool(edge)
         and edge.get("type") == SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE
         and bool(edge.get("role"))
+        and (uploaded_by is None or edge.get("uploadedBy") == uploaded_by)
     )

@@ -81,7 +81,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.azure.azure_files import AzureFilesClient
 from app.sources.external.azure.azure_files import AzureFilesDataSource
 from app.connectors.core.base.error.stream_errors import (
@@ -609,36 +609,6 @@ class AzureFilesConnector(BaseConnector):
             if not share_name:
                 continue
 
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id,
-                    )
-                )
-            else:
-                # Use cached creator_email from init() instead of querying DB again
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by,
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id,
-                        )
-                    )
-
             lm_ms = ts_map.get(share_name)
             record_group = RecordGroup(
                 name=share_name,
@@ -650,8 +620,9 @@ class AzureFilesConnector(BaseConnector):
                 web_url=self._generate_directory_url(share_name, ""),
                 source_created_at=lm_ms,
                 source_updated_at=lm_ms,
+                inherit_permissions=True,
             )
-            record_groups.append((record_group, permissions))
+            record_groups.append((record_group, []))
 
         if record_groups:
             await self.data_entities_processor.on_new_record_groups(record_groups)
@@ -1175,10 +1146,9 @@ class AzureFilesConnector(BaseConnector):
             # Use RecordType.FILE for both files and directories; directories are distinguished via is_file flag.
             record_type = RecordType.FILE
             extension = get_file_extension(normalized_path) if is_file else None
-            mime_type = (
-                item.get("content_type")
-                or get_mimetype_for_azure_files(normalized_path, is_directory=is_directory)
-            )
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_directory
+                         else item.get("content_type") or get_mimetype_for_azure_files(normalized_path))
 
             parent_path = get_parent_path(normalized_path)
             parent_external_id = (
@@ -1274,49 +1244,8 @@ class AzureFilesConnector(BaseConnector):
     async def _create_azure_files_permissions(
         self, share_name: str, item_path: str
     ) -> list[Permission]:
-        """Create permissions for an Azure Files item based on connector scope."""
-        try:
-            permissions: list[Permission] = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id,
-                    )
-                )
-            else:
-                # Use cached creator_email from init() instead of querying DB for each item
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by,
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id,
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {item_path}: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id,
-                )
-            ]
+        """Files inherit their parent folder or the share. No permission edges."""
+        return []
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access."""
@@ -1743,10 +1672,9 @@ class AzureFilesConnector(BaseConnector):
             is_directory = item_metadata.get("is_directory", False)
 
             extension = get_file_extension(item_path) if is_file else None
-            mime_type = (
-                item_metadata.get("content_type")
-                or get_mimetype_for_azure_files(item_path, is_directory=is_directory)
-            )
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_directory
+                         else item_metadata.get("content_type") or get_mimetype_for_azure_files(item_path))
 
             parent_path = get_parent_path(item_path)
             parent_external_id = (

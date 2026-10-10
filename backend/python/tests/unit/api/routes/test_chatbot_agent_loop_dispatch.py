@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.chat_modes.policy import AGENT_POLICY, WEB_SEARCH_POLICY
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 class TestGenerateChatStreamViaAgentLoop:
@@ -112,6 +113,11 @@ class TestGenerateChatStreamViaAgentLoop:
         async def _fake_run_chat_stream(*args, **kwargs):
             yield "event: complete\ndata: {}\n\n"
 
+        # The user may access vr1's record.
+        graph_provider = MagicMock()
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        graph_provider.check_access = AsyncMock(return_value=AccessCheck(records_by_vrid={"vr1": "rec-1"}))
+
         with (
             patch(
                 "app.api.routes.chatbot.get_llm_for_chat",
@@ -124,7 +130,7 @@ class TestGenerateChatStreamViaAgentLoop:
             events = [
                 chunk
                 async for chunk in _generate_chat_stream_via_agent_loop(
-                    request, query_info, AsyncMock(), MagicMock(), AsyncMock(),
+                    request, query_info, AsyncMock(), graph_provider, AsyncMock(),
                 )
             ]
 

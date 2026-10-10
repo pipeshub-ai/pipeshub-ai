@@ -872,3 +872,28 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_the_prefetch_searches_the_turns_prepared_filters(self) -> None:
+        """GS-04: this path searched the client's filters, without the project's bound."""
+        kwargs = self._base_kwargs(INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"] = {
+            **kwargs["query_info"],
+            "filters": {"apps": [], "kb": ["main"], "allowedApps": ["client-sent"]},
+            "allowedFilters": {"apps": [], "recordGroups": [], "records": ["qa-a"]},
+        }
+        # A bound below app level is resolved at turn start (R1-23).
+        kwargs["graph_provider"].get_user_by_user_id = AsyncMock(return_value={"_key": "user-key"})
+        kwargs["graph_provider"].get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+
+        async def _no_answer(**_kwargs):
+            yield {"event": "complete", "data": {"answer": ""}}
+
+        with (
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)) as mock_prefetch,
+            patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_no_answer),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert mock_prefetch.call_args.kwargs["filters"] == {
+            "apps": [], "kb": ["main"], "projectApps": [], "projectRecordGroups": [], "projectRecords": ["qa-a"],
+        }

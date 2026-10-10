@@ -488,6 +488,28 @@ class TestAttachmentsAndComments:
         assert "1" in seen
 
 
+class TestAnUnreachableSource:
+    async def test_a_failed_first_space_listing_fails_the_sync(self, atlassian_api, records_db, checkpoints, search) -> None:
+        """CONFDC-01: read as an empty listing, the sync reported success over nothing."""
+        atlassian_api.on("GET", f"{API}/space", json_response({"message": "ERR_NGROK_3200"}, status=404))
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        with pytest.raises(RuntimeError, match="HTTP 404"):
+            await connector.run_sync()
+
+    async def test_a_failed_later_space_page_keeps_stored_access(self, atlassian_api, records_db, checkpoints, search) -> None:
+        stub_spaces(
+            atlassian_api,
+            space_page([space("ENG", 10)], next_start=25),
+            json_response({"message": "busy"}, status=503),
+        )
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+
+        await connector.run_sync()
+
+        assert "spaces past 25" in connector.stored_access_kept
+
+
 class TestPartialFailures:
     async def test_one_bad_page_does_not_stop_the_rest(self, atlassian_api, records_db, checkpoints, search) -> None:
         stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
@@ -743,7 +765,8 @@ class TestSyncStopsLoudlyWhenItCannotStart:
         atlassian_api.on("GET", f"{API}/space", json_response({"message": "down"}, status=503))
         connector = await make_connector(atlassian_api, records_db, checkpoints)
 
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="HTTP 503"):
+            await connector.run_sync()
 
         assert records_db.record_groups == {}
         assert checkpoints.sync_points == {}
@@ -1439,7 +1462,10 @@ class TestRemovalFromSource:
         connector = await self._synced(atlassian_api, records_db, checkpoints, search)
         stub_spaces(atlassian_api, answer)
 
-        await connector.run_sync()
+        try:
+            await connector.run_sync()
+        except RuntimeError:
+            assert isinstance(answer, httpx.Response), "only the failed listing fails the sync"
 
         assert "10" in records_db.record_groups
         assert {"p1", "p2"} <= set(records_db.records)

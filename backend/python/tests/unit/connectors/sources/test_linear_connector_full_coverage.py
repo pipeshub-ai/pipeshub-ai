@@ -1836,10 +1836,12 @@ class TestMarkRecordDeleted:
         connector._tx_store.get_records_by_parent = AsyncMock(
             side_effect=[[child], []]
         )
-        connector._tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        assert connector._tx_store.delete_records_and_relations.call_count == 2
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 # ===================================================================

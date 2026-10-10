@@ -487,6 +487,51 @@ describe('enterprise_search/validators/es_validators', () => {
         expect(result.data.body).to.not.have.property('modelName')
       }
     })
+
+    const nodeId = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+    it('should keep a selection below app level', () => {
+      const filters = {
+        apps: [nodeId(1)],
+        recordGroups: [nodeId(2)],
+        records: [nodeId(3)],
+        recordsExact: [nodeId(4)],
+      }
+      const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters } })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.filters).to.deep.equal(filters)
+      }
+    })
+
+    it('should reject a selected id that is not a UUID', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { records: ['not-a-uuid'] } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should drop filter keys it does not know, such as server-set ones', () => {
+      const result = enterpriseSearchSearchSchema.safeParse({
+        body: { query: 'q', filters: { records: [nodeId(1)], allowedApps: [nodeId(2)] } },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.filters).to.deep.equal({ records: [nodeId(1)] })
+      }
+    })
+
+    it('should accept 200 selected ids and reject 201, counted across keys', () => {
+      const ids = Array.from({ length: 200 }, (_, i) => nodeId(i))
+      const atLimit = { apps: ids.slice(0, 50), records: ids.slice(50) }
+      expect(
+        enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters: atLimit } }).success,
+      ).to.be.true
+      const overLimit = { ...atLimit, recordsExact: [nodeId(999)] }
+      expect(
+        enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', filters: overLimit } }).success,
+      ).to.be.false
+    })
   })
 
   describe('addMessageParamsSchema', () => {
@@ -1616,6 +1661,71 @@ describe('enterprise_search/validators/es_validators', () => {
         },
       })
       expect(result.success).to.be.true
+    })
+
+    describe('knowledge source filters', () => {
+      const GROUP = '29b6f606-2223-4c7a-add6-139061177d00'
+      const FOLDER = 'c75f567a-3f77-41f2-9457-151db868bfde'
+      const withFilters = (filters: unknown) =>
+        createAgentSchema.safeParse({
+          body: { name: 'Limited', knowledge: [{ connectorId: 'conn-1', filters }] },
+        })
+      const savedFilters = (filters: unknown) => {
+        const result = withFilters(filters)
+        return result.success ? result.data.body.knowledge?.[0]?.filters : undefined
+      }
+
+      it('keeps a limit and the names saved beside it', () => {
+        const filters = {
+          recordGroups: [GROUP],
+          records: [FOLDER],
+          nodes: [{ id: FOLDER, name: 'Specs', nodeType: 'folder' }],
+        }
+        expect(savedFilters(filters)).to.deep.equal(filters)
+      })
+
+      it('reads a limit sent as JSON text', () => {
+        expect(savedFilters(JSON.stringify({ records: [FOLDER] }))).to.deep.equal({ records: [FOLDER] })
+      })
+
+      it('reads every older spelling of "no filters" as a whole source', () => {
+        for (const filters of [{}, [], '', '  ', '{}']) {
+          expect(savedFilters(filters), JSON.stringify(filters)).to.deep.equal({})
+        }
+        expect(withFilters(undefined).success).to.be.true
+      })
+
+      it('refuses a limit it cannot read instead of saving it as no limit', () => {
+        const unreadable = [
+          '{bad',
+          '[1,2]',
+          [1, 2],
+          7,
+          null,
+          { records: 'x' },
+          { records: [123, null] },
+          { recordGroups: ['not-a-uuid'] },
+          { records: [FOLDER, ''] },
+        ]
+        for (const filters of unreadable) {
+          expect(withFilters(filters).success, JSON.stringify(filters)).to.be.false
+        }
+      })
+
+      it('refuses a limit of more than 200 ids across both lists', () => {
+        const ids = (n: number) =>
+          Array.from({ length: n }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+        expect(withFilters({ recordGroups: ids(100), records: ids(100) }).success).to.be.true
+        expect(withFilters({ recordGroups: ids(100), records: ids(101) }).success).to.be.false
+      })
+
+      it('checks an update the same way', () => {
+        const result = updateAgentSchema.safeParse({
+          params: { agentKey: 'agent-1' },
+          body: { knowledge: [{ connectorId: 'conn-1', filters: { records: 'x' } }] },
+        })
+        expect(result.success).to.be.false
+      })
     })
 
     it('should preserve canonical skill assignments', () => {

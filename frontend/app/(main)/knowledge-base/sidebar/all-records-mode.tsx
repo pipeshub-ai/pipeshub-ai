@@ -41,7 +41,7 @@ interface AllRecordsModeProps {
   connectorAppTrees: Map<string, EnhancedFolderTreeNode[]>;
   loadingAppIds: Set<string>;
   /** Per-app hub child pagination (direct children under each app node) */
-  appChildrenPagination?: Map<string, { hasNext: boolean; nextPage: number }>;
+  appChildrenPagination?: Map<string, { hasNext: boolean; nextCursor: string | null }>;
   onLoadMoreAppChildPage?: (appId: string) => void;
   connectors: Connector[];
   moreConnectors: MoreConnectorLink[];

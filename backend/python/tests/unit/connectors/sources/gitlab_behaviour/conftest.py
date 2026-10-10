@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import pytest
+import requests
+from requests.adapters import BaseAdapter, HTTPAdapter
 from gitlab_server_fake import BASE_URL, FakeGitLab
 from gitlab_store_fakes import (
     FakeCheckpointStore,
@@ -125,18 +127,35 @@ async def harness(gitlab: FakeGitLab, db: FakeRecordsDb, checkpoints: FakeCheckp
     await h.close()
 
 
+class _ToTheFake(HTTPAdapter):
+    """Stands in for the socket layer under the client's own transport adapter."""
+
+    def __init__(self, fake_adapter: BaseAdapter) -> None:
+        super().__init__()
+        self.fake_adapter = fake_adapter
+
+    def send(self, request: requests.PreparedRequest, *args: Any, **kwargs: Any) -> requests.Response:
+        return self.fake_adapter.send(request, *args, **kwargs)
+
+
+class _ClientTransportOverTheFake(gitlab_client_module._GitLabTransportAdapter, _ToTheFake):
+    pass
+
+
 @pytest.fixture(autouse=True)
 def fake_network(monkeypatch: pytest.MonkeyPatch, gitlab: FakeGitLab) -> None:
-    """Every ``requests`` session python-gitlab is given talks to the fake GitLab."""
+    """Every ``requests`` session python-gitlab is given talks to the fake GitLab,
+    through the client's own transport adapter (its read-timeout retry)."""
     real_secure_session = gitlab_client_module._secure_session
 
     def secure_session(logger: logging.Logger | None = None):  # noqa: ANN202
         session = real_secure_session(logger)
-        session.mount("https://", gitlab.requests_adapter())
-        session.mount("http://", gitlab.requests_adapter())
+        session.mount("https://", _ClientTransportOverTheFake(gitlab.requests_adapter()))
+        session.mount("http://", _ClientTransportOverTheFake(gitlab.requests_adapter()))
         return session
 
     monkeypatch.setattr(gitlab_client_module, "_secure_session", secure_session)
+    monkeypatch.setattr(gitlab_client_module, "_READ_TIMEOUT_RETRY_DELAY_SECONDS", 0.0)
 
 
 @pytest.fixture(autouse=True)

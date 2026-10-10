@@ -88,7 +88,8 @@ class TestWhoSeesTheTrash:
         assert result["code"] == 404
         svc.graph_provider.list_trashed_records.assert_not_called()
 
-    @pytest.mark.parametrize("role", ["READER", "COMMENTER"])
+    # FILEORGANIZER is a retired role and reads as READER.
+    @pytest.mark.parametrize("role", ["READER", "COMMENTER", "FILEORGANIZER"])
     async def test_a_reader_cannot_see_what_they_could_not_restore(self, svc, role) -> None:
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
         result = await svc.list_trash(KB, "u1", ORG)
@@ -100,8 +101,8 @@ class TestWhoSeesTheTrash:
         assert result["code"] == 404
         svc.graph_provider.list_trashed_records.assert_not_called()
 
-    @pytest.mark.parametrize(("role", "single_only"), [("OWNER", False), ("WRITER", False), ("FILEORGANIZER", True)])
-    async def test_a_file_organizer_sees_only_single_files(self, svc, role, single_only) -> None:
+    @pytest.mark.parametrize(("role", "single_only"), [("OWNER", False), ("WRITER", False)])
+    async def test_an_editor_sees_every_deleted_item(self, svc, role, single_only) -> None:
         svc.graph_provider.get_user_kb_permission = AsyncMock(return_value=role)
         result = await svc.list_trash(KB, "u1", ORG, page=3, limit=10)
         assert result["success"] is True

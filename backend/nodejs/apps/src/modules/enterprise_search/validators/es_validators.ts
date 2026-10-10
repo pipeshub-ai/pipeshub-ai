@@ -71,15 +71,35 @@ const appliedFiltersSchema = z
   .object({
     apps: z.array(appliedFilterNodeSchema).optional(),
     kb: z.array(appliedFilterNodeSchema).optional(),
+    recordGroups: z.array(appliedFilterNodeSchema).optional(),
+    records: z.array(appliedFilterNodeSchema).optional(),
+    recordsExact: z.array(appliedFilterNodeSchema).optional(),
   })
   .optional();
 
-/** `{ apps, kb }` filter object reused across search/message/regenerate flows. */
+/** Most ids one request may select, across every filter key. */
+const MAX_FILTER_IDS = 200;
+
+/**
+ * Filter object reused across search/message/regenerate flows: whole apps
+ * (`apps`, with `kb` as its older name for collections) and selections below
+ * app level — record groups (with the groups nested in them), folders or
+ * records (with everything under them) and single records.
+ */
 const filtersSchema = z
   .object({
     apps: z.array(appOrKbIdSchema).optional(),
     kb: z.array(appOrKbIdSchema).optional(),
+    recordGroups: z.array(appOrKbIdSchema).optional(),
+    records: z.array(appOrKbIdSchema).optional(),
+    recordsExact: z.array(appOrKbIdSchema).optional(),
   })
+  .refine(
+    (filters) =>
+      Object.values(filters).reduce((count, ids) => count + (ids?.length ?? 0), 0) <=
+      MAX_FILTER_IDS,
+    { message: `At most ${MAX_FILTER_IDS} ids may be selected in one request` },
+  )
   .optional();
 
 /** Model selection fields shared across search, message, regenerate, etc. */
@@ -549,10 +569,67 @@ const agentMcpServersSchema = z
     });
   });
 
+/** Most record groups, folders and records one knowledge source may be limited to. */
+const MAX_AGENT_SOURCE_LIMIT_IDS = 200;
+const AGENT_SOURCE_LIMIT_KEYS = ['recordGroups', 'records'] as const;
+
+/**
+ * A knowledge source's `filters`: an object (or the JSON text of one) whose
+ * `recordGroups` and `records`, when given, limit the source to those nodes.
+ * With neither the agent searches the whole source, so a value that cannot be
+ * read is refused here: stored, it would count as "no limit". Other keys are
+ * kept as sent. Older clients send `[]` or an empty string for "no filters".
+ */
+const readAgentKnowledgeFilters = (
+  value: unknown,
+  ctx: z.RefinementCtx,
+): Record<string, unknown> => {
+  let filters = value;
+  if (typeof filters === 'string') {
+    if (filters.trim() === '') return {};
+    try {
+      filters = JSON.parse(filters);
+    } catch {
+      filters = null;
+    }
+  }
+  if (Array.isArray(filters) && filters.length === 0) return {};
+  if (!filters || typeof filters !== 'object' || Array.isArray(filters)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'Knowledge filters must be an object, with recordGroups and records as lists of ids',
+    });
+    return z.NEVER;
+  }
+  const limit = filters as Record<string, unknown>;
+  let count = 0;
+  for (const key of AGENT_SOURCE_LIMIT_KEYS) {
+    const ids = limit[key];
+    if (ids === undefined || ids === null) continue;
+    if (!Array.isArray(ids) || !ids.every((id) => appOrKbIdSchema.safeParse(id).success)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [key],
+        message: `${key} must be a list of ids (UUIDs)`,
+      });
+      return z.NEVER;
+    }
+    count += ids.length;
+  }
+  if (count > MAX_AGENT_SOURCE_LIMIT_IDS) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `A knowledge source may be limited to at most ${MAX_AGENT_SOURCE_LIMIT_IDS} ids`,
+    });
+    return z.NEVER;
+  }
+  return limit;
+};
+
 const agentKnowledgeSchema = z
   .object({
     connectorId: z.string().trim().min(1),
-    filters: z.union([z.record(z.unknown()), z.string(), z.array(z.unknown())]).optional(),
+    filters: z.unknown().transform(readAgentKnowledgeFilters).optional(),
   });
 
 const agentSkillSchema = z

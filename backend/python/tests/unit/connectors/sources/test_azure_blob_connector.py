@@ -1986,8 +1986,7 @@ class TestCreateAzureBlobPermissions:
     async def test_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_with_creator(self, connector):
@@ -1995,16 +1994,14 @@ class TestCreateAzureBlobPermissions:
         connector.creator_email = "user@test.com"
         connector.created_by = "uid-1"
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_no_creator_fallback(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.creator_email = None
         perms = await connector._create_azure_blob_permissions("c", "file.txt")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_fallback(self, connector):
@@ -2023,7 +2020,7 @@ class TestCreateAzureBlobPermissions:
         connector2.scope = "INVALID"
         connector2.creator_email = None
         perms = await AzureBlobConnector._create_azure_blob_permissions(connector2, "c", "file.txt")
-        assert len(perms) == 1
+        assert perms == []
 
 
 class TestSyncContainer:

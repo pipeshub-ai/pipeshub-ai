@@ -553,7 +553,9 @@
     "searchEmptyHint": "आप जो खोज रहे हैं वह नहीं मिला। कुछ और खोजकर देखें।",
     "adjustFiltersHint": "कोई दूसरा स्रोत चुनें या अपने फ़िल्टर समायोजित करें",
     "addFromCollectionsHint": "आप अपनी कंपनी की फ़ाइलें या फ़ोल्डर संग्रहों से जोड़ सकते हैं",
-    "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें"
+    "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें",
+    "chatWithSelection": "चैट",
+    "chatSelectionLimit": "चैट में अधिकतम {{max}} चुने गए आइटम लिए जा सकते हैं। कुछ का चयन हटाएँ और फिर से प्रयास करें।"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -650,6 +652,12 @@
     "searchCollections": "कनेक्टर्स और संग्रह खोजें",
     "loadingCollections": "कलेक्शन लोड हो रहे हैं…",
     "failedToLoadCollections": "कलेक्शन लोड करने में विफल",
+    "treeEmpty": "यहाँ कुछ नहीं है",
+    "treeLoadFailed": "ये आइटम लोड नहीं हो सके",
+    "treeRetry": "फिर से कोशिश करें",
+    "treeIncludedWith": "{{name}} के साथ शामिल",
+    "treeExpand": "{{name}} की सामग्री दिखाएँ",
+    "treeCollapse": "{{name}} की सामग्री छिपाएँ",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",
     "comingSoon": "जल्द आ रहा है",
     "answer": "उत्तर",
@@ -1125,7 +1133,9 @@
       "webSearch": "वेब खोज"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
-    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।"
+    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।",
+    "selectedAlone": "{{name}} (केवल यह आइटम)",
+    "noConnectorsFound": "कोई कनेक्टर नहीं मिला"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -3914,7 +3924,10 @@
     "mcpServerWithToolCount_one": "{{count}} टूल वाला MCP सर्वर",
     "mcpServerWithToolCount_other": "{{count}} टूल वाला MCP सर्वर",
     "deprecatedToolsBanner_one": "इस एजेंट का {{count}} टूल अप्रचलित है। इसे हटाएँ: {{tools}}",
-    "deprecatedToolsBanner_other": "इस एजेंट के {{count}} टूल अप्रचलित हैं। उन्हें हटाएँ: {{tools}}"
+    "deprecatedToolsBanner_other": "इस एजेंट के {{count}} टूल अप्रचलित हैं। उन्हें हटाएँ: {{tools}}",
+    "limitSource": "चुनें कि {{name}} में क्या खोजा जाए",
+    "limitSourceHint": "पूरे स्रोत को चुना रहने दें, या उसे हटाकर वे फ़ोल्डर और आइटम चुनें जिनमें एजेंट खोज सकता है।",
+    "limitSourceCount": "{{count}} चुने गए आइटम तक सीमित"
   },
   "recordView": {
     "sections": {

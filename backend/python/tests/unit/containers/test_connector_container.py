@@ -152,6 +152,58 @@ class TestCreateDataStore:
 
 
 # ===========================================================================
+# initialize_container — node relation migration ordering
+# ===========================================================================
+
+
+class TestNodeRelationMigrationIsFatal:
+    """The one migration that must NOT follow the house log-and-continue pattern.
+
+    It renames the hierarchy edge collection and runs *before* ensure_schema().
+    If it fails and initialization carries on, ensure_schema() creates an empty
+    nodeRelations while the real edges still sit under the old name — the
+    service then serves a graph with no hierarchy at all, and the next boot's
+    both-exist branch has to clean up after it. The All-team and KB-apps
+    migrations below it deliberately swallow their errors, so nothing but this
+    test stops someone "fixing" the inconsistency.
+    """
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    async def test_a_failed_migration_is_fatal_and_skips_schema_init(
+        self, mock_migration, mock_health
+    ):
+        container, _logger, _config_service = _make_mock_container()
+        mock_migration.return_value = {"success": False, "error": "rename refused"}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema
+
+        with pytest.raises(Exception, match="rename refused"):
+            await initialize_container(container)
+
+        ensure_schema.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "arangodb"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_node_relation_migration", new_callable=AsyncMock)
+    async def test_a_successful_migration_lets_schema_init_run(
+        self, mock_migration, mock_all_team, mock_health
+    ):
+        """Guards the guard: without this, the assertion above would hold even
+        if ensure_schema were never awaited on any path."""
+        container, _logger, _config_service = _make_mock_container()
+        mock_migration.return_value = {"success": True, "skipped": True}
+        mock_all_team.return_value = {"success": True, "skipped": True}
+        ensure_schema = container.data_store.return_value.graph_provider.ensure_schema
+
+        assert await initialize_container(container) is True
+        ensure_schema.assert_awaited_once()
+
+
+# ===========================================================================
 # initialize_container — happy path
 # ===========================================================================
 
@@ -346,3 +398,150 @@ class TestAllTeamMigration:
 
         result = await initialize_container(container)
         assert result is True
+
+
+# ===========================================================================
+# Graph migrations that run after the service has started
+# ===========================================================================
+
+_BACKGROUND = {
+    "links": "run_record_link_migration",
+    "folders": "run_folder_mime_type_migration",
+    "mail_grants": "run_mailbox_record_grants_migration",
+    "group_copies": "run_duplicate_user_groups_migration",
+    "hierarchy": "run_hierarchy_backfill_migration",
+    "nested_roots": "run_hierarchy_nested_group_roots_migration",
+    "listing": "run_kh_listing_state_migration",
+}
+_DONE = {"success": True, "skipped": True}
+
+
+class TestBackgroundGraphMigrations:
+    @pytest.fixture
+    def migrations(self):
+        """The background migrations, recording the order they were tried in."""
+        tried: list[str] = []
+        mocks = {}
+        patches = []
+        for key, name in _BACKGROUND.items():
+            mock = AsyncMock(return_value=_DONE)
+            mock.side_effect = lambda *_a, _key=key, _mock=mock, **_k: tried.append(_key) or _mock.return_value
+            mocks[key] = mock
+            patches.append(patch(f"app.containers.connector.{name}", mock))
+        sleep = patch("app.containers.connector.asyncio.sleep", new_callable=AsyncMock)
+        for p in patches:
+            p.start()
+        mocks["sleep"] = sleep.start()
+        mocks["tried"] = tried
+        yield mocks
+        patch.stopall()
+
+    @pytest.mark.asyncio
+    async def test_runs_each_once_in_dependency_order(self, migrations):
+        from app.containers.connector import _kh_graph_migrations
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == ["links", "folders", "mail_grants", "group_copies", "hierarchy", "nested_roots", "listing"]
+        migrations["sleep"].assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_step_is_retried_and_holds_back_the_steps_that_read_it(self, migrations):
+        from app.containers.connector import KH_MIGRATION_RETRY_SECONDS, _kh_graph_migrations
+
+        outcomes = iter([{"success": False, "error": "deadlock"}, _DONE])
+        migrations["links"].side_effect = lambda **_k: migrations["tried"].append("links") or next(outcomes)
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == [
+            "links", "folders", "mail_grants", "group_copies", "links", "hierarchy", "nested_roots", "listing",
+        ]
+        migrations["sleep"].assert_awaited_once_with(KH_MIGRATION_RETRY_SECONDS)
+
+    @pytest.mark.asyncio
+    async def test_the_backfill_waits_for_the_mailbox_grants_removal(self, migrations):
+        """An attachment of a mail that still carries grants would not inherit from it."""
+        from app.containers.connector import _kh_graph_migrations
+
+        outcomes = iter([{"success": False, "error": "write conflict"}, _DONE])
+        migrations["mail_grants"].side_effect = lambda **_k: migrations["tried"].append("mail_grants") or next(outcomes)
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == [
+            "links", "folders", "mail_grants", "group_copies", "mail_grants", "hierarchy", "nested_roots", "listing",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_nested_group_roots_step_runs_after_a_backfill_that_was_already_done(self, migrations):
+        """On a stack that set the backfill flag before the shape existed, the step
+        still runs once, after the mailbox grants are gone."""
+        from app.containers.connector import _kh_graph_migrations
+
+        failed = iter([{"success": False, "error": "deadlock"}, _DONE])
+        migrations["hierarchy"].side_effect = lambda **_k: migrations["tried"].append("hierarchy") or next(failed)
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert migrations["tried"] == [
+            "links", "folders", "mail_grants", "group_copies", "hierarchy", "hierarchy", "nested_roots", "listing",
+        ]
+        assert migrations["nested_roots"].await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_listing_stamp_that_raised_is_retried(self, migrations):
+        from app.containers.connector import _kh_graph_migrations
+
+        calls = {"n": 0}
+
+        def stamp(**_k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("DeadlockDetected")
+            return _DONE
+
+        migrations["listing"].side_effect = stamp
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=True) is True
+
+        assert calls["n"] == 2
+        assert migrations["hierarchy"].await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_hierarchy_steps_wait_for_the_kb_apps_migration(self, migrations):
+        from app.containers.connector import _kh_graph_migrations
+
+        assert await _kh_graph_migrations(MagicMock(), MagicMock(), MagicMock(), kb_apps_done=False) is False
+
+        assert migrations["tried"] == ["links", "folders", "mail_grants", "group_copies"]
+
+    @pytest.mark.asyncio
+    @patch.dict(os.environ, {"DATA_STORE": "neo4j"})
+    @patch("app.containers.connector.Health.system_health_check", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_kb_apps_migration", new_callable=AsyncMock)
+    @patch("app.containers.connector.run_all_team_migration", new_callable=AsyncMock)
+    async def test_the_service_starts_without_waiting_for_them(self, mock_all_team, mock_kb_apps, mock_health):
+        import asyncio
+
+        from app.containers import connector as module
+
+        container, _logger, _config = _make_mock_container()
+        mock_all_team.return_value = _DONE
+        mock_kb_apps.return_value = _DONE
+        never = asyncio.Event()
+
+        async def slow(**_k):
+            await never.wait()
+
+        before = set(module._kh_scope_tasks)
+        with patch.object(module, "run_record_link_migration", slow):
+            assert await asyncio.wait_for(initialize_container(container), timeout=5) is True
+            await asyncio.sleep(0)
+        started = module._kh_scope_tasks - before
+        try:
+            assert [task for task in started if not task.done()], "the migrations are still running"
+        finally:
+            for task in started:
+                task.cancel()
+            module._kh_scope_tasks.difference_update(started)

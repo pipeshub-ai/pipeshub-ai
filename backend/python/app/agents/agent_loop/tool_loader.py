@@ -202,6 +202,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 graph_provider=state.get("graph_provider"),
                 org_id=state.get("org_id"),
                 user_id=state.get("user_id"),
+                tool_state=state,
             )
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)

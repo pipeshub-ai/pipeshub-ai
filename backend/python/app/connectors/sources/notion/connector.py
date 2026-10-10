@@ -93,7 +93,7 @@ from app.models.entities import (
     RecordType,
     WebpageRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.sources.client.notion.notion import NotionClient, NotionRESTClientViaOAuth
 from app.sources.external.notion.notion import NotionDataSource
@@ -122,9 +122,12 @@ TOKEN_URL = "https://api.notion.com/v1/oauth/token"
 _PERMANENT_IMAGE_STATUSES = frozenset({404, 410, 415})
 
 # Notion answers 404 object_not_found both for "deleted" and for "not shared with this
-# integration" — the two are indistinguishable over the API, which is why a 404 never
-# deletes a record that already has content. It only stops us re-queueing it forever.
+# integration". Either way the integration may no longer read it, so a synced record
+# that answers it is deleted; any other failure leaves the record alone.
 _NOT_FOUND_STATUS = 404
+_OBJECT_NOT_FOUND_CODE = "object_not_found"
+# Search's maximum; the gone-at-source pass lists every object once per sync.
+_RECONCILE_PAGE_SIZE = 100
 _OAUTH_REQUIRED_SCOPES = (
     ("read_content", "Read content"),
     ("read_comment", "Read comments"),
@@ -132,7 +135,7 @@ _OAUTH_REQUIRED_SCOPES = (
 
 
 class _RecordGone:
-    """Sentinel: the source object is definitively unreachable (404).
+    """Sentinel: the source object is gone (object_not_found, or in the trash).
 
     Distinct from ``None``, which every caller already reads as "unchanged, reindex it".
     Conflating the two is what re-published a reindex event for a 404 page on every pass.
@@ -277,6 +280,9 @@ class NotionConnector(BaseConnector):
     _SYNC_PAGE_SIZE = 20
     # Above the connector's own rate_limit=3 the limiter just serializes them anyway.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 3
+    # The gone-at-source pass lists the whole workspace (~35 s per 10k objects at
+    # Notion's 3 requests/s), so a scheduled sync runs it at most this often.
+    _GONE_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1000
     # Runaway backstop only — `visited` already guarantees termination.
     _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
 
@@ -468,6 +474,13 @@ class NotionConnector(BaseConnector):
             # along with all page attachments and comments
             await self._sync_objects_by_type("page")
 
+            # The delta passes stop at the checkpoint, and an unshared or deleted object
+            # is simply absent from search, so only a full listing finds what went away.
+            try:
+                await self._delete_records_gone_at_source_when_due()
+            except Exception as e:
+                self.logger.error(f"Gone-at-source pass failed: {e}", exc_info=True)
+
             # Step 4: Reconcile parent stubs the passes above left behind. Deliberately
             # outside the raising path — a sweep failure must not fail a sync whose records
             # all landed.
@@ -536,43 +549,20 @@ class NotionConnector(BaseConnector):
         return "in_scope", payload
 
     async def _detach_placeholder_children(self, stub: Record) -> int:
-        """Clear the dangling parent pointer on a stub's children, before deleting it.
+        """Move a stub's children to the record above it, or to their record group, before deleting it.
 
-        Deleting the stub on its own is not enough: the record-group root listing selects
-        on the persisted ``externalParentId`` while child expansion walks edges, so a child
-        left pointing at a deleted parent is excluded from the root *and* has nothing to
-        expand from — it disappears from the browse tree entirely.
-
-        Writes the base node directly rather than going through ``on_new_records``: that
-        path gates its only upsert on a revision change, so the field write would be
-        silently dropped, and it would republish indexing events for these records.
+        Clearing ``externalParentId`` alone is not enough: the stub's delete takes the
+        children's hierarchy and inheritance edges with it, so a child left without a
+        group edge drops out of browse, and on an APP_LEVEL App out of every surface.
+        The processor re-points both edges in one transaction and raises on a partial
+        write, which leaves the stub for the next sweep.
         """
         children = await self.data_entities_processor.get_records_by_parent(
             self.connector_id, stub.external_record_id
         )
         if not children:
             return 0
-
-        nodes = []
-        for child in children:
-            child.parent_external_record_id = None
-            child.parent_record_type = None
-            nodes.append(child.to_arango_base_record())
-
-        async with self.data_store_provider.transaction() as tx_store:
-            # Base node only — batch_upsert_records would also rewrite the type doc, and
-            # these come back as base Records whose type payload is the wrong shape.
-            updated = await tx_store.batch_update_nodes(nodes, CollectionNames.RECORDS.value)
-
-        # The providers report a partial write by returning False, not by raising. Deleting
-        # the stub anyway would strand whichever children kept their now-dangling parent
-        # pointer — the exact orphaning this method exists to prevent — so refuse to let the
-        # caller proceed and leave the stub for the next sweep to retry.
-        if updated is not True:
-            raise RuntimeError(
-                f"detach of {len(children)} child record(s) from {stub.external_record_id} "
-                f"did not fully apply (batch_update_nodes returned {updated!r})"
-            )
+        await self.data_entities_processor.on_records_detached_from_parent([child.id for child in children])
         return len(children)
 
     async def _rehome_children(
@@ -587,16 +577,19 @@ class NotionConnector(BaseConnector):
         Browse lists roots by ``externalParentId IS NULL`` and expands children by
         edges. Updating the field without the edge (or the edge without nulling the
         field) hides the child. If the new parent is not in the graph yet, detach
-        so they stay visible at the workspace root.
+        so they stay visible at the workspace root, under their record group.
         """
         parent_record = None
         if new_parent_external_id:
             parent_record = await self.data_entities_processor.get_record_by_external_id(
                 self.connector_id, new_parent_external_id
             )
-            if parent_record is None:
-                new_parent_external_id = None
-                new_parent_type = None
+        if parent_record is None:
+            if children:
+                await self.data_entities_processor.on_records_detached_from_parent(
+                    [child.id for child in children]
+                )
+            return
 
         nodes = []
         for child in children:
@@ -616,12 +609,11 @@ class NotionConnector(BaseConnector):
                     )
             for child in children:
                 await tx_store.delete_parent_child_edge_to_record(child.id)
-                if parent_record is not None:
-                    await tx_store.create_record_relation(
-                        parent_record.id,
-                        child.id,
-                        RecordRelations.PARENT_CHILD.value,
-                    )
+                await tx_store.create_record_relation(
+                    parent_record.id,
+                    child.id,
+                    RecordRelations.PARENT_CHILD.value,
+                )
 
     async def _retire_database_container_record(self, record: Record) -> None:
         """Re-home children of a leftover DATABASE container, then delete it.
@@ -1182,33 +1174,25 @@ class NotionConnector(BaseConnector):
 
             updated_records: List[Tuple[Record, List[Permission]]] = []
             non_updated_records: List[Record] = []
-            gone_count = 0
+            gone_records: List[Record] = []
             for record in records:
                 try:
                     updated = await self._check_and_fetch_updated_record(record)
                     if updated is RECORD_GONE:
-                        # Unreachable at source. Republishing would make the indexing
-                        # pipeline fetch it, 404, and store an empty document — on every
-                        # pass, forever. Keep the record; just stop re-queueing it.
-                        gone_count += 1
+                        # A DATABASE container is retired inside the check.
+                        if record.record_type != RecordType.DATABASE:
+                            gone_records.append(record)
                         continue
                     if updated:
                         updated_records.append(updated)
                     else:
                         non_updated_records.append(record)
                 except Exception as e:
-                    # Deliberately still reindexed. Only a definitive 404 suppresses a
-                    # record; an unrecognised failure here must not silently turn reindex
+                    # Deliberately still reindexed. Only object_not_found or the trash
+                    # removes a record; an unrecognised failure here must not silently turn reindex
                     # into a no-op for the whole connector.
                     self.logger.error("Error checking Notion record %s at source: %s", record.id, e,)
                     non_updated_records.append(record)
-
-            if gone_count:
-                self.logger.info(
-                    "Notion reindex: %d record(s) unreachable at source (404); "
-                    "kept in the graph, reindex skipped",
-                    gone_count,
-                )
 
             if updated_records:
                 await self.data_entities_processor.on_new_records(updated_records)
@@ -1217,6 +1201,9 @@ class NotionConnector(BaseConnector):
             if non_updated_records:
                 await self.data_entities_processor.reindex_existing_records(non_updated_records)
                 self.logger.info(f"Published reindex events for {len(non_updated_records)} non updated records")
+
+            if gone_records:
+                await self._delete_records(gone_records)
         except Exception as e:
             self.logger.error(f"Error during Notion reindex: {e}", exc_info=True)
             raise
@@ -1235,6 +1222,133 @@ class NotionConnector(BaseConnector):
             return False
         status = getattr(getattr(response, "data", None), "status", None)
         return isinstance(status, int) and status == _NOT_FOUND_STATUS
+
+    @classmethod
+    def _is_object_not_found(cls, response: Any) -> bool:
+        """A 404 whose body is Notion's ``object_not_found``: the integration may no longer
+        read the object. A 404 from anything in between (a proxy, a gateway) is not."""
+        if not cls._is_definitive_not_found(response):
+            return False
+        try:
+            body = response.data.json()
+        except Exception:
+            return False
+        return isinstance(body, dict) and body.get("code") == _OBJECT_NOT_FOUND_CODE
+
+    async def _source_object_is_gone(self, record: Record) -> bool:
+        """True only when Notion answers object_not_found, or the object is in the trash."""
+        datasource = await self._get_fresh_datasource()
+        if record.record_type == RecordType.WEBPAGE:
+            response = await datasource.retrieve_page(record.external_record_id)
+        elif record.record_type == RecordType.DATASOURCE:
+            response = await datasource.retrieve_data_source_by_id(record.external_record_id)
+        else:
+            return False
+        if self._is_object_not_found(response):
+            return True
+        if not response or not response.success or not response.data:
+            return False
+        payload = response.data.json()
+        return isinstance(payload, dict) and bool(payload.get("archived") or payload.get("in_trash"))
+
+    async def _list_source_object_ids(self, object_type: str) -> Optional[set]:
+        """Ids of every ``object_type`` search returns outside the trash; None when the
+        listing did not complete, so nothing is decided from part of it."""
+        ids: set = set()
+        cursor = None
+        while True:
+            datasource = await self._get_fresh_datasource()
+            request_body: Dict[str, Any] = {
+                "filter": {"property": "object", "value": object_type},
+                "page_size": _RECONCILE_PAGE_SIZE,
+            }
+            if cursor:
+                request_body["start_cursor"] = cursor
+            response = await datasource.search(request_body=request_body)
+            if not response or not response.success or not response.data:
+                self.logger.warning(
+                    "Notion %s listing failed (%s); nothing is reconciled this sync",
+                    object_type, response.error if response else "no response",
+                )
+                return None
+            data = response.data.json()
+            if not isinstance(data, dict):
+                return None
+            for obj in data.get("results") or []:
+                if isinstance(obj, dict) and obj.get("id") and not (obj.get("archived") or obj.get("in_trash")):
+                    ids.add(obj["id"])
+            next_cursor = data.get("next_cursor")
+            if not data.get("has_more"):
+                return ids
+            if not next_cursor or next_cursor == cursor:
+                return None
+            cursor = next_cursor
+
+    async def _delete_records(self, records: List[Record]) -> None:
+        """Delete records with their attachments. A live child page stays, under the
+        nearest record above or its record group."""
+        result = await self.data_entities_processor.on_records_deleted_cascade(
+            [record.id for record in records], self.connector_id,
+            cascade_children=False, include_trashed_roots=True,
+        )
+        if not (result or {}).get("success", False):
+            raise RuntimeError(
+                f"Deleting {len(records)} Notion record(s) gone at source failed: "
+                f"{(result or {}).get('reason')}"
+            )
+        self.logger.info("Deleted %d Notion record(s) gone at source", len(records))
+
+    async def _delete_records_gone_at_source_when_due(self) -> None:
+        """A full sync's prep deletes every sync point, so a full sync always scans."""
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "notion_gone_scan", "global")
+        last_scan_ms = ((await self.pages_sync_point.read_sync_point(key)) or {}).get("last_scan_ms")
+        now_ms = get_epoch_timestamp_in_ms()
+        if last_scan_ms and now_ms - last_scan_ms < self._GONE_SCAN_INTERVAL_MS:
+            self.logger.info(
+                "Notion: looked for records gone at source %d min ago; not again this sync",
+                (now_ms - last_scan_ms) // 60000,
+            )
+            return
+        if await self._delete_records_gone_at_source():
+            await self.pages_sync_point.update_sync_point(key, {"last_scan_ms": now_ms})
+
+    async def _delete_records_gone_at_source(self) -> bool:
+        """Delete pages and data sources the integration can no longer read. False when
+        the listing did not complete, so nothing was decided.
+
+        A record search no longer lists is only a candidate: search lags and is not
+        exhaustive, so each one is fetched by id, and only object_not_found or the
+        trash deletes it. Placeholders are left to the placeholder sweep.
+        """
+        candidates: List[Record] = []
+        for record_type, object_type in self._PLACEHOLDER_OBJECT_TYPES.items():
+            listed = await self._list_source_object_ids(object_type)
+            if listed is None:
+                return False
+            stored = await self.data_entities_processor.get_records_by_record_type(
+                self.connector_id, record_type
+            )
+            candidates.extend(
+                record for record in stored or []
+                if record.id and record.external_record_id and not record.is_placeholder
+                and record.external_record_id not in listed
+            )
+        if not candidates:
+            return True
+
+        verdicts = await gather_with_concurrency(
+            self._PLACEHOLDER_SWEEP_CONCURRENCY,
+            *[self._source_object_is_gone(record) for record in candidates],
+            return_exceptions=True,
+        )
+        gone = [record for record, verdict in zip(candidates, verdicts) if verdict is True]
+        self.logger.info(
+            "Notion: %d record(s) missing from search, %d gone at source",
+            len(candidates), len(gone),
+        )
+        if gone:
+            await self._delete_records(gone)
+        return True
 
     async def _check_and_fetch_updated_record(
         self, record: Record
@@ -1256,7 +1370,7 @@ class NotionConnector(BaseConnector):
         else:
             return None
 
-        if self._is_definitive_not_found(response):
+        if self._is_object_not_found(response):
             return RECORD_GONE
 
         if not response or not response.success or not response.data:
@@ -1412,6 +1526,7 @@ class NotionConnector(BaseConnector):
             cursor = None
             total_synced = 0
             total_skipped = 0
+            user_details_complete = True
             workspace_emails: List[str] = []
 
             # Paginate through all users
@@ -1439,6 +1554,7 @@ class NotionConnector(BaseConnector):
                         next_cursor,
                         has_more,
                     )
+                    user_details_complete = False
 
                 if not users_data:
                     self.logger.info("No more users to process")
@@ -1501,6 +1617,7 @@ class NotionConnector(BaseConnector):
                         if isinstance(result, Exception):
                             self.logger.error(f"❌ Failed to process user {user_id}: {result}", exc_info=False)
                             total_skipped += 1
+                            user_details_complete = False
                             continue
 
                         if not result or not result.success:
@@ -1509,6 +1626,7 @@ class NotionConnector(BaseConnector):
                                 f"{result.error if result else 'No response'}"
                             )
                             total_skipped += 1
+                            user_details_complete = False
                             continue
 
                         user_detail = result.data.json() if result.data else {}
@@ -1532,11 +1650,14 @@ class NotionConnector(BaseConnector):
                     break
                 if next_cursor == cursor:
                     self.logger.warning("Notion users pagination stopping: next_cursor equals start_cursor (%s)", cursor)
+                    user_details_complete = False
                     break
                 cursor = next_cursor
 
             if self.workspace_id and workspace_emails:
                 await self._add_users_to_workspace_permissions(workspace_emails)
+            if user_details_complete:
+                await self._remove_departed_workspace_users(workspace_emails)
 
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped: {total_skipped}")
 
@@ -1544,27 +1665,48 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _add_users_to_workspace_permissions(self, user_emails: List[str]) -> None:
+    async def _remove_departed_workspace_users(self, keep_emails: List[str]) -> None:
+        """Drop workspace membership for people Notion no longer returns.
+
+        Search reaches a workspace through the user-app edge. Leaving a leaver's
+        edge in place keeps that workspace visible to them.
         """
-        Add READ permissions for users to the workspace record group.
+        keep = {email.lower() for email in keep_emails if email}
+        removed = 0
+        async with self.data_entities_processor.data_store_provider.transaction() as tx_store:
+            existing = await tx_store.get_app_users(self.data_entities_processor.org_id, self.connector_id)
+            for user in existing:
+                email = (user.email or "").lower()
+                if not email or email in keep:
+                    continue
+                await tx_store.delete_edge(
+                    user.id,
+                    CollectionNames.USERS.value,
+                    self.connector_id,
+                    CollectionNames.APPS.value,
+                    CollectionNames.USER_APP_RELATION.value,
+                )
+                removed += 1
+        if removed:
+            self.logger.info("Removed %s Notion user(s) who are no longer in the workspace", removed)
 
-        Uses on_new_record_groups to create/update the record group along with permission edges,
-        following the same pattern as other connectors (e.g., Confluence).
+    async def _add_users_to_workspace_permissions(self, user_emails: List[str]) -> None:
+        """Point the workspace at the app and drop per-user grants.
 
-        Args:
-            user_emails: List of user email addresses to grant permissions
+        The user sync is the gate. An inherit edge from the workspace to the app
+        reaches those people. A read grant on the workspace would only repeat it.
+        ``user_emails`` is still required so a run that synced nobody does not
+        rewrite the workspace.
         """
         try:
             if not self.workspace_id or not user_emails:
                 return
 
-            # Get the existing record group by external_id (if it exists)
             record_group = await self.data_entities_processor.get_record_group_by_external_id(
                 connector_id=self.connector_id,
                 external_id=self.workspace_id
             )
 
-            # Create record group if it doesn't exist
             if not record_group:
                 record_group = RecordGroup(
                     org_id=self.data_entities_processor.org_id,
@@ -1574,24 +1716,21 @@ class NotionConnector(BaseConnector):
                     connector_id=self.connector_id,
                     group_type=RecordGroupType.NOTION_WORKSPACE,
                     permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                    inherit_permissions=True,
                     created_at=get_epoch_timestamp_in_ms(),
                     updated_at=get_epoch_timestamp_in_ms(),
                 )
+            else:
+                record_group.inherit_permissions = True
 
-            # Create READ permissions for all users
-            permissions = [
-                Permission(
-                    email=email,
-                    type=PermissionType.READ,
-                    entity_type=EntityType.USER,
-                )
-                for email in user_emails
-            ]
+            # [] clears a per-user grant written before the workspace inherited.
+            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
-            # Use on_new_record_groups to handle record group upsert and permission edges
-            await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
-
-            self.logger.info(f"✅ Added permissions for {len(user_emails)} users to workspace record group")
+            self.logger.info(
+                "Workspace %s inherits from the app (%d synced users)",
+                self.workspace_id,
+                len(user_emails),
+            )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to add workspace permissions: {e}", exc_info=True)
@@ -1680,7 +1819,7 @@ class NotionConnector(BaseConnector):
                     obj_id = obj_data.get("id")
                     last_edited_time = obj_data.get("last_edited_time")
 
-                    # Skip archived/trashed
+                    # Trashed: deleted by the gone-at-source pass at the end of the sync.
                     if obj_data.get("archived") or obj_data.get("in_trash"):
                         self.logger.info(f"Skipping archived {object_type}: {obj_id}")
                         continue
@@ -3654,12 +3793,11 @@ class NotionConnector(BaseConnector):
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
                 permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                inherit_permissions=True,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-            # Create record group with empty permissions initially
-            # Permissions will be added as users are synced
             await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
             self.logger.info(

@@ -724,6 +724,21 @@ class TestGetAllUsers:
         assert users[0].source_created_at == dt.timestamp()
 
     @pytest.mark.asyncio
+    async def test_guests_are_marked_and_members_are_not(self) -> None:
+        client = _make_client()
+        guest = self._user_mock(uid="g1", mail="bob@partner.com")
+        guest.user_type = "Guest"
+        member = self._user_mock(uid="m1")
+        member.user_type = "Member"
+        client.client.users.get = AsyncMock(return_value=_paged_result([guest, member]))
+
+        users = await client.get_all_users()
+
+        assert [(u.source_user_id, u.is_guest) for u in users] == [("g1", True), ("m1", False)]
+        query = client.client.users.get.await_args.args[0].query_parameters
+        assert "userType" in query.select
+
+    @pytest.mark.asyncio
     async def test_pagination(self):
         client = _make_client()
         u1 = self._user_mock(uid="u1")
@@ -960,6 +975,20 @@ class TestGetDeltaResponseSharepoint:
         assert resp["drive_items"] == ["item1"]
         assert resp["next_link"] is None
         assert resp["delta_link"] is None
+
+    @pytest.mark.asyncio
+    async def test_asks_for_sharing_only_changes_while_the_onedrive_delta_does_not(self) -> None:
+        client = _make_client()
+        client.client.request_adapter.send_async = AsyncMock(return_value=MagicMock(value=[]))
+
+        await client.get_delta_response_sharepoint("https://graph/delta")
+        await client.get_delta_response("https://graph/delta")
+
+        sharepoint_request, onedrive_request = (
+            call.kwargs["request_info"] for call in client.client.request_adapter.send_async.await_args_list
+        )
+        assert sharepoint_request.headers.get("Prefer") == {"deltashowsharingchanges"}
+        assert not onedrive_request.headers.contains("Prefer")
 
     @pytest.mark.asyncio
     async def test_exception_raised(self):

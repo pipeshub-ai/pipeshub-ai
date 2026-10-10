@@ -2750,7 +2750,10 @@ class TestSchemaGroupCleanup:
 
         await connector._remove_database_group_self_links()
 
-        assert tx.deleted_edges == [("g1", "g1", "belongsTo"), ("g1", "g1", "inheritPermissions")]
+        # The hierarchy self-loop too: a group that is its own parent is unreachable (RG-7).
+        assert tx.deleted_edges == [
+            ("g1", "g1", "belongsTo"), ("g1", "g1", "inheritPermissions"), ("g1", "g1", "nodeRelations"),
+        ]
 
     @pytest.mark.asyncio
     async def test_full_sync_repairs_only_when_a_schema_is_named_after_the_database(self):

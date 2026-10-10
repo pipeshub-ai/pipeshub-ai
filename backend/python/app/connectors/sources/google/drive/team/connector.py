@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime, timezone
 from logging import Logger
 from pathlib import Path
-from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, AsyncGenerator, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -18,6 +18,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     CollectionNames,
     Connectors,
     ExtensionTypes,
@@ -73,6 +74,14 @@ from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     is_delegation_error,
     resolve_explicit_user,
+)
+from app.connectors.sources.google.drive.team.drive_access import (
+    DrivePermissionBatch,
+    domain_group_id,
+    grants_to_store,
+    item_inherits_parent,
+    opens_metadata_only,
+    permission_is_direct,
 )
 from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     ANCESTOR_FETCH_CONCURRENCY,
@@ -337,6 +346,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # Accumulated across the run and flushed once at the end, so an email repeated
         # across thousands of files costs one membership write.
         self._external_emails: set[str] = set()
+        # Email domains of this Workspace's users; a share with any other domain grants nothing.
+        self._workspace_domains: set[str] = set()
+        self._archived_user_emails: set[str] = set()
 
         # Google clients and data sources (initialized in init())
         self.admin_client: Optional[GoogleClient] = None
@@ -493,6 +505,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Step 2: Sync user groups and their members
             self.logger.info("Syncing user groups...")
             await self._sync_user_groups()
+            await self._sync_domain_groups()
 
             # Step 3: Sync record groups (drives) for users
             self.logger.info("Syncing record groups...")
@@ -542,6 +555,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             self.logger.info("Fetching all users from Google Workspace Admin API...")
             all_users: List[AppUser] = []
+            archived_emails: set[str] = set()
             page_token: Optional[str] = None
 
             while True:
@@ -586,6 +600,8 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                             # Check if user is active (not suspended)
                             is_active = not user.get("suspended", False)
+                            if user.get("archived"):
+                                archived_emails.add(email.lower())
 
                             # Convert creation time to epoch milliseconds
                             source_created_at = None
@@ -627,6 +643,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.warning("No users found in Google Workspace")
                 self.synced_users = []
                 self.synced_user_emails = set()
+                self._workspace_domains = set()
+                self._archived_user_emails = set()
                 return
 
             # Process all users through the data entities processor
@@ -636,6 +654,8 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Store users for use in batch processing
             self.synced_users = all_users
             self.synced_user_emails = {user.email.lower() for user in all_users if user.email}
+            self._workspace_domains = {email.rsplit("@", 1)[1] for email in self.synced_user_emails if "@" in email}
+            self._archived_user_emails = archived_emails
 
             self.logger.info(f"✅ Successfully synced {len(all_users)} users")
 
@@ -730,6 +750,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                                 f"Error processing group {group.get('id', 'unknown')}: {e}",
                                 exc_info=True
                             )
+                            self.keep_stored_access(f"group {group.get('id', 'unknown')} could not be synced; it keeps its members")
                             continue
 
                     # Check for next page
@@ -748,6 +769,44 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}", exc_info=True)
             raise
+
+    async def _sync_domain_groups(self) -> None:
+        """One user group per Workspace domain, holding its active, unarchived users.
+
+        A file shared with "anyone at <domain>" is granted to that group, so it
+        reaches exactly the users Google lets in, not every member of the org.
+        """
+        if not self._workspace_domains:
+            return
+        groups = []
+        for domain in sorted(self._workspace_domains):
+            members = [
+                user for user in self.synced_users
+                if user.is_active and user.email and user.email.lower().endswith(f"@{domain}")
+                and user.email.lower() not in self._archived_user_emails
+            ]
+            groups.append((
+                AppUserGroup(
+                    source_user_group_id=domain_group_id(domain),
+                    app_name=self.connector_name,
+                    connector_id=self.connector_id,
+                    name=f"Everyone at {domain}",
+                    description=f"Files shared with anyone at {domain}",
+                ),
+                members,
+            ))
+        await self.data_entities_processor.on_new_user_groups(groups)
+        self.logger.info(f"✅ Synced {len(groups)} domain group(s)")
+
+    def _domain_grant(self, domain: Optional[str], permission_type: PermissionType) -> Optional[Permission]:
+        """A share with a whole domain, as a grant to its domain group; None for a domain outside this Workspace."""
+        if not domain:
+            return None
+        # Unknown before the first user sync (a reindex on a fresh instance): the
+        # grant names the group, and a domain that has none resolves to nothing.
+        if self._workspace_domains and domain.lower() not in self._workspace_domains:
+            return None
+        return Permission(external_id=domain_group_id(domain), type=permission_type, entity_type=EntityType.GROUP)
 
     async def _process_group(self, group: Dict) -> None:
         """
@@ -902,16 +961,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             return PermissionType.OWNER
         elif role_lower in ["fileorganizer", "writer"]:
             return PermissionType.WRITE
-        elif role_lower == "commenter":
-            return PermissionType.COMMENT
-        elif role_lower == "reader":
+        elif role_lower in ["commenter", "reader"]:
             return PermissionType.READ
         else:
             # Default to read for unknown roles
             self.logger.warning(f"Unknown Google Drive role '{role}', defaulting to READ")
             return PermissionType.READ
 
-    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> EntityType:
+    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> Optional[EntityType]:
         """
         Map Google Drive permission type to EntityType enum.
 
@@ -920,7 +977,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             email: Optional email address for additional context
 
         Returns:
-            EntityType enum value
+            EntityType enum value, or None for a share with a whole domain, which _domain_grant maps
         """
         perm_type_lower = permission_type.lower()
         if perm_type_lower == "user":
@@ -928,22 +985,39 @@ class GoogleDriveTeamConnector(BaseConnector):
         elif perm_type_lower == "group":
             return EntityType.GROUP
         elif perm_type_lower == "domain":
-            return EntityType.DOMAIN
-        elif perm_type_lower == "anyone":
-            return EntityType.ANYONE
-        elif perm_type_lower in ["anyonewithlink", "anyone_with_link"]:
-            return EntityType.ANYONE_WITH_LINK
+            # Not an org grant: the domain may be a partner's, and an org grant reaches every user.
+            return None
         else:
             # Default to user for unknown types
             self.logger.warning(f"Unknown Google Drive permission type '{permission_type}', defaulting to USER")
             return EntityType.USER
+
+    def _fallback_grants(
+        self, user_email: str, role: PermissionType, owner_emails: Sequence[str]
+    ) -> List[Permission]:
+        """The syncing user's own access, plus the owners the file's metadata names.
+
+        A viewer cannot list the ACL, but the owner's access is not in doubt, and
+        an owner outside this Workspace has no sync of their own to add it.
+        """
+        grants = [Permission(email=user_email, type=role, entity_type=EntityType.USER)]
+        seen = {user_email.lower()}
+        for owner in owner_emails:
+            if owner and owner.lower() not in seen:
+                seen.add(owner.lower())
+                grants.append(Permission(email=owner, type=PermissionType.OWNER, entity_type=EntityType.USER))
+                self._track_external_collaborator(EntityType.USER, owner)
+        return grants
 
     async def _fetch_permissions(
         self,
         resource_id: str,
         is_drive: bool = False,
         user_email: Optional[str] = None,
-        drive_data_source: Optional[GoogleDriveDataSource] = None
+        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        inherited_permissions_disabled: bool = False,
+        drive_acl_on_group: bool = True,
+        owner_emails: Sequence[str] = (),
     ) -> Tuple[List[Permission], bool, List[str]]:
         """
         Fetch all permissions for a Google Drive resource (file or shared drive) with pagination.
@@ -953,6 +1027,10 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_drive: Whether this is a shared drive (True) or a file (False)
             user_email: Optional user email for fallback permission if access is denied (files only)
             drive_data_source: Optional drive data source to use (if None, uses self.drive_data_source)
+            drive_acl_on_group: False for an item of a shared drive whose record group has no
+                members (another tenant's drive), so the members' grants stay on the item
+            owner_emails: The file's owners from its metadata, kept when only a fallback grant is
+                possible
 
         Returns:
             Tuple of (list of Permission objects, whether the permissions were fallback permissions,
@@ -960,12 +1038,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             populated for items inside a Shared Drive, since Google omits `permissionDetails` elsewhere)
         """
         permissions: List[Permission] = []
+        direct_permissions: List[Permission] = []
+        saw_permission_details = False
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
         anyone_with_link_permission_type: Optional[PermissionType] = None
 
         # Use provided drive_data_source or fall back to service account's data source
         data_source = drive_data_source if drive_data_source else self.drive_data_source
+        # Google lists a member's access on each item it reaches, cut off by limited access.
+        member_is_direct = not drive_acl_on_group and not inherited_permissions_disabled
 
         while True:
             try:
@@ -975,7 +1057,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                     "pageSize": 100,  # Maximum allowed by Google Drive API
                     "pageToken": page_token,
                     "supportsAllDrives": True,
-                    "fields": "permissions(id, displayName, type, role, domain, emailAddress, deleted, permissionDetails)"
+                    "fields": "permissions(id, displayName, type, role, domain, allowFileDiscovery, emailAddress, deleted, permissionDetails, view)"
                 }
 
                 # Only use domain admin access for shared drives
@@ -994,41 +1076,59 @@ class GoogleDriveTeamConnector(BaseConnector):
                         # Skip deleted permissions for files, but include them for drives
                         if perm_data.get("deleted", False):
                             continue
+                        if opens_metadata_only(perm_data):
+                            continue
 
                         role = perm_data.get("role", "reader")
                         perm_type = perm_data.get("type", "user")
 
-                        # Map role and type
                         permission_type = self._map_drive_role_to_permission_type(role)
-                        entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
 
-                        # Extract email or domain based on permission type
+                        # Link sharing names no grantee, so it is not stored as a
+                        # grant. It still becomes a direct grant for the syncing
+                        # user, below.
+                        if perm_type.lower() in ("anyone", "anyonewithlink", "anyone_with_link"):
+                            anyone_with_link_permission_type = permission_type
+                            continue
+
                         email = perm_data.get("emailAddress")
-                        perm_data.get("domain")
-                        external_id = perm_data.get("id")
-
-                        # Create permission object
-                        permission = Permission(
-                            email=email if entity_type == EntityType.USER else None,
-                            external_id=email if entity_type == EntityType.GROUP else external_id,
-                            type=permission_type,
-                            entity_type=entity_type
-                        )
+                        if perm_type.lower() == "domain":
+                            entity_type = EntityType.GROUP
+                            permission = self._domain_grant(perm_data.get("domain"), permission_type)
+                            if permission is None:
+                                continue
+                            # "Anyone at <domain> with the link" names nobody either; only a
+                            # share Google says is discoverable opens the file to the domain.
+                            if perm_data.get("allowFileDiscovery") is not True:
+                                anyone_with_link_permission_type = permission_type
+                                continue
+                        else:
+                            entity_type = self._map_drive_permission_type_to_entity_type(perm_type)
+                            if entity_type is None:
+                                continue
+                            permission = Permission(
+                                email=email if entity_type == EntityType.USER else None,
+                                external_id=email if entity_type == EntityType.GROUP else perm_data.get("id"),
+                                type=permission_type,
+                                entity_type=entity_type
+                            )
                         permissions.append(permission)
+                        directness = permission_is_direct(perm_data, member_is_direct=member_is_direct)
+                        if directness is not None:
+                            saw_permission_details = True
+                        if directness is not False:
+                            direct_permissions.append(permission)
 
                         self._track_external_collaborator(entity_type, email)
 
-                        # A "file"-type entry means this user was granted access directly on this
-                        # item, as opposed to inheriting it via Shared Drive membership ("member").
+                        # A "file" entry written on this item, not inherited from a shared folder
+                        # above it: Shared with Me lists only the item that was shared.
                         permission_details = perm_data.get("permissionDetails") or []
                         if entity_type == EntityType.USER and email and any(
-                            detail.get("permissionType") == "file" for detail in permission_details
+                            detail.get("permissionType") == "file" and detail.get("inherited") is False
+                            for detail in permission_details
                         ):
                             individually_shared_emails.add(email)
-
-                        # Track "anyone with link" permission type for fallback
-                        if entity_type == EntityType.ANYONE:
-                            anyone_with_link_permission_type = permission_type
 
                     except Exception as e:
                         resource_type = "drive" if is_drive else "file"
@@ -1065,27 +1165,21 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                     # If it's an insufficient permissions error and we have a user_email, create fallback permission
                     if error_reason == "insufficientFilePermissions" and user_email:
-                        # Create a fallback permission with READ access for the current user
-                        fallback_permission = Permission(
-                            email=user_email,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.USER
-                        )
                         self.logger.info(
                             f"Added single user permission for file {resource_id}: {user_email}"
                         )
-                        return ([fallback_permission], True, [])
+                        return (self._fallback_grants(user_email, PermissionType.READ, owner_emails), True, [])
                     else:
                         self.logger.error(
                             f"Error fetching permissions for file {resource_id}: {http_error}",
                             exc_info=True
                         )
-                        # Return empty list if no fallback available
-                        return (permissions, False, [])
+                        # A failed read is not an empty ACL. is_fallback keeps stored grants.
+                        return ([], True, [])
                 else:
                     # For other HttpErrors, log and return empty list
                     self.logger.error(f"Error fetching permissions for file {resource_id}: {http_error}", exc_info=True)
-                    return (permissions, False, [])
+                    return ([], True, [])
             except Exception as e:
                 resource_type = "drive" if is_drive else "file"
                 if is_drive:
@@ -1095,7 +1189,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 else:
                     # For files, return empty list on error instead of raising, to allow processing to continue
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
-                    return (permissions, False, [])
+                    return ([], True, [])
 
         # If we found an "anyone with link" permission and have a user_email, create a fallback permission
         if anyone_with_link_permission_type is not None and user_email:
@@ -1105,13 +1199,12 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
 
             if not user_already_has_permission:
-                fallback_permission = Permission(
-                    email=user_email,
-                    type=anyone_with_link_permission_type,
-                    entity_type=EntityType.USER
-                )
                 self.logger.info("Anyone with link permission found for file")
-                return ([fallback_permission], True, list(individually_shared_emails))
+                return (
+                    self._fallback_grants(user_email, anyone_with_link_permission_type, owner_emails),
+                    True,
+                    list(individually_shared_emails),
+                )
 
         # A successful but empty ACL means this user cannot enumerate permissions: a
         # viewer on a shared drive item gets 200 with an empty list rather than the 403
@@ -1124,12 +1217,23 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"falling back to read access for {user_email}"
             )
             return (
-                [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)],
+                self._fallback_grants(user_email, PermissionType.READ, owner_emails),
                 True,
                 list(individually_shared_emails),
             )
 
-        return (permissions, False, list(individually_shared_emails))
+        stored = grants_to_store(
+            permissions,
+            direct_permissions,
+            saw_permission_details=saw_permission_details,
+            inherited_permissions_disabled=inherited_permissions_disabled,
+            is_drive=is_drive,
+        )
+        return (
+            DrivePermissionBatch(stored, saw_permission_details=bool(saw_permission_details and not is_drive)),
+            False,
+            list(individually_shared_emails),
+        )
 
     async def _create_and_sync_shared_drive_record_group(self, drive: Dict) -> None:
         """
@@ -1243,6 +1347,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                         f"Failed to sync shared drive '{drive.get('name', 'unknown')}': {e}",
                         exc_info=True
                     )
+                    self.keep_stored_access(f"shared drive {drive.get('id', 'unknown')} could not be synced; it keeps its access")
                     continue
 
             # Step 2: Create "My Drive" record groups for each user
@@ -1483,6 +1588,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"Error fetching {error_type} page from drive '{drive_name}': {error}",
                 exc_info=True
             )
+            self.keep_stored_access(f"the {error_type} of shared drive {drive_id} could not be read; it keeps its access")
             return True  # Break and continue to next drive
         else:
             # For other exceptions, log and break
@@ -1490,6 +1596,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"Error fetching {error_type} page from drive '{drive_name}': {error}",
                 exc_info=True
             )
+            self.keep_stored_access(f"the {error_type} of shared drive {drive_id} could not be read; it keeps its access")
             return True  # Break and continue to next drive
 
     def _parse_datetime(self, dt_obj) -> Optional[int]:
@@ -1718,13 +1825,13 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             return
 
-        if existing_record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+        if existing_record.mime_type in FOLDER_MIME_TYPES:
             self.logger.info(
                 "📁 Folder %s exited folder-filter scope; deleting folder and descendants",
                 existing_record.record_name,
             )
             result = await self.data_entities_processor.on_records_deleted_cascade(
-                [existing_record.id], self.connector_id
+                [existing_record.id], self.connector_id, include_trashed_roots=True
             )
             total_deleted = len((result or {}).get("deleted_records") or [])
             self.logger.info(
@@ -2031,8 +2138,10 @@ class GoogleDriveTeamConnector(BaseConnector):
     async def _delete_record_tree(self, record: Record) -> None:
         """Delete a record; a folder takes the records under it along."""
         self.logger.info("Deleting record: %s", record.record_name)
-        if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
-            await self.data_entities_processor.on_records_deleted_cascade([record.id], self.connector_id)
+        if record.mime_type in FOLDER_MIME_TYPES:
+            await self.data_entities_processor.on_records_deleted_cascade(
+                [record.id], self.connector_id, include_trashed_roots=True
+            )
         else:
             await self.data_entities_processor.on_record_deleted(record_id=record.id)
 
@@ -2066,11 +2175,17 @@ class GoogleDriveTeamConnector(BaseConnector):
         if group_id in self._listed_shared_drive_ids and not self._pass_drive_ids_filter(group_id):
             return False
         parent = record.parent_external_record_id or group_id
+        # A stored folder is text/directory; the filters know a folder by Google's type.
+        mime_type = (
+            MimeTypes.GOOGLE_DRIVE_FOLDER.value
+            if record.mime_type in FOLDER_MIME_TYPES
+            else record.mime_type
+        )
         metadata = {
             "id": record.external_record_id,
             "name": record.record_name,
             "fileExtension": getattr(record, "extension", None),
-            "mimeType": record.mime_type,
+            "mimeType": mime_type,
             "parents": [parent] if parent else [],
             "createdTime": self._epoch_ms_to_iso(record.source_created_at),
             "modifiedTime": self._epoch_ms_to_iso(record.source_updated_at),
@@ -2127,7 +2242,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 for record in page:
                     if self._record_passes_sync_filters(record):
                         continue
-                    if record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+                    if record.mime_type in FOLDER_MIME_TYPES:
                         excluded_folders.append(record)
                         continue
                     try:
@@ -2391,7 +2506,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 weburl=metadata.get("webViewLink", None),
-                mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
+                # Every folder is written as text/directory, not Google's own folder type.
+                mime_type=MimeTypes.FOLDER.value if not is_file else (mime_type or MimeTypes.UNKNOWN.value),
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,
@@ -2426,20 +2542,37 @@ class GoogleDriveTeamConnector(BaseConnector):
             try:
                 # Fetch permissions for this file using the provided drive_data_source
                 # If drive_data_source is provided, use it; otherwise fall back to service account
+                limited_access = bool(metadata.get("inheritedPermissionsDisabled"))
+                item_drive_id = metadata.get("driveId")
                 new_permissions, is_fallback_permissions, individually_shared_emails = await self._fetch_permissions(
                     file_id,
                     is_drive=False,
                     user_email=user_email,
-                    drive_data_source=drive_data_source
+                    drive_data_source=drive_data_source,
+                    inherited_permissions_disabled=limited_access,
+                    # Only a drive in the admin listing gets a record group holding its members.
+                    drive_acl_on_group=not item_drive_id or item_drive_id in self._synced_drive_ids,
+                    owner_emails=owner_emails,
                 )
 
                 if is_fallback_permissions:
                     permissions_changed = False
-
-                    if existing_record:
+                    if existing_record is not None:
+                        self.keep_stored_access(
+                            f"the permissions of file {file_id} could not be read; it keeps its access"
+                        )
+                    file_record.inherit_permissions = await self.data_entities_processor.inheritance_when_unreadable(
+                        CollectionNames.RECORDS.value, existing_record.id if existing_record else None
+                    )
+                    if existing_record is not None and new_permissions:
                         await self.data_entities_processor.add_permission_to_record(existing_record, new_permissions)
                 else:
                     permissions_changed = True
+                    file_record.inherit_permissions = item_inherits_parent(
+                        saw_permission_details=bool(getattr(new_permissions, "saw_permission_details", False)),
+                        inherited_permissions_disabled=limited_access,
+                        is_fallback=False,
+                    )
                     if existing_record:
                         is_updated = True
 
@@ -3847,7 +3980,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                     for user in batch
                 ]
 
-                await asyncio.gather(*sync_tasks, return_exceptions=True)
+                results = await asyncio.gather(*sync_tasks, return_exceptions=True)
+                if any(isinstance(r, Exception) for r in results):
+                    self.keep_stored_access("a user's drive could not be synced; what it holds keeps its access")
 
                 # Small delay between batches to prevent overwhelming the API
                 await asyncio.sleep(1)
@@ -4035,6 +4170,15 @@ class GoogleDriveTeamConnector(BaseConnector):
             return await drive_data_source.execute(metadata_request.execute)
         except HttpError as http_error:
             self.logger.error(f"Error fetching file metadata from Drive: {str(http_error)}")
+            # Drive answers 404 for a file the impersonated user may not read, too.
+            if http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
+                raise HTTPException(
+                    status_code=HttpStatusCode.NOT_FOUND.value,
+                    detail=(
+                        f"This item is not available in {self.display_name}. It may have been deleted, "
+                        "or you may no longer have access to it there."
+                    ),
+                ) from http_error
             raise map_source_status(
                 http_error.resp.status, connector=self.display_name
             ) from http_error

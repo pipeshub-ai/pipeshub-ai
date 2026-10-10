@@ -1,12 +1,12 @@
 """Knowledge Hub service and authenticatedAs links.
 
-The service knows nothing about links: connectors reached only through a link arrive in
-the app-id list the provider returns, and the provider's queries count the linked account
-themselves. These tests pin that the service stays a pass-through.
+The service knows nothing about links: a connector reached only through a link
+arrives in the access context the provider returns (its gate and its grants), and
+the provider's queries count the linked account themselves. These tests pin that
+the service passes that context through untouched.
 """
 
 import logging
-from collections.abc import Awaitable
 from unittest.mock import AsyncMock
 
 import pytest
@@ -17,14 +17,21 @@ from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
 
 USER_KEY = "creator-key"
 ORG = "org-1"
+LINKED = "jira-1"
 
 
 @pytest.fixture
 def provider() -> AsyncMock:
     p = AsyncMock()
-    # get_user_app_ids already includes connectors reachable only through a link
-    p.get_user_app_ids = AsyncMock(return_value=["own-1", "jira-1"])
-    p.get_user_permission_app_ids = AsyncMock(return_value=[])
+    p.get_user_by_user_id.return_value = {"_key": USER_KEY}
+    # The provider's gate already includes the connector reachable only through a link.
+    p.get_knowledge_hub_access_context_v2.return_value = {
+        "grantee_ids": [USER_KEY], "gated_app_ids": ["own-1", LINKED],
+    }
+    p.get_knowledge_hub_access_v3.return_value = {
+        "grantee_ids": [USER_KEY], "gated_app_ids": ["own-1", LINKED],
+        "by_connector": {"own-1": [], LINKED: ["issue-1"]},
+    }
     return p
 
 
@@ -35,55 +42,25 @@ def service(provider) -> KnowledgeHubService:
     return KnowledgeHubService(logger=log, graph_provider=provider)
 
 
-class TestRootLevel:
-    async def test_every_app_id_the_provider_returns_is_used(self, service, provider) -> None:
-        provider.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await service._get_root_level_nodes(USER_KEY, ORG, 0, 50, "name", "asc", None, None, None, only_containers=False)
-
-        assert provider.get_knowledge_hub_root_nodes.await_args.kwargs["user_app_ids"] == ["own-1", "jira-1"]
-
-    async def test_connector_filter_still_applies(self, service, provider) -> None:
-        provider.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await service._get_root_level_nodes(
-            USER_KEY, ORG, 0, 50, "name", "asc", None, None, ["own-1"], only_containers=False
-        )
-
-        assert provider.get_knowledge_hub_root_nodes.await_args.kwargs["user_app_ids"] == ["own-1"]
+@pytest.mark.asyncio
+async def test_every_gated_app_the_provider_returns_is_listed(service, provider) -> None:
+    provider.get_knowledge_hub_root_nodes_v2.return_value = {
+        "partitions": [{"rows": [], "hasMore": False, "total": 0, "ids": []}], "scope": None,
+    }
+    await service.get_nodes(user_id="u1", org_id=ORG)
+    assert provider.get_knowledge_hub_root_nodes_v2.await_args.kwargs["user_app_ids"] == ["own-1", LINKED]
 
 
-class TestSearch:
-    def _search(self, service, **kwargs) -> Awaitable:
-        defaults = {
-            "user_key": USER_KEY, "org_id": ORG, "skip": 0, "limit": 2, "sort_by": "updatedAt",
-            "sort_order": "desc", "q": "x", "node_types": None, "record_types": None, "origins": None,
-            "connector_ids": None, "indexing_status": None, "created_at": None, "updated_at": None,
-            "size": None, "only_containers": False,
-        }
-        defaults.update(kwargs)
-        return service._search_nodes(**defaults)
-
-    async def test_search_is_a_single_provider_call_as_the_caller(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await self._search(service)
-
-        provider.get_knowledge_hub_search.assert_awaited_once()
-        assert provider.get_knowledge_hub_search.await_args.kwargs["user_key"] == USER_KEY
-
-    async def test_scoped_search_passes_the_parent_through(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await self._search(service, parent_id="jira-1", parent_type="app")
-
-        provider.get_knowledge_hub_search.assert_awaited_once()
-        assert provider.get_knowledge_hub_search.await_args.kwargs["parent_id"] == "jira-1"
-
-    async def test_paging_arguments_reach_the_provider_unchanged(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await self._search(service, skip=2, limit=2)
-
-        call = provider.get_knowledge_hub_search.await_args.kwargs
-        assert (call["skip"], call["limit"]) == (2, 2)
+@pytest.mark.asyncio
+async def test_a_linked_connectors_grants_reach_the_listing_unchanged(service, provider) -> None:
+    provider.get_knowledge_hub_connector_page_v3.return_value = {
+        "rows": [], "hasMore": False, "total": 0, "counts": None,
+        "scope": {"admitted": True, "nodeId": LINKED},
+    }
+    await service.get_nodes(user_id="u1", org_id=ORG, parent_id=LINKED, parent_type="app")
+    kwargs = provider.get_knowledge_hub_connector_page_v3.await_args.kwargs
+    assert kwargs["gated_app_ids"] == ["own-1", LINKED]
+    # The page reads the connector's grants itself (the source account's among
+    # them) for this user: nothing narrower is handed to it.
+    assert kwargs["user_key"] and kwargs["granted_ids"] is None
+    assert kwargs.get("grants_by_connector") is None

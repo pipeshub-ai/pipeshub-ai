@@ -1,7 +1,7 @@
 """Container-scoped permission filtering in `search_with_filters`.
 
 The filter this builds *widens*: it admits records the user cannot read, and
-`filter_accessible_virtual_record_ids` narrows the result back. So the tests
+the batch access check (`check_access`) narrows the result back. So the tests
 that matter most are the ones proving the narrowing actually happens, and the
 ones proving the widening cannot become unbounded.
 
@@ -23,7 +23,7 @@ import pytest
 import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -37,6 +37,12 @@ def _clear_user_cache():
     mod._user_cache.clear()
 
 
+@pytest.fixture(autouse=True)
+def _a_user_with_a_graph_key(mock_graph_provider):
+    """The shared provider's default user has no key, and no hit is checked without one."""
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "test@example.com"}
+
+
 @pytest.fixture
 def _patch_sparse():
     """Patch SparseEmbedder so no model is loaded."""
@@ -47,16 +53,6 @@ def _patch_sparse():
         )
         mock_cls.return_value = instance
         yield instance
-
-
-@pytest.fixture(autouse=True)
-def _container_filter_on():
-    """These tests describe the container path, which is off by default."""
-    with patch(
-        "app.modules.retrieval.retrieval_service.read_platform_feature_flag",
-        new=AsyncMock(return_value=True),
-    ) as flag:
-        yield flag
 
 
 @pytest.fixture
@@ -99,7 +95,7 @@ def _containers(**kwargs) -> AccessibleContainers:
 
 
 class TestFilterConstruction:
-    def test_all_buckets_become_one_should_clause_each(self, retrieval_service):
+    def test_all_buckets_become_one_should_clause_each(self, retrieval_service) -> None:
         must, should = retrieval_service._build_container_clauses(
             "o1",
             _containers(
@@ -115,7 +111,7 @@ class TestFilterConstruction:
         assert set(should[RECORD_GROUP_IDS_FIELD]) == {"rg-t", "rg-v"}
         assert should["virtualRecordId"] == ["v1"]
 
-    def test_trusted_and_verify_share_one_clause(self, retrieval_service):
+    def test_trusted_and_verify_share_one_clause(self, retrieval_service) -> None:
         """The vector DB cannot tell them apart; a separate clause would only
         cost a term."""
         _, should = retrieval_service._build_container_clauses(
@@ -129,7 +125,7 @@ class TestFilterConstruction:
         assert len([k for k in should if k == RECORD_GROUP_IDS_FIELD]) == 1
         assert set(should[RECORD_GROUP_IDS_FIELD]) == {"a", "b"}
 
-    def test_empty_buckets_yield_no_clause_not_an_empty_list(self, retrieval_service):
+    def test_empty_buckets_yield_no_clause_not_an_empty_list(self, retrieval_service) -> None:
         """`build_conditions` drops empty lists, which would leave `orgId` alone
         and match the whole org."""
         _, should = retrieval_service._build_container_clauses(
@@ -138,10 +134,10 @@ class TestFilterConstruction:
         assert RECORD_GROUP_IDS_FIELD not in should
         assert "virtualRecordId" not in should
 
-    def test_nothing_reachable_returns_none(self, retrieval_service):
+    def test_nothing_reachable_returns_none(self, retrieval_service) -> None:
         assert retrieval_service._build_container_clauses("o1", _containers(), None) is None
 
-    def test_must_always_carries_org_id(self, retrieval_service):
+    def test_must_always_carries_org_id(self, retrieval_service) -> None:
         """An empty `must` makes OpenSearch treat every should clause as
         score-only, matching the entire index."""
         must, _ = retrieval_service._build_container_clauses(
@@ -149,7 +145,7 @@ class TestFilterConstruction:
         )
         assert must["orgId"] == "o1"
 
-    def test_tool_ids_narrow_via_must_containers_still_authorise(self, retrieval_service):
+    def test_tool_ids_narrow_via_must_containers_still_authorise(self, retrieval_service) -> None:
         must, should = retrieval_service._build_container_clauses(
             "o1", _containers(app_ids=frozenset({"a"})), ["v-tool"]
         )
@@ -161,13 +157,13 @@ class TestRootScopedGroups:
     """Slack matches on a record's root group instead of its own, so a channel
     grant covers every thread under it without listing them."""
 
-    def test_root_groups_get_their_own_clause(self, retrieval_service):
+    def test_root_groups_get_their_own_clause(self, retrieval_service) -> None:
         must, should = retrieval_service._build_container_clauses(
             "o1", _containers(root_group_ids=frozenset({"channel-1"})), None
         )
         assert should[mod.ROOT_RECORD_GROUP_IDS_FIELD] == ["channel-1"]
 
-    def test_no_clause_when_no_connector_is_root_scoped(self, retrieval_service):
+    def test_no_clause_when_no_connector_is_root_scoped(self, retrieval_service) -> None:
         """Every other connector must keep matching on its own group ids."""
         must, should = retrieval_service._build_container_clauses(
             "o1", _containers(record_group_ids_verify=frozenset({"rg"})), None
@@ -175,7 +171,7 @@ class TestRootScopedGroups:
         assert mod.ROOT_RECORD_GROUP_IDS_FIELD not in should
         assert should[mod.RECORD_GROUP_IDS_FIELD] == ["rg"]
 
-    def test_root_groups_alone_are_enough_to_search(self, retrieval_service):
+    def test_root_groups_alone_are_enough_to_search(self, retrieval_service) -> None:
         """A user reaching only Slack still gets a filter; returning None here
         would 404 them instead."""
         clauses = retrieval_service._build_container_clauses(
@@ -183,7 +179,7 @@ class TestRootScopedGroups:
         )
         assert clauses is not None
 
-    def test_root_clause_does_not_displace_the_others(self, retrieval_service):
+    def test_root_clause_does_not_displace_the_others(self, retrieval_service) -> None:
         must, should = retrieval_service._build_container_clauses(
             "o1",
             _containers(
@@ -256,8 +252,8 @@ class TestAdjudication:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v-allowed"), _hit("v-denied")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v-allowed": "r-allowed"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(
             return_value=[{
@@ -339,8 +335,8 @@ class TestAdjudication:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "the-permitted-copy"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v1": "the-permitted-copy"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -362,59 +358,59 @@ class TestAdjudication:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1"), _hit("v1"), _hit("v2")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={})
         )
 
         await retrieval_service.search_with_filters(
             queries=["q"], user_id="u1", org_id="o1"
         )
 
-        asked = mock_graph_provider.filter_accessible_virtual_record_ids.await_args.args[0]
+        asked = mock_graph_provider.check_access.await_args.kwargs["virtual_record_ids"]
         assert sorted(asked) == ["v1", "v2"]
-
-    async def test_verifier_is_told_which_containers_are_trusted(
-        self, retrieval_service, mock_graph_provider
-    ):
-        """The shortcut lives in the query, so the sets have to reach it. Without
-        them the verifier resolves every role by hand and the whole change is a
-        no-op that still looks wired up from the outside."""
-        mock_graph_provider.get_accessible_containers = AsyncMock(
-            return_value=_containers(
-                app_ids=frozenset({"app-level", "kb-1"}),
-                app_ids_trusted=frozenset({"app-level"}),
-                record_group_ids_trusted=frozenset({"rg-trusted"}),
-                record_group_ids_verify=frozenset({"rg-verify"}),
-            )
-        )
-        retrieval_service._execute_parallel_searches = AsyncMock(
-            return_value=[_hit("v1")]
-        )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={}
-        )
-
-        await retrieval_service.search_with_filters(
-            queries=["q"], user_id="u1", org_id="o1"
-        )
-
-        kwargs = mock_graph_provider.filter_accessible_virtual_record_ids.await_args.kwargs
-        assert kwargs["trusted_app_ids"] == frozenset({"app-level"})
-        assert kwargs["trusted_group_ids"] == frozenset({"rg-trusted"})
-        # The KB app is reachable and belongs in the vector filter, but trusting
-        # it would hand a folder-scoped user the whole Collection.
-        assert "kb-1" not in kwargs["trusted_app_ids"]
-        # A verify-bucket group is not a shortcut; it is the slow path.
-        assert "rg-verify" not in kwargs["trusted_group_ids"]
-
 
 # ---------------------------------------------------------------------------
 # Over-fetch sizing and the retry
 # ---------------------------------------------------------------------------
 
 
+class TestTheBatchCheckVerifiesHits:
+    """Hits are verified by `check_access`: the user's graph key, finished
+    records only, and the request's scope."""
+
+    @pytest.mark.asyncio
+    async def test_hits_are_verified_by_check_access(self, retrieval_service, mock_graph_provider) -> None:
+        mock_graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "user-key", "email": "u@x.com"})
+        mock_graph_provider.get_accessible_containers = AsyncMock(
+            return_value=_containers(record_group_ids_verify=frozenset({"rg"}))
+        )
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            return_value=[_hit("v-allowed"), _hit("v-denied")]
+        )
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v-allowed": "r-allowed"})
+        )
+        mock_graph_provider.get_records_by_record_ids = AsyncMock(
+            return_value=[{
+                "_key": "r-allowed", "virtualRecordId": "v-allowed",
+                "origin": "CONNECTOR", "recordName": "n", "mimeType": "text/plain",
+                "connectorName": "X", "webUrl": "http://x",
+            }]
+        )
+
+        result = await retrieval_service.search_with_filters(queries=["q"], user_id="u1", org_id="o1")
+
+        returned = {r["metadata"].get("virtualRecordId") for r in result.get("searchResults", [])}
+        assert "v-denied" not in returned
+        call = mock_graph_provider.check_access.await_args
+        assert call.args == ("user-key", "o1")
+        assert set(call.kwargs["virtual_record_ids"]) == {"v-allowed", "v-denied"}
+        assert call.kwargs["indexed_only"] is True
+        assert call.kwargs["connector_ids"] is None       # an unscoped request
+
+
 class TestOverfetchSizing:
-    def test_no_verify_groups_costs_nothing(self, retrieval_service):
+    def test_no_verify_groups_costs_nothing(self, retrieval_service) -> None:
         """An all-app-level tenant must not pay for a change it cannot benefit
         from. `app_ids_trusted` has to cover `app_ids` for that to hold."""
         c = _containers(
@@ -424,7 +420,7 @@ class TestOverfetchSizing:
         )
         assert retrieval_service._overfetch_limit(20, c) == 20
 
-    def test_undeclared_apps_are_sized_as_checked_not_trusted(self, retrieval_service):
+    def test_undeclared_apps_are_sized_as_checked_not_trusted(self, retrieval_service) -> None:
         """An app reachable but not declared APP_LEVEL has no verify groups and
         is still adjudicated per record. Sizing it as trusted hands the tenant
         zero headroom and buys a second vector fan-out on every search the
@@ -434,14 +430,14 @@ class TestOverfetchSizing:
         )
         assert retrieval_service._overfetch_limit(20, c) > 20
 
-    def test_mixed_buckets_overfetch_within_the_cap(self, retrieval_service):
+    def test_mixed_buckets_overfetch_within_the_cap(self, retrieval_service) -> None:
         c = _containers(
             app_ids=frozenset({"a"}), record_group_ids_verify=frozenset({"v"})
         )
         got = retrieval_service._overfetch_limit(20, c)
         assert 20 < got <= 20 * mod._OVERFETCH_MAX_MULTIPLIER
 
-    def test_all_verify_hits_the_multiplier_ceiling(self, retrieval_service):
+    def test_all_verify_hits_the_multiplier_ceiling(self, retrieval_service) -> None:
         """Pinned to the derived value, not bounded by it: an upper bound is
         also satisfied by a multiplier that silently collapsed to 1.0, which is
         the failure that makes every all-verify tenant under-fetch and retry.
@@ -451,19 +447,19 @@ class TestOverfetchSizing:
         expected = math.ceil(20 / (1.0 - mod._ASSUMED_DENY_RATE))
         assert retrieval_service._overfetch_limit(20, c) == expected == 40
 
-    def test_absolute_cap_bounds_the_overfetch(self, retrieval_service):
+    def test_absolute_cap_bounds_the_overfetch(self, retrieval_service) -> None:
         c = _containers(record_group_ids_verify=frozenset({"v"}))
         got = retrieval_service._overfetch_limit(200, c)
         assert got == mod._OVERFETCH_ABSOLUTE_CAP
 
-    def test_never_returns_less_than_the_caller_asked_for(self, retrieval_service):
+    def test_never_returns_less_than_the_caller_asked_for(self, retrieval_service) -> None:
         """The cap bounds the *over*-fetch. Returning below `limit` would
         under-fetch a large search while claiming to have widened it — and
         `_should_requery`'s cap guard would then block any recovery."""
         c = _containers(record_group_ids_verify=frozenset({"v"}))
         assert retrieval_service._overfetch_limit(10_000, c) >= 10_000
 
-    def test_never_returns_less_than_limit_with_no_verify_groups(self, retrieval_service):
+    def test_never_returns_less_than_limit_with_no_verify_groups(self, retrieval_service) -> None:
         c = _containers(app_ids=frozenset({"a"}), app_ids_trusted=frozenset({"a"}))
         assert retrieval_service._overfetch_limit(10_000, c) == 10_000
 
@@ -477,29 +473,29 @@ class TestRequeryGuards:
         base.update(over)
         return base
 
-    def test_requeries_on_a_permission_shortfall(self, retrieval_service):
+    def test_requeries_on_a_permission_shortfall(self, retrieval_service) -> None:
         assert retrieval_service._should_requery(**self._args())
 
-    def test_no_requery_when_the_corpus_is_exhausted(self, retrieval_service):
+    def test_no_requery_when_the_corpus_is_exhausted(self, retrieval_service) -> None:
         """The decisive guard. Without it every small tenant re-queries on
         every single search, forever."""
         assert not retrieval_service._should_requery(**self._args(max_batch=12))
 
-    def test_no_requery_when_the_limit_is_already_met(self, retrieval_service):
+    def test_no_requery_when_the_limit_is_already_met(self, retrieval_service) -> None:
         assert not retrieval_service._should_requery(**self._args(surviving=20))
 
-    def test_no_requery_when_nothing_was_denied(self, retrieval_service):
+    def test_no_requery_when_nothing_was_denied(self, retrieval_service) -> None:
         """A shortfall of unattributed vids is a stale index, not a sizing
         problem; more results only amplify it."""
         assert not retrieval_service._should_requery(**self._args(denied=0))
 
-    def test_a_total_denial_still_requeries(self, retrieval_service):
+    def test_a_total_denial_still_requeries(self, retrieval_service) -> None:
         """Nothing granted is a denial now that the verifier raises on failure,
         and a narrow scope whose top hits are all restricted is exactly the
         case a larger fetch recovers."""
         assert retrieval_service._should_requery(**self._args(surviving=0))
 
-    def test_no_requery_past_the_attempt_cap(self, retrieval_service):
+    def test_no_requery_past_the_attempt_cap(self, retrieval_service) -> None:
         assert not retrieval_service._should_requery(
             **self._args(attempt=mod.MAX_SEARCH_ATTEMPTS - 1)
         )
@@ -514,7 +510,7 @@ class TestRequeryGuards:
             **self._args(fetch_limit=101, max_batch=101, raw=303)
         )
 
-    def test_no_requery_when_disallowed(self, retrieval_service):
+    def test_no_requery_when_disallowed(self, retrieval_service) -> None:
         assert not retrieval_service._should_requery(**self._args(allow_requery=False))
 
 
@@ -529,8 +525,8 @@ class TestRequeryBehaviour:
         # Full page both times, one survivor -> a genuine permission shortfall.
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -556,8 +552,8 @@ class TestRequeryBehaviour:
         )
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -581,8 +577,8 @@ class TestRequeryBehaviour:
         )
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -612,7 +608,7 @@ class TestDegradedVerification:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+        mock_graph_provider.check_access = AsyncMock(
             side_effect=PermissionVerificationUnavailableError("graph down")
         )
 
@@ -634,7 +630,7 @@ class TestDegradedVerification:
         )
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+        mock_graph_provider.check_access = AsyncMock(
             side_effect=PermissionVerificationUnavailableError("graph down")
         )
 
@@ -642,7 +638,7 @@ class TestDegradedVerification:
             queries=["q"], user_id="u1", org_id="o1", limit=20
         )
 
-        assert mock_graph_provider.filter_accessible_virtual_record_ids.await_count == 1
+        assert mock_graph_provider.check_access.await_count == 1
 
     @pytest.mark.asyncio
     async def test_total_denial_is_an_empty_answer_not_an_outage(
@@ -656,8 +652,8 @@ class TestDegradedVerification:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={})
         )
 
         result = await retrieval_service.search_with_filters(
@@ -675,8 +671,8 @@ class TestDegradedVerification:
         )
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={})
         )
 
         await retrieval_service.search_with_filters(
@@ -696,8 +692,8 @@ class TestDegradedVerification:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1"), _hit("v2")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v1": "r1"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -720,8 +716,8 @@ class TestResultsAreCappedAtLimit:
         )
         hits = [_hit(f"v{i}", score=1.0 - i / 100) for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(60)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(60)})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -737,8 +733,8 @@ class TestResultsAreCappedAtLimit:
     async def test_the_kept_results_are_the_highest_scoring(
         self, retrieval_service, mock_graph_provider
     ):
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(5)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(5)})
         )
         hits = [_hit(f"v{i}", score=i / 10) for i in range(5)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
@@ -762,8 +758,8 @@ class TestRetryNeverRegresses:
         retrieval_service._execute_parallel_searches = AsyncMock(
             side_effect=[good, []]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            side_effect=[{"v0": "r0"}, {}]
+        mock_graph_provider.check_access = AsyncMock(
+            side_effect=[AccessCheck(records_by_vrid={"v0": "r0"}), AccessCheck(records_by_vrid={})]
         )
 
         results, accessible, _ = await retrieval_service._search_and_adjudicate(
@@ -838,8 +834,8 @@ class TestRouting:
         )
         hits = [_hit(f"v{i}") for i in range(60)]
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -848,9 +844,9 @@ class TestRouting:
             filter_groups={"kb": ["kb-1"]},
         )
 
-        calls = mock_graph_provider.filter_accessible_virtual_record_ids.await_args_list
+        calls = mock_graph_provider.check_access.await_args_list
         assert len(calls) == 2
-        assert all(call.kwargs["scope_connector_ids"] == scope for call in calls)
+        assert all(call.kwargs["connector_ids"] == scope for call in calls)
 
     @pytest.mark.asyncio
     async def test_an_unscoped_search_does_not_scope_the_verifier(
@@ -863,8 +859,8 @@ class TestRouting:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v1": "r1"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -872,8 +868,8 @@ class TestRouting:
             queries=["q"], user_id="u1", org_id="o1"
         )
 
-        kwargs = mock_graph_provider.filter_accessible_virtual_record_ids.await_args.kwargs
-        assert kwargs["scope_connector_ids"] is None
+        kwargs = mock_graph_provider.check_access.await_args.kwargs
+        assert kwargs["connector_ids"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -1043,8 +1039,8 @@ class TestTheLegacyEnumerationIsSkipped:
         retrieval_service._execute_parallel_searches = AsyncMock(
             return_value=[_hit("v1")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v1": "r1"})
         )
         mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
 
@@ -1091,7 +1087,7 @@ class TestTheQueryPlanIsReused:
         return retrieval_service, dense
 
     @pytest.mark.asyncio
-    async def test_a_second_call_sharing_a_plan_does_not_re_embed(self, planned):
+    async def test_a_second_call_sharing_a_plan_does_not_re_embed(self, planned) -> None:
         service, dense = planned
         plan = mod._QueryPlan()
 
@@ -1106,7 +1102,7 @@ class TestTheQueryPlanIsReused:
         dense.aembed_query.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_the_reused_call_still_applies_the_new_limit(self, planned):
+    async def test_the_reused_call_still_applies_the_new_limit(self, planned) -> None:
         """The reuse branch returns early, so a limit dropped there would make
         the retry an exact repeat of the attempt that already fell short."""
         service, _ = planned
@@ -1122,7 +1118,7 @@ class TestTheQueryPlanIsReused:
         assert [c.args[2] for c in service._run_searches.await_args_list] == [10, 40]
 
     @pytest.mark.asyncio
-    async def test_without_a_plan_every_call_embeds(self, planned):
+    async def test_without_a_plan_every_call_embeds(self, planned) -> None:
         """The mocked-`_execute_parallel_searches` tests elsewhere depend on the
         plan being caller-owned and optional."""
         service, dense = planned
@@ -1131,116 +1127,6 @@ class TestTheQueryPlanIsReused:
         await service._execute_parallel_searches(["q"], None, 10, "o1", "u1")
 
         assert service.get_embedding_model_instance.await_count == 2
-
-class TestTheFeatureFlagGatesTheWholeChange:
-    """The kill switch. OFF must reproduce pre-change behaviour exactly:
-    enumerate record ids, never ask the graph for containers."""
-
-    @pytest.mark.asyncio
-    async def test_off_enumerates_record_ids_and_never_asks_for_containers(
-        self, retrieval_service, mock_graph_provider, _container_filter_on
-    ):
-        _container_filter_on.return_value = False
-        mock_graph_provider.get_accessible_containers = AsyncMock(
-            return_value=_containers(app_ids=frozenset({"a"}))
-        )
-        mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
-        )
-        retrieval_service._execute_parallel_searches = AsyncMock(
-            return_value=[_hit("v1")]
-        )
-        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
-
-        await retrieval_service.search_with_filters(
-            queries=["q"], user_id="u1", org_id="o1"
-        )
-
-        mock_graph_provider.get_accessible_virtual_record_ids.assert_awaited()
-        mock_graph_provider.get_accessible_containers.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_off_sends_the_virtual_record_id_term_the_containers_replace(
-        self, retrieval_service, mock_graph_provider, _container_filter_on
-    ):
-        _container_filter_on.return_value = False
-        mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
-        )
-        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
-
-        await retrieval_service.search_with_filters(
-            queries=["q"], user_id="u1", org_id="o1"
-        )
-
-        kwargs = retrieval_service.vector_db_service.filter_collection.await_args.kwargs
-        assert "virtualRecordId" in kwargs["must"], (
-            "OFF must still scope by record id; without this term the legacy "
-            "path would return the whole corpus"
-        )
-
-    @pytest.mark.asyncio
-    async def test_the_flag_is_read_per_search_not_cached(
-        self, retrieval_service, mock_graph_provider, _container_filter_on
-    ):
-        """An admin flipping it in Labs must take effect on the next search."""
-        mock_graph_provider.get_accessible_containers = AsyncMock(
-            return_value=_containers(app_ids=frozenset({"a"}))
-        )
-        mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
-        )
-        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
-        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
-
-        for _ in range(2):
-            await retrieval_service.search_with_filters(
-                queries=["q"], user_id="u1", org_id="o1"
-            )
-
-        assert _container_filter_on.await_count >= 2, (
-            "flag was read once and reused; a Labs toggle would need a restart"
-        )
-
-    @pytest.mark.asyncio
-    async def test_an_unreadable_setting_falls_back_to_record_ids(
-        self, retrieval_service, mock_graph_provider
-    ):
-        """Defaults off, including when the setting cannot be read.
-
-        The container path grants records in an APP_LEVEL or RECORD_GROUP_LEVEL
-        container without resolving a per-record role, so it is NOT the stricter
-        of the two and must not be where a failed read lands. A missing settings
-        blob, a non-dict featureFlags and a KV outage are indistinguishable to
-        the reader, so an operator who turned this off to stop the shortcut
-        would otherwise have it silently turned back on. Runs the real flag
-        reader over a config service that raises, so the fallback under test is
-        the shipped one and not the fixture's stand-in."""
-        from app.services.featureflag import platform_settings
-
-        retrieval_service.config_service.get_config = AsyncMock(
-            side_effect=RuntimeError("kv down")
-        )
-        mock_graph_provider.get_accessible_containers = AsyncMock(
-            return_value=_containers(app_ids=frozenset({"a"}))
-        )
-        mock_graph_provider.get_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v1": "r1"}
-        )
-        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[])
-        mock_graph_provider.get_records_by_record_ids = AsyncMock(return_value=[])
-
-        with patch(
-            "app.modules.retrieval.retrieval_service.read_platform_feature_flag",
-            platform_settings.read_platform_feature_flag,
-        ):
-            await retrieval_service.search_with_filters(
-                queries=["q"], user_id="u1", org_id="o1"
-            )
-
-        mock_graph_provider.get_accessible_virtual_record_ids.assert_awaited()
-        mock_graph_provider.get_accessible_containers.assert_not_awaited()
-
 
 class TestTheContainerPathReturnsAsMuchAsTheRecordIdPath:
     """`limit` is per-query: `_run_searches` issues one request per expanded
@@ -1255,8 +1141,8 @@ class TestTheContainerPathReturnsAsMuchAsTheRecordIdPath:
     ):
         queries = ["q1", "q2", "q3", "q4"]
         hits = [_hit(f"v{i}") for i in range(40)]
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(40)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(40)})
         )
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
 
@@ -1275,8 +1161,8 @@ class TestTheContainerPathReturnsAsMuchAsTheRecordIdPath:
         self, retrieval_service, mock_graph_provider
     ):
         hits = [_hit(f"v{i}") for i in range(300)]
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(300)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(300)})
         )
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
 
@@ -1312,8 +1198,8 @@ class TestTheRetryTargetsTheWholeFanOut:
         # the corpus-exhausted guard does not decide it instead.
         hits = [_hit(f"v{i}") for i in range(200)]
         granted = {f"v{i}": f"r{i}" for i in range(40)}
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value=granted
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid=granted)
         )
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
 
@@ -1340,8 +1226,8 @@ class TestTheRetryTargetsTheWholeFanOut:
         because 303 clears a ceiling that 101 does not."""
         queries = ["q1", "q2", "q3"]
         hits = [_hit(f"v{i}") for i in range(400)]
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(50)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(50)})
         )
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
 
@@ -1360,8 +1246,8 @@ class TestTheRetryTargetsTheWholeFanOut:
     ):
         """One query means budget == limit, so nothing about the retry moves."""
         hits = [_hit(f"v{i}") for i in range(30)]
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={f"v{i}": f"r{i}" for i in range(30)}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={f"v{i}": f"r{i}" for i in range(30)})
         )
         retrieval_service._execute_parallel_searches = AsyncMock(return_value=hits)
 

@@ -1469,24 +1469,6 @@ class TestBatchUpsertRecordPermissions:
 # get_file_permissions
 # ===================================================================
 
-class TestGetFilePermissions:
-    async def test_success(self, connected_provider):
-        edges = [{"_from": "users/u1", "_to": "records/r1", "role": "OWNER"}]
-        connected_provider.http_client.execute_aql.return_value = edges
-        result = await connected_provider.get_file_permissions("records/r1")
-        assert len(result) == 1
-
-    async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_file_permissions("records/r1")
-        assert result == []
-
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_file_permissions("records/r1")
-        assert result == []
-
-
 # ===================================================================
 # get_first_user_with_permission_to_node
 # ===================================================================
@@ -1594,37 +1576,6 @@ class TestGetRecordOwnerSourceUserEmail:
 # ===================================================================
 # get_file_parents
 # ===================================================================
-
-class TestGetFileParents:
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = [{
-            "input_file_key": "f1",
-            "found_relations": ["records/p1"],
-            "parsed_parent_keys": [{"original_id": "records/p1", "parsed_key": "p1"}],
-            "found_parent_files": [{"key": "p1", "externalRecordId": "ext-p1"}],
-        }]
-        result = await connected_provider.get_file_parents("f1")
-        assert result == ["ext-p1"]
-
-    async def test_no_parents(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = [{
-            "input_file_key": "f1",
-            "found_relations": [],
-            "parsed_parent_keys": [],
-            "found_parent_files": [],
-        }]
-        result = await connected_provider.get_file_parents("f1")
-        assert result == []
-
-    async def test_empty_file_key(self, connected_provider):
-        result = await connected_provider.get_file_parents("")
-        assert result == []
-
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_file_parents("f1")
-        assert result == []
-
 
 # ===================================================================
 # get_sync_point / upsert_sync_point / remove_sync_point
@@ -1749,6 +1700,7 @@ class TestUpsertRecordUnderParent:
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[{"_key": "e1"}])
         connected_provider.batch_upsert_records = AsyncMock()
         record = _make_mock_record("r1")
+        record.connector_id = "kb-1"
 
         await connected_provider.upsert_record_under_parent(record, "folder-2", "tx")
 
@@ -1758,8 +1710,8 @@ class TestUpsertRecordUnderParent:
         connected_provider.batch_upsert_records.assert_awaited_once_with(
             [record], "tx", release_trashed_external_ids=True
         )
-        delete, create = connected_provider.http_client.execute_aql.await_args_list
-        assert "REMOVE edge IN @@record_relations" in delete.args[0]
+        delete, create, leave_root = connected_provider.http_client.execute_aql.await_args_list
+        assert "REMOVE edge IN @@node_relations" in delete.args[0]
         assert delete.kwargs["bind_vars"]["record_id"] == "r1"
         assert delete.kwargs["txn_id"] == "tx"
         (edge,) = create.args[1]["edges"]
@@ -1767,15 +1719,25 @@ class TestUpsertRecordUnderParent:
             "records/folder-2", "records/r1", "PARENT_CHILD"
         )
         assert create.kwargs["txn_id"] == "tx"
+        # Out of the KB root: the App edge goes, or the item lists in both places.
+        (app_edge,) = leave_root.args[1]["edges"]
+        assert (app_edge["_from"], app_edge["_to"]) == ("apps/kb-1", "records/r1")
+        assert leave_root.args[1]["@collection"] == "nodeRelations"
+        assert leave_root.kwargs["txn_id"] == "tx"
 
-    async def test_to_the_root_creates_no_edge(self, connected_provider) -> None:
+    async def test_to_the_root_hangs_it_off_its_knowledge_base(self, connected_provider) -> None:
+        """At the root the hub reaches a KB item only through its App."""
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         connected_provider.batch_upsert_records = AsyncMock()
+        record = _make_mock_record("r1")
+        record.connector_id = "kb-1"
 
-        await connected_provider.upsert_record_under_parent(_make_mock_record("r1"), None, "tx")
+        await connected_provider.upsert_record_under_parent(record, None, "tx")
 
-        connected_provider.http_client.execute_aql.assert_awaited_once()
-        assert "REMOVE edge" in connected_provider.http_client.execute_aql.await_args.args[0]
+        delete, create = connected_provider.http_client.execute_aql.await_args_list
+        assert "REMOVE edge" in delete.args[0]
+        (edge,) = create.args[1]["edges"]
+        assert (edge["_from"], edge["_to"], edge["relationshipType"]) == ("apps/kb-1", "records/r1", "PARENT_CHILD")
         connected_provider.batch_upsert_records.assert_awaited_once()
 
     async def test_a_parent_that_is_gone_is_raised_before_anything_is_written(self, connected_provider) -> None:
@@ -2115,89 +2077,6 @@ class TestBatchUpsertOrgs:
 # batch_upsert_domains
 # ===================================================================
 
-@patch.object(CollectionNames, "DOMAINS", create=True, new=MagicMock(value="domains"))
-class TestBatchUpsertDomains:
-    async def test_success(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_domains([{"id": "d1"}])
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    async def test_empty_skips(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_domains([])
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    async def test_exception_raises(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
-        with pytest.raises(Exception, match="err"):
-            await connected_provider.batch_upsert_domains([{"id": "d1"}])
-
-
-# ===================================================================
-# batch_upsert_anyone
-# ===================================================================
-
-class TestBatchUpsertAnyone:
-    async def test_success(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone([{"id": "a1"}])
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    async def test_empty_skips(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone([])
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    async def test_exception_raises(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
-        with pytest.raises(Exception, match="err"):
-            await connected_provider.batch_upsert_anyone([{"id": "a1"}])
-
-
-# ===================================================================
-# batch_upsert_anyone_with_link
-# ===================================================================
-
-@patch.object(CollectionNames, "ANYONE_WITH_LINK", create=True, new=MagicMock(value="anyoneWithLink"))
-class TestBatchUpsertAnyoneWithLink:
-    async def test_success(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone_with_link([{"id": "a1"}])
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    async def test_empty_skips(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone_with_link([])
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    async def test_exception_raises(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
-        with pytest.raises(Exception, match="err"):
-            await connected_provider.batch_upsert_anyone_with_link([{"id": "a1"}])
-
-
-# ===================================================================
-# batch_upsert_anyone_same_org
-# ===================================================================
-
-@patch.object(CollectionNames, "ANYONE_SAME_ORG", create=True, new=MagicMock(value="anyoneSameOrg"))
-class TestBatchUpsertAnyoneSameOrg:
-    async def test_success(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone_same_org([{"id": "a1"}])
-        connected_provider.batch_upsert_nodes.assert_awaited_once()
-
-    async def test_empty_skips(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        await connected_provider.batch_upsert_anyone_same_org([])
-        connected_provider.batch_upsert_nodes.assert_not_awaited()
-
-    async def test_exception_raises(self, connected_provider):
-        connected_provider.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
-        with pytest.raises(Exception, match="err"):
-            await connected_provider.batch_upsert_anyone_same_org([{"id": "a1"}])
-
-
 # ===================================================================
 # batch_create_user_app_edges
 # ===================================================================
@@ -2293,118 +2172,9 @@ class TestBulkGetEntityIdsByEmail:
 # store_permission
 # ===================================================================
 
-class TestStorePermission:
-    async def test_empty_entity_key(self, connected_provider):
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="",
-            permission_data={"type": "USER", "role": "READER"},
-        )
-        assert result is False
-
-    async def test_new_permission(self, connected_provider):
-        connected_provider.get_file_permissions = AsyncMock(return_value=[])
-        connected_provider.http_client.execute_aql.return_value = []
-        connected_provider.batch_upsert_nodes = AsyncMock()
-
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="u1",
-            permission_data={"type": "USER", "role": "READER", "id": "perm1"},
-        )
-        assert result is True
-        connected_provider.batch_upsert_nodes.assert_awaited()
-
-    async def test_existing_needs_update(self, connected_provider):
-        existing = [{"_from": "users/u1", "_to": "records/r1", "_key": "e1",
-                     "role": "READER"}]
-        connected_provider.get_file_permissions = AsyncMock(return_value=existing)
-        connected_provider.http_client.execute_aql.return_value = [existing[0]]
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider._permission_needs_update = MagicMock(return_value=True)
-
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="u1",
-            permission_data={"type": "USER", "role": "WRITER", "id": "perm1"},
-        )
-        assert result is True
-
-    async def test_existing_no_update(self, connected_provider):
-        existing = [{"_from": "users/u1", "_to": "records/r1", "_key": "e1",
-                     "role": "READER"}]
-        connected_provider.get_file_permissions = AsyncMock(return_value=existing)
-        connected_provider.http_client.execute_aql.return_value = [existing[0]]
-        connected_provider.batch_upsert_nodes = AsyncMock()
-        connected_provider._permission_needs_update = MagicMock(return_value=False)
-
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="u1",
-            permission_data={"type": "USER", "role": "READER", "id": "perm1"},
-        )
-        assert result is True
-
-    async def test_domain_type_uses_orgs(self, connected_provider):
-        connected_provider.get_file_permissions = AsyncMock(return_value=[])
-        connected_provider.http_client.execute_aql.return_value = []
-        connected_provider.batch_upsert_nodes = AsyncMock()
-
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="d1",
-            permission_data={"type": "DOMAIN", "role": "READER", "id": "perm1"},
-        )
-        assert result is True
-        edge = connected_provider.batch_upsert_nodes.call_args[0][0][0]
-        assert edge["_from"].startswith("organizations/")
-
-    async def test_exception_without_txn(self, connected_provider):
-        connected_provider.get_file_permissions = AsyncMock(side_effect=Exception("err"))
-        result = await connected_provider.store_permission(
-            file_key="r1", entity_key="u1",
-            permission_data={"type": "USER", "role": "READER"},
-        )
-        assert result is False
-
-    async def test_exception_with_txn_raises(self, connected_provider):
-        connected_provider.get_file_permissions = AsyncMock(side_effect=Exception("err"))
-        with pytest.raises(Exception, match="err"):
-            await connected_provider.store_permission(
-                file_key="r1", entity_key="u1",
-                permission_data={"type": "USER", "role": "READER"},
-                transaction="txn1",
-            )
-
-
 # ===================================================================
 # _permission_needs_update
 # ===================================================================
-
-class TestPermissionNeedsUpdate:
-    def test_role_changed(self, connected_provider):
-        assert connected_provider._permission_needs_update(
-            {"role": "READER"}, {"role": "WRITER"}
-        ) is True
-
-    def test_no_change(self, connected_provider):
-        assert connected_provider._permission_needs_update(
-            {"role": "READER", "active": True},
-            {"role": "READER", "active": True},
-        ) is False
-
-    def test_active_changed(self, connected_provider):
-        assert connected_provider._permission_needs_update(
-            {"active": True}, {"active": False}
-        ) is True
-
-    def test_permission_details_changed(self, connected_provider):
-        assert connected_provider._permission_needs_update(
-            {"permissionDetails": {"level": 1}},
-            {"permissionDetails": {"level": 2}},
-        ) is True
-
-    def test_permission_details_same(self, connected_provider):
-        assert connected_provider._permission_needs_update(
-            {"permissionDetails": {"a": 1, "b": 2}},
-            {"permissionDetails": {"b": 2, "a": 1}},
-        ) is False
-
 
 # ===================================================================
 # delete_records_and_relations
@@ -2415,6 +2185,7 @@ class TestDeleteRecordsAndRelations:
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
         connected_provider.http_client.execute_aql.return_value = []
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["permission"])
         result = await connected_provider.delete_records_and_relations("r1")
         assert result is True
 
@@ -2422,6 +2193,7 @@ class TestDeleteRecordsAndRelations:
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
         connected_provider.http_client.execute_aql.return_value = []
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["permission"])
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
         )
@@ -2515,34 +2287,6 @@ class TestGetKeyByExternalMessageId:
 # ===================================================================
 # get_related_records_by_relation_type
 # ===================================================================
-
-class TestGetRelatedRecordsByRelationType:
-    async def test_success(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = [
-            {"_key": "r2", "messageId": "msg1", "relationshipType": "REPLY"}
-        ]
-        result = await connected_provider.get_related_records_by_relation_type(
-            record_id="r1", relation_type="REPLY",
-            edge_collection="recordRelations",
-        )
-        assert len(result) == 1
-
-    async def test_empty(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        result = await connected_provider.get_related_records_by_relation_type(
-            record_id="r1", relation_type="REPLY",
-            edge_collection="recordRelations",
-        )
-        assert result == []
-
-    async def test_exception(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.get_related_records_by_relation_type(
-            record_id="r1", relation_type="REPLY",
-            edge_collection="recordRelations",
-        )
-        assert result == []
-
 
 # ===================================================================
 # get_message_id_header_by_key
@@ -2872,32 +2616,6 @@ class TestMigrateAgentHubKnowledge:
 # ===================================================================
 # process_file_permissions
 # ===================================================================
-
-class TestProcessFilePermissions:
-    async def test_empty_permissions(self, connected_provider):
-        connected_provider.http_client.execute_aql.return_value = []
-        connected_provider.get_file_permissions = AsyncMock(return_value=[])
-        result = await connected_provider.process_file_permissions(
-            org_id="org1", file_key="r1", permissions_data=[],
-        )
-        assert result is True
-
-    async def test_exception_without_txn(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        result = await connected_provider.process_file_permissions(
-            org_id="org1", file_key="r1", permissions_data=[{"id": "p1"}],
-        )
-        assert result is False
-
-    async def test_exception_with_txn_raises(self, connected_provider):
-        connected_provider.http_client.execute_aql.side_effect = Exception("err")
-        with pytest.raises(Exception):
-            await connected_provider.process_file_permissions(
-                org_id="org1", file_key="r1",
-                permissions_data=[{"id": "p1"}],
-                transaction="txn1",
-            )
-
 
 # ===================================================================
 # delete_google_drive_record
@@ -4025,10 +3743,15 @@ class TestGetUserKbPermission:
         result = await connected_provider.get_user_kb_permission("kb1", "u1")
         assert result is None
 
-    async def test_a_failed_read_raises(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
+        """A caller must answer 500 during an outage, not a misleading 403."""
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         with pytest.raises(Exception, match="fail"):
             await connected_provider.get_user_kb_permission("kb1", "u1")
+
+    async def test_a_retired_role_reads_as_reader(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = ["FILEORGANIZER"]
+        assert await connected_provider.get_user_kb_permission("kb1", "u1") == "READER"
 
     async def test_correct_bind_vars(self, connected_provider):
         connected_provider.http_client.execute_aql.return_value = []
@@ -4093,15 +3816,10 @@ class TestListUserKnowledgeBases:
         )
         assert kbs == []
 
-    async def test_exception_returns_empty(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        kbs, total, filters = await connected_provider.list_user_knowledge_bases(
-            user_id="u1", org_id="org1", skip=0, limit=10
-        )
-        assert kbs == []
-        assert total == 0
-        assert filters["permissions"] == []
-        assert "sortFields" in filters
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_user_knowledge_bases(user_id="u1", org_id="org1", skip=0, limit=10)
 
     async def test_sort_by_options(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=[
@@ -4213,7 +3931,7 @@ class TestDeleteRecordsRecursive:
         connected_provider._delete_isoftype_targets_from_collected = AsyncMock(
             return_value=(1, [])
         )
-        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider._remove_records_or_raise = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         connected_provider._create_deleted_record_event_payload = AsyncMock(
             return_value={"virtualRecordId": "vr1"}
@@ -4284,7 +4002,7 @@ class TestDeleteRecordsRecursive:
             }],
         }])
         connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(0, []))
-        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider._remove_records_or_raise = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_records_recursive(["r1"], "c1")
         assert result["success"] is True
@@ -4313,20 +4031,45 @@ class TestDeleteRecordsRecursive:
 
         rereads: list[int] = []
 
-        connected_provider._get_all_edge_collections = AsyncMock(return_value=["recordRelations"])
+        connected_provider._get_all_edge_collections = AsyncMock(return_value=["nodeRelations"])
         connected_provider.execute_query = AsyncMock(side_effect=execute_query)
         connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(0, []))
-        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(2, 0))
+        connected_provider._remove_records_or_raise = AsyncMock()
 
     async def test_folder_scoped_delete_stops_when_a_record_was_moved_in(self, connected_provider) -> None:
+        """The caller owns the transaction, so it gets the exception and rolls back."""
         self._folder_scoped(connected_provider, ["sub", "s1", "moved_in"])
-        result = await connected_provider.delete_records_recursive(
-            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
-        )
-        assert result["success"] is False
+        with pytest.raises(FolderChangedDuringDelete, match="moved into this folder"):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
+        connected_provider._delete_edges_by_node_ids.assert_not_called()
+        connected_provider._remove_records_or_raise.assert_not_called()
+
+    async def test_folder_scoped_delete_in_its_own_transaction_reports_the_move(self, connected_provider) -> None:
+        self._folder_scoped(connected_provider, ["sub", "s1", "moved_in"])
+        connected_provider.begin_transaction = AsyncMock(return_value="own_txn")
+        connected_provider.rollback_transaction = AsyncMock()
+        result = await connected_provider.delete_records_recursive(["sub"], "c1", within_folder_id="folder_a")
+        assert result["success"] is False and result["code"] == 409
         assert "moved into this folder" in result["reason"]
         connected_provider._delete_edges_by_node_ids.assert_not_called()
-        connected_provider._delete_nodes_by_keys.assert_not_called()
+        connected_provider._remove_records_or_raise.assert_not_called()
+
+    async def test_the_moved_in_check_walks_the_same_tree_as_the_inventory(self, connected_provider) -> None:
+        """Both walks stay on containment edges inside the connector, in nodeRelations."""
+        self._folder_scoped(connected_provider, ["sub", "s1"])
+        await connected_provider.delete_records_recursive(
+            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+        )
+        calls = connected_provider.execute_query.call_args_list
+        inventory = next(c for c in calls if "valid_root" in c.args[0])
+        rereads = [c for c in calls if "valid_root" not in c.args[0] and "deleteGuard" not in c.args[0]]
+        assert len(rereads) == 2
+        for call in (inventory, *rereads):
+            assert call.kwargs["bind_vars"]["@node_relations"] == "nodeRelations"
+            assert call.kwargs["bind_vars"]["connector_id"] == "c1"
+            assert "v.connectorId != @connector_id" in call.args[0]
 
     async def test_folder_scoped_delete_proceeds_when_the_tree_is_unchanged(self, connected_provider) -> None:
         self._folder_scoped(connected_provider, ["sub", "s1"])
@@ -4335,7 +4078,7 @@ class TestDeleteRecordsRecursive:
         )
         assert result["success"] is True
         assert {r["record_id"] for r in result["deleted_records"]} == {"sub", "s1"}
-        connected_provider._delete_nodes_by_keys.assert_called_once()
+        connected_provider._remove_records_or_raise.assert_called_once()
 
     async def test_a_move_committed_during_the_deletes_rolls_back_the_callers_transaction(
         self, connected_provider
@@ -4345,7 +4088,7 @@ class TestDeleteRecordsRecursive:
             await connected_provider.delete_records_recursive(
                 ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
             )
-        connected_provider._delete_nodes_by_keys.assert_called_once()
+        connected_provider._remove_records_or_raise.assert_called_once()
 
     async def test_a_move_committed_during_the_deletes_rolls_back_its_own_transaction(
         self, connected_provider
@@ -4363,7 +4106,7 @@ class TestDeleteRecordsRecursive:
 
     async def test_a_failure_after_writing_reaches_the_callers_transaction(self, connected_provider) -> None:
         self._folder_scoped(connected_provider, ["sub", "s1"])
-        connected_provider._delete_nodes_by_keys = AsyncMock(side_effect=RuntimeError("node delete failed"))
+        connected_provider._remove_records_or_raise = AsyncMock(side_effect=RuntimeError("node delete failed"))
         with pytest.raises(RuntimeError, match="node delete failed"):
             await connected_provider.delete_records_recursive(
                 ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
@@ -4371,11 +4114,11 @@ class TestDeleteRecordsRecursive:
 
     async def test_folder_scoped_delete_fails_when_the_recheck_cannot_read(self, connected_provider) -> None:
         self._folder_scoped(connected_provider, None)
-        result = await connected_provider.delete_records_recursive(
-            ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
-        )
-        assert result["success"] is False
-        connected_provider._delete_nodes_by_keys.assert_not_called()
+        with pytest.raises(RuntimeError, match="Could not re-read the folder"):
+            await connected_provider.delete_records_recursive(
+                ["sub"], "c1", transaction="ext_txn", within_folder_id="folder_a"
+            )
+        connected_provider._remove_records_or_raise.assert_not_called()
 
 
 # ===================================================================
@@ -4410,7 +4153,7 @@ class TestDeleteSingleRecord:
         connected_provider._delete_isoftype_targets_from_collected = AsyncMock(
             return_value=(1, [])
         )
-        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider._remove_records_or_raise = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_single_record("r1")
         assert result["success"] is True
@@ -4441,7 +4184,7 @@ class TestDeleteSingleRecord:
             }],
         }])
         connected_provider._delete_edges_by_node_ids = AsyncMock(return_value=(0, []))
-        connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider._remove_records_or_raise = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_single_record(
             "r1", transaction="ext_txn"

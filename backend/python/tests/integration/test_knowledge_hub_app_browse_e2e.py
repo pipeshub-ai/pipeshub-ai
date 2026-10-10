@@ -3,22 +3,25 @@
 Browse walks down from the app one level at a time, so a record or nested group
 shared with an external collaborator (``userAppRelation.isExternalUser``, #3115)
 whose container they cannot see would be unreachable. App browse hoists exactly
-those to the app level: a node is hoisted when the user has a role on it and on
-none of its immediate parents.
+those to the app level: a node the user holds a grant on, with no parent and no
+record group of its own that they can open.
 
 One seeded Drive app, browsed by three users:
 
 * the external collaborator, who sees the one top-level group shared with them
   plus every orphan: a record and a folder in a hidden group, a record shared
-  through a user group whose folder is hidden, and a nested group under a
-  hidden group. Not hoisted: a record whose folder they can see, a nested group
-  whose parent they can see, a record with no container, a deleted record.
-* a colleague with the same grants but no external flag, who gets no hoisting.
+  through a user group whose folder is hidden, a nested group under a hidden
+  group, and a record with no container at all. Not hoisted: a record whose
+  folder they can see, a nested group whose parent they can see, a record in a
+  group they can see, a deleted record.
+* a colleague with the same direct grants but no external flag, who is hoisted
+  the same nodes: placement follows the grants, not the flag.
 * the owner, who sees both top-level groups.
 
-Both backends must return the same nodes with the same type, role and children
-flag. On Arango the test also asks the optimizer for the query's plan: nesting
-the permission lookups once made planning alone need more than 1 GB.
+Both backends must return the same nodes with the same type and children flag
+(a connector's items carry no role). On Arango the test also asks the optimizer
+for the plan of every statement the browse sends: nesting the permission lookups
+once made planning alone need more than 1 GB.
 
 Runs on Neo4j and ArangoDB (backend-matrix). Environment: NEO4J_IT_URI,
 NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -40,6 +43,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
 from app.models.entities import FileRecord, RecordType
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -53,6 +57,7 @@ from tests.integration.real_graph import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from app.connectors.sources.localKB.api.knowledge_hub_models import KnowledgeHubNodesResponse
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(300)]
@@ -75,18 +80,20 @@ DIRECT_GRANTS = (
     "shared_folder", "in_shared_folder", "in_shared_top", "parentless", "deleted",
 )
 
-# (nodeType, userRole, hasChildren) by name.
+# (nodeType, hasChildren) by name.
 EXTERNAL_SEES = {
-    "shared_top": ("recordGroup", "READER", True),
-    "nested_orphan": ("recordGroup", "READER", False),
-    "orphan_direct": ("record", "READER", False),
-    "in_hidden_folder": ("record", "READER", False),
-    "shared_folder": ("folder", "READER", True),
+    "shared_top": ("recordGroup", True),
+    "nested_orphan": ("recordGroup", False),
+    "orphan_direct": ("record", False),
+    "in_hidden_folder": ("record", False),
+    "shared_folder": ("folder", True),
+    "parentless": ("record", False),
 }
-GUEST_SEES = {"shared_top": ("recordGroup", "READER", True)}
+# The same direct grants; in_hidden_folder reaches the external collaborator through a user group.
+GUEST_SEES = {name: seen for name, seen in EXTERNAL_SEES.items() if name != "in_hidden_folder"}
 OWNER_SEES = {
-    "hidden_top": ("recordGroup", "OWNER", True),
-    "shared_top": ("recordGroup", "OWNER", True),
+    "hidden_top": ("recordGroup", True),
+    "shared_top": ("recordGroup", True),
 }
 
 
@@ -127,7 +134,7 @@ async def _remove(w: _World) -> None:
         CollectionNames.BELONGS_TO.value,
         CollectionNames.IS_OF_TYPE.value,
         CollectionNames.USER_APP_RELATION.value,
-        CollectionNames.RECORD_RELATIONS.value,
+        CollectionNames.NODE_RELATIONS.value,
     ):
         await w.graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -176,7 +183,7 @@ async def _seed(w: _World) -> None:
     )
     assert await g.batch_upsert_nodes(
         [{"id": w.app_id, "name": "Google Drive", "type": Connectors.GOOGLE_DRIVE.value,
-          "appGroup": "Google Workspace", "scope": "team", "isActive": True, **stamps}],
+          "appGroup": "Google Workspace", "scope": "team", "isActive": True, "orgId": w.org_id, **stamps}],
         collection=CollectionNames.APPS.value,
     )
     assert await g.batch_upsert_nodes(
@@ -213,10 +220,22 @@ async def _seed(w: _World) -> None:
         edge(w.ids["in_shared_top"], rec, w.ids["shared_top"], rg),
     ]
     assert await g.batch_create_edges(belongs, collection=CollectionNames.BELONGS_TO.value)
+    # The hierarchy browse walks: groups off the App or their parent group, a record
+    # off its folder, else off its group. ``parentless`` hangs off nothing.
+    in_folder = {"in_hidden_folder": "hidden_folder", "in_shared_folder": "shared_folder"}
+    hierarchy = [
+        edge(w.app_id, CollectionNames.APPS.value, w.ids["hidden_top"], rg),
+        edge(w.app_id, CollectionNames.APPS.value, w.ids["shared_top"], rg),
+        edge(w.ids["hidden_top"], rg, w.ids["nested_orphan"], rg),
+        edge(w.ids["shared_top"], rg, w.ids["nested_visible"], rg),
+        *(edge(w.ids[folder], rec, w.ids[name], rec) for name, folder in in_folder.items()),
+        *(edge(w.ids["hidden_top"], rg, w.ids[name], rec)
+          for name in ("orphan_direct", "hidden_folder", "shared_folder", "deleted")),
+        edge(w.ids["shared_top"], rg, w.ids["in_shared_top"], rec),
+    ]
     assert await g.batch_create_edges(
-        [edge(w.ids[parent], rec, w.ids[child], rec, relationshipType="PARENT_CHILD")
-         for parent, child in (("hidden_folder", "in_hidden_folder"), ("shared_folder", "in_shared_folder"))],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        [{**e, "relationshipType": "PARENT_CHILD"} for e in hierarchy],
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
 
     grants = [
@@ -263,18 +282,25 @@ async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch)
         yield w
 
 
-async def _browse(w: _World, user: str) -> dict[str, tuple]:
-    got = await w.graph.get_knowledge_hub_children(
-        w.app_id, "app", w.org_id, w.ids[user], 0, 100, "name", "ASC",
+async def _listing(w: _World, user: str, **paging: object) -> KnowledgeHubNodesResponse:
+    listing = await KnowledgeHubService(logger, w.graph).get_nodes(
+        user_id=f"uid-{w.ids[user]}", org_id=w.org_id, parent_id=w.app_id, parent_type="app",
+        sort_by="name", sort_order="asc", **{"limit": 100, **paging},
     )
+    assert listing.success, listing.error
+    return listing
+
+
+async def _browse(w: _World, user: str) -> dict[str, tuple]:
+    listing = await _listing(w, user)
     names = {v: k for k, v in w.ids.items()}
-    nodes = got["nodes"]
-    assert got["total"] == len(nodes), got
+    nodes = listing.items
+    assert listing.pagination.totalItems == len(nodes), listing
     for node in nodes:
-        assert node["parentId"] == f"apps/{w.app_id}", node
-        assert node["origin"] == "CONNECTOR", node
-    assert len({n["id"] for n in nodes}) == len(nodes), f"a node is listed twice: {nodes}"
-    return {names.get(n["id"], n["id"]): (n["nodeType"], n["userRole"], n["hasChildren"]) for n in nodes}
+        assert node.parent is not None and (node.parent.id, node.parent.nodeType) == (w.app_id, "app"), node
+        assert node.origin == "CONNECTOR", node
+    assert len({n.id for n in nodes}) == len(nodes), f"a node is listed twice: {nodes}"
+    return {names.get(n.id, n.id): (n.nodeType, n.hasChildren) for n in nodes}
 
 
 @pytest.mark.parametrize(("user", "expected"), [
@@ -282,26 +308,21 @@ async def _browse(w: _World, user: str) -> dict[str, tuple]:
     ("guest", GUEST_SEES),
     ("owner", OWNER_SEES),
 ])
-async def test_app_browse_hoists_only_what_an_external_collaborator_cannot_reach(
+async def test_app_browse_hoists_only_what_the_user_cannot_reach_through_a_parent(
     world: _World, user: str, expected: dict[str, tuple],
 ) -> None:
     assert await _browse(world, user) == expected
 
 
 async def test_app_browse_pages_and_counts_the_hoisted_nodes(world: _World) -> None:
-    first = await world.graph.get_knowledge_hub_children(
-        world.app_id, "app", world.org_id, world.ids["external"], 0, 2, "name", "ASC",
-    )
-    rest = await world.graph.get_knowledge_hub_children(
-        world.app_id, "app", world.org_id, world.ids["external"], 2, 100, "name", "ASC",
-    )
-    assert first["total"] == rest["total"] == len(EXTERNAL_SEES)
-    names = [n["name"] for n in first["nodes"] + rest["nodes"]]
+    pages = [await _listing(world, "external", limit=2, page=page) for page in (1, 2, 3)]
+    assert {page.pagination.totalItems for page in pages} == {len(EXTERNAL_SEES)}
+    names = [node.name for page in pages for node in page.items]
     assert names == sorted(EXTERNAL_SEES), names
 
 
 async def test_app_browse_plans_in_bounded_memory(world: _World) -> None:
-    """Arango: one plan, small planner footprint. Neo4j: the browse simply answers."""
+    """Arango: every statement plans in a small footprint. Neo4j: the browse simply answers."""
     graph = world.graph
     if not isinstance(graph, ArangoHTTPProvider):
         assert await _browse(world, "external") == EXTERNAL_SEES
@@ -320,21 +341,20 @@ async def test_app_browse_plans_in_bounded_memory(world: _World) -> None:
         assert await _browse(world, "external") == EXTERNAL_SEES
     finally:
         client.execute_aql = execute
-    assert len(sent) == 1, sent
+    assert sent, "the browse sent no statement"
 
     session = await client._get_session()
-    async with session.post(
-        f"{client.base_url}/_db/{client.database}/_api/explain",
-        json={"query": sent[0]["query"], "bindVars": sent[0]["bindVars"], "options": sent[0]["options"]},
-    ) as resp:
-        assert resp.status == 200, await resp.text()
-        stats = (await resp.json())["stats"]
-    assert stats["plansCreated"] == 1, stats
-    assert stats["peakMemoryUsage"] < 64 * 1024 * 1024, stats
+    for statement in sent:
+        async with session.post(
+            f"{client.base_url}/_db/{client.database}/_api/explain",
+            json={"query": statement["query"], "bindVars": statement["bindVars"], "options": statement["options"]},
+        ) as resp:
+            assert resp.status == 200, await resp.text()
+            stats = (await resp.json())["stats"]
+        assert stats["plansCreated"] == 1, (stats, statement["query"])
+        assert stats["peakMemoryUsage"] < 64 * 1024 * 1024, (stats, statement["query"])
 
 
-
-@pytest.mark.parametrize("world", ["arango"], indirect=True)
 async def test_app_browse_takes_a_hoisted_files_size_from_its_file_node(world: _World) -> None:
     """Older file docs carry ``sizeInBytes`` (deprecated there now); a record without its own size falls back to it."""
     await world.graph.update_node(
@@ -343,8 +363,5 @@ async def test_app_browse_takes_a_hoisted_files_size_from_its_file_node(world: _
     await world.graph.update_node(
         world.ids["orphan_direct"], CollectionNames.FILES.value, {"sizeInBytes": 4096},
     )
-    got = await world.graph.get_knowledge_hub_children(
-        world.app_id, "app", world.org_id, world.ids["external"], 0, 100, "name", "ASC",
-    )
-    sizes = {n["id"]: n.get("sizeInBytes") for n in got["nodes"]}
-    assert sizes[world.ids["orphan_direct"]] == 4096, got["nodes"]
+    sizes = {node.id: node.sizeInBytes for node in (await _listing(world, "external")).items}
+    assert sizes[world.ids["orphan_direct"]] == 4096, sizes

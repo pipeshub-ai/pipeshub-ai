@@ -681,6 +681,11 @@ async def _resolve_input_artifacts(
     When `inmemory_store` is provided, refs are tried there FIRST (fast,
     in-process lookup for context-compacted tool results like ``artifact_4``)
     before falling back to ``ArtifactRegistryService`` (blob-backed)."""
+    from app.agents.actions.knowledge_graph.ops.scope import (
+        ARTIFACT_OF_ANOTHER_CONVERSATION,
+        artifact_within_turn,
+    )
+
     actor = Actor(org_id=context.org_id, user_id=context.user_id)
     files: dict[str, bytes] = {}
     resolved: list[dict[str, Any]] = []
@@ -740,6 +745,13 @@ async def _resolve_input_artifacts(
             metadata: ArtifactMetadata = await registry.resolve(
                 actor=actor, ref=ref, conversation_id=context.conversation_id,
             )
+            if not artifact_within_turn(getattr(context, "tool_state", None) or {}, metadata.conversation_id):
+                logger.warning(
+                    "_resolve_input_artifacts: ref %r is an artifact of another conversation "
+                    "on a limited turn", ref,
+                )
+                missing.append(f"{ref} ({ARTIFACT_OF_ANOTHER_CONVERSATION})")
+                continue
             content = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
         except (ArtifactNotFoundError, AccessDeniedError) as exc:
             logger.warning(

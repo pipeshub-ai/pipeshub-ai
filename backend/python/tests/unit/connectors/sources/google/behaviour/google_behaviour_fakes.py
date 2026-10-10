@@ -316,6 +316,11 @@ class FakeEntitiesProcessor:
     def by_id(self, record_id: str) -> Optional[Record]:
         return next((r for r in self.records.values() if r.id == record_id), None)
 
+    async def inheritance_when_unreadable(self, collection: str, stored_id: Optional[str]) -> bool:
+        """Whether the stored record inherits. The fake keeps that as the flag it was saved with."""
+        stored = self.by_id(stored_id) if stored_id else None
+        return bool(stored is not None and stored.inherit_permissions)
+
     def perm_emails(self, external_id: str) -> set[str]:
         return {p.email for p in self.permissions.get(external_id, []) if p.email}
 
@@ -423,7 +428,13 @@ class FakeEntitiesProcessor:
         return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         for record, _ in records_with_permissions:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])
@@ -490,9 +501,13 @@ class FakeEntitiesProcessor:
             self.permissions.pop(record.external_record_id, None)
         self.deleted.append(record_id)
 
-    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str) -> dict[str, Any]:
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, *, include_trashed_roots: bool = False
+    ) -> dict[str, Any]:
+        """Like the real processor, a root in the trash is left alone unless ``include_trashed_roots``."""
         deleted: list[str] = []
-        pending = list(record_ids)
+        roots = [self.by_id(record_id) for record_id in record_ids]
+        pending = [r.id for r in roots if r is not None and (include_trashed_roots or is_live_record(r))]
         while pending:
             record = self.by_id(pending.pop())
             if record is None:
@@ -558,7 +573,7 @@ class FakeSyncPointStore:
         return matches[0] if matches else None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeSyncPointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:
         yield self
 
 

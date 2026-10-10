@@ -19,6 +19,7 @@ from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
+from app.services.graph_db.common.sync_sweep import full_sync_running
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -130,6 +131,10 @@ async def _finalize(
     connector: "BaseConnector | None" = None,
     resync_spec: object | None = None,
     org_id: str | None = None,
+    *,
+    scope_generation: int | None = None,
+    stamp_scopes: bool = False,
+    unswept_generation: int | None = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -145,6 +150,8 @@ async def _finalize(
     its status; the CAS release is still safe (it no-ops) and keeps bookkeeping
     tidy.
     """
+    if unswept_generation is not None:
+        await _clear_sync_edge_tags(graph_provider, logger, connector_id, unswept_generation)
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it
@@ -199,6 +206,35 @@ async def _finalize(
     # boot resumes every connector anyway.
     if resync_spec is not None and getattr(coordinator, "shutting_down", False) is not True:
         await _reissue_pending_resync(graph_provider, logger, connector_id, resync_spec)
+
+    # Last: a stamp of a large connector takes minutes, and nothing above may wait for it.
+    await _kh_scope_end(graph_provider, logger, connector_id, scope_generation, stamp=stamp_scopes)
+
+
+async def _kh_scope_begin(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
+) -> int | None:
+    """Mark the connector's knowledge hub scopes stale before a sync writes; the generation this run owns."""
+    try:
+        return await graph_provider.kh_scope_mark_stale(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+        return None
+
+
+async def _kh_scope_end(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str,
+    generation: int | None, *, stamp: bool,
+) -> None:
+    """End this run's mark and, when the scope listing is enabled, re-stamp from what it left."""
+    if generation is None:
+        return
+    try:
+        await graph_provider.kh_scope_sync_ended(connector_id, generation)
+        if stamp and await graph_provider.kh_scope_enabled():
+            await graph_provider.kh_scope_stamp(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -476,6 +512,58 @@ async def _reissue_pending_resync(
         logger.error(f"Could not re-issue pending resync for {connector_id}: {e}")
 
 
+async def _sweep_stale_sync_edges(
+    connector: "BaseConnector",
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    generation: int,
+    lease: SyncLease | None,
+) -> bool:
+    """Delete the edges a finished full sync did not write again; whether it did."""
+    if lease is not None and lease.stop_requested.is_set():
+        logger.info(f"Full sync of {connector_id} was stopped; its stored edges stay")
+        return False
+    kept = getattr(connector, "stored_access_kept", None)
+    if kept:
+        logger.warning(
+            f"Full sync of {connector_id} kept stored access ({kept}); edges it did not "
+            "rewrite stay until a full sync that reads everything"
+        )
+        return False
+    gates_kept = getattr(connector, "stored_gates_kept", None)
+    keep = {"keep_collections": (CollectionNames.USER_APP_RELATION.value,)} if gates_kept else {}
+    if gates_kept:
+        logger.warning(f"Full sync of {connector_id} keeps its stored user gates ({gates_kept})")
+    try:
+        swept, success = await graph_provider.sweep_connector_sync_edges(connector_id, generation, **keep)
+    except Exception as e:
+        logger.error(f"❌ Sweeping stale sync edges of {connector_id} failed; they stay: {e}")
+        return False
+    if success:
+        logger.info(f"Swept {swept} sync edges of {connector_id} that the full sync no longer produced")
+    else:
+        logger.warning(f"Stale sync edges of {connector_id} were not swept; they stay until the next full sync")
+    # Kept gates still carry the tag, which the finalizer clears.
+    return success and not gates_kept
+
+
+async def _clear_sync_edge_tags(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str, generation: int,
+) -> None:
+    """A full sync that did not sweep leaves its edges as stored, untagged."""
+    try:
+        cleared, success = await graph_provider.clear_connector_sync_edge_tags(connector_id, generation)
+    except Exception as e:
+        cleared, success = 0, False
+        logger.error(f"❌ Clearing the sweep tags of {connector_id} failed: {e}")
+    if success:
+        logger.info(f"Cleared the sweep tag from {cleared} sync edges of {connector_id}")
+    else:
+        # Harmless: only a running sync's tag reads as absent, and the next full sync re-tags.
+        logger.warning(f"Sweep tags of {connector_id} stay until its next full sync")
+
+
 async def run_sync_task(
     connector: "BaseConnector",
     connector_id: str,
@@ -483,6 +571,7 @@ async def run_sync_task(
     logger: logging.Logger,
     *,
     start_status: str = AppStatus.SYNCING.value,
+    sweep_generation: int | None = None,
     lease: SyncLease | None = None,
     coordinator: SyncCoordinator | None = None,
     close_connector: bool = False,
@@ -491,7 +580,9 @@ async def run_sync_task(
     start = time.monotonic()
     stopped = False
     failed = False
+    swept = False
     skipped_code: str | None = None
+    scope_generation = await _kh_scope_begin(graph_provider, logger, connector_id)
     try:
         await write_app_status(graph_provider, logger, connector_id, start_status)
         # A resync asked for before this run began is served by it. Left set, the
@@ -515,10 +606,18 @@ async def run_sync_task(
                 )
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
-        if lease is None:
-            await connector.run_sync()
-        else:
-            await _run_until_aborted(connector, lease)
+        if sweep_generation is not None:
+            connector.stored_access_kept = None
+            connector.stored_gates_kept = None
+        with full_sync_running(sweep_generation):
+            if lease is None:
+                await connector.run_sync()
+            else:
+                await _run_until_aborted(connector, lease)
+        if sweep_generation is not None:
+            swept = await _sweep_stale_sync_edges(
+                connector, connector_id, graph_provider, logger, sweep_generation, lease
+            )
     except asyncio.CancelledError:
         stopped = True
         raise
@@ -569,6 +668,11 @@ async def run_sync_task(
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
+                scope_generation=scope_generation,
+                # A stopped sync is being replaced, or its connector disabled: it ends
+                # only its own mark, and the replacement or the scope keeper stamps.
+                stamp_scopes=not stopped,
+                unswept_generation=sweep_generation if not swept else None,
             ),
             name=f"sync_cleanup_{connector_id}",
         )

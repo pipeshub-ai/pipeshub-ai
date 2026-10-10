@@ -23,7 +23,9 @@ import {
   selectMcpEnabled,
   selectActionsEnabled,
 } from '@/lib/store/feature-flags-store';
-import { CollectionRow } from './connectors-collections/collection-row';
+import { KnowledgeTreeRoot } from './connectors-collections/knowledge-tree';
+import { hasAnyFilter, sameSelection } from '@/chat/utils/tree-selection';
+import type { ChatKnowledgeFilters } from '@/chat/types';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -220,7 +222,6 @@ function useScopedResourceSource(scope: ScopedResourcesSource) {
   const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
   const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const agentKbIds = useChatStore((s) => s.agentChatKbIds);
   const scopedCaps = useChatStore((s) =>
     agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
   );
@@ -250,11 +251,11 @@ function useScopedResourceSource(scope: ScopedResourcesSource) {
       setKnowledgeScope: setProjectKnowledgeScope,
       setTools: setProjectStreamTools,
       getToolCatalog: getProjectToolCatalog,
-      internalSearchEnabled: defaults.apps.length > 0 || defaults.kb.length > 0,
+      internalSearchEnabled: hasAnyFilter(defaults),
     };
   }
 
-  const agentHasInternalSearch = agentConnectors.length > 0 || agentKbIds.length > 0;
+  const agentHasInternalSearch = hasAnyFilter(agentDefaults);
   return {
     connectors: agentConnectors,
     collectionRows: agentCollectionRows,
@@ -279,9 +280,9 @@ function setsEqualAsSets(a: string[], b: string[]): boolean {
 }
 
 function effectiveKnowledge(
-  scope: { apps: string[]; kb: string[] } | null,
-  defaults: { apps: string[]; kb: string[] }
-): { apps: string[]; kb: string[] } {
+  scope: ChatKnowledgeFilters | null,
+  defaults: ChatKnowledgeFilters
+): ChatKnowledgeFilters {
   return scope ?? defaults;
 }
 
@@ -410,42 +411,14 @@ export function AgentScopedResourcesPanel({
    * Omit when the agent never had knowledge (tools-only / retrieval-less agents).
    */
   const showKnowledgeClearedWarning = useMemo(
-    () =>
-      eff.apps.length === 0 &&
-      eff.kb.length === 0 &&
-      (defaults.apps.length > 0 || defaults.kb.length > 0),
-    [eff.apps, eff.kb, defaults.apps, defaults.kb]
+    () => !hasAnyFilter(eff) && hasAnyFilter(defaults),
+    [eff, defaults]
   );
 
-  const tryNormalizeKnowledgeScope = useCallback(
-    (apps: string[], kb: string[]) => {
-      if (setsEqualAsSets(apps, defaults.apps) && setsEqualAsSets(kb, defaults.kb)) {
-        setScope(null);
-      } else {
-        setScope({ apps, kb });
-      }
-    },
-    [defaults.apps, defaults.kb, setScope]
-  );
-
-  const toggleConnector = useCallback(
-    (id: string) => {
-      const nextApps = eff.apps.includes(id)
-        ? eff.apps.filter((x) => x !== id)
-        : [...eff.apps, id];
-      tryNormalizeKnowledgeScope(nextApps, eff.kb);
-    },
-    [eff.apps, eff.kb, tryNormalizeKnowledgeScope]
-  );
-
-  const toggleKb = useCallback(
-    (id: string) => {
-      const nextKb = eff.kb.includes(id)
-        ? eff.kb.filter((x) => x !== id)
-        : [...eff.kb, id];
-      tryNormalizeKnowledgeScope(eff.apps, nextKb);
-    },
-    [eff.apps, eff.kb, tryNormalizeKnowledgeScope]
+  /** A selection equal to the defaults is stored as "nothing narrowed". */
+  const selectKnowledge = useCallback(
+    (next: ChatKnowledgeFilters) => setScope(sameSelection(next, defaults) ? null : next),
+    [defaults, setScope]
   );
 
   const isToolOn = useCallback(
@@ -897,36 +870,19 @@ export function AgentScopedResourcesPanel({
               </Text>
             ) : (
               filteredConnectors.map((c) => (
-                <Flex
+                <KnowledgeTreeRoot
                   key={c.id}
-                  align="center"
-                  justify="between"
-                  gap="2"
-                  onClick={() => toggleConnector(c.id)}
-                  style={{
-                    ...OLIVE_ROW,
-                    padding: 'var(--space-2) var(--space-3)',
-                    cursor: 'pointer',
+                  node={{
+                    id: c.id,
+                    name: c.label,
+                    nodeType: c.nodeType ?? 'app',
+                    connector: connectorIconHint(c),
+                    hasChildren: true,
+                    ancestorIds: [],
                   }}
-                >
-                  <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                    <span style={CHECKBOX_ALIGN}>
-                      <Checkbox
-                        size="1"
-                        checked={eff.apps.includes(c.id)}
-                        onCheckedChange={() => toggleConnector(c.id)}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </span>
-                    <ConnectorIcon
-                      type={resolveConnectorType(connectorIconHint(c))}
-                      size={20}
-                    />
-                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                      {c.label}
-                    </Text>
-                  </Flex>
-                </Flex>
+                  filters={eff}
+                  onSelectionChange={selectKnowledge}
+                />
               ))
             )}
           </>
@@ -946,13 +902,20 @@ export function AgentScopedResourcesPanel({
               </Text>
             ) : (
               filteredCollections.map((row) => (
-                <CollectionRow
+                <KnowledgeTreeRoot
                   key={row.id}
-                  id={row.id}
-                  name={row.name}
-                  sourceType={row.sourceType}
-                  isSelected={eff.kb.includes(row.id)}
-                  onToggle={toggleKb}
+                  node={{
+                    id: row.id,
+                    name: row.name,
+                    nodeType: row.nodeType ?? 'app',
+                    connector: row.sourceType ?? 'KB',
+                    hasChildren: true,
+                    ancestorIds: [],
+                    // A whole collection is kept apart from the apps here.
+                    ...(row.nodeType ? {} : { bucket: 'kb' as const }),
+                  }}
+                  filters={eff}
+                  onSelectionChange={selectKnowledge}
                 />
               ))
             )}

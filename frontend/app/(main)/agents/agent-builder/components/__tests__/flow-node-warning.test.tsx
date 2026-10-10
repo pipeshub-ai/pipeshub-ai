@@ -12,6 +12,10 @@ vi.mock('../agent-core-node', () => ({ AgentCoreNode: () => null }));
 vi.mock('../toolset-flow-node', () => ({ ToolsetFlowNode: () => null }));
 vi.mock('../mcp-flow-node', () => ({ McpFlowNode: () => null }));
 vi.mock('../node-handles', () => ({ NodeHandles: () => null }));
+vi.mock('../knowledge-source-limit', () => ({
+  KnowledgeSourceLimitButton: () => null,
+  KnowledgeSourceLimitNote: () => null,
+}));
 
 vi.mock('@/app/components/ui', () => ({
   ConnectorIcon: () => null,

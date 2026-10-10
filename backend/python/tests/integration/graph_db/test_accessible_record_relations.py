@@ -27,7 +27,7 @@ _DOC_COLLECTIONS = (
 )
 _EDGE_COLLECTIONS = (
     "permission", "belongsTo", "inheritPermissions", "userAppRelation",
-    "authenticatedAs", "recordRelations",
+    "authenticatedAs", "nodeRelations",
 )
 _NEO4J_LABELS = {
     "users": "User", "records": "Record", "recordGroups": "RecordGroup",
@@ -35,7 +35,7 @@ _NEO4J_LABELS = {
 }
 _NEO4J_EDGES = {
     "permission": "PERMISSION", "inheritPermissions": "INHERIT_PERMISSIONS",
-    "userAppRelation": "USER_APP_RELATION", "recordRelations": "RECORD_RELATION",
+    "userAppRelation": "USER_APP_RELATION", "nodeRelations": "NODE_RELATION",
 }
 
 
@@ -134,10 +134,10 @@ class _Graph:
 
         self.nodes += [
             ("users", self.user_key, {"userId": self.user_id, "orgId": ORG}),
-            ("apps", self.app, {"type": "JIRA"}),
-            ("apps", self.lost_app, {"type": "JIRA"}),
+            ("apps", self.app, {"type": "JIRA", "orgId": ORG}),
+            ("apps", self.lost_app, {"type": "JIRA", "orgId": ORG}),
             ("groups", self.group, {"orgId": ORG}),
-            ("recordGroups", self.space, {"orgId": ORG}),
+            ("recordGroups", self.space, {"orgId": ORG, "connectorId": self.app}),
         ]
         self._edge("userAppRelation", ("users", self.user_key), ("apps", self.app))
         self._edge("permission", ("users", self.user_key), ("groups", self.group),
@@ -149,7 +149,10 @@ class _Graph:
         self._record(ids["epic"], 100, direct=True)
         self._record(ids["parent"], 50, direct=True)
         self._record(ids["attachment"], 10, direct=True)
+        # In the space the user's group is granted, and inheriting from it.
         self._record(ids["child_group"], 300)
+        self._edge("nodeRelations", ("recordGroups", self.space), ("records", ids["child_group"]),
+                   relationshipType="PARENT_CHILD")
         self._edge("inheritPermissions", ("records", ids["child_group"]),
                    ("recordGroups", self.space))
         self._record(ids["child_unindexed"], 200, direct=True, indexingStatus="FAILED")
@@ -163,7 +166,7 @@ class _Graph:
 
         self._relation(ids["parent"], ids["epic"], "PARENT_CHILD")
         self._relation(ids["epic"], ids["attachment"], "ATTACHMENT")
-        for name in ("child_group", "child_unindexed", "child_no_ts", "child_denied",
+        for name in ("child_unindexed", "child_no_ts", "child_denied",
                      "child_placeholder", "child_other_org", "child_deleted",
                      "child_lost_connector"):
             self._relation(ids["epic"], ids[name], "PARENT_CHILD")
@@ -172,7 +175,7 @@ class _Graph:
         self.edges.append((coll, frm, to, props))
 
     def _relation(self, frm, to, relation_type) -> None:
-        self._edge("recordRelations", ("records", frm), ("records", to),
+        self._edge("nodeRelations", ("records", frm), ("records", to),
                    relationshipType=relation_type)
 
     def _record(self, rid, modified_at, *, direct=False, **overrides) -> None:
@@ -254,6 +257,23 @@ class _Contract:
                 ids["epic"], ids["parent"], ids["attachment"], ids["child_group"],
                 ids["child_unindexed"], ids["child_no_ts"],
             }
+        await self._with_graph(provider, check)
+
+    async def test_filter_keeps_only_what_the_turns_scopes_admit(self, provider):
+        from app.modules.retrieval.selection_scope import SelectionScope
+
+        async def check(provider, g):
+            ids = g.ids
+            whole_app = SelectionScope(app_ids=frozenset({g.app}))
+            only_epic = SelectionScope(records={ids["epic"]: ("", g.app)})
+            granted = await provider.filter_accessible_record_ids(
+                list(ids.values()), g.user_id, ORG, scopes=[whole_app, only_epic],
+            )
+            assert granted == {ids["epic"]}
+            other_app = SelectionScope(app_ids=frozenset({g.lost_app}))
+            assert await provider.filter_accessible_record_ids(
+                list(ids.values()), g.user_id, ORG, scopes=[other_app],
+            ) == set()
         await self._with_graph(provider, check)
 
     async def test_filter_denies_an_unknown_user(self, provider):

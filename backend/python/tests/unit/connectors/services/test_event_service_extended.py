@@ -42,6 +42,7 @@ def mock_graph_provider():
     gp.get_document = AsyncMock(return_value=None)
     gp.delete_sync_points_by_connector_id = AsyncMock(return_value=(5, True))
     gp.delete_connector_sync_edges = AsyncMock(return_value=(3, True))
+    gp.mark_connector_sync_edges = AsyncMock(return_value=(3, True))
     gp.delete_connector_instance = AsyncMock(return_value={
         "success": True, "virtual_record_ids": [], "deleted_records_count": 0,
     })
@@ -119,7 +120,7 @@ class TestSyncPointDeletionException:
         service.graph_provider.delete_sync_points_by_connector_id = AsyncMock(
             side_effect=Exception("db error")
         )
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(return_value=(0, True))
+        service.graph_provider.mark_connector_sync_edges = AsyncMock(return_value=(0, True))
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \

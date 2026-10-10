@@ -70,7 +70,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.github.common.apps import GithubApp
 from app.connectors.sources.github_teams.connector import AUTHORIZE_URL, TOKEN_URL, GitHubTeamsConnector
-from app.connectors.sources.github_teams.projects import ProjectsSync
+from app.connectors.sources.github_teams.projects import GitHubReadError, ProjectsSync
 from app.models.permission import Permission
 
 AUTH_REDIRECT_URI = "connectors/oauth/callback/Github"
@@ -87,14 +87,8 @@ class GitHubPersonalProjectsSync(ProjectsSync):
     async def _sync_repo_members(
         self, owner: str, repo: str, repo_obj: GhObject | None = None,
     ) -> list[Permission]:
-        """Route all repo access through the ConnectorGroup — no collaborator/team fetch.
-
-        ``repo_obj`` (used by the team connector to bind individual-repo
-        collaborators) is deliberately ignored: personal access is the
-        ConnectorGroup, never GitHub's ACL.
-        """
-        permission = self.c.creator_user_permission()
-        return [permission] if permission is not None else []
+        """A personal repo inherits the app. No collaborator or ConnectorGroup grant."""
+        return []
 
     def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
         """No visibility-derived grants on a personal connector.
@@ -147,6 +141,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
                     continue
                 owner, name = full_name.split("/", 1)
                 res = await c.runtime.ds_call(c.data_source.get_repo, owner, name)
+                GitHubReadError.raise_unless_absent(f"Repository {full_name}", res)
                 if not res.success or not res.data:
                     self.logger.error("Repository not found or inaccessible: %s (%s)", full_name, res.error)
                     continue
@@ -155,8 +150,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
 
         res = await c.runtime.ds_call(c.data_source.list_user_repos, None, "all")
         if not res.success:
-            self.logger.error("list_user_repos failed: %s", res.error)
-            return []
+            raise GitHubReadError(f"The account's repositories could not be read from GitHub: {res.error}")
         candidates = list(res.data or [])
         if repo_not_in:
             excluded = set(repo_not_in)
@@ -308,7 +302,7 @@ class GithubConnector(GitHubTeamsConnector):
                     self.connector_id,
                 )
             else:
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()

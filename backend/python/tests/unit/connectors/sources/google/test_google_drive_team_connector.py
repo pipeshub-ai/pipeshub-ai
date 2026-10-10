@@ -877,7 +877,7 @@ class TestPermissionMapping:
 
     def test_commenter_role(self):
         conn = _make_connector()
-        assert conn._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert conn._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader_role(self):
         conn = _make_connector()
@@ -900,19 +900,16 @@ class TestEntityTypeMapping:
 
     def test_domain(self):
         conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
+        assert conn._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_anyone(self):
         conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
 
     def test_anyone_with_link(self):
         conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
 
     def test_anyone_with_link_underscore(self):
         conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
 
     def test_unknown_defaults_to_user(self):
         conn = _make_connector()
@@ -1076,7 +1073,14 @@ class TestFetchPermissions:
         assert perms[0].email == "u@x.com"
 
     @pytest.mark.asyncio
-    async def test_anyone_permission_user_already_has_permission(self):
+    async def test_anyone_permission_alongside_a_real_grant_is_not_stored(self):
+        """Decision 59: link sharing names no grantee, so it is not a grant.
+
+        The `anyone` entry only decides whether the syncing user needs a
+        fallback grant; storing it would hand everyone the permission it
+        describes. Here the user already has a real grant, so there is no
+        fallback and that grant is the only permission the file carries.
+        """
         conn = _make_connector()
         conn.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [
@@ -1085,9 +1089,8 @@ class TestFetchPermissions:
             ],
         })
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        # User already has permission, so no fallback
         assert is_fallback is False
-        assert len(perms) == 2
+        assert [p.email for p in perms] == ["u@x.com"]
 
     @pytest.mark.asyncio
     async def test_uses_custom_drive_data_source(self):
@@ -1992,7 +1995,7 @@ class TestProcessDriveItem:
                 {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
                 {
                     "id": "p2", "role": "reader", "type": "user", "emailAddress": "member@x.com",
-                    "permissionDetails": [{"permissionType": "file"}],
+                    "permissionDetails": [{"permissionType": "file", "inherited": False}],
                 },
             ],
         })
@@ -4655,7 +4658,7 @@ class TestFolderScopeReconciliation:
 
         assert items == []
         conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
-            ["rec-folder"], conn.connector_id
+            ["rec-folder"], conn.connector_id, include_trashed_roots=True
         )
         conn.data_entities_processor.on_record_deleted.assert_not_called()
 

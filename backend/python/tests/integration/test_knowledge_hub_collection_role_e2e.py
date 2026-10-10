@@ -61,7 +61,7 @@ async def _member(w: _World, role: str) -> str:
     return key
 
 
-@pytest.mark.parametrize("role", ["FILEORGANIZER", "READER", "WRITER"])
+@pytest.mark.parametrize("role", ["READER", "WRITER"])
 async def test_the_collection_role_is_the_same_at_the_collection_and_in_a_folder(seeded: _World, role: str) -> None:
     user = await _member(seeded, role)
     hub = KnowledgeHubService(logger, seeded.graph)
@@ -73,16 +73,18 @@ async def test_the_collection_role_is_the_same_at_the_collection_and_in_a_folder
     assert (at_collection.collectionRole, in_folder.collectionRole) == (role, role)
 
 
-async def test_a_file_organizer_reads_as_a_reader_in_a_folder_but_keeps_their_collection_role(seeded: _World) -> None:
-    """Why the header can't use the context role: inside a folder it has no FILEORGANIZER."""
+async def test_a_stored_file_organizer_grant_reads_as_a_reader_at_the_collection_and_in_a_folder(
+    seeded: _World,
+) -> None:
+    """FILEORGANIZER is retired (``RETIRED_ROLES``): a stored grant reads as READER on both backends."""
     user = await _member(seeded, "FILEORGANIZER")
     hub = KnowledgeHubService(logger, seeded.graph)
 
+    at_collection = await hub._get_permissions(user, seeded.org_id, seeded.kb_id, "app")
     in_folder = await hub._get_permissions(user, seeded.org_id, seeded.ids["folder"], "folder")
 
-    assert in_folder is not None
-    assert in_folder.role != "FILEORGANIZER"
-    assert in_folder.collectionRole == "FILEORGANIZER"
+    assert at_collection is not None and in_folder is not None
+    assert (at_collection.collectionRole, in_folder.collectionRole) == ("READER", "READER")
 
 
 async def test_a_node_outside_a_collection_has_no_collection_role(seeded: _World) -> None:

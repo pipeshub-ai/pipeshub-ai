@@ -14,6 +14,7 @@ from .models import (
     RecordContentError,
     RecordContentUnavailableError,
     RecordNotFoundError,
+    RecordOutsideTurnError,
     RecordTooLargeError,
     ResolvedRecordContent,
 )
@@ -33,6 +34,7 @@ __all__ = [
     "RecordContentError",
     "RecordNotFoundError",
     "RecordAccessDeniedError",
+    "RecordOutsideTurnError",
     "RecordTooLargeError",
     "RecordContentUnavailableError",
 ]

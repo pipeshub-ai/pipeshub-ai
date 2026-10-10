@@ -22,6 +22,7 @@ from app.config.constants.arangodb import (
     MimeTypes,
     OriginTypes,
     ProgressStatus,
+    Connectors,
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
@@ -112,6 +113,7 @@ class IssuesSync:
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.keep_stored_access(f"issues of project {project_id} past offset {i} were not written")
                 return
         if failed.count:
             self.logger.warning(
@@ -119,6 +121,7 @@ class IssuesSync:
                 "before the earliest one so the next sync retries them.",
                 failed.count, project_id,
             )
+            c.keep_stored_access(f"{failed.count} issue(s) of project {project_id} were not written")
         for group_id, last_sync_time in watermarks.items():
             await self._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
 
@@ -209,7 +212,11 @@ class IssuesSync:
             # the token owner and sees it regardless, so the restriction has to be
             # re-imposed here or every Guest inherits it through the work-items group.
             is_confidential = bool(getattr(issue, "confidential", False))
-            suffix = _CONFIDENTIAL_SUFFIX if is_confidential else _WORK_ITEMS_SUFFIX
+            personal = c.connector_name in (
+                Connectors.GITLAB_PERSONAL,
+                Connectors.GITLAB_PERSONAL.value,
+            )
+            suffix = _WORK_ITEMS_SUFFIX if personal or not is_confidential else _CONFIDENTIAL_SUFFIX
             external_group_id = f"{issue.project_id}{suffix}"
             ticket_record = TicketRecord(
                 id=existing_record.id if existing_record else str(uuid.uuid4()),
@@ -237,10 +244,12 @@ class IssuesSync:
             # Author and assignees keep access whatever their role. Additive on top
             # of the restricted group, which is the direction the union-with-no-deny
             # model can express.
-            exceptions = (
+            exceptions = [] if personal else (
                 await self._confidential_exception_permissions(issue)
                 if is_confidential else []
             )
+            if personal or is_confidential:
+                ticket_record.rewrite_permissions = True
             return RecordUpdate(
                 record=ticket_record,
                 is_new=is_new,
@@ -248,7 +257,7 @@ class IssuesSync:
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=bool(exceptions),
+                permissions_changed=personal or is_confidential or bool(exceptions),
                 old_permissions=[],
                 new_permissions=exceptions,
                 external_record_id=str(issue.id),

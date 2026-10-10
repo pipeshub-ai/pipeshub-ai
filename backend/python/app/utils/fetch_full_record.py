@@ -12,10 +12,12 @@ from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.service import config_node_constants
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, TicketRecord
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
+    accessible_node_ids,
     collection_map,
     create_record_instance_from_dict,
     get_record,
@@ -93,13 +95,15 @@ async def _apply_live_ticket_context_metadata(
 async def _enrich_sql_table_with_fk_relations(
     record: dict[str, Any],
     graph_provider: IGraphDBProvider,
-    org_id: str | None,
+    user_id: str = "",
+    org_id: str = "",
 ) -> dict[str, Any]:
     """Add the tables a SQL_TABLE record is linked to by a foreign key.
 
     Returns a copy of ``record`` with ``fk_parent_record_ids`` and
-    ``fk_child_record_ids``: one dict per live related table, with its record
-    id, table name and columns.
+    ``fk_child_record_ids``: one dict per live related table the user may
+    access, with its record id, table name and columns. ``user_id`` and
+    ``org_id`` say whose fetch this is.
     """
     from app.config.constants.arangodb import RecordRelations
 
@@ -126,14 +130,24 @@ async def _enrich_sql_table_with_fk_relations(
     except Exception as e:
         logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
 
-    # The trash keeps a dropped table's node and FK edges until the purge, so
-    # the edge reads still return it; its name and columns must not reach the agent.
-    live = await live_record_ids(
-        graph_provider, (rel.get("record_id") for rel in (*fk_child_ids, *fk_parent_ids)), org_id
-    )
-    fk_child_ids = [rel for rel in fk_child_ids if rel.get("record_id") in live]
-    fk_parent_ids = [rel for rel in fk_parent_ids if rel.get("record_id") in live]
+    # A related table's id is shown only to a user who may open it, and only while
+    # it is live: the trash keeps a dropped table's node and FK edges until the
+    # purge, so the edge reads still return it.
+    def fk_id(entry: dict[str, Any] | str) -> str | None:
+        return entry.get("record_id") if isinstance(entry, dict) else entry
 
+    related = {fk_id(e) for e in fk_child_ids + fk_parent_ids} - {None}
+    try:
+        allowed = await accessible_node_ids(graph_provider, related, user_id, org_id)
+    except PermissionVerificationUnavailableError:
+        # The related tables are extra context: the record itself is still shown.
+        logger.warning("Could not check access to the tables related to %s", record_id, exc_info=True)
+        allowed = set()
+    allowed &= await live_record_ids(graph_provider, allowed, org_id)
+    fk_child_ids = [e for e in fk_child_ids if fk_id(e) in allowed]
+    fk_parent_ids = [e for e in fk_parent_ids if fk_id(e) in allowed]
+
+    # Add FK relations to the record (non-destructive - creates a copy)
     enriched_record = dict(record)
     enriched_record["fk_parent_record_ids"] = fk_parent_ids
     enriched_record["fk_child_record_ids"] = fk_child_ids
@@ -178,8 +192,12 @@ class _RecordResolver:
         org_id: str | None,
         user_id: str | None,
         frontend_url: str | None,
+        accessible: set[str] | None = None,
     ) -> None:
         self._map = virtual_record_id_to_result
+        # The batch check's answer for this call's ids. None only without a graph
+        # provider: nothing can check then, and only map entries are served.
+        self._accessible = accessible
         self._graph_provider = graph_provider
         self._blob_store = blob_store
         self._config_service = config_service
@@ -211,6 +229,10 @@ class _RecordResolver:
             return frozenset()
 
     async def resolve(self, record_id: str) -> tuple[str, dict[str, Any] | None, str | None]:
+        # The map is not only retrieval's: attachment and FK enrichment write
+        # to it too, so an entry proves nothing where the batch check has run.
+        if self._accessible is not None and record_id not in self._accessible:
+            return record_id, None, UNAVAILABLE
         cached = self._from_map(record_id)
         if cached is not None:
             if "record_name" in cached:
@@ -228,19 +250,9 @@ class _RecordResolver:
                 return record_id, None, UNAVAILABLE
             return record_id, await self._enrich(record), None
 
-        # An id that is not already in the (ACL-filtered) map is unverified.
-        # Without a user to check against, it is never served.
+        # Without a user to check against, an id is never served.
         if not (self._org_id and self._graph_provider and self._user_id):
             return record_id, None, UNAVAILABLE
-
-        try:
-            if not await self._graph_provider.check_record_access_with_details(
-                self._user_id, self._org_id, record_id,
-            ):
-                return record_id, None, UNAVAILABLE
-        except Exception:
-            logger.warning("Access check failed for %s", record_id, exc_info=True)
-            return record_id, None, STORAGE_ERROR
 
         try:
             graph_record = await self._graph_provider.get_document(
@@ -321,7 +333,9 @@ class _RecordResolver:
         )
         record_type = record.get("record_type") or record.get("recordType")
         if record_type == "SQL_TABLE" and self._graph_provider:
-            return await _enrich_sql_table_with_fk_relations(record, self._graph_provider, self._org_id)
+            return await _enrich_sql_table_with_fk_relations(
+                record, self._graph_provider, self._user_id or "", self._org_id or "",
+            )
         return record
 
 
@@ -337,9 +351,9 @@ async def _fetch_multiple_records_impl(
     Fetch multiple complete records at once.
     For SQL_TABLE records, also enriches with FK parent/child record IDs.
 
-    If a record_id is not found in the map, attempts to:
-    0. Verify the user may read it (the map itself is already ACL-filtered,
-       an arbitrary id is not), skipping the record when they may not
+    Every id is first checked in one batch (map entries included); an id the
+    user may not read is skipped. If a record_id is not found in the map,
+    attempts to:
     1. Fetch the Record from graph_provider to get virtual_record_id
     2. Fetch the record content from blob_store
     3. Enrich with FK relations if SQL_TABLE
@@ -369,6 +383,21 @@ async def _fetch_multiple_records_impl(
 
     config_service = graph_provider.config_service if graph_provider else None
 
+    accessible: set[str] | None = None
+    if graph_provider is not None:
+        try:
+            accessible = await accessible_node_ids(
+                graph_provider, set(record_ids), user_id or "", org_id or "",
+            )
+        except Exception:
+            logger.warning("Access check failed for %s", record_ids, exc_info=True)
+            return {
+                "ok": False,
+                "error": "None of the requested records were available.",
+                "not_available_ids": list(record_ids),
+                "unavailable_reasons": dict.fromkeys(record_ids, STORAGE_ERROR),
+            }
+
     # Built once, not once per record: this used to be constructed inside the
     # loop, along with a fresh ENDPOINTS read.
     resolver = _RecordResolver(
@@ -379,6 +408,7 @@ async def _fetch_multiple_records_impl(
         org_id=org_id,
         user_id=user_id,
         frontend_url=frontend_url,
+        accessible=accessible,
     )
 
     # Records resolve concurrently -- each miss costs an ACL check, a graph

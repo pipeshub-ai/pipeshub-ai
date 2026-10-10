@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix-ui/themes';
+import { Flex, Box, Text, Checkbox, Button, DropdownMenu, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { formatSize, formatDate } from '@/lib/utils/formatters';
@@ -27,7 +27,6 @@ import {
 } from '../utils/kb-table-item-actions';
 import { useTranslation } from 'react-i18next';
 import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
-import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import {
   getReindexMenuState,
   getReindexNodeForTableItem,
@@ -46,6 +45,9 @@ function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
 function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
   return 'sourceName' in item && 'sourceType' in item;
 }
+
+// Room for the preview, go-to-parent and more buttons.
+const ACTIONS_WIDTH = '104px';
 
 interface TableHeaderCellProps {
   label: string;
@@ -136,6 +138,8 @@ interface TableRowProps {
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
+  onPreview?: (item: TableItem) => void;
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -153,6 +157,8 @@ function TableRow({
   onSelect,
   onClick,
   onOpen,
+  onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -276,6 +282,12 @@ function TableRow({
   const isFolder = isHubNode
     ? ['kb', 'app', 'folder', 'recordGroup'].includes(item.nodeType)
     : item.type === 'folder';
+
+  const canPreview =
+    !!onPreview && isHubNode && item.nodeType === 'record' && item.previewRenderable !== false;
+  // The address of a parent needs its type, which only `parent` carries; an App has none.
+  const parentTarget =
+    onGoToParent && isHubNode && item.nodeType !== 'app' && item.parent?.id ? item : null;
 
   // Status label for tooltip
   const getStatusLabel = (): string => {
@@ -618,7 +630,45 @@ function TableRow({
       )}
 
       {/* Actions */}
-      <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
+      <Flex align="center" justify="end" gap="2" style={{ width: ACTIONS_WIDTH, padding: '0 var(--space-2)' }}>
+        {canPreview && (
+          <Tooltip content="Preview" side="top" delayDuration={200}>
+            <IconButton
+              variant="ghost"
+              size="1"
+              color="gray"
+              aria-label="Preview"
+              onClick={(e) => {
+                e.stopPropagation();
+                onPreview!(item);
+              }}
+              style={{ cursor: 'pointer' }}
+            >
+              <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
+            </IconButton>
+          </Tooltip>
+        )}
+        {parentTarget && (
+          <Tooltip
+            content={parentTarget.parent?.name ? `Go to ${parentTarget.parent.name}` : 'Go to parent'}
+            side="top"
+            delayDuration={200}
+          >
+            <IconButton
+              variant="ghost"
+              size="1"
+              color="gray"
+              aria-label="Go to parent"
+              onClick={(e) => {
+                e.stopPropagation();
+                onGoToParent!(parentTarget);
+              }}
+              style={{ cursor: 'pointer' }}
+            >
+              <MaterialIcon name="north_west" size={16} color="var(--slate-11)" />
+            </IconButton>
+          </Tooltip>
+        )}
         <ItemActionMenu
           open={isMenuOpen}
           onOpenChange={setIsMenuOpen}
@@ -651,20 +701,24 @@ interface KbListViewProps {
   showCheckbox?: boolean;
   sort: SortConfig | AllRecordsSortConfig;
   pagination?: {
-    page: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   onSelectAll: () => void;
   onSelectItem: (id: string) => void;
   onItemClick: (item: TableItem) => void;
   onSort: (config: SortConfig | AllRecordsSortConfig) => void;
-  onPageChange?: (page: number) => void;
+  onCursorChange?: (cursor: string | null) => void;
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
+  /** Set while the rows are search or filter results: each row then offers its parent. */
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -685,9 +739,10 @@ export function KbListView({
   onSelectItem,
   onItemClick,
   onSort,
-  onPageChange,
+  onCursorChange,
   onLimitChange,
   onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -695,10 +750,7 @@ export function KbListView({
   onDelete,
   onDownload,
 }: KbListViewProps) {
-  // Once per page, so each row's Demo badge is a cheap lookup.
-  useDemoDataActive();
   const isMobile = useIsMobile();
-  console.log('pagination data', pagination);
 
   return (
     <>
@@ -757,7 +809,7 @@ export function KbListView({
         )}
 
         {/* Actions */}
-        <Box style={{ width: '80px' }} />
+        <Box style={{ width: ACTIONS_WIDTH }} />
       </Flex>
 
       {/* Table Body */}
@@ -776,6 +828,8 @@ export function KbListView({
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
+            onPreview={onPreview}
+            onGoToParent={onGoToParent}
             onRename={onRename}
             onReindex={onReindex}
             onReplace={onReplace}
@@ -801,7 +855,7 @@ export function KbListView({
           }}
         >
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
-            Showing {((pagination.page - 1) * pagination.limit) + 1}-{Math.min(pagination.page * pagination.limit, pagination.totalItems)} of {pagination.totalItems} Items
+            Showing {pagination.startIndex ?? 0}-{pagination.endIndex ?? 0} of {pagination.totalItems} Items
           </Text>
           <Flex gap="3" align="center">
             {/* Previous Button */}
@@ -813,13 +867,14 @@ export function KbListView({
                 opacity: pagination.hasPrev ? 1 : 0.5,
                 color: 'var(--slate-11)',
               }}
-              onClick={() => pagination.hasPrev && onPageChange?.(pagination.page - 1)}
+              onClick={() => pagination.hasPrev && onCursorChange?.(pagination.prevCursor ?? null)}
             >
               <MaterialIcon name="chevron_left" size={16} />
               <Text size="2">Previous</Text>
             </Flex>
 
-            {/* Page Number Box */}
+            {/* Position, derived from the item index: keyset paging has no page
+                number of its own, and inventing one server-side would be a lie. */}
             <Box
               style={{
                 padding: 'var(--space-1) var(--space-3)',
@@ -830,7 +885,7 @@ export function KbListView({
               }}
             >
               <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {pagination.page}
+                {Math.floor(((pagination.startIndex ?? 1) - 1) / Math.max(1, pagination.limit)) + 1}
               </Text>
             </Box>
 
@@ -843,7 +898,7 @@ export function KbListView({
                 opacity: pagination.hasNext ? 1 : 0.5,
                 color: 'var(--slate-11)',
               }}
-              onClick={() => pagination.hasNext && onPageChange?.(pagination.page + 1)}
+              onClick={() => pagination.hasNext && onCursorChange?.(pagination.nextCursor ?? null)}
             >
               <Text size="2">Next</Text>
               <MaterialIcon name="chevron_right" size={16} />

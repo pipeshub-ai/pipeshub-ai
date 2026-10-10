@@ -456,6 +456,144 @@ class TestFetchIssuesBatched:
 # ===========================================================================
 
 
+def _secured_scheme():
+    from app.connectors.sources.atlassian.core.jira_issue_security import (
+        IssueSecurityContext,
+        SchemeKnowledge,
+    )
+
+    return IssueSecurityContext(
+        knowledge=SchemeKnowledge.PRESENT,
+        scheme_id="9",
+        members_by_level={"20": [{"type": "group", "value": "level-holders"}]},
+        members_readable=True,
+    )
+
+
+def _story_under(epic_id, story_id="2002", key="PROJ-2"):
+    story = _issue_dict(issue_id=story_id, key=key)
+    story["fields"]["parent"] = {"id": epic_id, "key": "PROJ-1"}
+    story["fields"]["issuetype"] = {"name": "Story", "subtask": False}
+    return story
+
+
+def _issue_builder():
+    connector = _make_connector()
+    connector.site_url = "https://co.atlassian.net"
+    connector.indexing_filters = None
+    connector._issue_security_context = _secured_scheme()
+    connector._app_roles_mapping = {}
+    connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    connector._handle_attachment_deletions_from_changelog = AsyncMock(return_value=[])
+    connector._fetch_issue_attachments = AsyncMock(return_value=[])
+    return connector
+
+
+def _by_id(records):
+    return {rec.external_record_id: rec for rec, _perms, _changed in records}
+
+
+class TestStoryUnderSecuredEpic:
+    """JC-02: Jira applies an epic's security level to its sub-tasks only."""
+
+    @pytest.mark.asyncio
+    async def test_story_under_a_secured_epic_also_takes_the_project(self):
+        connector = _issue_builder()
+        epic = _issue_dict(issue_id="1001", key="PROJ-1")
+        epic["fields"]["security"] = {"id": "20", "name": "Admins"}
+        epic["fields"]["issuetype"] = {"name": "Epic", "subtask": False}
+
+        records, _ = await connector._build_issue_records([_story_under("1001"), epic], "p-1", [])
+
+        story = _by_id(records)["2002"]
+        assert story.inherit_permissions_from_group is True
+        assert story.parent_external_record_id == "1001"
+        assert _by_id(records)["1001"].inherit_permissions_from_group is False
+
+    @pytest.mark.asyncio
+    async def test_story_under_an_open_epic_hangs_off_the_epic_only(self):
+        connector = _issue_builder()
+        epic = _issue_dict(issue_id="1001", key="PROJ-1")
+        epic["fields"]["issuetype"] = {"name": "Epic", "subtask": False}
+
+        records, _ = await connector._build_issue_records([epic, _story_under("1001")], "p-1", [])
+
+        assert _by_id(records)["2002"].inherit_permissions_from_group is False
+
+    @pytest.mark.asyncio
+    async def test_a_parent_outside_the_page_is_read_once(self):
+        connector = _issue_builder()
+        connector._get_issue_with_retry = AsyncMock(
+            return_value=_resp(200, {"id": "1001", "fields": {"security": {"id": "20"}}})
+        )
+
+        records, _ = await connector._build_issue_records(
+            [_story_under("1001"), _story_under("1001", story_id="2003", key="PROJ-3")], "p-1", [],
+        )
+
+        assert all(rec.inherit_permissions_from_group for rec in _by_id(records).values())
+        connector._get_issue_with_retry.assert_awaited_once_with("1001", ["security"])
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_parent_also_takes_the_project(self):
+        connector = _issue_builder()
+        connector._get_issue_with_retry = AsyncMock(return_value=_resp(404, {}))
+
+        records, _ = await connector._build_issue_records([_story_under("1001")], "p-1", [])
+
+        assert _by_id(records)["2002"].inherit_permissions_from_group is True
+
+    @pytest.mark.asyncio
+    async def test_subtask_of_a_secured_parent_follows_the_parent_only(self):
+        connector = _issue_builder()
+        parent = _issue_dict(issue_id="1001", key="PROJ-1")
+        parent["fields"]["security"] = {"id": "20"}
+        subtask = _story_under("1001")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+
+        records, _ = await connector._build_issue_records([parent, subtask], "p-1", [])
+
+        assert _by_id(records)["2002"].inherit_permissions_from_group is False
+
+    @pytest.mark.asyncio
+    async def test_an_epic_that_gains_a_level_rebuilds_its_stories(self):
+        from app.config.constants.arangodb import AccessRule
+
+        connector = _issue_builder()
+        epic = _issue_dict(issue_id="1001", key="PROJ-1", updated="2024-06-16T10:00:00.000+0000")
+        epic["fields"]["security"] = {"id": "20"}
+        stored_epic = TicketRecord(
+            id="epic-rec", org_id="org-jira-1", record_name="[PROJ-1] Issue PROJ-1",
+            record_type=RecordType.TICKET, external_record_id="1001", version=1,
+            origin=OriginTypes.CONNECTOR, connector_name=Connectors.JIRA, connector_id="conn-jira-1",
+            source_updated_at=connector._parse_jira_timestamp("2024-06-15T10:00:00.000+0000"),
+            access_rule=AccessRule.STRICT,
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: stored_epic if external_record_id == "1001" else None
+        )
+
+        await connector._build_issue_records([epic], "p-1", [])
+
+        assert connector._issue_level_changes == {"1001"}
+
+        stored_story = MagicMock(external_record_id="2002", is_placeholder=False)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[stored_story])
+        ds = MagicMock()
+        ds.bulk_fetch_issues = AsyncMock(return_value=_resp(200, {"issues": [_story_under("1001")]}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector._process_new_records = AsyncMock()
+
+        await connector._replace_children_of("PROJ", "p-1", [], {"1001"}, {"new_count": 0, "updated_count": 0})
+
+        connector.data_entities_processor.get_records_by_parent.assert_awaited_once_with(
+            "conn-jira-1", "1001", RecordType.TICKET.value,
+        )
+        rebuilt = connector._process_new_records.await_args.args[0]
+        assert [rec.external_record_id for rec, _p, _c in rebuilt] == ["2002"]
+        assert rebuilt[0][0].inherit_permissions_from_group is True
+
+
 class TestBuildIssueRecords:
 
     @pytest.mark.asyncio
@@ -1753,6 +1891,243 @@ class TestPermissionSchemeIdGuard:
 
         assert result is None
         ds.get_permission_scheme_grants.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_default_permission_scheme_id_zero_is_read(self):
+        # Jira's Default Permission Scheme has id 0.
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_resp(200, {"id": 0}))
+        ds.get_permission_scheme_grants = AsyncMock(return_value=_resp(200, {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "g1", "value": "g1"}},
+        ]}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        result = await connector._fetch_project_permission_scheme("PPC")
+
+        assert result is not None
+        assert [p.external_id for p in result] == ["g1"]
+        assert ds.get_permission_scheme_grants.await_args.kwargs["schemeId"] == 0
+
+
+class TestIssueSecurityUnreadableNotice:
+
+    async def _load_with_member_status(self, status):
+        connector = _make_connector()
+        connector._app_roles_mapping = {}
+        ds = MagicMock()
+        ds.get_project_issue_security_scheme = AsyncMock(return_value=_resp(200, {"id": 10001}))
+        ds.get_issue_security_level_members = AsyncMock(return_value=_resp(status, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.notify = AsyncMock()
+        context = await connector._load_issue_security_context("PST", "10000", "classic")
+        return connector, context
+
+    @pytest.mark.asyncio
+    async def test_oauth_401_on_members_names_the_scopes_to_add(self):
+        # Jira Cloud answers 401 "scope does not match" when the token lacks the
+        # granular issue-security scopes; the account's own permissions are not the cause.
+        connector, context = await self._load_with_member_status(401)
+
+        assert context.members_readable is False
+        message = connector.notify.await_args.kwargs["message"]
+        assert "read:issue-security-level:jira" in message
+        assert "re-authorize" in message
+        assert "including" in message
+
+    @pytest.mark.asyncio
+    async def test_403_on_members_names_the_admin_permission(self):
+        connector, _context = await self._load_with_member_status(403)
+
+        message = connector.notify.await_args.kwargs["message"]
+        assert "Administer Jira" in message
+        assert "scope" not in message
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mapping_status", [401, 403])
+    async def test_oauth_401_on_the_scheme_names_the_scopes_to_add(self, mapping_status):
+        # R1-14: a token without the issue-security scopes is refused 401 on the
+        # project's scheme too; that must not read as "unknown" with no notice.
+        connector = _make_connector()
+        connector._app_roles_mapping = {}
+        ds = MagicMock()
+        ds.get_project_issue_security_scheme = AsyncMock(return_value=_resp(401, {}))
+        ds.search_projects_using_security_schemes = AsyncMock(return_value=_resp(mapping_status, {}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.notify = AsyncMock()
+
+        context = await connector._load_issue_security_context("PST", "10000", "classic")
+
+        assert context.scheme_forbidden is True
+        message = connector.notify.await_args.kwargs["message"]
+        assert "read:issue-security-level:jira" in message
+        assert "re-authorize" in message
+
+
+# Response shapes from the QA site (n4qa-atlassian, data/jsrc): project PST (10138),
+# issue security scheme 10101, secured epic PST-1 with stories PST-21/PST-22 and
+# sub-task PST-23 under PST-22, secured task PST-6.
+DARSHAN = "712020:55194b33-3140-4d90-9e52-5fe272669d3b"
+SCOPE_401 = {"code": 401, "message": "Unauthorized; scope does not match"}
+PST_SCHEME = {
+    "self": "https://api.atlassian.com/ex/jira/c7f/rest/api/3/issuesecurityschemes/10101",
+    "id": 10101,
+    "name": "admin only access",
+    "description": "",
+    "levels": [
+        {"id": "10133", "name": "user only access"},
+        {"id": "10134", "name": "admin group only access"},
+        {"id": "10135", "name": "organization acces"},
+    ],
+}
+PST_MEMBERS = {
+    "maxResults": 100, "startAt": 0, "total": 2, "isLast": True,
+    "values": [
+        {"id": 10300, "issueSecurityLevelId": 10133, "issueSecuritySchemeId": 10101,
+         "holder": {"type": "user", "parameter": DARSHAN, "value": DARSHAN,
+                    "user": {"accountId": DARSHAN, "active": True}}},
+        {"id": 10301, "issueSecurityLevelId": 10135, "issueSecuritySchemeId": 10101,
+         "holder": {"type": "group", "parameter": "jira-users-pipeshub", "value": "grp-jira-users"}},
+    ],
+}
+
+
+def _pst_issue(issue_id, key, issue_type, *, security=None, parent=None, subtask=False):
+    issue = _issue_dict(issue_id=issue_id, key=key)
+    issue["fields"]["project"] = {"id": "10138", "key": "PST"}
+    issue["fields"]["issuetype"] = {"name": issue_type, "subtask": subtask}
+    issue["fields"]["security"] = security
+    issue["fields"]["reporter"] = {"accountId": DARSHAN}
+    issue["fields"]["assignee"] = {"accountId": DARSHAN}
+    if parent:
+        issue["fields"]["parent"] = {"id": parent[0], "key": parent[1]}
+    return issue
+
+
+PST_ISSUES = [
+    _pst_issue("17988", "PST-1", "Epic", security={"id": "10133", "name": "user only access"}),
+    _pst_issue("26170", "PST-21", "Story", parent=("17988", "PST-1")),
+    _pst_issue("26171", "PST-22", "Story", parent=("17988", "PST-1")),
+    _pst_issue("26172", "PST-23", "Sub-task", parent=("26171", "PST-22"), subtask=True),
+    _pst_issue("17993", "PST-6", "Task", security={"id": "10135", "name": "organization acces"}),
+]
+
+
+class TestIssueSecurityOnTheQaSite:
+    """N4ATLASSIAN-01/-02: secured PST issues with and without the issue-security scopes."""
+
+    def _connector(self, members_response):
+        connector = _issue_builder()
+        connector._issue_security_context = None
+        ds = MagicMock()
+        ds.get_project_issue_security_scheme = AsyncMock(return_value=_resp(200, PST_SCHEME))
+        ds.get_issue_security_level_members = AsyncMock(return_value=members_response)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+        connector.notify = AsyncMock()
+        return connector
+
+    async def _build(self, connector):
+        context = await connector._load_issue_security_context("PST", "10138", "classic")
+        users = [_app_user(email="darshan.godase@pipeshub.com", account_id=DARSHAN)]
+        records, _ = await connector._build_issue_records(PST_ISSUES, "10138", users)
+        return context, {rec.external_record_id: (rec, perms) for rec, perms, _c in records}
+
+    @pytest.mark.asyncio
+    async def test_with_the_scopes_level_holders_get_their_secured_issues(self):
+        from app.config.constants.arangodb import AccessRule
+
+        connector = self._connector(_resp(200, PST_MEMBERS))
+        context, by_id = await self._build(connector)
+
+        assert context.members_readable is True
+        epic, epic_grants = by_id["17988"]
+        assert (epic.access_rule, epic.rewrite_permissions) == (AccessRule.RESTRICTED, True)
+        assert [(p.entity_type, p.email) for p in epic_grants] == [(EntityType.USER, "darshan.godase@pipeshub.com")]
+        _task, task_grants = by_id["17993"]
+        assert [(p.entity_type, p.external_id) for p in task_grants] == [(EntityType.GROUP, "grp-jira-users")]
+        assert connector.stored_access_kept is None
+        connector.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_stories_under_the_secured_epic_take_the_project_and_its_subtask_follows_its_story(self):
+        connector = self._connector(_resp(200, PST_MEMBERS))
+        _context, by_id = await self._build(connector)
+
+        assert by_id["26170"][0].inherit_permissions_from_group is True
+        assert by_id["26171"][0].inherit_permissions_from_group is True
+        subtask = by_id["26172"][0]
+        assert (subtask.parent_external_record_id, subtask.inherit_permissions_from_group) == ("26171", False)
+
+    @pytest.mark.asyncio
+    async def test_without_the_scopes_secured_issues_keep_their_stored_grants_and_the_full_sync_keeps_them(self):
+        from app.config.constants.arangodb import AccessRule
+
+        connector = self._connector(_resp(401, SCOPE_401))
+        context, by_id = await self._build(connector)
+
+        assert (context.members_readable, context.keep_stored_grants) == (False, True)
+        for issue_id in ("17988", "17993"):
+            record, grants = by_id[issue_id]
+            assert (record.access_rule, record.rewrite_permissions, grants) == (AccessRule.RESTRICTED, False, [])
+        assert by_id["26170"][0].inherit_permissions_from_group is True, "stories still reach the project's audience"
+        assert by_id["26170"][0].rewrite_permissions is True
+        assert "PST" in connector.stored_access_kept
+        message = connector.notify.await_args.kwargs["message"]
+        assert "read:issue-security-level:jira" in message and "read:field:jira" in message
+        assert "re-authorize" in message and "stored at the last successful read" in message
+
+    @pytest.mark.asyncio
+    async def test_every_sync_without_the_scopes_keeps_stored_access_and_says_why(self, caplog):
+        connector = self._connector(_resp(401, SCOPE_401))
+        await connector._load_issue_security_context("PST", "10138", "classic")
+
+        connector._issue_security_by_project = {}
+        connector.stored_access_kept = None
+        with caplog.at_level(logging.WARNING, logger=connector.logger.name):
+            await connector._load_issue_security_context("PST", "10138", "classic")
+
+        assert connector.stored_access_kept is not None
+        assert connector.notify.await_count == 1, "the notification is sent once"
+        assert any("read:issue-security-level:jira" in r.getMessage() for r in caplog.records), "the log says it every sync"
+
+    @pytest.mark.asyncio
+    async def test_a_transient_member_read_keeps_grants_without_recording_a_refusal(self):
+        connector = self._connector(_resp(503, {}))
+        context, by_id = await self._build(connector)
+
+        assert (context.defer_checkpoint, context.keep_stored_grants) == (True, False)
+        assert by_id["17988"][0].rewrite_permissions is False
+
+
+class TestDefaultPermissionSchemeOnTheQaSite:
+    """N4ATLASSIAN-03: project PPC uses the Default Permission Scheme, id 0."""
+
+    @pytest.mark.asyncio
+    async def test_ppc_browse_holders_are_read_and_saved(self):
+        connector = _make_connector()
+        ds = MagicMock()
+        ds.get_assigned_permission_scheme = AsyncMock(return_value=_resp(200, {
+            "expand": "permissions,user,group,projectRole,field,all",
+            "id": 0,
+            "self": "https://api.atlassian.com/ex/jira/c7f/rest/api/3/permissionscheme/0",
+            "name": "Default Permission Scheme",
+            "description": "This is the default Permission Scheme.",
+        }))
+        ds.get_permission_scheme_grants = AsyncMock(return_value=_resp(200, {"permissions": [
+            {"id": 10004, "holder": {"type": "applicationRole"}, "permission": "BROWSE_PROJECTS"},
+            {"id": 10500, "holder": {
+                "type": "projectRole", "parameter": "10003", "value": "10003",
+                "projectRole": {"name": "atlassian-addons-project-access", "id": 10003},
+            }, "permission": "BROWSE_PROJECTS"},
+            {"id": 10005, "holder": {"type": "applicationRole"}, "permission": "CREATE_ISSUES"},
+        ]}))
+        connector._get_fresh_datasource = AsyncMock(return_value=ds)
+
+        grants = await connector._fetch_project_permission_scheme("PPC")
+
+        assert grants is not None, "None keeps the project's stored access, which a full sync no longer has"
+        assert ds.get_permission_scheme_grants.await_args.kwargs["schemeId"] == 0
+        assert [(p.entity_type, p.type) for p in grants] == [(EntityType.ORG, PermissionType.READ)]
 
 
 # ===========================================================================

@@ -1,5 +1,6 @@
 """Tests for app.utils.fetch_full_record — record fetching tools."""
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,6 +11,7 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     matches_visibility,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 class TestFetchFullRecordArgs:
@@ -115,13 +117,23 @@ def _ids(relations: list[dict]) -> set[str]:
 
 
 class TestEnrichSqlTableWithFkRelations:
+    @pytest.fixture(autouse=True)
+    def _caller_may_open_every_table(self) -> Iterator[None]:
+        """The access check passes every table for a caller with an identity, as for an admin.
+        A test about the access check patches its own."""
+        def check(_provider, ids, user_id, org_id):
+            return set(ids) if user_id and org_id else set()
+
+        with patch("app.utils.fetch_full_record.accessible_node_ids", AsyncMock(side_effect=check)):
+            yield
+
     @pytest.mark.asyncio
     async def test_enriches_with_fk_relations(self) -> None:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         graph = _shop()
         result = await _enrich_sql_table_with_fk_relations(
-            {"id": "orders", "record_name": "orders"}, graph, "org-1"
+            {"id": "orders", "record_name": "orders"}, graph, "user-1", "org-1"
         )
 
         assert _ids(result["fk_parent_record_ids"]) == {"customers", "products"}
@@ -139,7 +151,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop(trashed=("customers", "reviews"))
         result = await _enrich_sql_table_with_fk_relations(
-            {"id": "orders", "record_name": "orders"}, graph, "org-1"
+            {"id": "orders", "record_name": "orders"}, graph, "user-1", "org-1"
         )
 
         assert _ids(result["fk_parent_record_ids"]) == {"products"}
@@ -153,7 +165,7 @@ class TestEnrichSqlTableWithFkRelations:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         graph = _shop()
-        await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+        await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", "org-1")
 
         assert len(graph.lookups) == 1
         ids, org_id, visibility = graph.lookups[0]
@@ -167,7 +179,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop()
         graph.table("audit_log")
-        result = await _enrich_sql_table_with_fk_relations({"id": "audit_log"}, graph, "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"id": "audit_log"}, graph, "user-1", "org-1")
 
         assert graph.lookups == []
         assert result["fk_parent_record_ids"] == []
@@ -179,7 +191,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop()
         graph.table("customers", org_id="org-2")
-        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", "org-1")
 
         assert _ids(result["fk_parent_record_ids"]) == {"products"}
 
@@ -189,7 +201,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop()
         graph.get_records_by_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
-        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", "org-1")
 
         assert result["fk_parent_record_ids"] == []
         assert result["fk_child_record_ids"] == []
@@ -199,10 +211,43 @@ class TestEnrichSqlTableWithFkRelations:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         graph = _shop()
-        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, None)
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", None)
 
         assert graph.lookups == []
         assert result["fk_parent_record_ids"] == []
+        assert result["fk_child_record_ids"] == []
+
+    @pytest.mark.asyncio
+    async def test_only_tables_the_user_may_open_are_named(self):
+        """C4: a related table's id is an existence leak unless the user may open it."""
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        record = {"id": "rec-1", "record_name": "users"}
+        graph_provider = AsyncMock()
+        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(
+            return_value=[{"record_id": "child-1"}, {"record_id": "child-2"}],
+        )
+        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[{"record_id": "parent-1"}])
+        check = AsyncMock(return_value={"child-2"})
+
+        live = AsyncMock(side_effect=lambda _provider, ids, _org: set(ids))
+        with patch("app.utils.fetch_full_record.accessible_node_ids", check),              patch("app.utils.fetch_full_record.live_record_ids", live):
+            result = await _enrich_sql_table_with_fk_relations(record, graph_provider, "user-1", "org-1")
+
+        assert result["fk_child_record_ids"] == [{"record_id": "child-2"}]
+        assert result["fk_parent_record_ids"] == []
+        assert check.await_args.args[1:] == ({"child-1", "child-2", "parent-1"}, "user-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_no_table_is_named(self):
+        from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
+
+        graph_provider = AsyncMock()
+        graph_provider.get_child_record_ids_by_relation_type = AsyncMock(return_value=[{"record_id": "c1"}])
+        graph_provider.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+
+        result = await _enrich_sql_table_with_fk_relations({"id": "rec-1"}, graph_provider)
+
         assert result["fk_child_record_ids"] == []
 
     @pytest.mark.asyncio
@@ -210,7 +255,7 @@ class TestEnrichSqlTableWithFkRelations:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         record = {"id": "orders", "record_name": "orders"}
-        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "org-1")
+        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "user-1", "org-1")
 
         assert "fk_parent_record_ids" not in record
         assert "fk_parent_record_ids" in result
@@ -220,14 +265,14 @@ class TestEnrichSqlTableWithFkRelations:
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
         record = {"record_name": "no_id_table"}
-        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "org-1")
+        result = await _enrich_sql_table_with_fk_relations(record, _shop(), "user-1", "org-1")
         assert result is record
 
     @pytest.mark.asyncio
     async def test_uses_record_id_field(self):
         from app.utils.fetch_full_record import _enrich_sql_table_with_fk_relations
 
-        result = await _enrich_sql_table_with_fk_relations({"record_id": "products"}, _shop(), "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"record_id": "products"}, _shop(), "user-1", "org-1")
 
         assert _ids(result["fk_parent_record_ids"]) == {"suppliers"}
         assert _ids(result["fk_child_record_ids"]) == {"orders"}
@@ -238,7 +283,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop()
         graph.get_child_record_ids_by_relation_type = AsyncMock(side_effect=RuntimeError("graph down"))
-        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", "org-1")
 
         assert result["fk_child_record_ids"] == []
         assert _ids(result["fk_parent_record_ids"]) == {"customers", "products"}
@@ -249,7 +294,7 @@ class TestEnrichSqlTableWithFkRelations:
 
         graph = _shop()
         graph.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=RuntimeError("graph down"))
-        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "org-1")
+        result = await _enrich_sql_table_with_fk_relations({"id": "orders"}, graph, "user-1", "org-1")
 
         assert _ids(result["fk_child_record_ids"]) == {"reviews"}
         assert result["fk_parent_record_ids"] == []
@@ -341,6 +386,15 @@ class TestApplyLiveTicketContextMetadata:
 
 
 class TestFetchMultipleRecordsImpl:
+    @pytest.fixture(autouse=True)
+    def _batch_check_admits_every_id(self) -> Iterator[None]:
+        """These cases are about enrichment and resolution, not access."""
+        with patch(
+            "app.utils.fetch_full_record.accessible_node_ids",
+            new=AsyncMock(side_effect=lambda _gp, ids, _user, _org: set(ids)),
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_found_records(self):
         from app.utils.fetch_full_record import _fetch_multiple_records_impl
@@ -667,6 +721,12 @@ class TestFetchMultipleRecordsImplGraphFallback:
         gp.check_record_access_with_details = AsyncMock(
             return_value={"record": {"_key": "r1"}} if access else None,
         )
+        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        gp.check_access = AsyncMock(
+            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
+                node_ids=frozenset(node_ids) if access else frozenset(),
+            ),
+        )
         return gp
 
     @pytest.mark.asyncio
@@ -834,6 +894,12 @@ class TestColdPathAccessControl:
         gp.check_record_access_with_details = AsyncMock(
             return_value={"record": {"_key": "r1"}} if access else None,
         )
+        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        gp.check_access = AsyncMock(
+            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
+                node_ids=frozenset(node_ids) if access else frozenset(),
+            ),
+        )
         gp.get_document = AsyncMock(return_value={
             "indexingStatus": "COMPLETED", "virtualRecordId": "vrid-1",
         })
@@ -882,9 +948,10 @@ class TestColdPathAccessControl:
         graph_provider.get_document.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_records_already_in_the_map_are_not_re_checked(self):
-        """Those came from an ACL-filtered search — re-checking each one would
-        add a permission traversal per record for no security gain."""
+    async def test_records_in_the_map_are_checked_in_one_batch_not_per_id(self) -> None:
+        """The map is not only filled by ACL-filtered search (attachments and FK
+        enrichment write to it too), so its entries are checked as well: once,
+        for all ids together."""
         from app.utils import fetch_full_record as ffr
 
         graph_provider = self._graph_provider(access=True)
@@ -895,7 +962,19 @@ class TestColdPathAccessControl:
         )
 
         assert result["ok"] is True
+        graph_provider.check_access.assert_awaited_once()
         graph_provider.check_record_access_with_details.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_denied_record_in_the_map_is_not_served(self) -> None:
+        from app.utils import fetch_full_record as ffr
+
+        result = await ffr._fetch_multiple_records_impl(
+            ["r1"], {"vr1": {"id": "r1", "content": "data"}},
+            org_id="org-1", graph_provider=self._graph_provider(access=False), user_id="u1",
+        )
+
+        assert result["ok"] is False
 
 
 class TestCreateFetchFullRecordTool:

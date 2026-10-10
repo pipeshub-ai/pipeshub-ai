@@ -59,7 +59,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -249,48 +249,8 @@ class RSSConnector(BaseConnector):
         return list(dict.fromkeys(clean_urls))  # Deduplicate while preserving order
 
     def _create_rss_permissions(self) -> list[Permission]:
-        """Create permissions for RSS feed articles based on connector scope."""
-        try:
-            permissions = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating RSS permissions: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id
-                )
-            ]
+        """Articles inherit the feed, and the feed inherits the app. No permission edges."""
+        return []
 
     async def test_connection_and_access(self) -> bool:
         """Test if the configured feed URLs are accessible."""
@@ -354,6 +314,7 @@ class RSSConnector(BaseConnector):
                 web_url=feed_url,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
+                inherit_permissions=True,
             )
 
             permissions = self._create_rss_permissions()
@@ -362,7 +323,7 @@ class RSSConnector(BaseConnector):
                 [(record_group, permissions)]
             )
             self.logger.info(
-                f"✅ Created record group '{record_group_name}' for feed with org-level permissions"
+                f"✅ Created record group '{record_group_name}' for feed"
             )
 
         except Exception as e:
@@ -378,6 +339,10 @@ class RSSConnector(BaseConnector):
             # The instance outlives a sync (scheduled syncs reuse it), so a set left
             # from the last run would skip every entry and no change would be indexed.
             self.processed_urls.clear()
+            # A feed lists only its latest entries and nothing says an article was
+            # removed, so every stored article is kept; a full sync rewrites only the
+            # ones still listed and its sweep would leave the rest unreadable.
+            self.keep_stored_access("articles that have left the feed are kept with their edges")
 
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(

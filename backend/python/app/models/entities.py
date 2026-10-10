@@ -1,4 +1,5 @@
 import builtins
+import logging
 import os
 import json
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from app.modules.qna.prompt_templates import (
 from pydantic import BaseModel, Field
 from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
+    AccessRule,
     CollectionNames,
     Connectors,
     DeleteSource,
@@ -31,6 +33,31 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
+
+_logger = logging.getLogger(__name__)
+
+
+def read_access_rule(doc: dict) -> AccessRule:
+    """Read ``accessRule`` off a stored document.
+
+    Absent means OPEN: a node written before the field existed, or by a
+    connector that declares nothing. An *unrecognised* value (corruption, or a
+    writer that does not share this enum) reads as RESTRICTED so it fails
+    closed, matching the traversal, where an unknown string matches no branch
+    and hides the node.
+    """
+    raw = doc.get("accessRule")
+    if raw is None:
+        return AccessRule.OPEN
+    try:
+        return AccessRule(raw)
+    except ValueError:
+        _logger.error(
+            "Unknown accessRule %r on %s; reading as RESTRICTED",
+            raw,
+            doc.get("_key") or doc.get("id"),
+        )
+        return AccessRule.RESTRICTED
 
 
 def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
@@ -255,6 +282,18 @@ class Record(BaseModel):
     size_in_bytes: int | None = Field(default=None, description="Size of the record content in bytes")
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
+    # Write-time only. The record inherits from and hangs off its record group as
+    # well as its parent record, for a parent whose restriction the source does
+    # not apply to it (a Jira story under a secured epic). The parent's audience
+    # must lie inside the group's, or this widens access.
+    inherit_permissions_from_group: bool = Field(default=False)
+    # Write-time only. When set, this save replaces the record's permission edges.
+    rewrite_permissions: bool = Field(default=False)
+    # Read by the permission traversal on every visited node, so unlike
+    # inherit_permissions — which is expressed as an edge — this is stored.
+    # OPEN by default: a connector that says nothing gets the permissive
+    # reading, and only sources that need every ancestor checked opt in.
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this record's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
     parsing_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Parsing status for the record (parse phase, ahead of indexing/extraction)")
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
@@ -402,6 +441,7 @@ class Record(BaseModel):
             "hideWeburl": self.hide_weburl,
             "isInternal": self.is_internal,
             "isPlaceholder": self.is_placeholder,
+            "accessRule": self.access_rule.value,
             "storageDocumentId": self.storage_document_id,
         }
         # Omitted rather than null: the Neo4j upsert is `SET n +=`, where a null
@@ -492,6 +532,10 @@ class Record(BaseModel):
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            # Must round-trip: dropping this on read would silently reset a
+            # node to OPEN on the next write, widening access rather than
+            # narrowing it.
+            access_rule=read_access_rule(arango_base_record),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -732,6 +776,7 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            access_rule=read_access_rule(arango_base_record),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -2592,6 +2637,10 @@ class RecordGroup(BaseModel):
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record group update in the source system")
     inherit_permissions: bool | None = Field(default=False, description="Permissions for the record group")
+    # As on Record: read per node by the traversal, so stored rather than
+    # inferred from an edge. A Confluence space is RESTRICTED — it carries its
+    # own permission list, so inheriting from the App is never enough alone.
+    access_rule: AccessRule = Field(default=AccessRule.OPEN, description="How this group's own permissions combine with its ancestors': OPEN, STRICT or RESTRICTED")
     is_internal: bool | None = Field(default=False, description="Flag indicating if the record group is for internal use")
     hide_children: bool | None = Field(
         default=False,
@@ -2625,6 +2674,7 @@ class RecordGroup(BaseModel):
             "groupType": self.group_type.value,
             "isInternal": self.is_internal,
             "hideChildren": self.hide_children,
+            "accessRule": self.access_rule.value,
             "permissionModel": (self.permission_model.value if self.permission_model else None),
             "webUrl": self.web_url,
             "createdAtTimestamp": self.created_at,
@@ -2657,6 +2707,7 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
             permission_model=arango_base_record_group.get("permissionModel"),
+            access_rule=read_access_rule(arango_base_record_group),
             is_deleted_at_source=arango_base_record_group.get("isDeletedAtSource") is True,
         )
 
@@ -3009,6 +3060,7 @@ class AppUser(BaseModel):
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the user update in the source system")
     is_active: bool = Field(default=False, description="Whether the user is active")
     title: str | None = Field(default=None, description="Title of the user")
+    is_guest: bool = Field(default=False, description="Whether the source directory lists the user as a guest; the connector's org-wide grants do not reach a guest")
 
     def to_arango_base_user(self) -> dict:
         return {

@@ -355,7 +355,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_non_sender_gets_read(self, connector):
         message = _make_gmail_message(from_email="other@example.com")
@@ -363,7 +363,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     async def test_case_insensitive_sender_comparison(self, connector):
         message = _make_gmail_message(from_email="User@Example.COM")
@@ -371,7 +371,7 @@ class TestTeamProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_no_message_id_returns_none(self, connector):
         message = {"threadId": "t1", "payload": {"headers": []}}
@@ -634,7 +634,7 @@ class TestTeamProcessAttachment:
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
             external_record_group_id="u@e.com:OTHERS",
         )
-        assert result.new_permissions == parent_perms
+        assert result.new_permissions == []
 
     async def test_drive_file_fetches_metadata(self, connector):
         attachment_info = {
@@ -1640,7 +1640,7 @@ class TestSyncRecordGroups:
         user = AppUser(app_name=Connectors.GOOGLE_MAIL, connector_id="c", source_user_id="u1",
                        email="u@t.com", full_name="User One")
         await connector_fullcov._sync_record_groups([user])
-        assert connector_fullcov.data_entities_processor.on_new_record_groups.await_count == 3
+        assert connector_fullcov.data_entities_processor.on_new_record_groups.await_count == 1
 
     @pytest.mark.asyncio
     async def test_skips_user_without_email(self, connector_fullcov):
@@ -1715,13 +1715,13 @@ class TestProcessGmailMessage:
         msg = _make_gmail_message_fullcov(from_email="u@t.com", label_ids=["SENT"])
         result = await connector_fullcov._process_gmail_message("u@t.com", msg, "thread-1", None)
         assert result.record.external_record_group_id == "u@t.com:SENT"
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_received_message_read_perm(self, connector_fullcov):
         msg = _make_gmail_message_fullcov(from_email="other@t.com", label_ids=["INBOX"])
         result = await connector_fullcov._process_gmail_message("u@t.com", msg, "thread-1", None)
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_received_date_does_not_skip_message(self, connector_fullcov):

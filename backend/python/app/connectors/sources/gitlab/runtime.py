@@ -37,6 +37,15 @@ if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
+class GitLabReadError(RuntimeError):
+    """GitLab could not be read; nothing about what exists there follows from it."""
+
+    @classmethod
+    def of(cls, what: str, response: GitLabResponse) -> "GitLabReadError":
+        status = f"HTTP {response.status_code}" if response.status_code else "no response"
+        return cls(f"{what} could not be read from GitLab ({status}): {response.error}")
+
+
 class RuntimeHelper:
     """
     Handles all low-level GitLab API invocation plumbing for ``GitLabConnector``.
@@ -312,7 +321,25 @@ class RuntimeHelper:
 
         ``timeout`` applies independently to each attempt — a stuck first call
         that triggers a refresh-and-retry still gets the full budget on retry.
+
+        A call that could not be read (``read_failed``) marks the connector as
+        keeping its stored access, so a full sync does not sweep what it could
+        not read again.
         """
+        response = await self._call_with_auth_retry(op, timeout=timeout, op_label=op_label)
+        if response.read_failed:
+            self.c.keep_stored_access(
+                f"GitLab {op_label or 'call'} could not be read: {response.error}"
+            )
+        return response
+
+    async def _call_with_auth_retry(
+        self,
+        op: Callable[[], GitLabResponse | Awaitable[GitLabResponse]],
+        *,
+        timeout: float | None,
+        op_label: str | None,
+    ) -> GitLabResponse:
         token_sent = self._current_token()
         response = await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
         if not self._is_auth_error(response):
@@ -432,11 +459,9 @@ class RuntimeHelper:
                     _GITLAB_PAGE_BATCH_TIMEOUT_SECONDS,
                     len(items),
                 )
-                return GitLabResponse(
-                    success=False,
-                    data=items,
-                    error=f"GitLab page batch timed out after {_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS:.0f}s",
-                )
+                error = f"GitLab page batch timed out after {_GITLAB_PAGE_BATCH_TIMEOUT_SECONDS:.0f}s"
+                self.c.keep_stored_access(f"{progress_label} stopped after {len(items)} items: {error}")
+                return GitLabResponse(success=False, data=items, error=error)
 
             items.extend(batch)
             if items:
@@ -449,6 +474,7 @@ class RuntimeHelper:
                     err,
                     exc_info=err,
                 )
+                self.c.keep_stored_access(f"{progress_label} stopped after {len(items)} items: {err}")
                 return GitLabResponse(success=False, data=items, error=str(err))
             if done:
                 break

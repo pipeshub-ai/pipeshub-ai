@@ -49,9 +49,10 @@ export function resetRootListLoads(): void {
   newestReplacingLoadDone = true;
 }
 
-export function fetchRootAppPage(page: number): Promise<KnowledgeHubApiResponse> {
+/** A page of root apps; no cursor reads the first page. */
+export function fetchRootAppPage(cursor: string | null): Promise<KnowledgeHubApiResponse> {
   return KnowledgeHubApi.getNavigationNodes({
-    page,
+    ...(cursor ? { cursor } : {}),
     limit: SIDEBAR_PAGINATION_PAGE_SIZE,
     include: 'counts',
     sortBy: 'updatedAt',
@@ -59,12 +60,13 @@ export function fetchRootAppPage(page: number): Promise<KnowledgeHubApiResponse>
   });
 }
 
+/** "Load more" state after a page. Without a cursor there is no way to ask for more, so no "load more". */
 export function rootListPaginationAfter(
   pagination: KnowledgeHubApiResponse['pagination'] | undefined,
-): { hasNext: boolean; nextPage: number } | null {
-  return pagination
-    ? { hasNext: pagination.hasNext, nextPage: pagination.hasNext ? pagination.page + 1 : pagination.page }
-    : null;
+): { hasNext: boolean; nextCursor: string | null } | null {
+  if (!pagination) return null;
+  const nextCursor = pagination.nextCursor ?? null;
+  return { hasNext: Boolean(pagination.hasNext && nextCursor), nextCursor };
 }
 
 export function collectionsFirst(appItems: KnowledgeHubNode[]): KnowledgeHubNode[] {
@@ -83,7 +85,7 @@ export async function loadRootAppListFirstPage(): Promise<boolean> {
   return runReplacingRootListLoad(async (isCurrent) => {
     let response: KnowledgeHubApiResponse;
     try {
-      response = await fetchRootAppPage(1);
+      response = await fetchRootAppPage(null);
     } catch (error) {
       if (!isCurrent()) return false;
       throw error;

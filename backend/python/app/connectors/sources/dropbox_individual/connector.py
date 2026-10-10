@@ -605,6 +605,7 @@ class DropboxIndividualConnector(BaseConnector):
                 weburl=preview_url, # Calculated in step 5.5
                 signed_url=signed_url, # Calculated in step 5
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
                 preview_renderable=is_file,
@@ -614,33 +615,8 @@ class DropboxIndividualConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            # 8. Handle Permissions
-            new_permissions = []
-
-            try:
-                new_permissions.append(
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.WRITE,
-                        entity_type=EntityType.USER
-                    )
-                )
-
-            except Exception as perm_ex:
-                self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
-                # Safe Fallback to owner permission to prevent data invisibility
-                new_permissions = [
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-                ]
-
-            # 9. Compare permissions
-            old_permissions = []
+            file_record.rewrite_permissions = True
+            file_record.inherit_permissions = True
 
             return RecordUpdate(
                 record=file_record,
@@ -649,9 +625,9 @@ class DropboxIndividualConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=old_permissions,
-                new_permissions=new_permissions,
+                permissions_changed=True,
+                old_permissions=[],
+                new_permissions=[],
                 external_record_id=entry.id
             )
 
@@ -1022,6 +998,9 @@ class DropboxIndividualConnector(BaseConnector):
 
             app_user = self._get_current_user_as_app_user(response.data)
             await self.data_entities_processor.on_new_app_users([app_user])
+            await self.register_authenticated_source_user(
+                response.data.email, response.data.account_id
+            )
             self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
 
             # 2. Identify the User (for backward compatibility with existing code)
@@ -1060,11 +1039,9 @@ class DropboxIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=user_id,
+            inherit_permissions=True,
         )
-        # Permissions: Owner
-        permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
-
-        await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
         return record_group
 
     async def run_incremental_sync(self) -> None:

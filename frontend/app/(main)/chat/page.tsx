@@ -14,7 +14,8 @@ import {
   findModelInfoInConversationLists,
   pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
-import { ChatSuggestion } from '@/chat/types';
+import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
+import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -340,12 +341,13 @@ function ChatContent() {
           if (cancelled) return;
           const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
           const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+          const wholeCollections = collectionRows.filter((r) => !r.nodeType);
           const kbIds =
-            collectionRows.length > 0
-              ? collectionRows.map((r) => r.id)
+            wholeCollections.length > 0
+              ? wholeCollections.map((r) => r.id)
               : knowledgeDefaults.kb;
           const knowledgeDefaultsForStore = {
-            apps: knowledgeDefaults.apps,
+            ...knowledgeDefaults,
             kb: kbIds,
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
@@ -536,36 +538,13 @@ function ChatContent() {
             .find(
               (msg) =>
                 msg.role === 'user' &&
-                (msg.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
-                  ?.custom?.appliedFilters != null
+                (msg.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)?.custom
+                  ?.appliedFilters != null
             );
-          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
+          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
-            // Legacy chats stored the KB/Collections root ID in apps. With the new
-            // behavior, KB roots are never added to apps — drop them for compat.
-            const legacyFilteredApps = af.apps.filter(
-              (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-            );
-            if (urlAgentId) {
-              store.setAgentKnowledgeScope({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            } else {
-              store.setFilters({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            }
-            const namesCache: Record<string, string> = {};
-            const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-            for (const node of [...legacyFilteredApps, ...af.kb]) {
-              namesCache[node.id] = node.name;
-              metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-            }
-            store.setCollectionNamesCache(namesCache);
-            store.setCollectionMetaCache(metaCache);
+            restoreAppliedFilters(af, Boolean(urlAgentId));
           } else {
             if (urlAgentId) {
               store.setAgentKnowledgeScope(null);
@@ -713,39 +692,7 @@ function ChatContent() {
           .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
 
         if (lastFiltered?.appliedFilters) {
-          const af = lastFiltered.appliedFilters;
-          const store = useChatStore.getState();
-
-          // Legacy chats stored the KB/Collections root ID in apps. With the new
-          // behavior, KB roots are never added to apps — drop them for compat.
-          const legacyFilteredApps = af.apps.filter(
-            (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-          );
-
-          if (historyAndShareAgentId) {
-            store.setAgentKnowledgeScope({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          } else {
-            store.setFilters({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          }
-
-          const namesCache: Record<string, string> = {};
-          const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-          for (const node of [...legacyFilteredApps, ...af.kb]) {
-            namesCache[node.id] = node.name;
-            metaCache[node.id] = {
-              name: node.name,
-              nodeType: node.nodeType,
-              connector: node.connector,
-            };
-          }
-          store.setCollectionNamesCache(namesCache);
-          store.setCollectionMetaCache(metaCache);
+          restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId));
         }
 
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
@@ -936,12 +883,19 @@ function ChatContent() {
       });
     }
 
+    const selectedNodes = pending.pageContext.selectedNodes ?? [];
+    if (selectedNodes.length > 0) {
+      restoreAppliedFilters(appliedFiltersFromNodes(selectedNodes), false);
+    }
+
     // 2. Apply any settings overrides from the widget
     if (pending.settings) {
       if (pending.settings.mode) store.setMode(pending.settings.mode);
       if (pending.settings.queryMode) store.setQueryMode(pending.settings.queryMode);
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
+
+    if (!pending.message.trim() && !pending.attachments?.length) return;
 
     // 3. Auto-send the message through the runtime. Attachments arrive
     // pre-uploaded (the widget triggered the upload at attach-time), so we

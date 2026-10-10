@@ -3,14 +3,10 @@ from logging import Logger
 from typing import TYPE_CHECKING, AsyncContextManager, Optional
 
 from app.models.entities import (
-    Anyone,
-    AnyoneSameOrg,
-    AnyoneWithLink,
     AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
-    Domain,
     FileRecord,
     Org,
     Person,
@@ -33,9 +29,12 @@ class DataStoreProvider(ABC):
 
     """Base class for all data store providers"""
     @abstractmethod
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Return a transaction store context manager.
+
+        ``explicit=True`` asks for one real transaction for the block where the
+        backend would otherwise commit each statement; None is the backend setting.
 
         Usage:
             async with datastore.transaction() as tx_store:
@@ -98,6 +97,13 @@ class BaseDataStore(ABC):
     async def get_record_by_external_id(
         self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
     ) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def get_file_records_under_path(
+        self, connector_id: str, external_record_group_id: str, path: str
+    ) -> list[Record]:
+        """Live records of a group stored at ``path`` or below it, deepest first."""
         pass
 
     @abstractmethod
@@ -280,6 +286,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def remove_app_users_except(self, connector_id: str, emails: list[str]) -> int:
+        pass
+
+    @abstractmethod
     async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
         pass
 
@@ -311,10 +321,6 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
-        pass
-
-    @abstractmethod
-    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         pass
 
     @abstractmethod
@@ -358,22 +364,6 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
-        pass
-
-    @abstractmethod
     async def create_record_relation(
         self,
         from_record_id: str,
@@ -403,17 +393,23 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_from_node(
+        self, from_node_id: str, edge_collection: str, *, include_pending_sweep: bool = False
+    ) -> list[dict]:
         pass
 
     @abstractmethod
     async def get_edges_from_node_with_target_name(
-        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False
+        self, from_node_id: str, edge_collection: str, *, raise_on_error: bool = False,
+        include_pending_sweep: bool = False,
     ) -> list[dict]:
         pass
     
     @abstractmethod
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
+    async def get_edge(
+        self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str,
+        *, include_pending_sweep: bool = False,
+    ) -> Optional[dict]:
         pass
 
     @abstractmethod
@@ -457,7 +453,8 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def delete_edges_between_collections(
-        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+        *, to_connector_id: str | None = None,
     ) -> None:
         pass
 

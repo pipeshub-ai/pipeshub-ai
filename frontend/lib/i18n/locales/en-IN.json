@@ -553,7 +553,9 @@
     "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
     "adjustFiltersHint": "Select a different source or adjust your filters",
     "addFromCollectionsHint": "You can add your company files or folders from the Collections",
-    "addFilesHint": "Add your files or folders"
+    "addFilesHint": "Add your files or folders",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -650,6 +652,12 @@
     "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
+    "treeEmpty": "Nothing here",
+    "treeLoadFailed": "Couldn't load these items",
+    "treeRetry": "Try again",
+    "treeIncludedWith": "Included with {{name}}",
+    "treeExpand": "Show what is in {{name}}",
+    "treeCollapse": "Hide what is in {{name}}",
     "noCollectionsAvailable": "No collections available",
     "comingSoon": "Coming soon",
     "answer": "Answer",
@@ -1125,7 +1133,9 @@
       "webSearch": "Web Search"
     },
     "resizePanels": "Resize chat and preview panels",
-    "mobileProfileComingSoon": "Profile page on mobile is coming soon."
+    "mobileProfileComingSoon": "Profile page on mobile is coming soon.",
+    "selectedAlone": "{{name}} (this item only)",
+    "noConnectorsFound": "No connectors found"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -3914,7 +3924,10 @@
     "mcpServerWithToolCount_one": "MCP server with {{count}} tool",
     "mcpServerWithToolCount_other": "MCP server with {{count}} tools",
     "deprecatedToolsBanner_one": "{{count}} tool on this agent is deprecated. Remove it: {{tools}}",
-    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}"
+    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}",
+    "limitSource": "Choose what {{name}} searches",
+    "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
+    "limitSourceCount": "Limited to {{count}} selected"
   },
   "recordView": {
     "sections": {

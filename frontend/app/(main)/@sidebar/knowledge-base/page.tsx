@@ -12,7 +12,7 @@ import { openFolderChildren, reloadOpenFoldersUnder } from '../../knowledge-base
 // Registers the sign-out reset for the knowledge base's cached state.
 import '../../knowledge-base/utils/sidebar-session';
 import { fetchAppDirectChildren } from '../../knowledge-base/utils/fetch-app-direct-children';
-import { buildNavUrl, getIsAllRecordsMode } from '../../knowledge-base/utils/nav';
+import { buildNavUrl, getIsAllRecordsMode, pushKbUrl } from '../../knowledge-base/utils/nav';
 import { findNodeInCategorized } from '../../knowledge-base/utils/find-node';
 import { useCallback, useMemo, Suspense } from 'react';
 import { toast } from '@/lib/store/toast-store';
@@ -65,13 +65,13 @@ function KnowledgeBaseSidebarSlotContent() {
   const handleSelectKb = useCallback(
     (id: string) => {
       if (id) {
-        router.push(buildNavUrl(isAllRecordsMode, { kbId: id }));
+        pushKbUrl(buildNavUrl(isAllRecordsMode, { kbId: id }));
       } else {
-        router.push(isAllRecordsMode ? '/knowledge-base?view=all-records' : '/knowledge-base');
+        pushKbUrl(isAllRecordsMode ? '/knowledge-base?view=all-records' : '/knowledge-base');
       }
       closeOnMobile();
     },
-    [router, isAllRecordsMode, closeOnMobile]
+    [isAllRecordsMode, closeOnMobile]
   );
 
   const handleNodeExpand = useCallback(
@@ -144,40 +144,41 @@ function KnowledgeBaseSidebarSlotContent() {
       if (isAllRecordsMode) {
         setAllRecordsSidebarSelection({ type: 'explorer' });
       }
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      pushKbUrl(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
       closeOnMobile();
     },
-    [router, isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection, closeOnMobile]
+    [isAllRecordsMode, setCurrentFolderId, setAllRecordsSidebarSelection, closeOnMobile]
   );
 
   // --- All Records mode handlers ---
   const handleAllRecordsSelectAll = useCallback(() => {
-    router.push('/knowledge-base?view=all-records');
+    pushKbUrl('/knowledge-base?view=all-records');
     closeOnMobile();
-  }, [router, closeOnMobile]);
+  }, [closeOnMobile]);
 
   const handleAllRecordsSelectCollection = useCallback(
     (id: string) => {
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: id }));
+      pushKbUrl(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: id }));
       closeOnMobile();
     },
-    [router, isAllRecordsMode, closeOnMobile]
+    [isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectConnectorItem = useCallback(
     (nodeType: string, nodeId: string) => {
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
+      pushKbUrl(buildNavUrl(isAllRecordsMode, { nodeType, nodeId }));
       closeOnMobile();
     },
-    [router, isAllRecordsMode, closeOnMobile]
+    [isAllRecordsMode, closeOnMobile]
   );
 
   const handleAllRecordsSelectApp = useCallback(
     (appId: string) => {
-      router.push(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: appId }));
+      void fetchAppDirectChildren(appId).catch(() => {});
+      pushKbUrl(buildNavUrl(isAllRecordsMode, { nodeType: 'app', nodeId: appId }));
       closeOnMobile();
     },
-    [router, isAllRecordsMode, closeOnMobile]
+    [isAllRecordsMode, closeOnMobile]
   );
 
   const handleSidebarReindex = useCallback(

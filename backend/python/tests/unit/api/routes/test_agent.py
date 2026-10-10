@@ -930,11 +930,28 @@ class TestParseKnowledgeSources:
         result = _parse_knowledge_sources(raw)
         assert result["jira"]["filters"] == {"types": ["bug"]}
 
-    def test_invalid_json_filters_default_to_empty(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "jira", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
+
+    @pytest.mark.parametrize("filters", [{"records": "x"}, {"records": [123, None]}, [1, 2], {"recordGroups": [""]}])
+    def test_a_limit_that_is_not_lists_of_ids_is_refused(self, filters) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])
+
+    @pytest.mark.parametrize("filters", [None, "", "{}", {}, []])
+    def test_no_filters_in_any_spelling_is_a_whole_source(self, filters) -> None:
+        from app.api.routes.agent import _parse_knowledge_sources
+        result = _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])
         assert result["jira"]["filters"] == {}
+
+    def test_a_limit_keeps_the_names_saved_beside_it(self) -> None:
+        from app.api.routes.agent import _parse_knowledge_sources
+        filters = {"records": ["f1"], "nodes": [{"id": "f1", "name": "Specs", "nodeType": "folder"}]}
+        assert _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])["jira"]["filters"] == filters
 
 
 # ---------------------------------------------------------------------------
@@ -1782,11 +1799,11 @@ class TestParseKnowledgeSourcesFull:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"key": "val"}
 
-    def test_invalid_json_string_filters(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_string_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_non_dict_entry_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
@@ -3745,11 +3762,11 @@ class TestParseKnowledgeSourcesEdgeCases:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_filters_as_invalid_json_string(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_filters_as_invalid_json_string_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_missing_connector_id(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources

@@ -82,6 +82,10 @@ class BaseConnector(ABC):
     # (and so one messaging producer), instead of building one per instance. Only
     # safe for connectors whose processor carries no per-instance state.
     shares_org_processor: bool = False
+    # Why the running sync left some stored access as it was; see keep_stored_access.
+    stored_access_kept: Optional[str] = None
+    # Why the running sync left the stored user-app gates as they were; see keep_stored_gates.
+    stored_gates_kept: Optional[str] = None
 
     def __init__(
         self,
@@ -119,6 +123,22 @@ class BaseConnector(ABC):
         self._resilience_loaded = False
         self._thread_pool_lease: ThreadPoolLease | None = None
         self.instance_name: Optional[str] = None
+
+    def keep_stored_access(self, reason: str) -> None:
+        """Record that a failed read kept the stored grants, members or groups of
+        something instead of overwriting them.
+
+        A full sync that kept any must not sweep the edges it did not rewrite:
+        those include what was kept.
+        """
+        if self.stored_access_kept is None:
+            self.stored_access_kept = reason
+
+    def keep_stored_gates(self, reason: str) -> None:
+        """Record that the user listing may have missed users, so a full sync must
+        not sweep the user-app gates it did not rewrite. Everything else is swept."""
+        if self.stored_gates_kept is None:
+            self.stored_gates_kept = reason
 
     @property
     def connector_metadata(self) -> Dict[str, Any]:
@@ -339,6 +359,43 @@ class BaseConnector(ABC):
         helper without a one-off migration.
         """
         return f"internal-{self.connector_id}"
+
+    async def ensure_creator_user_app_relation(self) -> None:
+        """Upsert only the creator's user-to-app edge.
+
+        Personal connectors reach every record by inheriting up to the app, so
+        the creator is linked to the app and nowhere else.
+        """
+        if not self.creator_email:
+            self.logger.warning(
+                "Cannot link creator to app for connector %s: no creator email resolved",
+                self.connector_id,
+            )
+            return
+
+        app_name_enum = (
+            self.connector_name
+            if isinstance(self.connector_name, Connectors)
+            else Connectors(self.connector_name)
+        )
+        creator_member = AppUser(
+            app_name=app_name_enum,
+            connector_id=self.connector_id,
+            source_user_id=f"creator_{self.created_by or self.creator_email}",
+            email=self.creator_email,
+            full_name=self.creator_email,
+            org_id=self.data_entities_processor.org_id,
+            is_active=True,
+        )
+        try:
+            await self.data_entities_processor.on_new_app_users([creator_member])
+        except Exception as e:
+            self.logger.warning(
+                "USER_APP_RELATION upsert failed for connector %s creator %s: %s.",
+                self.connector_id,
+                self.creator_email,
+                e,
+            )
 
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo

@@ -944,7 +944,7 @@ class TestCreateAgent:
             "webSearch": {"provider": "Tavily", "providerLabel": "Tavily"},
             "toolsets": [{"name": "jira", "tools": [{"name": "search"}]}, "junk", {"name": ""}],
             "mcpServers": [{"instanceId": "i1", "name": "github", "tools": [{"name": "t"}]}],
-            "knowledge": [{"connectorId": "c1", "filters": "not json"}],
+            "knowledge": [{"connectorId": "c1", "filters": "{}"}],
             "skills": ["mine"],
         })
         assert response.status_code == 200
@@ -957,6 +957,18 @@ class TestCreateAgent:
         assert agent["skills"] == [{"name": "mine"}]
         assert len(graph.calls_to("begin_transaction")) == 1
         assert len(graph.committed) == 1
+
+    @pytest.mark.parametrize("filters", ["not json", {"records": "x"}, {"records": [123]}, [1, 2]])
+    def test_a_knowledge_limit_that_cannot_be_read_is_refused_before_anything_is_written(
+        self, client, graph, filters,
+    ) -> None:
+        """Saved as "no filters" it would let the agent search the whole source."""
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Limited", "knowledge": [{"connectorId": "c1", "filters": filters}],
+        })
+        assert response.status_code == 400
+        assert "cannot be read" in response.json()["detail"]
+        assert not graph.calls_to("begin_transaction")
 
     def test_each_tool_is_filed_under_its_own_toolset(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

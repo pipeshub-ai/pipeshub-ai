@@ -580,3 +580,50 @@ class TestDsCallArgForwarding:
 
         result = await runtime.ds_call_async(async_method, "arg1", key="value")
         assert result.success is True
+
+
+class TestReadFailuresKeepStoredAccess:
+    """A call that got no answer from GitLab marks the connector so a full sync
+    does not sweep what it could not read (N4GIT-01)."""
+
+    @pytest.mark.parametrize("status", [None, 500, 502, 429, 504])
+    async def test_a_call_gitlab_did_not_answer_keeps_stored_access(self, status) -> None:
+        c, runtime = _make_runtime()
+        method = MagicMock(__name__="get_project", return_value=GitLabResponse(
+            success=False, error="Read timed out. (read timeout=60)", status_code=status,
+        ))
+
+        res = await runtime.ds_call(method, "test/demo-repository")
+
+        assert res.read_failed
+        c.keep_stored_access.assert_called_once()
+        assert "get_project" in c.keep_stored_access.call_args[0][0]
+        runtime.shutdown()
+
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_an_answer_that_the_object_is_absent_keeps_nothing(self, status) -> None:
+        c, runtime = _make_runtime()
+        method = MagicMock(__name__="get_project", return_value=GitLabResponse(
+            success=False, error="404 Project Not Found", status_code=status,
+        ))
+
+        res = await runtime.ds_call(method, "test/demo-repository")
+
+        assert not res.read_failed
+        c.keep_stored_access.assert_not_called()
+        runtime.shutdown()
+
+    async def test_a_listing_that_breaks_part_way_keeps_stored_access(self) -> None:
+        c, runtime = _make_runtime()
+
+        def pages():
+            yield "a"
+            raise ConnectionError("connection reset")
+
+        method = MagicMock(__name__="list_issues", return_value=GitLabResponse(success=True, data=pages()))
+
+        res = await runtime.paged_list(method, progress_label="list_issues(11)")
+
+        assert not res.success and res.data == ["a"]
+        c.keep_stored_access.assert_called_once()
+        runtime.shutdown()

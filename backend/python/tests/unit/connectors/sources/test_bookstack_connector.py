@@ -409,8 +409,8 @@ class TestBookStackPermissions:
             "fallback_permissions": {"inheriting": False},
         }
         perms = await bookstack_connector._parse_bookstack_permissions(permissions_data, {}, "page")
-        # 1 owner + 1 read + 1 write
-        assert len(perms) == 3
+        # 1 read + 1 write; the owner has no role that views their own pages
+        assert len(perms) == 2
 
     async def test_parse_bookstack_permissions_fallback_book(self, bookstack_connector):
         bookstack_connector.data_source = MagicMock()
@@ -429,8 +429,8 @@ class TestBookStackPermissions:
         perms = await bookstack_connector._parse_bookstack_permissions(
             permissions_data, roles_details, "book"
         )
-        # 1 owner + 1 from role 100 (write because create-all)
-        assert len(perms) == 2
+        # role 100 (write because create-all); the owner has no role that views their own books
+        assert len(perms) == 1
 
 
 # ===========================================================================
@@ -775,6 +775,31 @@ class TestBookStackUserEvents:
         ]
         await bookstack_connector._handle_user_upsert_event(events, app_users)
         bookstack_connector._handle_role_create_event.assert_awaited()
+
+    async def test_a_user_update_clears_only_this_connectors_role_memberships(self, bookstack_connector):
+        # BOOKSTACK-06: the same person's Jira and Slack roles must survive it.
+        from app.models.entities import AppUser
+        bookstack_connector.data_source = MagicMock()
+        bookstack_connector.data_source.get_user = AsyncMock(
+            return_value=_make_response(True, {"id": 5, "email": "test@t.com", "roles": []})
+        )
+        bookstack_connector._handle_user_create_event = AsyncMock()
+        bookstack_connector.data_entities_processor.get_user_by_email = AsyncMock(
+            return_value=MagicMock(id="user-1")
+        )
+        app_users = [
+            AppUser(
+                app_name=Connectors.BOOKSTACK, connector_id="bs-conn-1",
+                source_user_id="5", email="test@t.com", full_name="TestUser", is_active=True,
+            ),
+        ]
+
+        await bookstack_connector._handle_user_upsert_event([{"detail": "(5) TestUser"}], app_users)
+
+        delete = bookstack_connector.data_entities_processor.delete_edges_between_collections
+        delete.assert_awaited_once()
+        assert delete.await_args.args[0] == "user-1"
+        assert delete.await_args.kwargs == {"to_connector_id": "bs-conn-1"}
 
 
 # ===========================================================================
@@ -1657,7 +1682,9 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
+        assert "book 1" in (connector.stored_access_kept or ""), "a full sync must not sweep what it kept"
 
 
 class TestParseBookstackPermissions:
@@ -1665,16 +1692,27 @@ class TestParseBookstackPermissions:
     async def test_with_owner(self, connector):
         connector.data_source = AsyncMock()
         connector.data_source.get_user = AsyncMock(
-            return_value=_make_response(data={"email": "owner@test.com"})
+            return_value=_make_response(data={"email": "owner@test.com", "roles": [{"id": 5}]})
         )
         data = {
             "owner": {"id": 1},
             "role_permissions": [],
-            "fallback_permissions": {},
+            "fallback_permissions": {"inheriting": True},
         }
-        result = await connector._parse_bookstack_permissions(data, {}, "book")
+        # Ownership counts only through the owner's role permission to view their own items.
+        result = await connector._parse_bookstack_permissions(data, {5: {"permissions": ["book-view-own"]}}, "book")
         assert len(result) == 1
         assert result[0].type == PermissionType.OWNER
+
+    @pytest.mark.asyncio
+    async def test_owner_without_view_own_gets_nothing_of_their_own(self, connector):
+        connector.data_source = AsyncMock()
+        connector.data_source.get_user = AsyncMock(
+            return_value=_make_response(data={"email": "owner@test.com", "roles": [{"id": 5}]})
+        )
+        data = {"owner": {"id": 1}, "role_permissions": [], "fallback_permissions": {}}
+        result = await connector._parse_bookstack_permissions(data, {5: {"permissions": ["book-view-own"]}}, "book")
+        assert len(result) == 0
 
     @pytest.mark.asyncio
     async def test_owner_no_email(self, connector):

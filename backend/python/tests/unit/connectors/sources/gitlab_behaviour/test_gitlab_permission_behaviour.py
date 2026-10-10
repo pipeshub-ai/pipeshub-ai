@@ -5,24 +5,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-from gitlab_server_fake import GUEST, OWNER, REPORTER
+from gitlab_server_fake import BASE_URL, GUEST, MINIMAL, OWNER, REPORTER
 from gitlab_world import ALICE, API, BOB, CAROL, DAVE, WEB, build_acme
 
 if TYPE_CHECKING:
     from gitlab_store_fakes import FakeRecordsDb
-
-FAILED_PROJECT_READ = (
-    "Failed-read rule (#3521, #3528): projects.py answers a failed project member read by saving "
-    "creator-only access, which replaces every member's stored access to the project"
-)
-FAILED_GROUP_LOOKUP = (
-    "Failed-read rule (#3521, #3528): projects.py answers a failed group lookup by saving the group "
-    "with creator-only access, which replaces every member's stored access to it"
-)
-FAILED_GROUP_READ = (
-    "Failed-read rule (#3521, #3528): projects.py answers a failed group member read by saving the "
-    "members of the group's projects instead, which replaces the stored group access and adds people"
-)
 
 
 def project_audiences(db: FakeRecordsDb, project_id: int) -> dict[str, set[str]]:
@@ -162,6 +149,8 @@ async def test_project_filter_syncs_only_the_named_project(harness, gitlab, db) 
     assert f"{WEB}-code-repository" in db.record_groups
     assert f"{API}-code-repository" not in db.record_groups
     assert db.record_groups[str(WEB)].parent_external_group_id == "acme"
+    assert db.record_groups[str(WEB)].name == "web"
+    assert db.record_groups[str(WEB)].web_url == f"{BASE_URL}/acme/web"
 
 
 async def test_excluding_a_group_also_excludes_its_subgroup_projects(harness, gitlab, db) -> None:
@@ -234,7 +223,6 @@ async def test_a_guest_only_member_of_a_private_project_gets_no_code_even_via_th
     assert "bob@example.com" not in db.access("/acme/web/-/blob/HEAD/src/app.py")
 
 
-@pytest.mark.xfail(strict=True, reason=FAILED_PROJECT_READ)
 async def test_a_failed_project_member_read_keeps_the_stored_project_access(harness, gitlab, db) -> None:
     build_acme(gitlab)
     await harness.sync()
@@ -247,7 +235,6 @@ async def test_a_failed_project_member_read_keeps_the_stored_project_access(harn
     assert project_audiences(db, WEB) == before
 
 
-@pytest.mark.xfail(strict=True, reason=FAILED_GROUP_READ)
 async def test_a_failed_group_member_read_keeps_the_stored_group_access(harness, gitlab, db) -> None:
     build_acme(gitlab)
     harness.set_sync_filter("group_ids", "in", ["acme"])
@@ -261,7 +248,6 @@ async def test_a_failed_group_member_read_keeps_the_stored_group_access(harness,
     assert db.group_access("acme") == before
 
 
-@pytest.mark.xfail(strict=True, reason=FAILED_GROUP_LOOKUP)
 async def test_a_failed_group_lookup_keeps_the_stored_group_access(harness, gitlab, db) -> None:
     build_acme(gitlab)
     harness.set_sync_filter("group_ids", "in", ["acme"])
@@ -273,3 +259,37 @@ async def test_a_failed_group_lookup_keeps_the_stored_group_access(harness, gitl
     await harness.sync()
 
     assert db.group_access("acme") == before
+
+
+ERIN = 6
+
+
+@pytest.mark.parametrize(
+    ("group_filter", "group_members_status"),
+    [
+        pytest.param(True, None, id="through-the-group-record-group"),
+        pytest.param(False, None, id="unscoped-project-node"),
+        pytest.param(True, 403, id="child-project-union"),
+    ],
+)
+async def test_a_minimal_access_group_member_reads_nothing_in_the_groups_projects(
+    harness, gitlab, db, group_filter, group_members_status,
+) -> None:
+    # GitLab: Minimal Access "cannot view project features such as wikis, issues, or the repository".
+    build_acme(gitlab)
+    gitlab.add_user(ERIN, "erin", email="erin@example.com")
+    gitlab.groups["acme"].members[ERIN] = MINIMAL
+    gitlab.add_issue(WEB, 1, "Issue 1", "2026-09-01T10:00:00Z")
+    if group_filter:
+        harness.set_sync_filter("group_ids", "in", ["acme"])
+    if group_members_status:
+        gitlab.fail("GET", r"^/api/v4/groups/acme/members(/all)?$", group_members_status)
+
+    await harness.sync()
+
+    if group_filter:
+        assert "erin@example.com" not in db.group_access("acme")
+    for part in project_audiences(db, WEB).values():
+        assert "erin@example.com" not in part
+    assert "erin@example.com" not in db.access(str(WEB * 1000 + 1))
+    assert "bob@example.com" in db.access(str(WEB * 1000 + 1))

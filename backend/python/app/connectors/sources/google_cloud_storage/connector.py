@@ -89,7 +89,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.gcs.gcs import GCSClient
 from app.sources.external.gcs.gcs import GCSDataSource
 from app.connectors.core.base.error.stream_errors import (
@@ -642,16 +642,6 @@ class GCSConnector(BaseConnector):
 
         ts_map = bucket_source_timestamps_ms or {}
 
-        # Get user info once upfront to avoid repeated transactions
-        creator_email = None
-        if self.created_by and self.scope != ConnectorScope.TEAM.value:
-            try:
-                user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                if user and getattr(user, "email", None):
-                    creator_email = user.email
-            except Exception as e:
-                self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
         successful_count = 0
         failed_buckets = []
 
@@ -659,35 +649,6 @@ class GCSConnector(BaseConnector):
         for bucket_name in bucket_names:
             if not bucket_name:
                 continue
-
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=creator_email,
-                            external_id=self.created_by
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
 
             pair = ts_map.get(bucket_name)
             created_ms: int | None = None
@@ -705,6 +666,7 @@ class GCSConnector(BaseConnector):
                 web_url=get_parent_weburl_for_gcs(bucket_name),
                 source_created_at=created_ms,
                 source_updated_at=updated_ms,
+                inherit_permissions=True,
             )
 
             # Process each record group with retry logic
@@ -713,7 +675,7 @@ class GCSConnector(BaseConnector):
 
             for attempt in range(max_retries):
                 try:
-                    await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+                    await self.data_entities_processor.on_new_record_groups([(record_group, [])])
                     successful_count += 1
                     break
                 except Exception as e:
@@ -1302,7 +1264,9 @@ class GCSConnector(BaseConnector):
             # Prepare record data: all items are RecordType.FILE; folders have is_file=False
             record_type = RecordType.FILE
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else obj.get("ContentType") or get_mimetype_for_gcs(normalized_key))
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None
@@ -1386,53 +1350,8 @@ class GCSConnector(BaseConnector):
     async def _create_gcs_permissions(
         self, bucket_name: str, key: str
     ) -> list[Permission]:
-        """Create permissions for a GCS object based on connector scope."""
-        try:
-            permissions = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                if self.created_by:
-                    try:
-                        user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
-                        if user and getattr(user, "email", None):
-                            permissions.append(
-                                Permission(
-                                    type=PermissionType.OWNER,
-                                    entity_type=EntityType.USER,
-                                    email=user.email,
-                                    external_id=self.created_by
-                                )
-                            )
-                    except Exception as e:
-                        self.logger.warning(f"Could not get user for created_by {self.created_by}: {e}")
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {key}: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id
-                )
-            ]
+        """Objects inherit their parent folder or the bucket. No permission edges."""
+        return []
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access."""
@@ -1745,7 +1664,9 @@ class GCSConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(normalized_key) if is_file else None
-            mime_type = obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else obj_metadata.get("ContentType") or get_mimetype_for_gcs(normalized_key))
 
             parent_path = get_parent_path_from_key(normalized_key)
             parent_external_id = f"{bucket_name}/{parent_path}" if parent_path else None

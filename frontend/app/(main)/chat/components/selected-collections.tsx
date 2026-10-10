@@ -5,12 +5,13 @@ import { Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KnowledgeItemIcon } from '@/app/components/ui/knowledge-item-icon';
 import type { ConnectorType } from '@/app/components/ui/ConnectorIcon';
+import type { SelectedNodeKind } from '@/chat/utils/tree-selection';
 
 export interface SelectedItem {
   id: string;
   name: string;
-  /** 'connector' for hub apps/connectors, 'collection' for KB record groups */
-  kind?: 'collection' | 'connector';
+  /** 'connector' for hub apps, 'collection' for collections, 'folder' / 'file' for what is selected inside one */
+  kind?: SelectedNodeKind;
   /** Resolved connector type key — used to render the right connector icon */
   connectorType?: string;
 }

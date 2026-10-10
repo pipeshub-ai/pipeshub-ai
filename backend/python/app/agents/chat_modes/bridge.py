@@ -71,6 +71,13 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    prepare_turn_scope,
+    selection_error,
+)
+from app.utils.attachment_utils import keep_accessible_attachments
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
@@ -282,12 +289,27 @@ async def _run_no_tools_degradation(
     org_id = user_info.get("orgId", "")
     user_id = user_info.get("userId", "")
     blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
+    project_sources = query_info.get("allowedFilters")
+    try:
+        filters = await prepare_turn_scope(
+            graph_provider, user_id, org_id, query_info.get("filters"),
+            project_sources=project_sources if isinstance(project_sources, dict) else None,
+        )
+    except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+        error_code, user_message = selection_error(exc)
+        yield create_sse_event("error", {"error": user_message, "type": error_code})
+        return
+    except Exception as exc:
+        log.error("run_chat_stream: no-tools turn scope failed: %s", exc, exc_info=True)
+        error_code, user_message = classify_exception(exc)
+        yield create_sse_event("error", {"error": user_message, "type": error_code})
+        return
 
     yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
     prefetch = await prefetch_retrieval(
         query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
         retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
-        filters=query_info.get("filters"), limit=query_info.get("limit"),
+        filters=filters, limit=query_info.get("limit"),
         is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
         logger=log, force=True,
     )
@@ -389,6 +411,23 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     try:
         blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
         ref_mapper = CitationRefMapper()
+        project_sources = query_info.get("allowedFilters")
+        filters = await prepare_turn_scope(
+            graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""),
+            query_info.get("filters"),
+            project_sources=project_sources if isinstance(project_sources, dict) else None,
+        )
+        attachments, previous_conversations = await keep_accessible_attachments(
+            graph_provider,
+            org_id=user_info.get("orgId", ""),
+            user_id=user_info.get("userId"),
+            is_service_account=bool(user_info.get("isServiceAccount")),
+            attachments=query_info.get("attachments") or [],
+            previous_conversations=query_info.get("previous_conversations") or [],
+            logger=log,
+            filters=filters,
+        )
+        query_info = {**query_info, "attachments": attachments, "previous_conversations": previous_conversations}
 
         # Everything needed to build the initial state is independent, and all
         # of it sits before the first streamed byte -- run it as one wave. The
@@ -401,7 +440,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ),
                 _resolve_web_search_config(config_service, log) if policy.include_web_search else _none(),
                 resolve_attachments(
-                    query_info.get("attachments"), blob_store=blob_store,
+                    attachments, blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
@@ -422,7 +461,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
-        filters = dict(query_info.get("filters") or {})
         if resolved_attachments.virtual_record_ids:
             # Widened, never narrowed: an attachment scoped search must not
             # accidentally EXCLUDE the rest of the org's knowledge the user
@@ -452,6 +490,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state["available_connectors"] = available_connectors
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
+    except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+        error_code, user_message = selection_error(exc)
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
+        yield _pre_stream_error_frame(protocol, user_message, error_code)
+        return
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)
@@ -496,6 +540,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
+                        attachment_vrids=resolved_attachments.virtual_record_ids,
                     )
                 )
                 if policy.prefetch_retrieval else None

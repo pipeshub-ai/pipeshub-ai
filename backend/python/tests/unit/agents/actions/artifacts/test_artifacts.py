@@ -16,6 +16,7 @@ from app.config.constants.arangodb import OriginTypes
 from app.models.entities import ArtifactType, LifecycleStatus
 from app.services.artifact_registry import ArtifactMetadata, ArtifactVersion, VersionConflictError
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _make_metadata(**overrides) -> ArtifactMetadata:
@@ -232,6 +233,86 @@ def _upload_record(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**fields)
 
 
+def _scoped(
+    graph: MagicMock, connector_of: dict[str, str], artifacts: dict[str, str] | None = None,
+) -> MagicMock:
+    """``check_access`` admits every asked node and applies the scopes it is given;
+    ``artifacts`` maps an artifact's id to the conversation that produced it."""
+    graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+        node_ids=frozenset(node_ids),
+        node_ids_in_scope=frozenset(
+            i for i in node_ids
+            if all(s.admits({"id": i, "connectorId": connector_of.get(i), "groupIds": []}) for s in scopes)
+        ),
+    ))
+    graph.get_selection_nodes = AsyncMock(side_effect=lambda org_id, *, group_ids, record_ids, exact_record_ids, limit: {
+        "groups": [], "records": [{"id": r, "vrid": "", "connectorId": connector_of.get(r)} for r in record_ids],
+    })
+    graph.get_nodes_by_field_in = AsyncMock(side_effect=lambda collection, field, ids, **_: [
+        {"id": i, "orgId": "org-1", "conversationId": conv} for i, conv in (artifacts or {}).items() if i in ids
+    ])
+    return graph
+
+
+class TestGetRecordDownloadUrlUnderASelection:
+    """GS-07: a readable record outside the turn's selection got a URL and its name."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_memo(self):
+        import app.modules.retrieval.selection_scope as selection_scope
+
+        selection_scope._memo.clear()
+        yield
+        selection_scope._memo.clear()
+
+    async def test_an_upload_outside_the_selection_gets_no_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _scoped(_record_graph(record=_upload_record(), acl_access=True), {"rec-1": "kb-1", "folder-a": "drive"})
+        manager, _ = _make_manager(
+            graph_provider=graph, blob_store=blob, filters={"apps": [], "kb": [], "records": ["folder-a"]},
+        )
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        assert "No record found" in json.loads(payload)["error"]
+        blob.get_download_url.assert_not_awaited()
+
+    async def test_a_connector_record_of_an_app_not_picked_is_not_named(self) -> None:
+        graph = _scoped(
+            _record_graph(record=_upload_record(origin=OriginTypes.CONNECTOR), acl_access=True), {"rec-1": "jira"},
+        )
+        manager, _ = _make_manager(graph_provider=graph, filters={"apps": ["confluence"], "kb": []})
+
+        _, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        body = json.loads(payload)
+        assert "source_url" not in body and "file_name" not in body
+
+    async def test_a_record_of_an_app_picked_whole_gets_its_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _scoped(_record_graph(record=_upload_record(), acl_access=True), {"rec-1": "kb-1"})
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob, filters={"apps": [], "kb": ["kb-1"]})
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is True
+
+    async def test_an_artifact_this_conversation_produced_gets_its_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        sandbox = {"rec-1": "coding_sandbox_org-1"}
+        for produced_in, expected in (("conv-1", True), ("conv-0", False)):
+            graph = _scoped(_record_graph(record=_upload_record(), acl_access=True), sandbox, {"rec-1": produced_in})
+            manager, _ = _make_manager(graph_provider=graph, blob_store=blob, filters={"apps": [], "kb": ["kb-1"]})
+
+            success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+            assert success is expected, produced_in
+
+
 class TestGetRecordDownloadUrl:
     async def test_user_without_access_gets_no_signed_url(self) -> None:
         # A signed URL needs no bearer token, so org membership alone must not mint one.
@@ -243,7 +324,7 @@ class TestGetRecordDownloadUrl:
         success, payload = await manager.get_record_download_url(record_id="rec-1")
 
         assert success is False
-        assert "permission" in json.loads(payload)["error"]
+        assert "No record found" in json.loads(payload)["error"]
         blob.get_download_url.assert_not_awaited()
         graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
 
@@ -268,10 +349,23 @@ class TestGetRecordDownloadUrl:
         assert success is False
         blob.get_download_url.assert_not_awaited()
 
-    async def test_direct_permission_edge_gets_signed_url(self) -> None:
+    async def test_direct_permission_edge_alone_gets_no_signed_url(self) -> None:
+        """The access check decides; a direct edge the check does not admit
+        (a STRICT or RESTRICTED record, a closed connector gate) is not enough."""
         blob = MagicMock()
         blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
         graph = _record_graph(record=_upload_record(), has_edge=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, _ = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        blob.get_download_url.assert_not_awaited()
+
+    async def test_accessible_record_gets_signed_url(self) -> None:
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -310,7 +404,7 @@ class TestGetRecordDownloadUrl:
         blob.get_record_stream_url = AsyncMock(
             return_value="https://app.example/api/v1/knowledgeBase/stream/record/rec-1",
         )
-        graph = _record_graph(record=_upload_record(), has_edge=True)
+        graph = _record_graph(record=_upload_record(), acl_access=True)
         manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
 
         success, payload = await manager.get_record_download_url(record_id="rec-1")
@@ -539,3 +633,48 @@ class TestGetArtifactContentBoundsTheFetch:
         )
 
         assert _MAX_ARTIFACT_FETCH_BYTES > _MAX_ARTIFACT_CONTENT_CHARS * 4
+
+
+class TestRecordDownloadUrlChecksAccess:
+    """The record id comes from the model, so a signed URL (or a connector
+    record's name and source URL) is only handed out after the permission check
+    the record routes use -- not after an org check alone."""
+
+    @staticmethod
+    def _manager(allowed):
+        from types import SimpleNamespace
+
+        from app.config.constants.arangodb import OriginTypes
+
+        record = SimpleNamespace(
+            id="rec-1", org_id="org-1", origin=OriginTypes.UPLOAD, external_record_id="blob-1",
+            record_name="f.pdf", mime_type="application/pdf", weburl=None,
+        )
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(return_value=record)
+        graph.check_record_access_with_details = AsyncMock(return_value=allowed)
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://signed/url")
+        manager = ArtifactManager({"org_id": "org-1", "user_id": "user-1",
+                                   "graph_provider": graph, "blob_store": blob})
+        return manager, graph, blob
+
+    @pytest.mark.asyncio
+    async def test_denied_record_gets_no_url(self) -> None:
+        manager, graph, blob = self._manager(allowed=None)
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert not ok
+        graph.check_record_access_with_details.assert_awaited_once_with("user-1", "org-1", "rec-1")
+        blob.get_download_url.assert_not_called()
+        denied = json.loads(payload)["error"]
+
+        graph.get_record_by_id = AsyncMock(return_value=None)
+        _, missing = await manager.get_record_download_url("rec-1")
+        assert json.loads(missing)["error"] == denied    # no existence oracle (P9)
+
+    @pytest.mark.asyncio
+    async def test_accessible_record_gets_its_url(self) -> None:
+        manager, _, blob = self._manager(allowed={"record": {}})
+        ok, payload = await manager.get_record_download_url("rec-1")
+        assert ok and json.loads(payload)["download_url"] == "https://signed/url"
+        blob.get_download_url.assert_awaited_once()

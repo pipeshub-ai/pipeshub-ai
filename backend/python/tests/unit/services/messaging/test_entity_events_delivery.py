@@ -121,7 +121,7 @@ class InMemoryGraph:
             CollectionNames.PERMISSION.value,
         )
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"
 
     async def commit_transaction(self, txn_id: str) -> None:

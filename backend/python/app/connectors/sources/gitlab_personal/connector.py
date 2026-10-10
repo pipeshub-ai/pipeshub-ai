@@ -49,8 +49,15 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     """
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
-        """Route all project access through the ConnectorGroup."""
+        """Skip GitLab membership. Project groups inherit the app."""
         await self._apply_creator_fallback_for_project(project)
+
+    async def _apply_creator_fallback_for_project(self, project: Project) -> None:
+        """Project groups inherit the app. No per-group grant."""
+        groups = self._build_project_record_groups(project)
+        for group in groups:
+            group.inherit_permissions = True
+        await self.c.data_entities_processor.on_new_record_groups([(group, []) for group in groups])
 
     async def _ensure_gitlab_group_record_groups(
         self,
@@ -61,15 +68,18 @@ class GitLabPersonalProjectsSync(ProjectsSync):
         c = self.c
         if not c.data_source:
             return
-        group_permission = c.creator_user_permission()
-        if group_permission is None:
-            return
         self.logger.info(
             "Ensuring GitLab personal group record groups for %s", group_paths
         )
-        for group_path in group_paths:
+        for group_path in sorted(group_paths, key=lambda path: str(path).count("/")):
             group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
-            if group_res.success and group_res.data:
+            if group_res.read_failed:
+                self.logger.error(
+                    "GitLab group %s could not be read (%s); its stored record group stays as it is.",
+                    group_path, group_res.error,
+                )
+                continue
+            if group_res.success is True and group_res.data:
                 group = group_res.data
                 full_path = getattr(group, "full_path", None) or group_path
                 name = getattr(group, "name", full_path) or full_path
@@ -78,6 +88,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 full_path = group_path
                 name = group_path
                 web_url = None
+            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
             group_rg = RecordGroup(
                 org_id=c.data_entities_processor.org_id,
                 name=name,
@@ -85,11 +96,11 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=full_path,
+                parent_external_group_id=parent_path,
                 web_url=web_url,
+                inherit_permissions=True,
             )
-            await c.data_entities_processor.on_new_record_groups(
-                [(group_rg, [group_permission])]
-            )
+            await c.data_entities_processor.on_new_record_groups([(group_rg, [])])
 
 
 @(
@@ -324,7 +335,7 @@ class GitLabPersonalConnector(GitLabConnector):
                 # write rather than dropping the permission for the first
                 # project / group. creator_user_permission (overridden
                 # above) reads the cached permission populated here.
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of projects")
             await self.projects.sync_all_projects()

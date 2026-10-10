@@ -64,10 +64,37 @@ class TestCallerCanReadVirtualRecord:
 
     async def test_service_account_reads_an_org_granted_record(self) -> None:
         graph = _graph(allowed=False)
-        graph.get_edge.return_value = {"type": "ORGANIZATION", "role": "READER"}
+        graph.get_edge.return_value = {"type": "ORGANIZATION", "role": "READER", "uploadedBy": "sa-1"}
 
         assert await caller_can_read_virtual_record(
             graph, user_id="sa-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            is_service_account=True,
+        )
+
+    async def test_service_account_cannot_read_another_callers_upload(self) -> None:
+        graph = _graph(allowed=False)
+        graph.get_edge.return_value = {"type": "ORGANIZATION", "role": "READER", "uploadedBy": "sa-2"}
+
+        assert not await caller_can_read_virtual_record(
+            graph, user_id="sa-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            is_service_account=True,
+        )
+
+    async def test_service_account_cannot_read_an_upload_that_names_no_uploader(self) -> None:
+        graph = _graph(allowed=False)
+        graph.get_edge.return_value = {"type": "ORGANIZATION", "role": "READER"}
+
+        assert not await caller_can_read_virtual_record(
+            graph, user_id="sa-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+            is_service_account=True,
+        )
+
+    async def test_service_account_without_an_id_reads_nothing(self) -> None:
+        graph = _graph(allowed=False)
+        graph.get_edge.return_value = {"type": "ORGANIZATION", "role": "READER"}
+
+        assert not await caller_can_read_virtual_record(
+            graph, user_id=None, org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
             is_service_account=True,
         )
 
@@ -92,7 +119,7 @@ class TestCallerCanReadVirtualRecord:
 
 class TestServiceAccountUploadEdges:
     def test_the_edges_grant_the_org_read_access_with_the_type_the_check_accepts(self) -> None:
-        edges = service_account_upload_permission_edges("org-1", ["rec-1", "rec-2"], 1700)
+        edges = service_account_upload_permission_edges("org-1", ["rec-1", "rec-2"], 1700, uploaded_by="svc-1")
 
         assert [e["to_id"] for e in edges] == ["rec-1", "rec-2"]
         for edge in edges:
@@ -101,6 +128,7 @@ class TestServiceAccountUploadEdges:
             assert edge["to_collection"] == "records"
             assert edge["type"] == SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE
             assert edge["role"] == "READER"
+            assert edge["uploadedBy"] == "svc-1"
 
     def test_arango_accepts_the_edge_type(self) -> None:
         """ArangoDB validates permission edges; a type missing here fails every upload there."""

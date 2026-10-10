@@ -16,7 +16,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 # ---------------------------------------------------------------------------
@@ -53,14 +55,18 @@ def arango(mock_logger, mock_config_service):
 
 
 # ---------------------------------------------------------------------------
-# get_knowledge_hub_node_access — Arango
+# get_knowledge_hub_node_access — Arango: the batch check decides
 # ---------------------------------------------------------------------------
+
+
+def _allow(*ids: str) -> AsyncMock:
+    return AsyncMock(return_value=AccessCheck(node_ids=frozenset(ids)))
 
 
 class TestArangoGetKnowledgeHubNodeAccess:
     @pytest.mark.asyncio
     async def test_hit_returns_node_dict(self, arango):
-        expected = {
+        node = {
             "id": "rec123",
             "name": "PA-1787 Payment outage",
             "nodeType": "record",
@@ -69,93 +75,77 @@ class TestArangoGetKnowledgeHubNodeAccess:
             "webUrl": "https://example.atlassian.net/browse/PA-1787",
             "recordType": "TICKET",
             "indexingStatus": "COMPLETED",
-            "userRole": "READER",
         }
-        arango.http_client.execute_aql = AsyncMock(return_value=[expected])
+        arango.check_access = _allow("rec123")
+        arango.http_client.execute_aql = AsyncMock(return_value=[{"result": node, "kbId": None}])
         result = await arango.get_knowledge_hub_node_access(
             node_id="rec123",
             user_key="user1",
             org_id="org1",
             folder_mime_types=["application/vnd.folder"],
         )
-        assert result == expected
-        arango.http_client.execute_aql.assert_called_once()
-        # Verify org_id and user_key are in the bind vars
-        call_args = arango.http_client.execute_aql.call_args
-        bind_vars = call_args[1].get("bind_vars") or call_args[0][1]
-        assert bind_vars["org_id"] == "org1"
-        assert bind_vars["user_key"] == "user1"
-        assert bind_vars["node_id"] == "rec123"
+        assert result == {**node, "userRole": None}     # a connector item carries no role
+        arango.check_access.assert_awaited_once_with("user1", "org1", node_ids=["rec123"], transaction=None)
+        bind_vars = arango.http_client.execute_aql.call_args.kwargs["bind_vars"]
+        assert bind_vars == {"node_id": "rec123", "org_id": "org1",
+                             "folder_mime_types": ["application/vnd.folder"]}
+
+    @pytest.mark.asyncio
+    async def test_a_collection_item_carries_the_collection_role(self, arango):
+        arango.check_access = _allow("rec1")
+        arango.http_client.execute_aql = AsyncMock(
+            return_value=[{"result": {"id": "rec1", "nodeType": "record"}, "kbId": "kb1"}]
+        )
+        arango.get_user_kb_permission = AsyncMock(return_value="WRITER")
+        result = await arango.get_knowledge_hub_node_access("rec1", "user1", "org1", [])
+        assert result["userRole"] == "WRITER"
+        arango.get_user_kb_permission.assert_awaited_once_with("kb1", "user1", transaction=None)
+
+    @pytest.mark.asyncio
+    async def test_denied_is_none_and_the_node_is_never_read(self, arango):
+        arango.check_access = _allow()
+        arango.http_client.execute_aql = AsyncMock()
+        result = await arango.get_knowledge_hub_node_access("denied-rec", "user1", "org1", [])
+        assert result is None
+        arango.http_client.execute_aql.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_returns_none(self, arango):
+        arango.check_access = _allow("gone")
         arango.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await arango.get_knowledge_hub_node_access(
-            node_id="nonexistent",
-            user_key="user1",
-            org_id="org1",
-            folder_mime_types=[],
-        )
-        assert result is None
+        assert await arango.get_knowledge_hub_node_access("gone", "user1", "org1", []) is None
 
     @pytest.mark.asyncio
-    async def test_denied_returns_none(self, arango):
-        # Empty result means denied (same code path as missing — no info leak)
-        arango.http_client.execute_aql = AsyncMock(return_value=[None])
-        result = await arango.get_knowledge_hub_node_access(
-            node_id="denied-rec",
-            user_key="user1",
-            org_id="org1",
-            folder_mime_types=[],
-        )
-        assert result is None
+    async def test_no_org_is_none_without_asking(self, arango):
+        arango.check_access = _allow("rec1")
+        assert await arango.get_knowledge_hub_node_access("rec1", "user1", "", []) is None
+        arango.check_access.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self, arango):
-        arango.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("DB error"))
-        result = await arango.get_knowledge_hub_node_access(
-            node_id="rec1",
-            user_key="user1",
-            org_id="org1",
-            folder_mime_types=[],
-        )
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_wrong_org_returns_none(self, arango):
-        # Provider should scope by org_id — returning [] simulates no match
-        arango.http_client.execute_aql = AsyncMock(return_value=[])
-        result = await arango.get_knowledge_hub_node_access(
-            node_id="rec-other-org",
-            user_key="user1",
-            org_id="org2",  # different org
-            folder_mime_types=[],
-        )
-        assert result is None
+    async def test_an_unavailable_check_is_not_reported_as_absence(self, arango):
+        arango.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("down"))
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await arango.get_knowledge_hub_node_access("rec1", "user1", "org1", [])
 
 
 # ---------------------------------------------------------------------------
-# get_linked_records — Arango
+# get_linked_records — Arango: neighbours first, then the batch check
 # ---------------------------------------------------------------------------
+
+
+def _link(record_id: str) -> dict:
+    return {
+        "id": record_id, "name": record_id, "recordType": "CONFLUENCE_PAGE",
+        "connectorName": "CONFLUENCE", "webUrl": None, "relationshipType": "LINKED_TO",
+        "hasChildren": False, "indexingStatus": "COMPLETED", "userRole": None,
+    }
 
 
 class TestArangoGetLinkedRecords:
     @pytest.mark.asyncio
-    async def test_returns_list_of_linked_records(self, arango):
-        linked = [
-            {
-                "id": "rel1",
-                "name": "Agent Loop Doc",
-                "recordType": "CONFLUENCE_PAGE",
-                "connectorName": "CONFLUENCE",
-                "webUrl": "https://example.com/wiki",
-                "relationshipType": "LINKED_TO",
-                "hasChildren": False,
-                "indexingStatus": "COMPLETED",
-                "userRole": "READER",
-            }
-        ]
-        arango.http_client.execute_aql = AsyncMock(return_value=[linked])
+    async def test_returns_only_the_accessible_links(self, arango):
+        arango.http_client.execute_aql = AsyncMock(return_value=[_link("rel1"), _link("rel2")])
+        arango.check_access = _allow("rel2")
         result = await arango.get_linked_records(
             record_id="rec123",
             org_id="org1",
@@ -163,15 +153,22 @@ class TestArangoGetLinkedRecords:
             relation_types=["LINKED_TO", "RELATED"],
             limit=10,
         )
-        assert result == linked
-        call_args = arango.http_client.execute_aql.call_args
-        bind_vars = call_args[1].get("bind_vars") or call_args[0][1]
-        assert bind_vars["limit"] == 10
-        assert "LINKED_TO" in bind_vars["relation_types"]
+        assert result == [_link("rel2")]
+        bind_vars = arango.http_client.execute_aql.call_args.kwargs["bind_vars"]
+        assert bind_vars == {"record_id": "rec123", "org_id": "org1", "relation_types": ["LINKED_TO", "RELATED"]}
+        arango.check_access.assert_awaited_once_with("user1", "org1", node_ids=["rel1", "rel2"], transaction=None)
+
+    @pytest.mark.asyncio
+    async def test_the_limit_applies_to_what_the_user_can_see(self, arango):
+        arango.http_client.execute_aql = AsyncMock(return_value=[_link(f"rel{i}") for i in range(4)])
+        arango.check_access = _allow("rel1", "rel2", "rel3")
+        result = await arango.get_linked_records("rec1", "org1", "user1", ["LINKED_TO"], limit=2)
+        assert [r["id"] for r in result] == ["rel1", "rel2"]
 
     @pytest.mark.asyncio
     async def test_empty_result_returns_empty_list(self, arango):
-        arango.http_client.execute_aql = AsyncMock(return_value=[[]])
+        arango.http_client.execute_aql = AsyncMock(return_value=[])
+        arango.check_access = _allow()
         result = await arango.get_linked_records(
             record_id="rec123",
             org_id="org1",
@@ -179,6 +176,7 @@ class TestArangoGetLinkedRecords:
             relation_types=["LINKED_TO"],
         )
         assert result == []
+        arango.check_access.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty_list(self, arango):

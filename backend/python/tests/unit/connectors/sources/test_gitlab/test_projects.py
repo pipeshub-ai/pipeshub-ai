@@ -14,6 +14,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.sources.client.gitlab.gitlab import GitLabResponse
+from app.sources.external.gitlab.gitlab_data_source import GitLabDataSource
+from app.connectors.sources.gitlab.runtime import GitLabReadError
 from app.connectors.sources.gitlab.projects import (
     ProjectsSync,
     _longest_matching_group_path,
@@ -35,6 +38,8 @@ def _project(pid: int, path: str, ns_kind: str = "group", ns_path: str | None = 
     p = MagicMock()
     p.id = pid
     p.path_with_namespace = path
+    p.name = path.rsplit("/", 1)[-1]
+    p.web_url = f"https://gitlab.com/{path}"
     p.default_branch = "main"
     ns = MagicMock()
     ns.kind = ns_kind
@@ -131,6 +136,71 @@ class TestLongestMatchingGroupPath:
         assert _longest_matching_group_path("eng", []) is None
 
 
+class TestReadFailuresAreNotAbsence:
+    """"Could not read" (no answer, 5xx) is not "absent" (404/403) (N4GIT-01)."""
+
+    def _project_filter(self, c: MagicMock) -> None:
+        from app.connectors.core.registry.filters import SyncFilterKey
+        c.sync_filters = {SyncFilterKey.PROJECT_IDS: _make_sync_filter("in", ["test/demo-repository"])}
+
+    async def test_a_listed_project_that_could_not_be_read_fails_the_sync(self) -> None:
+        c = make_mock_connector()
+        self._project_filter(c)
+        c.runtime.ds_call = AsyncMock(return_value=failed_res("Read timed out. (read timeout=60)"))
+
+        with pytest.raises(GitLabReadError, match="test/demo-repository"):
+            await ProjectsSync(c)._resolve_projects_with_filters()
+
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_a_listed_project_gitlab_says_is_absent_is_skipped(self, status) -> None:
+        c = make_mock_connector()
+        self._project_filter(c)
+        c.runtime.ds_call = AsyncMock(return_value=failed_res("404 Project Not Found", status_code=status))
+
+        assert await ProjectsSync(c)._resolve_projects_with_filters() == []
+
+    async def test_project_members_that_could_not_be_read_keep_the_stored_grants(self) -> None:
+        c = make_mock_connector()
+        c._gitlab_included_group_paths = None
+        c.creator_user_permission = MagicMock(return_value=MagicMock(email="owner@example.com"))
+        c.runtime.ds_call = AsyncMock(return_value=failed_res("Read timed out. (read timeout=60)"))
+
+        await ProjectsSync(c)._sync_project_members_as_pseudo(_project(1, "eng/proj"))
+
+        groups = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert len(groups) == 5
+        assert all(perms is None for _, perms in groups)
+
+    async def test_group_members_that_could_not_be_read_keep_the_stored_grants(self) -> None:
+        c = make_mock_connector()
+        group = MagicMock(full_path="eng", web_url="https://gitlab.com/groups/eng")
+        group.name = "Engineering"
+        c.creator_user_permission = MagicMock(return_value=MagicMock(email="owner@example.com"))
+        c.runtime.ds_call = AsyncMock(side_effect=[
+            GitLabResponse(success=True, data=group),
+            failed_res("Connection aborted.", status_code=None),
+        ])
+
+        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng"], candidate_projects=[_project(1, "eng/p")])
+
+        [(_, perms)] = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        assert perms is None
+
+    async def test_a_project_step_that_fails_keeps_stored_access(self) -> None:
+        c = make_mock_connector()
+        c.issues.fetch_issues_batched = AsyncMock(side_effect=RuntimeError("boom"))
+        c.merge_requests.fetch_prs_batched = AsyncMock()
+        c.repos.run = AsyncMock()
+        projects_sync = ProjectsSync(c)
+        projects_sync._resolve_projects_with_filters = AsyncMock(return_value=[_project(1, "eng/proj")])
+        projects_sync._sync_project_members_as_pseudo = AsyncMock()
+
+        await projects_sync._sync_projects()
+
+        c.keep_stored_access.assert_called_once()
+        assert "issues of project eng/proj" in c.keep_stored_access.call_args[0][0]
+
+
 # ===========================================================================
 # _resolve_projects_with_filters
 # ===========================================================================
@@ -145,7 +215,7 @@ class TestResolveProjectsWithFilters:
         c.data_source = MagicMock()
 
         proj = _project(1, "eng/proj-a")
-        res = MagicMock(success=True, data=proj, error=None)
+        res = GitLabResponse(success=True, data=proj)
         c.runtime.ds_call = AsyncMock(return_value=res)
 
         projects_sync = ProjectsSync(c)
@@ -388,7 +458,7 @@ class TestBuildIncludedGroupHierarchy:
         g_ok.full_path = "keep"
         g_excl = MagicMock()
         g_excl.full_path = "exclude"
-        scope_res = MagicMock(success=True, data=[g_ok, g_excl], error=None)
+        scope_res = GitLabResponse(success=True, data=[g_ok, g_excl])
         c.scope = MagicMock()
         c.scope.paged_list_groups_with_role_fallback = AsyncMock(return_value=scope_res)
 
@@ -410,23 +480,23 @@ class TestEnsureGitlabGroupRecordGroups:
     async def test_happy_path_creates_record_group(self) -> None:
         """Group members found → RecordGroup created with permissions."""
         c = make_mock_connector()
-        c.data_source = MagicMock()
+        c.data_source = MagicMock(spec=GitLabDataSource)
 
         group = MagicMock()
         group.full_path = "eng"
         group.name = "Engineering"
         group.web_url = "https://gitlab.com/eng"
-        group_res = MagicMock(success=True, data=group, error=None)
+        group_res = GitLabResponse(success=True, data=group)
 
         member = _member(uid=1, access_level=40)
-        members_res = MagicMock(success=True, data=[member], error=None)
+        members_res = GitLabResponse(success=True, data=[member])
 
         async def ds_call_side(fn, *args, **kwargs):
-            if "get_group" in str(fn):
+            if fn is c.data_source.get_group:
                 return group_res
-            if "list_group_members_all" in str(fn):
+            if fn is c.data_source.list_group_members_all:
                 return members_res
-            return MagicMock(success=True, data=[], error=None)
+            raise AssertionError(f"unexpected data source call {fn}")
 
         c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
         c.creator_user_permission = MagicMock(return_value=None)
@@ -444,7 +514,7 @@ class TestEnsureGitlabGroupRecordGroups:
         c = make_mock_connector()
         c.data_source = MagicMock()
 
-        fail_res = MagicMock(success=False, data=None, error="forbidden")
+        fail_res = GitLabResponse(success=False, error="forbidden", status_code=403)
         c.runtime.ds_call = AsyncMock(return_value=fail_res)
 
         from app.models.permission import Permission, EntityType, PermissionType
@@ -459,21 +529,21 @@ class TestEnsureGitlabGroupRecordGroups:
     async def test_member_list_failure_triggers_child_project_union(self) -> None:
         """Group found but member listing fails → child-project union attempted."""
         c = make_mock_connector()
-        c.data_source = MagicMock()
+        c.data_source = MagicMock(spec=GitLabDataSource)
 
         group = MagicMock()
         group.full_path = "eng"
         group.name = "Engineering"
         group.web_url = "https://gitlab.com/eng"
-        group_res = MagicMock(success=True, data=group, error=None)
-        members_fail_res = MagicMock(success=False, data=None, error="forbidden")
+        group_res = GitLabResponse(success=True, data=group)
+        members_fail_res = GitLabResponse(success=False, error="forbidden", status_code=403)
 
         async def ds_call_side(fn, *args, **kwargs):
-            if "get_group" in str(fn):
+            if fn is c.data_source.get_group:
                 return group_res
-            if "list_group_members_all" in str(fn):
+            if fn is c.data_source.list_group_members_all:
                 return members_fail_res
-            return MagicMock(success=True, data=[], error=None)
+            raise AssertionError(f"unexpected data source call {fn}")
 
         c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
         c.creator_user_permission = MagicMock(return_value=None)
@@ -485,6 +555,83 @@ class TestEnsureGitlabGroupRecordGroups:
         p = _project(1, "eng/proj", ns_path="eng")
         await projects_sync._ensure_gitlab_group_record_groups(["eng"], candidate_projects=[p])
         projects_sync._group_permissions_from_child_projects.assert_called_once()
+
+
+    async def test_subgroup_of_a_synced_group_lists_direct_members(self) -> None:
+        """A subgroup whose parent is synced gets its direct members; the rest inherit."""
+        c = make_mock_connector()
+        c.data_source = MagicMock(spec=GitLabDataSource)
+
+        def group(path: str) -> MagicMock:
+            g = MagicMock()
+            g.full_path = path
+            g.name = path
+            g.web_url = None
+            return g
+
+        called: list[object] = []
+
+        async def ds_call_side(fn, *args, **kwargs):
+            called.append(fn)
+            if fn is c.data_source.get_group:
+                return GitLabResponse(success=True, data=group(args[0]))
+            if fn in (c.data_source.list_group_members, c.data_source.list_group_members_all):
+                return GitLabResponse(success=True, data=[])
+            raise AssertionError(f"unexpected data source call {fn}")
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        await ProjectsSync(c)._ensure_gitlab_group_record_groups(["eng", "eng/backend"])
+
+        member_calls = [fn for fn in called if fn is not c.data_source.get_group]
+        assert member_calls == [c.data_source.list_group_members_all, c.data_source.list_group_members]
+
+
+class TestProjectMembersDirectVsInherited:
+    async def _sync(self, included_group_paths: list[str]) -> tuple[MagicMock, list[object]]:
+        c = make_mock_connector()
+        c.data_source = MagicMock(spec=GitLabDataSource)
+        c._gitlab_included_group_paths = included_group_paths
+        c.users._inject_creator_member_into = MagicMock()
+        inherited, direct = _member(uid=1, access_level=30), _member(uid=2, access_level=30)
+        called: list[object] = []
+
+        async def ds_call_side(fn, *args, **kwargs):
+            called.append(fn)
+            if fn is c.data_source.list_project_members_all:
+                return GitLabResponse(success=True, data=[inherited, direct])
+            if fn is c.data_source.list_project_members:
+                return GitLabResponse(success=True, data=[direct])
+            raise AssertionError(f"unexpected data source call {fn}")
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        from app.models.permission import EntityType, Permission, PermissionType
+        sync = ProjectsSync(c)
+        sync._transform_restrictions_to_permissions = AsyncMock(
+            side_effect=lambda m: Permission(
+                email=f"u{m.id}@example.com", type=PermissionType.WRITE, entity_type=EntityType.USER,
+            )
+        )
+        await sync._sync_project_members_as_pseudo(_project(7, "eng/proj", ns_path="eng"))
+        return c, called
+
+    async def test_project_under_a_synced_group_grants_only_direct_members_on_the_project_node(self) -> None:
+        c, called = await self._sync(["eng"])
+        assert c.data_source.list_project_members in called
+        groups = dict(
+            (rg.external_group_id, perms)
+            for rg, perms in c.data_entities_processor.on_new_record_groups.call_args.args[0]
+        )
+        assert {p.email for p in groups["7"]} == {"u2@example.com"}
+        assert {p.email for p in groups["7-code-repository"]} == {"u1@example.com", "u2@example.com"}
+
+    async def test_project_without_a_synced_parent_grants_every_member_on_the_project_node(self) -> None:
+        c, called = await self._sync([])
+        assert c.data_source.list_project_members not in called
+        groups = dict(
+            (rg.external_group_id, perms)
+            for rg, perms in c.data_entities_processor.on_new_record_groups.call_args.args[0]
+        )
+        assert {p.email for p in groups["7"]} == {"u1@example.com", "u2@example.com"}
 
 
 # ===========================================================================
@@ -501,7 +648,7 @@ class TestGroupPermissionsFromChildProjects:
         p = _project(1, "eng/proj", ns_path="eng")
         member = _member(uid=1, access_level=40)
         member.id = 1
-        pm_res = MagicMock(success=True, data=[member], error=None)
+        pm_res = GitLabResponse(success=True, data=[member])
         c.runtime.ds_call = AsyncMock(return_value=pm_res)
 
         from app.models.permission import Permission, EntityType, PermissionType
@@ -545,7 +692,7 @@ class TestSyncProjectMembersAsPseudo:
         # One member with DEVELOPER access (level=30)
         member = _member(uid=1, access_level=30)
         member.id = 1
-        members_res = MagicMock(success=True, data=[member], error=None)
+        members_res = GitLabResponse(success=True, data=[member])
         c.runtime.ds_call = AsyncMock(return_value=members_res)
 
         from app.models.permission import Permission, EntityType, PermissionType
@@ -583,7 +730,7 @@ class TestSyncProjectMembersAsPseudo:
         member = _member(uid=1, access_level=10)
         member.id = 1
         c.runtime.ds_call = AsyncMock(
-            return_value=MagicMock(success=True, data=[member], error=None)
+            return_value=GitLabResponse(success=True, data=[member])
         )
 
         from app.models.permission import EntityType, Permission, PermissionType
@@ -617,6 +764,18 @@ class TestBuildProjectRecordGroupsParentPath:
         project_rg = rgs[0]
         # Parent should be set to "eng"
         assert project_rg.parent_external_group_id == "eng"
+
+    def test_the_project_group_carries_the_project_name_and_web_url(self) -> None:
+        """GITLAB-03: the source's display name, not its path, and a link back to it."""
+        c = make_mock_connector()
+        p = _project(54, "test/demo-repository")
+        p.name = "Demo Repository"
+        p.web_url = "https://gitlab.pipeshub.com/test/demo-repository"
+
+        project_rg = ProjectsSync(c)._build_project_record_groups(p)[0]
+
+        assert project_rg.name == "Demo Repository"
+        assert project_rg.web_url == "https://gitlab.pipeshub.com/test/demo-repository"
 
 
 # ===========================================================================

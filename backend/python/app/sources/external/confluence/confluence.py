@@ -63,6 +63,23 @@ def _validate_authorship_value(field: str, value: str) -> str:
     )
 
 
+def _cql_search_target(base: str, query: Dict[str, Any], include_archived_spaces: bool) -> str:
+    """URL of a v1 CQL listing; with ``include_archived_spaces`` it also reaches archived spaces.
+
+    ``/content/search`` leaves archived spaces out and ignores ``includeArchivedSpaces``.
+    ``/search`` honours it, takes expansions under ``content.``, and wraps each hit
+    as ``{"content": {...}}``.
+    """
+    if not include_archived_spaces:
+        return base + "/content/search"
+    query["includeArchivedSpaces"] = "true"
+    if query.get("expand"):
+        query["expand"] = ",".join(f"content.{part}" for part in str(query["expand"]).split(","))
+    if query.get("cursor"):
+        query["next"] = "true"
+    return base + "/search"
+
+
 class ConfluenceDataSource:
     def __init__(self, client: ConfluenceClient) -> None:
         """Default init for the connector-specific data source."""
@@ -2879,6 +2896,7 @@ class ConfluenceDataSource:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
+        include_archived_spaces: bool = False,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch pages using v1 content-search API with time-based filtering.
@@ -2990,7 +3008,7 @@ class ConfluenceDataSource:
         elif start is not None:
             _query["start"] = start
 
-        url = self._v1_rest_api_base() + "/content/search"
+        url = _cql_search_target(self._v1_rest_api_base(), _query, include_archived_spaces)
 
         req = HTTPRequest(
             method="GET",
@@ -3021,6 +3039,7 @@ class ConfluenceDataSource:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
+        include_archived_spaces: bool = False,
         headers: Optional[Dict[str, Any]] = None
     ) -> HTTPResponse:
         """Fetch blogposts using v1 content-search API with time-based filtering.
@@ -3122,7 +3141,7 @@ class ConfluenceDataSource:
         elif start is not None:
             _query["start"] = start
 
-        url = self._v1_rest_api_base() + "/content/search"
+        url = _cql_search_target(self._v1_rest_api_base(), _query, include_archived_spaces)
 
         req = HTTPRequest(
             method="GET",
@@ -3152,6 +3171,7 @@ class ConfluenceDataSource:
         cursor: Optional[str] = None,
         limit: Optional[int] = None,
         time_offset_hours: int = 0,
+        include_archived_spaces: bool = False,
         headers: Optional[Dict[str, Any]] = None,
     ) -> HTTPResponse:
         """List folders via v1 ``GET .../rest/api/content/search`` with CQL ``type=folder``.
@@ -3216,7 +3236,7 @@ class ConfluenceDataSource:
         elif start is not None:
             _query["start"] = start
 
-        url = self._v1_rest_api_base() + "/content/search"
+        url = _cql_search_target(self._v1_rest_api_base(), _query, include_archived_spaces)
 
         req = HTTPRequest(
             method="GET",

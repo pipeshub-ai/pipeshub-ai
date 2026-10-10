@@ -16,6 +16,11 @@ from app.config.constants.arangodb import ExtensionTypes
 
 GITLAB_CLOUD_URL = "https://gitlab.com"
 
+# Lowest member role that reads anything in a project. Below it are No access (0)
+# and Minimal Access (5), which "cannot view project features such as wikis,
+# issues, or the repository" (docs.gitlab.com/user/permissions).
+GITLAB_GUEST_ACCESS_LEVEL = 10
+
 # ---------------------------------------------------------------------------
 # Search behaviour
 # ---------------------------------------------------------------------------

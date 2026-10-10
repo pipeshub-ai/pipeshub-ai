@@ -1,8 +1,8 @@
 """Tests for DataStore abstract classes: DataStoreProvider, BaseDataStore, TransactionStore."""
 
 import logging
-from typing import AsyncContextManager, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
+from typing import AsyncContextManager
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,7 +24,7 @@ class ConcreteDataStoreProvider(DataStoreProvider):
         super().__init__(logger)
         self._mock_tx = MagicMock()
 
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         return self._mock_tx
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
@@ -119,6 +119,12 @@ class ConcreteTransactionStore(TransactionStore):
     async def reap_stale_external_app_relations(self, connector_id):
         return 0
 
+    async def get_file_records_under_path(self, connector_id, external_record_group_id, path):
+        return []
+
+    async def remove_app_users_except(self, connector_id, emails):
+        return 0
+
     async def get_users(self, org_id, active=True):
         return []
 
@@ -135,9 +141,6 @@ class ConcreteTransactionStore(TransactionStore):
         return None
 
     async def remove_user_access_to_record(self, connector_id, external_id, user_id):
-        pass
-
-    async def delete_record_group_by_external_id(self, connector_id, external_id):
         pass
 
     async def delete_user_group_by_id(self, group_id):
@@ -165,18 +168,6 @@ class ConcreteTransactionStore(TransactionStore):
         pass
 
     async def batch_upsert_orgs(self, orgs):
-        pass
-
-    async def batch_upsert_domains(self, domains):
-        pass
-
-    async def batch_upsert_anyone(self, anyone):
-        pass
-
-    async def batch_upsert_anyone_with_link(self, anyone_with_link):
-        pass
-
-    async def batch_upsert_anyone_same_org(self, anyone_same_org):
         pass
 
     async def create_record_relation(self, from_record_id, to_record_id, relation_type):
@@ -433,7 +424,6 @@ class TestBaseDataStoreCannotBeInstantiated:
 
 class TestBaseDataStoreFindSlackBurstRecord:
     def test_abstract_method_exists(self):
-        import inspect
         assert hasattr(BaseDataStore, "find_slack_burst_record_by_ts")
         method = getattr(BaseDataStore, "find_slack_burst_record_by_ts")
         assert getattr(method, "__isabstractmethod__", False) is True

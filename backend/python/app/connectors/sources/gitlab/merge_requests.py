@@ -111,6 +111,7 @@ class MergeRequestsSync:
                     "checkpoint stays behind the failure instead of skipping past it.",
                     project_id, i,
                 )
+                c.keep_stored_access(f"merge requests of project {project_id} past offset {i} were not written")
                 return
         if failed.count:
             self.logger.warning(
@@ -118,6 +119,7 @@ class MergeRequestsSync:
                 "stays before the earliest one so the next sync retries them.",
                 failed.count, project_id,
             )
+            c.keep_stored_access(f"{failed.count} merge request(s) of project {project_id} were not written")
         for group_id, last_sync_time in watermarks.items():
             await c.issues._update_sync_checkpoint(group_id, failed.checkpoint(last_sync_time))
 

@@ -14,12 +14,18 @@ the bound is "a hidden collection the caller can read", not "this chat's
 project". Retrieval still runs as the run-as identity, so for a service-account
 agent an admitted collection returns only what the creator can also read.
 
+A source may be limited to some of its record groups, folders or records
+(``filters.recordGroups`` / ``filters.records`` on the knowledge entry). Such
+a source is never searched as a whole: a turn that enables it searches those
+nodes, and a selection the caller makes must lie under them.
+
 The universal agent (``agentIdPlaceholder``) has no curated knowledge; its
 filters are the caller's own selection, bounded by the caller's permissions.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
@@ -27,14 +33,17 @@ from app.modules.agents.qna.chat_state import (
     _extract_kb_app_ids,
     _extract_knowledge_connector_ids,
 )
+from app.modules.retrieval.selection_scope import (
+    NO_KB_SELECTED_FILTER,
+    SERVER_SET_FILTER_KEYS,
+    has_selection,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
     from logging import Logger
 
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-
-NO_KB_SELECTED_FILTER = "NO_KB_SELECTED"
 
 # Ids looked up in one batched query. A project scope sends its collections
 # with the hidden one last, so the bound must comfortably exceed a project's
@@ -49,6 +58,71 @@ class AgentScope:
     filters: dict[str, Any]
     dropped_app_ids: tuple[str, ...] = ()
     dropped_kb_ids: tuple[str, ...] = ()
+    #: Everything a saved agent may search, as ``apps`` (whole sources),
+    #: ``recordGroups`` and ``records``. Empty for the universal agent, which
+    #: has no bound of its own.
+    sources: dict[str, list[str]] = field(default_factory=dict)
+    #: Sources whose stored limit could not be read; they are not searched.
+    unreadable_source_ids: tuple[str, ...] = ()
+
+
+_NARROWING_KEYS = ("recordGroups", "records")
+
+
+class UnreadableSourceLimitError(ValueError):
+    """A knowledge source's stored ``filters`` are not a limit that can be applied."""
+
+
+def read_source_limit(stored: object) -> dict[str, list[str]]:
+    """The record groups and records a knowledge source's ``filters`` list;
+    empty lists when they list none.
+
+    Raises:
+        UnreadableSourceLimitError: the value is not an object (or the JSON
+            text of one), or a list in it is not a list of ids. Such a limit
+            must be refused when saved and must limit the source to nothing
+            when read: it never means the whole source.
+    """
+    if isinstance(stored, str):
+        if not stored.strip():
+            return {key: [] for key in _NARROWING_KEYS}
+        try:
+            stored = json.loads(stored)
+        except ValueError as exc:
+            raise UnreadableSourceLimitError from exc
+    if stored is None or stored == []:
+        return {key: [] for key in _NARROWING_KEYS}
+    if not isinstance(stored, dict):
+        raise UnreadableSourceLimitError
+    limit: dict[str, list[str]] = {}
+    for key in _NARROWING_KEYS:
+        ids = stored.get(key)
+        if ids is None:
+            limit[key] = []
+        elif isinstance(ids, list) and all(isinstance(i, str) and i.strip() for i in ids):
+            limit[key] = list(dict.fromkeys(i.strip() for i in ids))
+        else:
+            raise UnreadableSourceLimitError
+    return limit
+
+
+def _narrowed_to(entry: dict[str, Any], source_ids: set[str]) -> dict[str, list[str]] | None:
+    """The record groups and records a knowledge source is limited to, or None
+    for a whole source. A stored limit that cannot be read limits the source
+    to nothing. An id that is itself a source is not a limit: agents saved
+    before each collection became its own source listed the collection there.
+    """
+    # The stored text is read here: the graph's parsed copy turns a value it
+    # cannot parse into "no filters".
+    stored = entry.get("filters")
+    if not (isinstance(stored, str) and stored.strip()):
+        stored = entry.get("filtersParsed", stored)
+    try:
+        limit = read_source_limit(stored)
+    except UnreadableSourceLimitError:
+        return {key: [] for key in _NARROWING_KEYS}
+    limit = {key: [i for i in ids if i not in source_ids] for key, ids in limit.items()}
+    return limit if any(limit.values()) else None
 
 
 def _clean_ids(values: Iterable[object]) -> list[str]:
@@ -88,7 +162,23 @@ def resolve_agent_filters(
     knowledge = [k for k in agent_knowledge or [] if isinstance(k, dict)]
     agent_apps = _clean_ids(_extract_knowledge_connector_ids(knowledge))
     agent_kbs = _clean_ids(_extract_kb_app_ids(knowledge))
-    filters = dict(requested_filters or {})
+    filters = {k: v for k, v in (requested_filters or {}).items() if k not in SERVER_SET_FILTER_KEYS}
+
+    # A collection may arrive under ``apps`` like any other app; the buckets
+    # below are typed, so it is moved to the one it is checked against.
+    requested_apps = filters.get("apps")
+    if isinstance(requested_apps, list):
+        collections = [i for i in requested_apps if i in set(agent_kbs)]
+        if collections:
+            filters["apps"] = [i for i in requested_apps if i not in collections]
+            filters["kb"] = list(dict.fromkeys([*(filters.get("kb") or []), *collections]))
+
+    # A selection below app level is the whole scope of the turn: a bucket
+    # that was not given means none of that kind, never all of them.
+    if has_selection(filters):
+        for bucket in ("apps", "kb"):
+            if filters.get(bucket) is None:
+                filters[bucket] = []
 
     if is_universal_agent:
         if filters.get("apps") is None:
@@ -99,9 +189,29 @@ def resolve_agent_filters(
 
     apps, dropped_apps = _within(_requested_ids(filters.get("apps")), agent_apps)
     kbs, dropped_kbs = _within(_requested_ids(filters.get("kb")), agent_kbs)
-    filters["apps"] = apps
-    filters["kb"] = kbs
-    return AgentScope(filters=filters, dropped_app_ids=dropped_apps, dropped_kb_ids=dropped_kbs)
+
+    source_ids = {*agent_apps, *agent_kbs}
+    narrowed = {
+        str(k.get("connectorId")).strip(): lists
+        for k in knowledge
+        if (lists := _narrowed_to(k, source_ids)) is not None
+    }
+    # An enabled source that is limited to some nodes is searched as those
+    # nodes, which makes the turn a selection below app level.
+    for key in _NARROWING_KEYS:
+        enabled = [i for source in (*apps, *kbs) for i in narrowed.get(source, {}).get(key, [])]
+        if enabled:
+            filters[key] = _clean_ids([*(filters.get(key) or []), *enabled])
+    filters["apps"] = [i for i in apps if i not in narrowed]
+    filters["kb"] = [i for i in kbs if i not in narrowed]
+    sources = {
+        "apps": [i for i in (*agent_apps, *agent_kbs) if i not in narrowed],
+        **{key: _clean_ids(i for lists in narrowed.values() for i in lists[key]) for key in _NARROWING_KEYS},
+    }
+    return AgentScope(
+        filters=filters, dropped_app_ids=dropped_apps, dropped_kb_ids=dropped_kbs, sources=sources,
+        unreadable_source_ids=tuple(i for i, lists in narrowed.items() if not any(lists.values())),
+    )
 
 
 async def admit_caller_project_collections(
@@ -159,6 +269,8 @@ __all__ = [
     "MAX_COLLECTION_CANDIDATES",
     "NO_KB_SELECTED_FILTER",
     "AgentScope",
+    "UnreadableSourceLimitError",
     "admit_caller_project_collections",
+    "read_source_limit",
     "resolve_agent_filters",
 ]

@@ -18,6 +18,7 @@ without monkey-patching.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiohttp
@@ -27,6 +28,7 @@ from .models import (
     RecordAccessDeniedError,
     RecordContentError,
     RecordNotFoundError,
+    RecordOutsideTurnError,
 )
 from .strategies import (
     BlobBackedContentStrategy,
@@ -69,18 +71,33 @@ class RecordContentResolver:
         conversation_id: str | None = None,
         max_bytes: int,
         session: aiohttp.ClientSession | None = None,
+        within_turn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> Any:
         """Resolve `ref` to a `ResolvedRecordContent`.
+
+        `within_turn` says whether a record id lies inside what the chat turn
+        is limited to; it is asked before any bytes are fetched.
 
         Raises:
             RecordNotFoundError — ref cannot be mapped to any record.
             RecordAccessDeniedError — actor is not authorized.
+            RecordOutsideTurnError — readable, but outside the turn's limits.
             RecordTooLargeError — content exceeds `max_bytes`.
             RecordContentUnavailableError — transport/connector failure.
         """
         record = await self._lookup_record(ref, actor, conversation_id)
 
         await self._authorizer.authorize(actor, record)
+        if within_turn is not None:
+            record_id = getattr(record, "id", None) or (
+                record.get("_key") if isinstance(record, dict) else None
+            )
+            if not record_id or not await within_turn(record_id):
+                raise RecordOutsideTurnError(
+                    f"Record {record_id or ref} lies outside what this conversation is limited to "
+                    "(the sources selected for it, the agent's knowledge or the project's sources), "
+                    "so it cannot be used here."
+                )
 
         content, source = await self._fetch(record, actor=actor, version=version,
                                             max_bytes=max_bytes, session=session)

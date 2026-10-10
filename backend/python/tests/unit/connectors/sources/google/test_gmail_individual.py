@@ -315,7 +315,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_recipient_gets_read_permission(self, connector):
         message = _make_gmail_message(from_email="other@example.com")
@@ -323,7 +323,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     async def test_returns_none_for_no_message_id(self, connector):
         message = {"threadId": "t1", "payload": {"headers": []}}
@@ -370,7 +370,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_existing_message_detected(self, connector):
         existing = MagicMock()
@@ -596,7 +596,7 @@ class TestProcessGmailAttachment:
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
             external_record_group_id="user@example.com:OTHERS",
         )
-        assert result.new_permissions == parent_perms
+        assert result.new_permissions == []
 
     async def test_unnamed_attachment_gets_default_name(self, connector):
         attachment_info = {
@@ -1637,8 +1637,7 @@ class TestProcessGmailMessageCoverage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_sender_is_not_user_gets_read_permission(self):
@@ -1657,8 +1656,7 @@ class TestProcessGmailMessageCoverage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_existing_record_no_change(self):

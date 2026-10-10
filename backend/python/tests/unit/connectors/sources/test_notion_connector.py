@@ -26,6 +26,7 @@ from app.models.blocks import (
     DataFormat,
 )
 from app.models.entities import FileRecord, RecordType, WebpageRecord
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from collections import defaultdict
 from unittest.mock import PropertyMock
 import aiohttp
@@ -3185,8 +3186,8 @@ class TestAddUsersToWorkspacePermissions:
         conn.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert len(perms) == 1
-        assert perms[0].email == "alice@ex.com"
+        assert perms == []
+        assert rg.inherit_permissions is True
 
     @pytest.mark.asyncio
     async def test_uses_existing_record_group(self):
@@ -6816,10 +6817,39 @@ class TestIsDefinitiveNotFound:
         assert NotionConnector._is_definitive_not_found(resp) is False
 
 
+def _not_found():
+    """Notion's answer for a deleted page and for one no longer shared with the integration."""
+    return _api_resp(False, {"object": "error", "status": 404, "code": "object_not_found"}, status=404)
+
+
+def _deleting(conn):
+    conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+    return conn.data_entities_processor.on_records_deleted_cascade
+
+
 class TestReindexSuppressesGoneRecords:
     @pytest.mark.asyncio
-    async def test_404_record_is_neither_updated_nor_reindexed(self):
+    async def test_object_not_found_record_is_deleted_not_reindexed(self):
         conn = _make_connector_fullcov()
+        cascade = _deleting(conn)
+        record = _make_webpage_record()
+        conn._ensure_workspace_from_bot = AsyncMock()
+        conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
+            retrieve_page=AsyncMock(return_value=_not_found())
+        ))
+
+        await conn.reindex_records([record])
+
+        conn.data_entities_processor.on_new_records.assert_not_awaited()
+        conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+        cascade.assert_awaited_once_with(
+            [record.id], conn.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_404_without_object_not_found_is_not_deleted(self):
+        conn = _make_connector_fullcov()
+        cascade = _deleting(conn)
         record = _make_webpage_record()
         conn._ensure_workspace_from_bot = AsyncMock()
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
@@ -6828,12 +6858,13 @@ class TestReindexSuppressesGoneRecords:
 
         await conn.reindex_records([record])
 
-        conn.data_entities_processor.on_new_records.assert_not_awaited()
-        conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+        cascade.assert_not_awaited()
+        conn.data_entities_processor.reindex_existing_records.assert_awaited_once_with([record])
 
     @pytest.mark.asyncio
     async def test_archived_record_is_treated_as_gone(self):
         conn = _make_connector_fullcov()
+        cascade = _deleting(conn)
         record = _make_webpage_record()
         conn._ensure_workspace_from_bot = AsyncMock()
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
@@ -6845,6 +6876,7 @@ class TestReindexSuppressesGoneRecords:
         await conn.reindex_records([record])
 
         conn.data_entities_processor.reindex_existing_records.assert_not_awaited()
+        cascade.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_rate_limited_record_is_still_reindexed(self):
@@ -6877,19 +6909,21 @@ class TestReindexSuppressesGoneRecords:
 
         conn._ensure_workspace_from_bot = AsyncMock()
         conn._check_and_fetch_updated_record = AsyncMock(side_effect=check)
+        cascade = _deleting(conn)
 
         await conn.reindex_records([gone, stale, same])
 
         conn.data_entities_processor.on_new_records.assert_awaited_once_with([(updated, [])])
         conn.data_entities_processor.reindex_existing_records.assert_awaited_once_with([same])
+        assert cascade.await_args.args[0] == [gone.id]
 
 
 class TestCheckAndFetchGoneVerdict:
     @pytest.mark.asyncio
-    async def test_404_returns_gone_sentinel(self):
+    async def test_object_not_found_returns_gone_sentinel(self):
         conn = _make_connector_fullcov()
         conn._get_fresh_datasource = AsyncMock(return_value=MagicMock(
-            retrieve_page=AsyncMock(return_value=_api_resp(False, status=404))
+            retrieve_page=AsyncMock(return_value=_not_found())
         ))
         assert await conn._check_and_fetch_updated_record(_make_webpage_record()) is RECORD_GONE
 
@@ -6912,8 +6946,7 @@ class TestSweepPlaceholderRecords:
         conn.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         conn.data_entities_processor.on_record_deleted = AsyncMock()
         conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
-        # The providers return True on a full write; the sweep refuses to delete a stub
-        # unless the detach fully applied, so the default has to model that contract.
+        conn.data_entities_processor.on_records_detached_from_parent = AsyncMock()
         conn._mock_tx.batch_update_nodes = AsyncMock(return_value=True)
         conn._get_fresh_datasource = AsyncMock(return_value=datasource or MagicMock())
         return conn
@@ -6979,17 +7012,20 @@ class TestSweepPlaceholderRecords:
         conn = self._conn_with_stubs([stub], ds)
         conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[child])
 
+        order = []
+        conn.data_entities_processor.on_records_detached_from_parent = AsyncMock(
+            side_effect=lambda ids: order.append(("detach", ids))
+        )
+        conn.data_entities_processor.on_record_deleted = AsyncMock(
+            side_effect=lambda rid: order.append(("delete", rid))
+        )
+
         await conn._sweep_placeholder_records()
 
-        # The dangling parent pointer is cleared via a narrow node write, not an upsert
-        # (which would rewrite the type doc and republish an indexing event).
-        conn._mock_tx.batch_update_nodes.assert_awaited_once()
-        nodes, collection = conn._mock_tx.batch_update_nodes.await_args.args
-        assert collection == CollectionNames.RECORDS.value
-        assert nodes[0]["externalParentId"] is None
-        assert child.parent_external_record_id is None
-
-        conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(stub.id)
+        # NOTION-05: the processor re-points the child at its record group (hierarchy and
+        # inheritance edges) before the stub's delete takes the old ones; clearing
+        # externalParentId alone left the owner of an APP_LEVEL App without the page.
+        assert order == [("detach", [child.id]), ("delete", stub.id)]
         # Cascade would take the real rows with it.
         conn.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
 
@@ -7087,6 +7123,10 @@ class TestSweepIsWiredIntoSync:
         conn._assert_required_capabilities = AsyncMock()
         conn._sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         conn._sync_objects_by_type = AsyncMock(side_effect=lambda t: order.append(t))
+        conn._delete_records_gone_at_source = AsyncMock(side_effect=lambda: order.append("gone"))
+        conn.pages_sync_point = MagicMock()
+        conn.pages_sync_point.read_sync_point = AsyncMock(return_value={})
+        conn.pages_sync_point.update_sync_point = AsyncMock()
         conn._sweep_placeholder_records = AsyncMock(side_effect=lambda: order.append("sweep"))
         conn._retire_leftover_database_records = AsyncMock(
             side_effect=lambda: order.append("retire")
@@ -7096,7 +7136,7 @@ class TestSweepIsWiredIntoSync:
             new=AsyncMock(return_value=(MagicMock(), MagicMock())),
         ):
             await conn.run_sync()
-        assert order == ["users", "data_source", "page", "sweep", "retire"]
+        assert order == ["users", "data_source", "page", "gone", "sweep", "retire"]
 
     @pytest.mark.asyncio
     async def test_sweep_failure_does_not_fail_the_sync(self):
@@ -7132,6 +7172,162 @@ class TestSweepIsWiredIntoSync:
             await conn.run_sync()
 
 
+class TestTheGoneScanRunsAtMostOncePerInterval:
+    """R1-18: the gone-at-source pass lists the whole workspace, so a scheduled sync
+    runs it at most once per interval; a full sync, whose prep clears every sync
+    point, always runs it."""
+
+    @staticmethod
+    async def _sync(stored_point, *, completed=True):
+        conn = _make_connector_fullcov()
+        conn._get_fresh_datasource = AsyncMock()
+        conn._assert_required_capabilities = AsyncMock()
+        conn._sync_users = AsyncMock()
+        conn._sync_objects_by_type = AsyncMock()
+        conn._sweep_placeholder_records = AsyncMock()
+        conn._retire_leftover_database_records = AsyncMock()
+        conn._delete_records_gone_at_source = AsyncMock(return_value=completed)
+        conn.pages_sync_point = MagicMock()
+        conn.pages_sync_point.read_sync_point = AsyncMock(return_value=stored_point)
+        conn.pages_sync_point.update_sync_point = AsyncMock()
+        with patch(
+            "app.connectors.sources.notion.connector.load_connector_filters",
+            new=AsyncMock(return_value=(MagicMock(), MagicMock())),
+        ):
+            await conn.run_sync()
+        return conn
+
+    @pytest.mark.asyncio
+    async def test_a_sync_soon_after_a_scan_does_not_list_the_workspace(self):
+        conn = await self._sync({"last_scan_ms": get_epoch_timestamp_in_ms() - 60 * 60 * 1000})
+
+        conn._delete_records_gone_at_source.assert_not_awaited()
+        conn.pages_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.parametrize("stored_point", [{}, {"last_scan_ms": 1}])
+    @pytest.mark.asyncio
+    async def test_a_due_scan_runs_and_is_remembered(self, stored_point):
+        conn = await self._sync(stored_point)
+
+        conn._delete_records_gone_at_source.assert_awaited_once()
+        (key, data), _ = conn.pages_sync_point.update_sync_point.await_args
+        assert "notion_gone_scan" in key
+        assert data["last_scan_ms"] > 1
+
+    @pytest.mark.asyncio
+    async def test_a_scan_that_did_not_finish_is_tried_again_next_sync(self):
+        conn = await self._sync({}, completed=False)
+
+        conn._delete_records_gone_at_source.assert_awaited_once()
+        conn.pages_sync_point.update_sync_point.assert_not_awaited()
+
+
+class TestDeleteRecordsGoneAtSource:
+    """NOTION-01: a page or data source the integration can no longer read is deleted.
+
+    Notion answers object_not_found for a deleted page and for one unshared from the
+    integration; both used to stay readable and searchable forever.
+    """
+
+    @staticmethod
+    def _conn(*, pages, data_sources=(), listed=(), trashed=(), answers=None, listing_ok=True):
+        conn = _make_connector_fullcov()
+        cascade = _deleting(conn)
+        results = [{"id": i, "object": "page"} for i in listed]
+        results += [{"id": i, "object": "page", "in_trash": True} for i in trashed]
+
+        async def search(request_body):
+            if not listing_ok:
+                return _api_resp(False, error="HTTP 503", status=503)
+            if request_body["filter"]["value"] == "page":
+                return _api_resp(True, {"results": results, "has_more": False, "next_cursor": None})
+            return _api_resp(True, {"results": [], "has_more": False, "next_cursor": None})
+
+        async def stored(connector_id, record_type):
+            return list(pages) if record_type == RecordType.WEBPAGE else list(data_sources)
+
+        lookup = answers or {}
+
+        async def retrieve(external_id):
+            return lookup.get(external_id, _api_resp(True, {"id": external_id}))
+
+        ds = MagicMock(
+            search=AsyncMock(side_effect=search),
+            retrieve_page=AsyncMock(side_effect=retrieve),
+            retrieve_data_source_by_id=AsyncMock(side_effect=retrieve),
+        )
+        conn._get_fresh_datasource = AsyncMock(return_value=ds)
+        conn.data_entities_processor.get_records_by_record_type = AsyncMock(side_effect=stored)
+        return conn, ds, cascade
+
+    @pytest.mark.asyncio
+    async def test_unshared_and_trashed_pages_are_deleted_and_live_ones_kept(self):
+        listed = _make_webpage_record(external_record_id="p-listed")
+        unshared = _make_webpage_record(external_record_id="p-unshared")
+        trashed = _make_webpage_record(external_record_id="p-trashed")
+        lagging = _make_webpage_record(external_record_id="p-new")
+        conn, ds, cascade = self._conn(
+            pages=[listed, unshared, trashed, lagging],
+            listed=["p-listed"], trashed=["p-trashed"],
+            answers={
+                "p-unshared": _not_found(),
+                "p-trashed": _api_resp(True, {"id": "p-trashed", "in_trash": True}),
+            },
+        )
+
+        await conn._delete_records_gone_at_source()
+
+        # A page search lists is never fetched; one it misses is kept unless Notion says gone.
+        fetched = {c.args[0] for c in ds.retrieve_page.await_args_list}
+        assert fetched == {"p-unshared", "p-trashed", "p-new"}
+        cascade.assert_awaited_once()
+        assert set(cascade.await_args.args[0]) == {unshared.id, trashed.id}
+        # Live child pages are re-pointed, not deleted with their gone parent (NOTION-04).
+        assert cascade.await_args.kwargs == {"cascade_children": False, "include_trashed_roots": True}
+
+    @pytest.mark.parametrize("status", [401, 403, 429, 500, 502])
+    @pytest.mark.asyncio
+    async def test_a_transient_answer_keeps_the_record(self, status):
+        page = _make_webpage_record(external_record_id="p-1")
+        conn, _ds, cascade = self._conn(
+            pages=[page], answers={"p-1": _api_resp(False, status=status)},
+        )
+
+        await conn._delete_records_gone_at_source()
+
+        cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_deletes_nothing(self):
+        page = _make_webpage_record(external_record_id="p-1")
+        conn, ds, cascade = self._conn(pages=[page], listing_ok=False, answers={"p-1": _not_found()})
+
+        await conn._delete_records_gone_at_source()
+
+        ds.retrieve_page.assert_not_awaited()
+        cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_placeholders_are_left_to_the_sweep(self):
+        stub = _make_stub(record_type=RecordType.WEBPAGE, external_record_id="p-stub")
+        conn, ds, cascade = self._conn(pages=[stub], answers={"p-stub": _not_found()})
+
+        await conn._delete_records_gone_at_source()
+
+        ds.retrieve_page.assert_not_awaited()
+        cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_gone_data_source_is_deleted(self):
+        source = _make_webpage_record(record_type=RecordType.DATASOURCE, external_record_id="ds-1")
+        conn, ds, cascade = self._conn(pages=[], data_sources=[source], answers={"ds-1": _not_found()})
+
+        await conn._delete_records_gone_at_source()
+
+        ds.retrieve_data_source_by_id.assert_awaited_once_with("ds-1")
+        assert cascade.await_args.args[0] == [source.id]
+
+
 class TestRetireDatabaseContainer:
     @staticmethod
     def _conn(*, children=None, parents=None):
@@ -7140,6 +7336,7 @@ class TestRetireDatabaseContainer:
             return_value=children or []
         )
         conn.data_entities_processor.on_record_deleted = AsyncMock()
+        conn.data_entities_processor.on_records_detached_from_parent = AsyncMock()
         lookup = parents or {}
 
         async def _get(connector_id, external_id):
@@ -7190,9 +7387,8 @@ class TestRetireDatabaseContainer:
 
         await conn._retire_database_container_record(container)
 
-        conn._mock_tx.delete_parent_child_edge_to_record.assert_awaited_once_with(child.id)
+        conn.data_entities_processor.on_records_detached_from_parent.assert_awaited_once_with([child.id])
         conn._mock_tx.create_record_relation.assert_not_awaited()
-        assert child.parent_external_record_id is None
         conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(
             container.id
         )
@@ -7281,9 +7477,8 @@ class TestRetireDatabaseContainer:
 
         await conn._retire_database_container_record(container)
 
-        assert row.parent_external_record_id is None
+        conn.data_entities_processor.on_records_detached_from_parent.assert_awaited_once_with([row.id])
         conn._mock_tx.create_record_relation.assert_not_awaited()
-        conn._mock_tx.delete_parent_child_edge_to_record.assert_awaited_once_with(row.id)
         conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(
             container.id
         )
@@ -7572,7 +7767,9 @@ class TestSweepPlaceholderFixes:
         ))
         conn = TestSweepPlaceholderRecords._conn_with_stubs([stub], ds)
         conn.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[child])
-        conn._mock_tx.batch_update_nodes = AsyncMock(return_value=False)
+        conn.data_entities_processor.on_records_detached_from_parent = AsyncMock(
+            side_effect=RuntimeError("Could not detach 1 records from their deleted parent")
+        )
 
         await conn._sweep_placeholder_records()
 

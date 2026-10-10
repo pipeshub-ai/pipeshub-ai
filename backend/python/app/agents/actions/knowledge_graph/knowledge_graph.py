@@ -26,7 +26,7 @@ from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
@@ -36,7 +36,7 @@ from app.utils.chat_helpers import resolve_frontend_url
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
-from .ops.scope import resolve_scope
+from .ops.scope import ids_within_scope, resolve_scope, selection_browse_refusal
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result, render_navigation_view
@@ -47,6 +47,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NOT_FOUND_MSG = "Not found or no access."
+_NODE_NOT_ACCESSIBLE_MSG = (
+    "Node {node_id!r} was not found, or you do not have access to it. "
+    "Call navigate without node_id to list what you can open."
+)
 
 
 # ---------------------------------------------------------------------------
@@ -457,6 +461,10 @@ class KnowledgeGraph:
                 if result.matches:
                     node_id = result.matches[0].id
 
+        refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
+        if refusal:
+            return False, refusal
+
         navigator = GraphNavigator(
             graph_provider=graph_provider,
             user_id=user_id,
@@ -485,6 +493,21 @@ class KnowledgeGraph:
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
+
+        # The navigator answers a node it cannot open with an empty root view,
+        # which reads as "nothing is connected".
+        if node_id and view.current is None:
+            return False, _NODE_NOT_ACCESSIBLE_MSG.format(node_id=node_id)
+        if view.related:
+            # Linked records can sit anywhere; only the hierarchy below the node is inside the turn.
+            try:
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
+                )
+            except Exception as exc:
+                logger.exception("navigate: limit check of linked records failed for %s", node_id)
+                return False, f"Navigation failed: could not check the linked records against this conversation's limits ({exc})."
+            view = view.model_copy(update={"related": [row for row in view.related if row.id in inside]})
 
         remember_record_ids(state, _record_ids_in_view(view))
         text = render_navigation_view(view, page, record_id_shortener)
@@ -607,9 +630,16 @@ class KnowledgeGraph:
 
         try:
             result = await resolver.resolve_many(idents)
+            # A match outside what the turn is limited to is not a match.
+            inside = await ids_within_scope(
+                state, graph_provider, user_key, org_id, [m.id for m in result.matches],
+            )
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
+        if len(inside) < len(result.matches):
+            kept = [m for m in result.matches if m.id in inside]
+            result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
         remember_record_ids(state, [m.id for m in result.matches])
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —

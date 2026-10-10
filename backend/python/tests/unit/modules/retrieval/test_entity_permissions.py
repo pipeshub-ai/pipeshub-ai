@@ -19,10 +19,8 @@ from app.modules.retrieval.entity_permissions import (
     list_accessible_entity_records,
     search_entities_for_user,
 )
-from tests.unit.modules.retrieval.entity_access_fakes import (
-    permitted_records,
-    record_spellings,
-)
+from app.services.graph_db.common.utils import PermittedEntityRows
+from tests.unit.modules.retrieval.entity_access_fakes import RESOLVED_ACCESS, entity_graph
 
 ORG = "org-1"
 USER = "user-1"
@@ -56,14 +54,13 @@ def _hit(entity_id: str, entity_type: str, score: float, **extra) -> dict:
     return {"entityId": entity_id, "entityType": entity_type, "name": entity_id, "score": score, **extra}
 
 
-def _graph(candidates=None, permitted=None) -> MagicMock:
-    """``candidates`` builds the candidate fixture (keyed by entity id); the
-    in-query permission check is applied to it by ``permitted_records``."""
-    graph = MagicMock()
-    fake = permitted_records(candidates or (lambda *a, **k: {}), permitted=permitted or ())
-    graph.get_permitted_entity_records = AsyncMock(side_effect=fake)
-    graph.get_record_taxonomy_links = AsyncMock(side_effect=record_spellings(fake))
-    return graph
+def _graph(candidates=None, permitted=None, denied=()) -> MagicMock:
+    """``candidates`` builds the candidate fixture (keyed by entity id). The
+    access check reads a ``kb-1`` row on app access and a record-level row
+    only when it is in ``permitted``; it refuses the ids in ``denied``."""
+    return entity_graph(
+        candidates or (lambda *a, **k: {}), app_level=("kb-1",), permitted=permitted or (), denied=denied,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +187,7 @@ class TestGetEntityAccessContext:
 
 class TestListAccessibleEntityRecords:
     @pytest.mark.asyncio
-    async def test_app_level_rows_skip_the_permission_check(self) -> None:
+    async def test_app_level_rows_are_readable_on_app_access(self) -> None:
         graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "kb-1"), _row("r2", "kb-1")]})
 
         page = await list_accessible_entity_records(
@@ -199,7 +196,38 @@ class TestListAccessibleEntityRecords:
 
         assert [r["_key"] for r in page.records] == ["r1", "r2"]
         assert page.next_cursor is None
-        assert graph.get_permitted_entity_records.call_args.kwargs["app_level_connector_ids"] == ["kb-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_query_only_pages_and_the_access_check_decides(self) -> None:
+        """Every connector of the ref is passed as granted and the limit is the
+        window, so the query returns the whole window for one access check."""
+        rows = [_row("r1", "kb-1"), _row("r2", "conf-1"), _row("r3", "conf-1")]
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": rows}, permitted={"r3"})
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=5,
+        )
+
+        assert [r["_key"] for r in page.records] == ["r1", "r3"]
+        asked = graph.get_permitted_entity_records.call_args.kwargs
+        assert asked["app_level_connector_ids"] == ["conf-1", "kb-1"]
+        assert asked["limit_per_entity"] == asked["window"] == ep.LISTING_WINDOW_MIN
+        graph.check_access.assert_awaited_once_with("ukey", ORG, node_ids=["r1", "r2", "r3"], access=RESOLVED_ACCESS)
+
+    @pytest.mark.asyncio
+    async def test_a_row_no_role_path_offers_is_returned_when_the_access_check_admits_it(self) -> None:
+        """Reached through the connector gate and inheritance alone: no grant
+        the query's role test could find, and the access check admits it."""
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": [_row("inherited", "conf-1")]},
+            permitted={"inherited"},
+        )
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=5,
+        )
+
+        assert [r["_key"] for r in page.records] == ["inherited"]
 
     @pytest.mark.asyncio
     async def test_record_level_rows_are_checked_for_the_user(self) -> None:
@@ -215,6 +243,109 @@ class TestListAccessibleEntityRecords:
         assert [r["_key"] for r in page.records] == ["r2"]
         args = graph.get_permitted_entity_records.call_args.args
         assert args[1:] == (ORG, "ukey")
+
+    @pytest.mark.asyncio
+    async def test_a_row_the_access_check_refuses_is_dropped(self) -> None:
+        """A role path can reach a record its access rule closes (a restricted
+        page under an open space): the access check has the last word."""
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": [_row("open", "conf-1"), _row("restricted", "conf-1")]},
+            permitted={"open", "restricted"},
+            denied={"restricted"},
+        )
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=5,
+        )
+
+        assert [r["_key"] for r in page.records] == ["open"]
+        asked = graph.check_access.call_args
+        assert asked.args == ("ukey", ORG) and asked.kwargs["node_ids"] == ["open", "restricted"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_access_check_shows_nothing(self) -> None:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": [_row("r1", "conf-1")]}, permitted={"r1"},
+        )
+        graph.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(EntityAccessError):
+            await list_accessible_entity_records(
+                graph, _context(), entity_id="t1", entity_type="topic",
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_query_that_returns_part_of_its_window_fails_the_call(self) -> None:
+        """A missing row leaves the position of the others unknown: no cursor is guessed."""
+        graph = _graph()
+        graph.get_permitted_entity_records = AsyncMock(return_value={
+            ("topic", "t1"): PermittedEntityRows([_row("r1", "kb-1")], window_size=3, examined=3),
+        })
+
+        with pytest.raises(EntityAccessError, match="1 of 3"):
+            await list_accessible_entity_records(
+                graph, _context(), entity_id="t1", entity_type="topic",
+            )
+        graph.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_row_does_not_end_the_paging_early(self) -> None:
+        rows = [_row(f"r{i}", "conf-1") for i in range(6)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+            denied={"r1"},
+        )
+
+        async def _page(cursor: str | None) -> ep.EntityRecordPage:
+            return await list_accessible_entity_records(
+                graph, _context(), entity_id="t1", entity_type="topic", limit=2, cursor=cursor,
+            )
+
+        first = await _page(None)
+        assert [r["_key"] for r in first.records] == ["r0", "r2"]
+        assert first.next_cursor == "3"
+        second = await _page(first.next_cursor)
+        assert [r["_key"] for r in second.records] == ["r3", "r4"]
+        assert second.next_cursor == "5"
+        last = await _page(second.next_cursor)
+        assert [r["_key"] for r in last.records] == ["r5"]
+        assert last.next_cursor is None
+
+    @pytest.mark.asyncio
+    async def test_the_users_grants_are_resolved_once_for_the_request(self) -> None:
+        rows = [_row(f"r{i}", "conf-1") for i in range(6)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+        context = _context()
+
+        first = await list_accessible_entity_records(graph, context, entity_id="t1", entity_type="topic", limit=2)
+        await list_accessible_entity_records(
+            graph, context, entity_id="t1", entity_type="topic", limit=2, cursor=first.next_cursor,
+        )
+
+        assert graph.check_access.await_count == 2
+        graph.get_knowledge_hub_access_v3.assert_awaited_once_with("ukey", ORG)
+        assert all(call.kwargs["access"] is RESOLVED_ACCESS for call in graph.check_access.await_args_list)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [5, 6])
+    async def test_a_refused_row_leaves_no_cursor_once_the_candidates_ran_out(self, limit: int) -> None:
+        rows = [_row(f"r{i}", "conf-1") for i in range(6)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+            denied={"r1"},
+        )
+
+        page = await list_accessible_entity_records(
+            graph, _context(), entity_id="t1", entity_type="topic", limit=limit,
+        )
+
+        assert [r["_key"] for r in page.records] == ["r0", "r2", "r3", "r4", "r5"]
+        assert page.next_cursor is None
 
     @pytest.mark.asyncio
     async def test_rows_from_connectors_outside_scope_are_dropped(self) -> None:
@@ -434,6 +565,92 @@ class TestSearchEntitiesForUser:
         assert [h.entity_id for h in hits] == ["space-a"]
 
     @pytest.mark.asyncio
+    async def test_only_the_reachable_record_group_hits_are_asked_of_the_access_check(self) -> None:
+        store = _store([
+            _hit("space-a", "record_group", 0.9), _hit("rg-x", "record_group", 0.8), _hit("t1", "topic", 0.7),
+        ], [], [])
+        graph = _graph(candidates=lambda refs, org, **k: {})
+
+        await search_entities_for_user(
+            store, graph, _context(record_groups=("space-a", "space-b", "space-c")), "q", top_k=5,
+        )
+
+        graph.check_access.assert_awaited_once_with("ukey", ORG, node_ids=["space-a"], access=RESOLVED_ACCESS)
+
+    @pytest.mark.asyncio
+    async def test_no_access_check_without_rows_or_reachable_record_group_hits(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9), _hit("rg-x", "record_group", 0.8)], [], [])
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [], "rg-x": []})
+
+        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
+        graph.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reachable_record_group_the_access_check_refuses_is_dropped(self) -> None:
+        store = _store([_hit("space-a", "record_group", 0.9)], [], [])
+        graph = _graph(candidates=lambda refs, org, **k: {"space-a": []}, denied={"space-a"})
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert hits == []
+
+    @pytest.mark.asyncio
+    async def test_refused_record_group_is_kept_for_a_permitted_record_of_its_own(self) -> None:
+        store = _store([_hit("space-a", "record_group", 0.9)], [], [])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"space-a": [_row("r1", "conf-1")]},
+            permitted={"r1"},
+            denied={"space-a"},
+        )
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["space-a"]
+        assert [r["_key"] for r in hits[0].records] == ["r1"]
+
+    @pytest.mark.asyncio
+    async def test_refused_record_group_is_probed_past_the_first_window(self) -> None:
+        first = [_row(f"d{i}", "conf-1") for i in range(ep.PROBE_WINDOWS[0])]
+        store = _store([_hit("space-a", "record_group", 0.9)], [], [])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"space-a": first if k["offset"] == 0 else [_row("ok", "conf-1")]},
+            permitted={"ok"},
+            denied={"space-a"},
+        )
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert [h.entity_id for h in hits] == ["space-a"]
+        assert [r["_key"] for r in hits[0].records] == ["ok"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_record_group_access_check_fails_the_whole_search(self) -> None:
+        store = _store([_hit("space-a", "record_group", 0.9)], [], [])
+        graph = _graph(candidates=lambda refs, org, **k: {"space-a": []})
+        graph.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(EntityAccessError):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_row_access_check_fails_the_whole_search(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9)], [], [])
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "kb-1")]})
+        graph.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(EntityAccessError):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_row_does_not_keep_its_entity(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9)], [], [])
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": [_row("r1", "conf-1")]}, permitted={"r1"}, denied={"r1"},
+        )
+
+        assert await search_entities_for_user(store, graph, _context(), "q", top_k=5) == []
+
+    @pytest.mark.asyncio
     async def test_undecided_probe_continues_into_next_round(self) -> None:
         first = [_row(f"d{i}", "conf-1") for i in range(ep.PROBE_WINDOWS[0])]
         store = _store([_hit("t1", "topic", 0.9)], [], [])
@@ -557,9 +774,30 @@ class TestReadPathRoundTrips:
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
+    async def test_a_slow_record_group_access_check_is_cut_at_the_deadline(self, monkeypatch) -> None:
+        """An undecided record group is left out, and no probe round starts."""
+        import asyncio
+
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        store = _store([_hit("space-a", "record_group", 0.9)])
+
+        async def _slow(*args: object, **kwargs: object) -> None:
+            await asyncio.sleep(5)
+
+        graph = _graph(candidates=lambda refs, org, **k: {"space-a": []})
+        graph.check_access = AsyncMock(side_effect=_slow)
+        started = asyncio.get_running_loop().time()
+
+        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert hits == []
+        assert asyncio.get_running_loop().time() - started < 2
+        graph.get_permitted_entity_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_rounds_stop_once_the_deadline_has_passed(self, monkeypatch) -> None:
         """The first round's candidate query takes the call past its deadline:
-        no permission check or further round follows."""
+        no further round follows."""
         clock = {"t": 0.0}
         monkeypatch.setattr(ep.time, "monotonic", lambda: clock["t"])
         first = [_row(f"d{i}", "conf-1") for i in range(ep.PROBE_WINDOWS[0])]
@@ -599,10 +837,10 @@ class TestListingDeadline:
         assert graph.get_permitted_entity_records.await_count == 1
 
 
-class TestPermissionInTheQuery:
-    """KG-11 and KG-38: the permission check runs in the provider query, over
-    a widening window of the newest candidates, so a user whose readable
-    records are older than the first few dozen still sees the entity."""
+class TestPermissionOverWideningWindows:
+    """KG-11 and KG-38: each round decides a wider window of the newest
+    candidates, so a user whose readable records are older than the first few
+    dozen still sees the entity."""
 
     @pytest.mark.asyncio
     async def test_a_readable_record_past_the_old_60_window_keeps_its_entity(self) -> None:
@@ -669,10 +907,11 @@ class TestListingWindowPastTheDeadline:
 
         monkeypatch.setattr(ep, "LISTING_DEADLINE_SECONDS", 0.3)
         rows = [_row(f"d{i}", "conf-1") for i in range(1000)]
-        build = permitted_records(
-            lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
             permitted={"d5"},
         )
+        query = graph.get_permitted_entity_records.side_effect
         calls = 0
 
         async def _permitted(*args: object, **kwargs: object) -> dict:
@@ -680,9 +919,8 @@ class TestListingWindowPastTheDeadline:
             calls += 1
             if calls > 1:
                 await asyncio.sleep(5)
-            return await build(*args, **kwargs)
+            return await query(*args, **kwargs)
 
-        graph = MagicMock()
         graph.get_permitted_entity_records = AsyncMock(side_effect=_permitted)
 
         page = await list_accessible_entity_records(

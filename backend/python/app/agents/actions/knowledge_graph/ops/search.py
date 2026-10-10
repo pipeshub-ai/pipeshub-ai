@@ -23,7 +23,11 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
-from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.actions.knowledge_graph.ops.scope import (
+    KnowledgeScope,
+    attachment_ids,
+    search_scope,
+)
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
@@ -264,17 +268,7 @@ async def execute_search(
         source_ids_norm = normalize_source_ids(source_ids)
 
         agent_filters = state.get("filters", {}) or {}
-        if is_placeholder_agent:
-            raw_apps: list[str] = list(state.get("apps") or [])
-            raw_kbs: list[str] = list(state.get("kb") or [])
-        else:
-            raw_apps = list(agent_filters.get("apps") or [])
-            raw_kbs = list(agent_filters.get("kb") or [])
-
-        base_scope = KnowledgeScope(
-            app_ids=tuple(raw_apps),
-            kb_ids=_clean_kb(raw_kbs),
-        )
+        base_scope = search_scope(state)
 
         explicit_ids = bool(source_ids_norm)
         narrowed_scope: KnowledgeScope | None = None
@@ -579,6 +573,8 @@ async def execute_search(
                 org_id=org_id,
                 config_service=config_service,
                 user_id=user_id,
+                filters=agent_filters,
+                ignore_kb_ids=attachment_ids(state)[1],
             )
 
         final_results = search_results if not flattened_results else flattened_results

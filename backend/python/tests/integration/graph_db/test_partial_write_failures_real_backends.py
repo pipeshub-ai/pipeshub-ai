@@ -284,6 +284,20 @@ async def _arango_unique(w: _World, collection: str, fields: list[str]) -> Async
             assert resp.status < 300, await resp.text()
 
 
+@contextlib.asynccontextmanager
+async def _arango_edge_held(w: _World, from_id: str, to_id: str) -> AsyncIterator[None]:
+    """An uncommitted PARENT_CHILD edge from *from_id* to *to_id*: another writer's edge
+    between the same records waits on its unique key."""
+    edges = CollectionNames.NODE_RELATIONS.value
+    async with _arango_unique(w, edges, ["_from", "_to"]), _arango_hold(
+        w, edges,
+        f"INSERT {{_from: @from, _to: @to, relationshipType: 'PARENT_CHILD', createdAtTimestamp: @now, "
+        f"updatedAtTimestamp: @now}} INTO {edges} RETURN 1",
+        {"from": f"records/{from_id}", "to": f"records/{to_id}", "now": get_epoch_timestamp_in_ms()},
+    ):
+        yield
+
+
 async def _failure(write: Callable[[], Awaitable[object]]) -> str:
     """Run *write*, which must fail, and return what it failed with."""
     try:
@@ -987,16 +1001,20 @@ async def _kb_tree(w: _World) -> _KbTree:
 
 
 async def _parents(w: _World, record_id: str) -> list[str]:
-    """The record at the other end of each PARENT_CHILD edge into the record."""
+    """The record at the other end of each PARENT_CHILD edge into the record.
+
+    An item at the root of its knowledge base hangs off the KB's App, which is not a folder.
+    """
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            "MATCH (p:Record)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) "
+            "RETURN p.id AS id",
             parameters={"id": record_id},
         )
         return [row["id"] for row in rows or []]
     return await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
-        "RETURN PARSE_IDENTIFIER(e._from).key",
+        "FOR e IN nodeRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "AND STARTS_WITH(e._from, 'records/') RETURN PARSE_IDENTIFIER(e._from).key",
         {"to": f"records/{record_id}"},
     ) or []
 
@@ -1082,9 +1100,9 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
             )
         else:
             hold = _arango_hold(
-                w, CollectionNames.RECORD_RELATIONS.value,
-                "FOR e IN recordRelations FILTER e._to == @to "
-                "UPDATE e WITH {updatedAtTimestamp: @now} IN recordRelations RETURN 1",
+                w, CollectionNames.NODE_RELATIONS.value,
+                "FOR e IN nodeRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN nodeRelations RETURN 1",
                 {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
             )
     elif fails_on == "record":
@@ -1106,15 +1124,15 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
                                 {"key": kb.reports, "now": get_epoch_timestamp_in_ms()})
     # The move fails on the edge from the new folder, after the edge from the old
     # one is deleted and the record rewritten. Another writer holds the new folder
-    # on Neo4j; on ArangoDB, whose edges have random keys, a unique index refuses
-    # the folder a second child.
+    # on Neo4j; on ArangoDB, whose edges have random keys, another writer holds an
+    # uncommitted edge between the same two records under a unique index. (One on
+    # the folder's children no longer builds: the KB's App has several.)
     elif w.neo4j:
         hold = _neo4j_hold(
             w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
         )
     else:
-        hold = _arango_unique(w, CollectionNames.RECORD_RELATIONS.value, ["_from", "relationshipType"])
-        expected = "unique constraint violated"
+        hold = _arango_edge_held(w, kb.new, kb.reports)
     async with hold:
         assert expected in await _failed_kb_move(w, kb, target)
 
@@ -1182,12 +1200,12 @@ async def _children(w: _World, record_id: str) -> set[str]:
     """The record at the other end of each PARENT_CHILD edge out of the record."""
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (:Record {id: $id})-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            "MATCH (:Record {id: $id})-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
             parameters={"id": record_id},
         )
         return {row["id"] for row in rows or []}
     return set(await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "FOR e IN nodeRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
         "RETURN PARSE_IDENTIFIER(e._to).key",
         {"from": f"records/{record_id}"},
     ) or [])

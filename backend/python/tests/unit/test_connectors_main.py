@@ -1767,13 +1767,22 @@ class TestRefreshConnectorMetrics:
         import asyncio
 
         from app.connectors_main import refresh_connector_metrics
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-        gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(return_value=[
+        apps = [
             {"isActive": True, "type": "KB"},
             {"isActive": False, "type": "KB"},
             {"isActive": True, "type": "DRIVE"},
-        ])
+        ]
+
+        async def nodes_by_filters(collection, filters, return_fields=None):
+            return [a for a in apps if all(a.get(k) == v for k, v in filters.items())]
+
+        # The count is the provider's: this one counts the way a backend without
+        # a query of its own does.
+        gp = AsyncMock()
+        gp.get_nodes_by_filters = AsyncMock(side_effect=nodes_by_filters)
+        gp.count_active_apps_by_type = lambda: IGraphDBProvider.count_active_apps_by_type(gp)
         logger = MagicMock()
 
         with patch("app.connectors_main.set_connector_active") as mock_set, \
@@ -1782,6 +1791,7 @@ class TestRefreshConnectorMetrics:
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         mock_set.assert_called_once_with({"KB": 1, "DRIVE": 1})
+        gp.get_all_documents.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_logs_warning_when_gauge_refresh_fails(self):
@@ -1790,15 +1800,16 @@ class TestRefreshConnectorMetrics:
         from app.connectors_main import refresh_connector_metrics
 
         gp = AsyncMock()
-        gp.get_all_documents = AsyncMock(side_effect=RuntimeError("graph down"))
+        gp.count_active_apps_by_type = AsyncMock(side_effect=RuntimeError("graph down"))
         logger = MagicMock()
 
-        with patch("app.connectors_main.set_connector_active"), \
+        with patch("app.connectors_main.set_connector_active") as mock_set, \
              patch("app.connectors_main.asyncio.sleep", new_callable=AsyncMock, side_effect=asyncio.CancelledError):
             with pytest.raises(asyncio.CancelledError):
                 await refresh_connector_metrics(gp, logger, interval_s=60)
 
         logger.warning.assert_called()
+        mock_set.assert_not_called()
 
 
 class TestCorsPolicy:

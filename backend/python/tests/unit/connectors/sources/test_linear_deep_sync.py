@@ -50,6 +50,7 @@ def _make_connector():
     dep.org_id = "org-1"
     dep.get_all_active_users = AsyncMock(return_value=[MagicMock(email="u@x.com")])
     dep.on_new_app_users = AsyncMock()
+    dep.remove_app_users_absent_from_source = AsyncMock(return_value=0)
     dep.on_new_user_groups = AsyncMock()
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()

@@ -641,7 +641,7 @@ class FakeStore:
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeStore"]:
         yield self
 
 
