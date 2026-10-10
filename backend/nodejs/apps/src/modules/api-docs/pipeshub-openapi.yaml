@@ -24216,6 +24216,55 @@ paths:
           description: The paging parameters are not valid.
         '401':
           description: The storage scoped token was missing or invalid.
+  /document/internal/missing:
+    post:
+      tags:
+        - Internal Storage
+      summary: Report which documents do not exist (service-to-service)
+      description: |
+        Answers which of the given document ids the caller's organisation
+        cannot download: no such document, another organisation's, or deleted.
+        Used to find processed records whose stored content is gone so they can
+        be re-indexed. An id that is not a 24-character hex id is answered as
+        missing. One lookup per call; at most 500 ids.
+      operationId: internalFindMissingDocuments
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentIds
+              properties:
+                documentIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+      responses:
+        '200':
+          description: The requested ids that do not exist for the organisation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - missing
+                properties:
+                  missing:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: The body is not a list of 1 to 500 ids.
+        '401':
+          description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}/download:
     get:
       tags:
