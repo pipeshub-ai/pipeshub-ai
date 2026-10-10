@@ -14,6 +14,7 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.chat_modes.bridge import (
     _apply_policy_to_chat_state,
     _fetch_available_connectors,
@@ -501,6 +502,64 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+
+    async def test_prefetched_records_are_remembered_in_rank_order(self) -> None:
+        """An unknown-id fetch lists the 20 most recent records; for a prefetch
+        those must be the ones the search ranked highest, not the first by
+        virtual record id."""
+        top = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+        ranked_ids = [top] + [f"{i:08x}-1111-4222-8333-944445555666" for i in range(1, 30)]
+        vr_map = {f"vr-{29 - rank:02d}": {"id": rid, "record_name": f"Rank {rank}"}
+                  for rank, rid in enumerate(ranked_ids)}
+        ranked = [{"virtual_record_id": f"vr-{29 - rank:02d}"} for rank in range(30)]
+        prefetch_result = PrefetchResult(
+            formatted_context="Excerpts.",
+            final_results=sorted(ranked, key=lambda r: r["virtual_record_id"]),
+            virtual_record_id_to_result=vr_map,
+            tool_records=list(vr_map.values()),
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            ranked_results=ranked,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: object, *,  # noqa: ANN401
+            query: str, model_name: str = "", model_key: str | None = None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            captured["context"] = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self: object, *, event_sink: Any, agent_output: Any = None, **_: object) -> dict[str, Any]:  # noqa: ANN401
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.bridge.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        mistyped = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
+        hint = unresolved_id_hint(
+            [mistyped], requested=[mistyped],
+            known_record_names=captured["context"].tool_state.get("known_record_names"),
+        )
+        bullets = [line[2:] for line in hint.splitlines() if line.startswith("- ")]
+        assert bullets == [f"{ranked_ids[r]} (Rank {r})" for r in range(20)]
+        assert f"The closest to the id you used is {top} (Rank 0)." in hint
 
     async def test_prefetch_appends_candidate_list_when_records_are_incomplete(self) -> None:
         """In prefetch mode the retrieval tool never runs, so candidate-list

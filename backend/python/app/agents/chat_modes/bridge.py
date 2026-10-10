@@ -521,7 +521,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ]
                 remember_shown_results(
                     context.tool_state,
-                    prefetch_result.final_results,
+                    prefetch_result.ranked_results,
                     prefetch_result.virtual_record_id_to_result,
                 )
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.

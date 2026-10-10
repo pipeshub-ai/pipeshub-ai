@@ -68,6 +68,9 @@ class PrefetchResult:
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
     collected_images: list[dict[str, Any]] = field(default_factory=list)
+    # `final_results` in the search's relevance order; `final_results` itself
+    # is sorted by virtual record id for display.
+    ranked_results: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -203,4 +206,5 @@ async def prefetch_retrieval(
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
         collected_images=collected_images,
+        ranked_results=list(flattened_results),
     )
