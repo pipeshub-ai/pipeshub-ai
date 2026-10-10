@@ -83,9 +83,18 @@ export class ErrorMiddleware {
     req: Request,
     res: Response,
   ) {
-    logError(this.logger, 'Application error', error, {
-      request: this.getRequestContext(req),
-    });
+    // A thrower may mark an answer it expects (a 4xx) as routine; a 5xx is always an error.
+    const level =
+      error.statusCode < 500 && error.metadata?.logLevel === 'warn'
+        ? 'warn'
+        : 'error';
+    logError(
+      this.logger,
+      'Application error',
+      error,
+      { request: this.getRequestContext(req) },
+      level,
+    );
 
     // Never expose stack traces to clients - security best practice
     const isDevelopment =

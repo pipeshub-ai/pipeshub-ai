@@ -108,6 +108,39 @@ describe('ErrorMiddleware', () => {
   })
 
   // -----------------------------------------------------------------------
+  // Log level of an expected answer
+  // -----------------------------------------------------------------------
+  describe('log level', () => {
+    it('logs a not-found the thrower marked as expected at warn, and still answers 404', () => {
+      const res = createMockResponse()
+
+      handler(new NotFoundError('Document not found', { logLevel: 'warn' }), createMockRequest(), res, createMockNext())
+
+      expect(loggerWarnStub.calledOnce).to.be.true
+      expect(loggerErrorStub.called).to.be.false
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
+    })
+
+    it('keeps logging an unmarked not-found at error', () => {
+      handler(new NotFoundError('Document not found'), createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+    })
+
+    it('never lowers a server error, whatever it is marked', () => {
+      handler(
+        new InternalServerError('Error fetching document information', { logLevel: 'warn' }),
+        createMockRequest(), createMockResponse(), createMockNext(),
+      )
+
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // BaseError handling
   // -----------------------------------------------------------------------
   describe('BaseError handling', () => {
