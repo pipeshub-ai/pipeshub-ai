@@ -298,6 +298,9 @@ class SemanticMetadata(BaseModel):
     sub_category_level_2: Optional[str] = None
     sub_category_level_3: Optional[str] = None
     confidence: Optional[Confidence] = None
+    # Set when the labels above are the names extracted from this record's
+    # own content (app.modules.indexing.record_label_repair reads it).
+    own_labels: bool | None = None
 
     def to_llm_context(self) -> list[str]:
         lines = []

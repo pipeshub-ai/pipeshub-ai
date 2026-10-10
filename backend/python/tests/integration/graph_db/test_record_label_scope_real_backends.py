@@ -534,5 +534,6 @@ class TestTheRepairOnARealGraph:
         assert app[RecordLabelRepairState.SKIPPED] == 1
         assert blob.stored[f"vr-{open_record}"]["semantic_metadata"] == {
             "summary": "s", "categories": ["Product programme"], "topics": ["Product launch window"],
+            "own_labels": True,
         }
         assert blob.writes == [f"vr-{open_record}"]

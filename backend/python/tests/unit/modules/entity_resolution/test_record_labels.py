@@ -142,3 +142,22 @@ class TestAReindexWritesTheSpellingOntoAnExistingEdge:
         assert edge["extractedName"] == "release checklist"
         assert edge["extractedNames"] == ["release checklist"]
         assert (edge["createdAtTimestamp"], edge["mergedFrom"]) == (7, "topics/older")
+
+
+class TestOwnLabelsAreMarked:
+    async def test_the_resolver_marks_the_labels_as_the_records_own(
+        self, make_resolver, metadata_factory, ctx_factory, scripted_model,
+    ) -> None:
+        scripted_model()
+        meta = metadata_factory(topics=["Release checklist"])
+        await make_resolver("apply").resolve(ctx_factory("r7", "acme", meta))
+        assert meta.own_labels is True
+        assert meta.model_dump(exclude_none=True)["own_labels"] is True
+
+    async def test_shadow_mode_leaves_the_labels_unmarked(
+        self, make_resolver, metadata_factory, ctx_factory, scripted_model,
+    ) -> None:
+        scripted_model()
+        meta = metadata_factory(topics=["Release checklist"])
+        await make_resolver("shadow").resolve(ctx_factory("r8", "acme", meta))
+        assert meta.own_labels is None

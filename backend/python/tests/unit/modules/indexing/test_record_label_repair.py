@@ -196,6 +196,7 @@ class TestARecordGetsItsOwnLabelsBackFromItsEdges:
         assert after["semantic_metadata"]["categories"] == ["Product programme"]
         assert after["semantic_metadata"]["topics"] == ["Shipping dates", "Product launch window"]
         assert after["semantic_metadata"]["languages"] == ["English"]
+        assert after["semantic_metadata"]["own_labels"] is True
         assert after["semantic_metadata"]["summary"] == before["semantic_metadata"]["summary"]
         assert after["block_containers"] == before["block_containers"]
         assert [w[2] for w in blob.writes] == ["vr-b-open"]
@@ -362,15 +363,15 @@ class TestEverySpellingAndCounters:
         assert app[RecordLabelRepairState.SKIPPED] == 1
         assert app[RecordLabelRepairState.EXHAUSTED] is False
 
-    async def test_a_stored_spelling_that_is_no_nodes_name_is_kept(self, world) -> None:
-        """A record whose labels are already its own: two of its spellings
-        share one node, whose name differs in case, and the edge records only
-        the first spelling."""
+    async def test_a_record_with_its_own_labels_is_left_alone(self, world) -> None:
+        """Written by a resolver that keeps the record's own labels: two of its
+        spellings share one node whose name differs in case, and the edge
+        records only the first spelling."""
         graph, blob = world
         _canonical(graph, TOPICS, "t-bug", "Bug bash testing")
         _canonical(graph, TOPICS, "t-rel", "Release checklist")
         own = ["BUG BASH TESTING", "Bug bash testing session", "Release checklist"]
-        _record(graph, blob, "g-own", {"topics": list(own)})
+        _record(graph, blob, "g-own", {"topics": list(own), "own_labels": True})
         _link(graph, "g-own", BELONGS_TO_TOPIC, TOPICS, "t-bug", "BUG BASH TESTING ")
         _link(graph, "g-own", BELONGS_TO_TOPIC, TOPICS, "t-rel", "Release checklist")
 
@@ -382,12 +383,13 @@ class TestEverySpellingAndCounters:
     @pytest.mark.parametrize(
         "topics", [["Launch plan", "Project Falcon"], ["Project Falcon", "Launch plan"]],
     )
-    async def test_a_node_name_after_its_link_was_used_is_kept(self, world, topics) -> None:
+    async def test_a_node_name_among_its_own_labels_is_kept(self, world, topics) -> None:
         """The record spells the node two ways, one of which is the node's
-        name, and its edge lists only the other, in either stored order."""
+        name, and its edge lists only the other; its labels are marked as its
+        own, so neither order is touched."""
         graph, blob = world
         _canonical(graph, TOPICS, "t-plan", "Project Falcon")
-        _record(graph, blob, "h-both", {"topics": list(topics)})
+        _record(graph, blob, "h-both", {"topics": list(topics), "own_labels": True})
         _link(graph, "h-both", BELONGS_TO_TOPIC, TOPICS, "t-plan", "Launch plan")
         graph.edges[(BELONGS_TO_TOPIC, f"{RECORDS}/h-both", f"{TOPICS}/t-plan")]["extractedNames"] = ["Launch plan"]
 
@@ -395,3 +397,68 @@ class TestEverySpellingAndCounters:
 
         assert blob.stored["vr-h-both"]["semantic_metadata"]["topics"] == topics
         assert "vr-h-both" not in [w[2] for w in blob.writes]
+
+    async def test_own_labels_in_another_order_than_the_edge_are_left_alone(self, world) -> None:
+        graph, blob = world
+        _canonical(graph, TOPICS, "t-nda", "Mutual NDA")
+        _record(graph, blob, "i-perm", {"topics": ["Non-disclosure agreement", "NDA"], "own_labels": True})
+        _link(graph, "i-perm", BELONGS_TO_TOPIC, TOPICS, "t-nda", "NDA")
+        graph.edges[(BELONGS_TO_TOPIC, f"{RECORDS}/i-perm", f"{TOPICS}/t-nda")]["extractedNames"] = [
+            "NDA", "Non-disclosure agreement",
+        ]
+
+        await _run_until_idle(graph, blob)
+
+        assert blob.stored["vr-i-perm"]["semantic_metadata"]["topics"] == ["Non-disclosure agreement", "NDA"]
+        assert "vr-i-perm" not in [w[2] for w in blob.writes]
+
+
+# Stored labels as the earlier rewrite wrote them (each a linked node's name),
+# the nodes as (key, name, the record's spelling), and the restored labels.
+REWRITTEN_CASES = [
+    (["Budget", "Sign off"], [("t-budget", "Budget", "Sign-off"), ("t-sign", "Sign off", "Quarterly review")],
+     ["Sign-off", "Quarterly review"]),
+    (["Integration testing", "end to end"],
+     [("t-it", "Integration testing", "end-to-end"), ("t-e2e", "end to end", "end to end")],
+     ["end-to-end", "end to end"]),
+    (["Launch-plan", "Project Falcon"],
+     [("t-pf", "Project Falcon", "Launch plan"), ("t-lp", "Launch-plan", "Launch-plan")],
+     ["Launch-plan", "Launch plan"]),
+]
+
+
+class TestRewrittenLabelsWhoseSpellingsCollide:
+    @pytest.mark.parametrize("reverse", [False, True])
+    @pytest.mark.parametrize(("stored", "nodes", "restored"), REWRITTEN_CASES)
+    async def test_each_node_name_becomes_that_nodes_spelling_in_stored_order(
+        self, world, stored, nodes, restored, reverse,
+    ) -> None:
+        graph, blob = world
+        if reverse:
+            by_name = {name: spelling for _key, name, spelling in nodes}
+            stored = list(reversed(stored))
+            restored = [by_name[name] for name in stored]
+        for key, name, _spelling in nodes:
+            _canonical(graph, TOPICS, key, name)
+        _record(graph, blob, "j-old", {"topics": list(stored)})
+        for key, _name, spelling in nodes:
+            _link(graph, "j-old", BELONGS_TO_TOPIC, TOPICS, key, spelling)
+
+        await _run_until_idle(graph, blob)
+
+        semantic = blob.stored["vr-j-old"]["semantic_metadata"]
+        assert semantic["topics"] == restored
+        assert semantic["own_labels"] is True
+
+    async def test_a_restored_record_is_not_written_again(self, world) -> None:
+        graph, blob = world
+        await _run_until_idle(graph, blob)
+        writes = len(blob.writes)
+        reads = len(blob.reads)
+        graph.apps[CONNECTOR][RecordLabelRepairState.STATE] = None
+
+        await _run_until_idle(graph, blob)
+
+        assert len(blob.writes) == writes
+        assert blob.stored["vr-b-open"]["semantic_metadata"]["own_labels"] is True
+        assert len(blob.reads) > reads

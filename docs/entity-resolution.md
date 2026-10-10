@@ -168,15 +168,24 @@ stored copy is rewritten.
   `recordLabelRepairState` equals `REPAIR_VERSION`. Connectors being deleted
   are skipped. The loop ends once every connector is done, and runs again on
   the next start for connectors added since.
+- The resolver stamps every record it indexes with `own_labels: true` in
+  `semantic_metadata`: its labels are the names extracted from its own
+  content. The repair never changes a stored copy that carries the stamp.
 - Only a record whose edges spell a node differently from the node's name is
-  read from storage, and only a change is written. A stored label that is
-  the name of a node the record links to (up to case, spacing and
-  punctuation) is replaced, in place, by every spelling the record's edge to
-  that node records. Each node is replaced once, where its name first
-  appears; any other stored label, including a later one equal to that
-  node's name, is the record's own and stays. Rewriting the stored
-  copy of a virtual record id that another record wrote is left to that
-  record.
+  read from storage. In an unmarked stored copy every label was written
+  either by the earlier rewrite, as the name of a node the record links to,
+  or before resolution existed, as the record's own word on a legacy node.
+  Each slot's labels are taken in stored order. A label is matched to a
+  linked node not yet matched whose name equals it (ignoring case, spacing
+  and surrounding punctuation), failing that to one whose name differs only
+  in other punctuation, as merges and migrations move edges only between
+  such names. A matched label is replaced, in place, by every spelling the
+  record's edge to that node records; a label that matches no node stays.
+  Spellings of linked nodes no label named are appended, and repeats are
+  dropped.
+- Only a change is written, and it carries the stamp, so the record is not
+  rewritten again. Rewriting the stored copy of a virtual record id that
+  another record wrote is left to that record.
 - A record extracted after the pass started, or being indexed
   (`processingStartedAt` set), is left alone: indexing writes its own labels.
   The record is read again just before the write and skipped if it changed.

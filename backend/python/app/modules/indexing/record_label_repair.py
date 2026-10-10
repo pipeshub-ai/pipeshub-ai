@@ -10,7 +10,10 @@ vector is embedded from the summary alone and carries no labels, so the
 stored copy is the only thing rewritten.
 
 Only a record whose edges spell a node differently from the node's name is
-read from storage, and only an actual change is written. A record extracted
+read from storage. A stored copy stamped ``own_labels`` (every record the
+resolver indexes now is) is left as it is; in any other, each stored label
+that names a linked node is replaced by the record's spellings of that node.
+Only an actual change is written, stamped, so a re-run leaves it. A record extracted
 after this process started, or being indexed, is left alone: indexing writes
 its own labels. A record with an edge to a canonical node that does not
 record the spelling (an edge copied onto a deduplicated record before copies
@@ -59,6 +62,10 @@ _LEASE_RENEW_EVERY_N_RECORDS = 10
 _BACKOFF_FACTOR = 2
 _MAX_BACKOFF_MULTIPLIER = 16
 
+# Set on a stored semantic_metadata whose labels are the record's own: by the
+# resolver on every record it indexes, and by this repair on what it restores.
+OWN_LABELS = "own_labels"
+
 _APPS = CollectionNames.APPS.value
 _RECORDS = CollectionNames.RECORDS.value
 _CATEGORIES = CollectionNames.CATEGORIES.value
@@ -98,45 +105,34 @@ def _key_of(doc: dict[str, Any]) -> str | None:
 
 
 def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
-    """The stored labels with each node name replaced by the record's own
-    spellings of that node, in the stored order, then the spellings of nodes
-    the stored labels did not name.
+    """The stored labels with each linked node's name replaced by the
+    record's own spellings of that node, in the stored order, then the
+    spellings of nodes the stored labels did not name.
 
-    A stored label that is a linked node's name (up to case, spacing and
-    punctuation, as merges and migrations move edges only between such
-    names) is what the earlier rewrite wrote, once per node, and is replaced
-    by the record's spellings of that node, unless one of those spellings is
-    stored too: then the stored labels were written with the record's own
-    wording, and the node-name label is one of its spellings and stays.
-    Every other stored label stays.
+    Only unmarked stored labels come here (see ``OWN_LABELS``), and each of
+    those was written either by the earlier rewrite, as a linked node's name,
+    or before resolution existed, as the record's own word on a legacy node.
+    A label is matched to a remaining link whose node name equals it, else
+    to one whose name differs only in case, spacing or punctuation (merges
+    and migrations move edges only between such names); the link is used
+    once. A label that matches no remaining link stays.
     """
-    def key(text: str) -> str:
-        return spelling_key(normalize_name(text))
-
     stored = [v for v in (current if isinstance(current, list) else []) if isinstance(v, str) and v.strip()]
-    stored_keys = {key(v) for v in stored}
     remaining = sorted(links, key=lambda link: link.spelling or "")
     ordered: list[str] = []
     for value in stored:
-        wanted = key(value)
-        # A label that is one of the link's spellings always matches it. A
-        # label that is only the node's name is the earlier rewrite's output
-        # unless the record's spelling of that node is stored too, in which
-        # case it is the record's own wording and stays.
-        match = next((link for link in remaining if wanted in {key(s) for s in link.spellings}), None)
+        exact = normalize_name(value)
+        match = next((link for link in remaining if normalize_name(link.name) == exact), None)
         if match is None:
+            loose = spelling_key(exact)
             match = next(
-                (
-                    link for link in remaining
-                    if wanted == key(link.name) and not stored_keys & {key(s) for s in link.spellings}
-                ),
-                None,
+                (link for link in remaining if spelling_key(normalize_name(link.name)) == loose), None,
             )
-        if match is not None:
-            remaining.remove(match)
-            ordered.extend(match.spellings)
-        else:
+        if match is None:
             ordered.append(value)
+            continue
+        remaining.remove(match)
+        ordered.extend(match.spellings)
     for link in remaining:
         ordered.extend(link.spellings)
     seen: set[str] = set()
@@ -154,10 +150,10 @@ def own_label_fields(
     """The label fields of a stored ``semantic_metadata`` rebuilt from the
     record's own edges, or ``None`` when an edge does not record its spelling.
 
-    A stored label that is a linked node's name gives way to the record's
-    spellings of that node; other stored labels are the record's own and
-    stay. The subcategory chain hangs off the category as on the index path,
-    and an absent subcategory level is ``None``.
+    Each stored label that names a linked node gives way to the record's
+    spellings of that node (``_ordered_spellings``). The subcategory chain
+    hangs off the category as on the index path, and an absent subcategory
+    level is ``None``.
     """
     if any(not link.spellings for link in links):
         return None
@@ -186,6 +182,7 @@ def _patched(semantic_metadata: dict[str, Any], fields: dict[str, Any]) -> dict[
     # Stored as model_dump(exclude_none=True): an absent level is no key, and
     # an empty slot the stored copy did not have is not added.
     patched = dict(semantic_metadata)
+    patched[OWN_LABELS] = True
     for slot, value in fields.items():
         if value is None or (value == [] and slot not in semantic_metadata):
             patched.pop(slot, None)
@@ -366,13 +363,13 @@ class RecordLabelRepair:
         if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
             return False
         semantic = stored.get("semantic_metadata")
-        if not isinstance(semantic, dict):
+        if not isinstance(semantic, dict) or semantic.get(OWN_LABELS) is True:
             return False
         fields = own_label_fields(semantic, links)
         if fields is None:
             return False
         patched = _patched(semantic, fields)
-        if patched == semantic:
+        if {**patched, OWN_LABELS: None} == {**semantic, OWN_LABELS: None}:
             return False
         latest = await self.graph.get_document(key, _RECORDS, raise_on_error=True)
         if (
