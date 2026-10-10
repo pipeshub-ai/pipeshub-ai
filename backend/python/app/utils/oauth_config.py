@@ -250,6 +250,66 @@ def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, 
     normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
 
 
+ZENDESK_OAUTH_URL_ERROR = (
+    "Enter only your Zendesk subdomain, such as acme for acme.zendesk.com. The Authorize "
+    "and Token URLs, if given, must be https addresses on zendesk.com."
+)
+
+
+def _zendesk_host(settings: dict[str, Any]) -> str:
+    subdomain = settings.get("subdomain")
+    subdomain = subdomain.strip().lower() if isinstance(subdomain, str) else ""
+    if not _DNS_LABEL.match(subdomain):
+        raise ValueError(ZENDESK_OAUTH_URL_ERROR)
+    return f"{subdomain}.zendesk.com"
+
+
+def check_zendesk_oauth_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Raise ValueError when a saved Zendesk subdomain or OAuth URL is not a Zendesk https host.
+
+    Only the fields present are checked: a connector linked to an existing OAuth app
+    carries none of them. The exact host is enforced by ``pin_zendesk_oauth_urls``.
+    """
+    if (connector_type or "").replace(" ", "").lower() != "zendesk":
+        return
+    settings = settings or {}
+    if settings.get("subdomain") not in (None, ""):
+        _zendesk_host(settings)
+    for key in (AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL):
+        url = settings.get(key)
+        if not url:
+            continue
+        try:
+            parsed = urlparse(str(url).strip())
+            port = parsed.port
+        except ValueError:
+            raise ValueError(ZENDESK_OAUTH_URL_ERROR) from None
+        url_host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme.lower() != "https"
+            or parsed.username is not None
+            or parsed.password is not None
+            or port not in (None, _HTTPS_DEFAULT_PORT)
+            or not url_host.endswith(".zendesk.com")
+            or not _DNS_LABEL.match(url_host.removesuffix(".zendesk.com"))
+        ):
+            raise ValueError(ZENDESK_OAUTH_URL_ERROR)
+
+
+def pin_zendesk_oauth_urls(connector_type: str, flow_config: dict[str, Any]) -> None:
+    """Point a Zendesk OAuth flow at its own subdomain, whatever URLs were saved.
+
+    The code exchange and refresh send the client secret from the server, and
+    Zendesk's endpoints are fixed per subdomain, so the free-text URL fields are
+    never trusted.
+    """
+    if (connector_type or "").replace(" ", "").lower() != "zendesk":
+        return
+    host = _zendesk_host(flow_config)
+    flow_config[AuthFieldKeys.AUTHORIZE_URL] = f"https://{host}/oauth/authorizations/new"
+    flow_config[AuthFieldKeys.TOKEN_URL] = f"https://{host}/oauth/tokens"
+
+
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
     # Derive authorize/token URLs from instanceUrl when not explicitly set.
     # This allows self-managed connectors (e.g. GitLab EE) to work without

@@ -1,14 +1,61 @@
 import base64
+import logging
+import re
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
+import httpx
 from pydantic import BaseModel  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.constants import OAuthConfigKeys
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.iclient import IClient
+
+# The subdomain is interpolated into every request URL, so anything beyond a bare
+# DNS label ("acme.zendesk.com", "evil.com/x") would send the bearer token elsewhere.
+_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+
+
+class ZendeskConfigError(ValueError):
+    """Connector configuration the user has to correct; the message is user-facing."""
+
+
+def validate_subdomain(subdomain: str) -> str:
+    subdomain = (subdomain or "").strip()
+    if not _SUBDOMAIN_RE.match(subdomain):
+        raise ZendeskConfigError(
+            f"Invalid Zendesk subdomain '{subdomain}'. Enter only the subdomain, "
+            "e.g. 'acme' for acme.zendesk.com."
+        )
+    return subdomain
+
+
+# Attachment URLs are bearer links: anyone holding one can download the file, and
+# httpx logs every request URL at INFO.
+_ATTACHMENT_SECRET_RE = re.compile(r"(/attachments/token/|[?&]token=)[^/?&\s\"']+")
+
+
+def redact_attachment_url(text: str) -> str:
+    return _ATTACHMENT_SECRET_RE.sub(r"\1<redacted>", text)
+
+
+class _AttachmentTokenLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                redact_attachment_url(str(arg)) if isinstance(arg, (str, httpx.URL)) else arg
+                for arg in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = redact_attachment_url(record.msg)
+        return True
+
+
+_ATTACHMENT_TOKEN_LOG_FILTER = _AttachmentTokenLogFilter()
+logging.getLogger("httpx").addFilter(_ATTACHMENT_TOKEN_LOG_FILTER)
 
 
 class ZendeskResponse(BaseModel):
@@ -17,6 +64,13 @@ class ZendeskResponse(BaseModel):
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Every call site already passes this; without the field Pydantic dropped it,
+    # leaving callers unable to tell a retryable 429 from a fatal 401.
+    status_code: Optional[int] = None
+    # Retry-After lives here. Zendesk's incremental exports allow 10 requests a
+    # minute, so a 429 wants roughly a minute of backoff; without the header the
+    # retry helper falls back to 0.5s and 1.0s and gives up in under two seconds.
+    headers: Optional[Dict[str, str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -40,6 +94,7 @@ class ZendeskRESTClientViaToken(HTTPClient):
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         # Initialize with empty token and override the headers manually
         super().__init__("", "")
+        subdomain = validate_subdomain(subdomain)
         self.subdomain = subdomain
         self.base_url = f"https://{subdomain}.zendesk.com/api/v2"
         # Set the correct Basic authentication header
@@ -77,6 +132,7 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
         # Initialize with empty token first, will be set after OAuth flow
         super().__init__(access_token or "", "Bearer")
 
+        subdomain = validate_subdomain(subdomain)
         self.subdomain = subdomain
         self.base_url = f"https://{subdomain}.zendesk.com/api/v2"
         self.oauth_base_url = f"https://{subdomain}.zendesk.com/oauth"
@@ -301,6 +357,12 @@ class ZendeskRESTClientViaOAuth(HTTPClient):
 
         return self.access_token
 
+    def set_access_token(self, access_token: str) -> None:
+        """Swap the token in place so data sources already holding this client use it."""
+        self.access_token = access_token
+        self.headers["Authorization"] = f"Bearer {access_token}"
+        self._oauth_completed = True
+
 
 class ZendeskTokenConfig(BaseModel):
     """Configuration for Zendesk REST client via Personal Access Token or API Token
@@ -409,24 +471,44 @@ class ZendeskClient(IClient):
             if not config:
                 raise ValueError("Failed to get Zendesk connector configuration")
             auth_config = config.get("auth", {}) or {}
-            auth_type = auth_config.get("authType", "API_TOKEN")  # API_TOKEN or OAUTH
+            # Zendesk stopped issuing API tokens and retires the existing ones on
+            # 2027-04-30, so the connector only offers OAuth.
+            auth_type = auth_config.get("authType", "OAUTH")
 
-            if auth_type == "API_TOKEN":
-                client = ZendeskRESTClientViaToken(
-                    subdomain=auth_config.get("subdomain", ""),
-                    token=auth_config.get("apiToken", ""),
-                    email=auth_config.get("email", "")
-                )
-
-
-            elif auth_type == "OAUTH":
-                credentials_config = auth_config.get("credentials", {})
+            if auth_type == "OAUTH":
+                # handle_callback stores the token at the config root, not under "auth".
+                credentials_config = config.get("credentials", {}) or {}
+                access_token = credentials_config.get("access_token", "")
+                if not access_token:
+                    raise ZendeskConfigError(
+                        "Zendesk is not authorized yet. Click Authorize to connect your Zendesk account."
+                    )
+                subdomain = auth_config.get("subdomain", "")
+                client_id = auth_config.get("clientId", "")
+                client_secret = auth_config.get("clientSecret", "")
+                redirect_uri = auth_config.get("redirectUri", "")
+                oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                # A connector created from an existing OAuth app keeps these on the app.
+                if oauth_config_id and not (subdomain and client_id and client_secret):
+                    from app.edition_config import fetch_oauth_config_by_id
+                    shared = await fetch_oauth_config_by_id(
+                        oauth_config_id=oauth_config_id,
+                        connector_type="zendesk",
+                        config_service=config_service,
+                        logger=logger,
+                        org_id=auth_config.get("inheritedFromOrgId"),
+                    )
+                    shared_config = (shared or {}).get(OAuthConfigKeys.CONFIG) or {}
+                    subdomain = subdomain or shared_config.get("subdomain", "")
+                    client_id = client_id or shared_config.get("clientId", "")
+                    client_secret = client_secret or shared_config.get("clientSecret", "")
+                    redirect_uri = redirect_uri or shared_config.get("redirectUri", "")
                 client = ZendeskRESTClientViaOAuth(
-                    subdomain=auth_config.get("subdomain", ""),
-                    client_id=auth_config.get("clientId", ""),
-                    client_secret=auth_config.get("clientSecret", ""),
-                    redirect_uri=auth_config.get("redirectUri", ""),
-                    access_token=credentials_config.get("access_token", "" )
+                    subdomain=subdomain,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                    redirect_uri=redirect_uri,
+                    access_token=access_token
                 )
 
             else:

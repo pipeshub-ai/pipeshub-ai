@@ -20,7 +20,6 @@ from app.connectors.core.registry.connector import (
     FormsConnector,
     MeetConnector,
     SlidesConnector,
-    ZendeskConnector,
 )
 from app.connectors.core.registry.connector_builder import SyncStrategy
 from app.connectors.core.sync.sync_coordinator import Admission, get_coordinator
@@ -89,6 +88,7 @@ from app.connectors.sources.slack.individual.connector import SlackIndividualCon
 from app.connectors.sources.slack.team.connector import SlackConnector
 from app.connectors.sources.web.connector import WebConnector
 from app.connectors.sources.zammad.connector import ZammadConnector
+from app.connectors.sources.zendesk.connector import ZendeskConnector
 from app.connectors.sources.zoom.connector import ZoomConnector
 
 
@@ -152,6 +152,7 @@ class ConnectorFactory:
         "notion": NotionConnector,
         "notionpersonal": NotionPersonalConnector,
         "zammad": ZammadConnector,
+        "zendesk": ZendeskConnector,
         "zoom": ZoomConnector,
         "salesforce": SalesforceConnector,
         "gitlab": GitLabConnector,
@@ -172,7 +173,6 @@ class ConnectorFactory:
         'forms': FormsConnector,
         'slides': SlidesConnector,
         'docs': DocsConnector,
-        'zendesk': ZendeskConnector,
         'airtable': AirtableConnector,
     }
 
