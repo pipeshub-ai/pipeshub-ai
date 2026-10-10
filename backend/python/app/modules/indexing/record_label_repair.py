@@ -38,6 +38,7 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.taxonomy import TaxonomyLink, taxonomy_links
 from app.services.messaging.utils import MessagingUtils
@@ -87,9 +88,19 @@ class RecordLabelRepairState:
     AFTER_KEY = "recordLabelRepairAfterKey"
     REPAIRED = "recordLabelRepairRepaired"
     SKIPPED = "recordLabelRepairSkipped"
+    # Records whose stored copy no longer exists (see _MissingStoredCopy).
+    MISSING = "recordLabelRepairMissing"
     FAILURES = "recordLabelRepairFailures"
     ATTEMPTS = "recordLabelRepairAttempts"
     EXHAUSTED = "recordLabelRepairExhausted"
+
+
+class _MissingStoredCopy(Exception):
+    """The record's stored copy is gone. Deleting the connector that first
+    stored deduplicated content removes it while records of other connectors
+    still use it, until a reindex rebuilds it, and that reindex writes the
+    record's own labels too. Reading again cannot succeed, so this is not a
+    failure that a retry of the connector could fix."""
 
 
 def _int(value: Any) -> int:  # noqa: ANN401
@@ -245,7 +256,7 @@ class RecordLabelRepair:
             for link in taxonomy_links(await self.graph.get_record_taxonomy_links(keys)):
                 links_by_record.setdefault(link.record_id, []).append(link)
 
-        repaired = skipped = failed = 0
+        repaired = skipped = missing = failed = 0
         for processed, row in enumerate(rows, start=1):
             key = _key_of(row)
             links = links_by_record.get(key or "")
@@ -261,6 +272,8 @@ class RecordLabelRepair:
                     repaired += 1
             except asyncio.CancelledError:
                 raise
+            except _MissingStoredCopy:
+                missing += 1
             except Exception:
                 failed += 1
                 self.logger.warning(
@@ -284,12 +297,19 @@ class RecordLabelRepair:
         totals = {
             RecordLabelRepairState.REPAIRED: _counted(RecordLabelRepairState.REPAIRED, repaired),
             RecordLabelRepairState.SKIPPED: _counted(RecordLabelRepairState.SKIPPED, skipped),
+            RecordLabelRepairState.MISSING: _counted(RecordLabelRepairState.MISSING, missing),
             RecordLabelRepairState.FAILURES: _counted(RecordLabelRepairState.FAILURES, failed),
         }
         self.logger.info(
             "record_label_repair: page done | connector=%s after=%s records=%d repaired=%d "
-            "skipped=%d failed=%d", app_key, after_key, len(rows), repaired, skipped, failed,
+            "skipped=%d missing=%d failed=%d", app_key, after_key, len(rows), repaired, skipped,
+            missing, failed,
         )
+        if missing:
+            self.logger.info(
+                "record_label_repair: %d record(s) of connector %s have no stored copy (removed "
+                "with content they shared); left for the reindex that rebuilds it", missing, app_key,
+            )
         if skipped:
             self.logger.info(
                 "record_label_repair: %d record(s) of connector %s have an edge without its "
@@ -325,8 +345,9 @@ class RecordLabelRepair:
             )
         else:
             self.logger.info(
-                "record_label_repair: connector %s done | repaired=%d skipped=%d",
+                "record_label_repair: connector %s done | repaired=%d skipped=%d missing=%d",
                 app_key, totals[RecordLabelRepairState.REPAIRED], totals[RecordLabelRepairState.SKIPPED],
+                totals[RecordLabelRepairState.MISSING],
             )
         await self.graph.update_node(app_key, _APPS, {
             RecordLabelRepairState.STATE: REPAIR_VERSION,
@@ -357,7 +378,10 @@ class RecordLabelRepair:
         lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
         if not lookup or not lookup.get("record_doc_id"):
             return False
-        stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
+        try:
+            stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
+        except StorageDocumentNotFoundError as exc:
+            raise _MissingStoredCopy from exc
         # A virtual record id can be shared; its copy is repaired with the
         # record that wrote it.
         if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
@@ -378,9 +402,12 @@ class RecordLabelRepair:
             or latest.get("lastExtractionTimestamp") != record.get("lastExtractionTimestamp")
         ):
             return False
-        await self.blob_store.update_record_buffer(
-            org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
-        )
+        try:
+            await self.blob_store.update_record_buffer(
+                org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
+            )
+        except StorageDocumentNotFoundError as exc:
+            raise _MissingStoredCopy from exc
         return True
 
 
