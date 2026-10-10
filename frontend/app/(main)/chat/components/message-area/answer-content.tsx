@@ -981,6 +981,7 @@ export function createMarkdownComponents(
               return (
                 <TableFullscreenWrapper>
                   <Box
+                    data-table-scroll-area
                     style={{
                       overflowX: 'auto',
                       overflowY: 'auto',
@@ -1157,6 +1158,7 @@ export function createMarkdownComponents(
     table: ({ children }: { children?: React.ReactNode }) => (
       <TableFullscreenWrapper>
         <Box
+          data-table-scroll-area
           style={{
             overflowX: 'auto',
             overflowY: 'auto',
