@@ -79,14 +79,20 @@ def _label(record_id: str, names: Mapping[str, str], shortener: Any) -> str:  # 
 
 
 def ids_in_text(record_ids: Iterable[str], text: str, shortener: Any = None) -> list[str]:  # noqa: ANN401
-    """The ids that survived into `text`; renderers cut long output at a byte cap."""
+    """The ids that survived into `text`, in the order `text` first shows them.
+
+    Renderers cut long output at a byte cap, and print the node being viewed
+    before its children, so text order is what the model read first.
+    """
     def printed(rid: str) -> str:
         return shortener.shorten_if_known(rid) if shortener is not None else rid
 
-    return [
-        rid for rid in record_ids
-        if re.search(rf"(?<![\w-]){re.escape(printed(rid))}(?![\w-])", text)
-    ]
+    found: dict[str, int] = {}
+    for rid in record_ids:
+        match = re.search(rf"(?<![\w-]){re.escape(printed(rid))}(?![\w-])", text)
+        if match is not None and rid not in found:
+            found[rid] = match.start()
+    return sorted(found, key=found.__getitem__)
 
 
 def unresolved_id_hint(

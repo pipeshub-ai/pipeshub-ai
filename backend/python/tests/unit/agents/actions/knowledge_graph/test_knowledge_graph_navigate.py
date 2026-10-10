@@ -469,6 +469,54 @@ class TestNavigateRemembersRecordIds:
         assert not [rid for rid in cut if rid in output.error]
 
     @pytest.mark.asyncio
+    async def test_the_viewed_record_stays_listed_on_a_full_page(self) -> None:
+        """The header and the read hint name the viewed record first; a full
+        50-row page must not push it out of the 20 the recovery reply lists."""
+        import re
+        from types import SimpleNamespace
+
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+
+        current = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+        state = _make_state(enable_record_id_shortening=False)
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": current, "name": "Call notes", "nodeType": "record", "subType": "TICKET",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[
+            {"id": f"{i:08x}-2222-4222-8333-944445555666", "name": f"Linked {i}"} for i in range(5)
+        ])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        children = [
+            _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}") for i in range(50)
+        ]
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=children, total=50)),
+        ):
+            ok, text = await KnowledgeGraph(state=state).navigate(node_id=current)
+
+        context = SimpleNamespace(
+            org_id="org-1", user_id="user-1", graph_provider=gp, full_records_fetched=set(),
+            tool_state=state, is_multimodal_llm=False, context_length=128_000, query="",
+            retrieval_service=None,
+        )
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=["8a2cfb7d-04fc-4647-8d43-5d0527800009"],
+        )
+
+        bullets = [line[2:].split(" ")[0] for line in output.error.splitlines() if line.startswith("- ")]
+        hinted = re.findall(r'"([0-9a-f-]{36})"', text.split("knowledgegraph__fetch_record(", 1)[1].split(")")[0])
+        assert ok is True and current in bullets
+        assert hinted and set(hinted) <= set(bullets)
+        assert f"The closest to the id you used is {current} (Call notes)." in output.error
+
+    @pytest.mark.asyncio
     async def test_container_node_ids_are_not_remembered(self):
         """An app or recordGroup id is not fetchable, so offering it as one
         would only produce a failed call."""
