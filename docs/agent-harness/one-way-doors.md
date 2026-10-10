@@ -310,6 +310,48 @@ Historic sessions must stay replayable for years for compliance.
 
 ---
 
+## Additions from gap review
+
+See [gaps-and-additions.md](./gaps-and-additions.md) for context.
+
+## OWD-14 — Agent versioning and what sessions/triggers pin
+- **Decision:** whether agent definitions are mutable in place (today) or immutable versions.
+- **Why one-way:** schedules, audit ("which instructions acted?"), eval gates, and staged rollout all reference a version; adding versions after triggers exist forces a migration of every trigger and loses historical attribution.
+- **Recommendation:** immutable published versions + drafts; sessions record `agent_version`; triggers pin a version (explicit opt-in to "latest published"); rollback = re-publish an old version.
+- **Keep flexible:** UI for diffing versions; canary percentages.
+
+## OWD-15 — Data classification as a first-class policy input
+- **Decision:** whether the taint/policy model carries record classification (e.g., sensitivity labels) alongside the boolean taint labels.
+- **Why one-way:** model-allowlists, egress, snapshot and retention rules keyed on classification cannot be applied retroactively to transcripts and snapshots already written without it.
+- **Recommendation:** taint includes `max_classification` (ordered levels, org-defined, mapped from connector labels where available); policy matrix maps classification → allowed models (with ZDR/region metadata), egress, retention, approver set. Unknown = org default level, not "public".
+- **Keep flexible:** level names, mappings per connector.
+
+## OWD-16 — Workspace ownership and sharing
+- **Decision:** whether persistent workspaces can be shared across principals (project/team workspaces) or are strictly per principal.
+- **Why one-way:** OWD-3 promises per-principal isolation; a shared workspace mixes data fetched under different ACLs. Once teams depend on shared workspaces, reverting breaks them; allowing it carelessly is a data-leak class.
+- **Recommendation:** v1: per-principal workspaces only. Shared project workspaces only under a project **service-account principal** whose ACL is the project's, never an individual's; personal data fetched by a user cannot be written into it without explicit export.
+- **Keep flexible:** quotas, GC policy.
+
+## OWD-17 — Vendor subscription logins inside harnesses
+- **Decision:** whether users may authenticate harnesses with personal vendor subscriptions (Claude Max/Pro, ChatGPT plans).
+- **Why one-way:** supporting it puts long-lived vendor OAuth tokens in sandboxes (violates OWD-1), bypasses metering/residency (OWD-8), and raises ToS questions; once users rely on it, removal is a visible regression.
+- **Recommendation:** not supported in v1; images disable harness login flows; all model access via the Model Gateway with org-managed keys. Revisit only for vendor-sanctioned delegated auth that the gateway can hold.
+- **Keep flexible:** n/a until revisited.
+
+## OWD-18 — Identity and AI disclosure on external writes
+- **Decision:** how commits, emails, messages, tickets created by agents are attributed in downstream systems.
+- **Why one-way:** downstream systems (git history, mail archives, Jira audit) keep this forever; changing it later leaves inconsistent historic attribution.
+- **Recommendation:** org-configurable per action type: act-as-user with disclosure footer/header ("via PipesHub agent X, session link"), or bot identity with `Co-authored-by: <user>`. Git commits signed with a bot key held outside the sandbox. Every external write carries `session_id` where the target supports metadata.
+- **Keep flexible:** disclosure wording.
+
+## OWD-19 — Multi-participant session semantics
+- **Decision:** whether non-principal users can steer/approve a session, and what data access they get.
+- **Why one-way:** interacts with OWD-2; if a steerer could direct an agent running with someone else's access, that is privilege escalation baked into the API.
+- **Recommendation:** principal is immutable per session; participants get explicit roles (viewer/commenter/steerer/approver); steering messages are attributed and labelled; policy may require steerers to have access ≥ the session's `max_classification`; "take over" = fork into a new session under the new principal.
+- **Keep flexible:** role names, UI.
+
+---
+
 ## Two-way doors (decide fast, revisit with data)
 
 These can be decided quickly and changed later:

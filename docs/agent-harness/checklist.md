@@ -644,3 +644,83 @@ Rule of thumb: load **lazily what the model or user pays for**, and load **eager
 - [ ] Performance targets are met on reference hardware, and the numbers are in the release notes.
 - [ ] Chaos suite is green in staging. Eval gates are met.
 - [ ] Docs, OpenAPI and runbooks are published. The changelog entry includes the harness versions supported.
+
+---
+
+## 20. Additions from gap review
+
+Details, rationale and acceptance criteria: [gaps-and-additions.md](./gaps-and-additions.md). Tests: GA-xx in [test-scenarios.md §13](./test-scenarios.md#13-additions-from-gap-review).
+
+**Decisions**
+- [ ] **P0** ADRs for OWD-14 (agent versioning), OWD-15 (classification), OWD-16 (workspace sharing), OWD-17 (vendor logins), OWD-18 (write identity/disclosure), OWD-19 (multi-participant sessions).
+
+**Lifecycle**
+- [ ] **P1** Immutable agent versions; sessions/triggers pin versions; rollback (G-01, GA-01).
+- [ ] **P2** Staged rollout/canary of agent and harness versions (G-02).
+- [ ] **P1** Shadow / dry-run mode with write tools stubbed in the gateway (G-03, GA-02).
+- [ ] **P1** Plan-approval gate as a policy option (G-04, GA-03).
+- [ ] **P1** Outcome verification gate (tests, citation text existence, file validity) (G-05, GA-04).
+- [ ] **P2** Workspace rewind + compensating actions for external writes (G-06).
+- [ ] **P1** End-of-session summary attached to notifications (G-07, GA-05).
+- [ ] **P2** Session export and local hand-off without secrets (G-08).
+
+**Interaction**
+- [ ] **P1** Session participant roles; principal immutable (G-09, GA-06).
+- [ ] **P2** Human takeover terminal with hand-back diff (G-10).
+- [ ] **P2** Authenticated, expiring preview URLs (G-11).
+- [ ] **P1** `auth_required` pause → connect → auto-retry (G-12, GA-07).
+- [ ] **P1** Unified approvals/questions inbox with safe batch approve (G-13, GA-08).
+- [ ] **P2** Teams / email-to-agent surfaces (G-14).
+- [ ] **P1** User feedback capture feeding the eval backlog (G-15).
+- [ ] **P2** Speculative pre-warm with per-user cost cap (G-16).
+
+**Environment**
+- [ ] **P1** Environment definitions (image, setup script, devcontainer subset, env vars) + post-setup snapshot (G-17, GA-09).
+- [ ] **P2** Service sidecars with ephemeral credentials (G-18).
+- [ ] **P1** Read-only org caches populated by trusted jobs (G-19, GA-10, SEC-SC-06).
+- [ ] **P1** Signed custom images + corporate CA injection (G-20, GA-11).
+- [ ] **P1** Upstream proxy chaining; private CIDRs default-deny; PipesHub internals always denied (G-21, G-38, SEC-EG-13, SEC-ISO-09).
+- [ ] **P2** Persistent project workspaces per OWD-16 (G-22).
+- [ ] **P1** Safe web-research tier via control-plane fetch/search tool (G-23, GA-12).
+- [ ] **P0** Built-in harness tool policy (allow/deny/replace) per profile, verified in conformance (G-24, GA-13).
+- [ ] **P1** Managed read-only policy hook in each harness that supports hooks (G-25, GA-14).
+- [ ] **P2** Harness extension assets (commands, subagents, plugins) as signed, versioned agent assets (G-26).
+- [ ] **P1** Role → model mapping (primary/fast/subagent/compaction) enforced by gateway (G-27, GA-15).
+- [ ] **P2** Headless browser under egress policy (G-28).
+
+**Data and knowledge**
+- [ ] **P1** Classification in taint; classification → model/egress/retention/approver matrix (G-29, GA-16).
+- [ ] **P1** Model registry data-handling metadata (ZDR, region, training opt-out) used by policy (G-30).
+- [ ] **P1** Shared per-(org, connector) rate budget between Tool Gateway and connector sync (G-31, GA-17).
+- [ ] **P2** Read-after-write overlay for agent-created records (G-32, GA-18).
+- [ ] **P2** Index agent artifacts as records with most-restrictive-source ACL (G-33).
+- [ ] **P2** Search past sessions (ACL'd) (G-34).
+- [ ] **P1** Async bulk export with quotas (G-35, GA-19).
+
+**Security**
+- [ ] **P1** Volume quotas + anomaly alerts for authorized bulk access (G-36, SEC-AZ-09).
+- [ ] **P1** Secret detection on user input with vault offer and redaction (G-37, SEC-CR-07).
+- [ ] **P0** Sandbox cannot reach any PipesHub internal datastore/service (G-38, SEC-ISO-09).
+- [ ] **P2** Content-safety guardrails at the Model Gateway (G-39).
+- [ ] **P1** SIEM export + fail-closed external policy webhook (G-40, GA-20).
+- [ ] **P1** IdP group-based policy subjects (G-41, GA-21).
+- [ ] **P1** Configured write identity + AI disclosure; bot-key commit signing outside sandbox (G-42, GA-22).
+- [ ] **P0** Vendor subscription login flows disabled and blocked (G-43, GA-23).
+- [ ] **P2** Legal hold / eDiscovery overriding retention (G-44).
+
+**Operations and quality**
+- [ ] **P1** Priority classes and preemption across claims, gateways and provider limits (G-45, GA-24).
+- [ ] **P2** Warm-pool autoscaling with idle-cost reporting (G-46).
+- [ ] **P1** Availability SLO, error budgets, RPO/RTO, DR drill (G-47).
+- [ ] **P1** Graceful degradation chain with visible notice (G-48, GA-25).
+- [ ] **P0** Mock harness adapter, gateway record/replay, seeded fixture tenant, ephemeral PR envs (G-49, GA-26).
+- [ ] **P1** Local dev profile documented in CONTRIBUTING (G-50).
+- [ ] **P2** Product analytics dashboard (G-51).
+- [ ] **P1** Timezone-aware schedules; date injected at context tail (G-52, GA-27).
+- [ ] **P2** Entitlement gating (G-53); chargeback/showback export (G-54).
+
+**Capability ideas**
+- [ ] **P2** Cross-harness best-of-N / cross-review (G-55).
+- [ ] **P2** Graduated autonomy within admin limits (G-56).
+- [ ] **P2** Initializer → incremental long-horizon mode (G-57).
+- [ ] **P1** Quarantined summarizer for bulk untrusted content (G-58, GA-28).
