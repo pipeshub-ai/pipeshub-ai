@@ -9,6 +9,7 @@ Targets:
 - Lines 617-624: _run_reindex status-only mode dispatching
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -80,6 +81,12 @@ def _make_mock_record(record_id="r1", is_placeholder=False, indexing_status="NOT
 # Lines 216-217: process_event dispatches "delete" action
 # ===========================================================================
 
+
+
+async def _drain_storage_releases() -> None:
+    from app.connectors.services import event_service
+    while event_service._storage_release_tasks:
+        await asyncio.gather(*list(event_service._storage_release_tasks))
 
 class TestProcessEventDeleteAction:
     @pytest.mark.asyncio
@@ -415,7 +422,34 @@ class TestHandleDelete:
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
             mock_rtm.cancel_by_prefix = AsyncMock()
-            return await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+        await _drain_storage_releases()
+        return result
+
+    @pytest.mark.asyncio
+    async def test_the_delete_returns_before_its_storage_release_finishes(self, service):
+        release_may_finish = asyncio.Event()
+
+        async def release(*_a):
+            from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+            await release_may_finish.wait()
+            return StorageReleaseResult(completed=True)
+
+        helper = AsyncMock()
+        helper.release_connector_storage = AsyncMock(side_effect=release)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await asyncio.wait_for(
+                service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}), timeout=5,
+            ) is True
+
+        helper.close.assert_not_awaited()
+        release_may_finish.set()
+        await _drain_storage_releases()
+        helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
+        helper.close.assert_awaited_once()
 
     @staticmethod
     def _helper(calls, completed=True):

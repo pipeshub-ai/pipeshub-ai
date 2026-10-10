@@ -256,7 +256,11 @@ async def _delete_connector(service: EventService, connector_id: str) -> bool:
     with patch("app.connectors.services.event_service.reindex_task_manager") as rtm, \
          patch("app.connectors.services.event_service.free_lane_of_deleted_connector", new=AsyncMock()):
         rtm.cancel_by_prefix = AsyncMock()
-        return await service._handle_delete("drive", {"orgId": ORG, "connectorId": connector_id})
+        result = await service._handle_delete("drive", {"orgId": ORG, "connectorId": connector_id})
+    from app.connectors.services import event_service
+    while event_service._storage_release_tasks:
+        await asyncio.gather(*list(event_service._storage_release_tasks))
+    return result
 
 
 def _reindexed(send_message: AsyncMock) -> list[dict]:

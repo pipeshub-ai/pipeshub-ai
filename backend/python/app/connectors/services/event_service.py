@@ -104,6 +104,11 @@ def connector_cache_max() -> int:
 #: task is not garbage collected mid-flight.
 _evict_tasks: set = set()
 
+#: A release pages through all of a connector's storage; it runs off the sync
+#: consumer so one large delete does not hold up every other connector's events.
+#: Its intent, recorded before the graph delete, covers a process that dies mid-run.
+_storage_release_tasks: set[asyncio.Task] = set()
+
 
 class EventService:
     """Event service for handling connector-specific events"""
@@ -1214,6 +1219,21 @@ class EventService:
                 f"connector={connector_id}: {e}"
             )
 
+    async def _release_storage(
+        self,
+        cleanup_helper: StorageCleanupHelper,
+        config_service: ConfigurationService,
+        org_id: str,
+        connector_id: str,
+    ) -> None:
+        try:
+            await release_connector_storage(
+                self.logger, cleanup_helper, config_service,
+                org_id=org_id, connector_id=connector_id,
+            )
+        finally:
+            await cleanup_helper.close()
+
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
         Handle the async connector deletion event.
@@ -1361,13 +1381,12 @@ class EventService:
             # Shared content is handed over before the connector's storage goes;
             # an unfinished release keeps its intent and is retried.
             cleanup_helper = StorageCleanupHelper(self.logger, self.graph_provider, config_service)
-            try:
-                await release_connector_storage(
-                    self.logger, cleanup_helper, config_service,
-                    org_id=org_id, connector_id=connector_id,
-                )
-            finally:
-                await cleanup_helper.close()
+            task = asyncio.get_running_loop().create_task(
+                self._release_storage(cleanup_helper, config_service, org_id, connector_id),
+                name=f"storage_release_{connector_id}",
+            )
+            _storage_release_tasks.add(task)
+            task.add_done_callback(_storage_release_tasks.discard)
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True
