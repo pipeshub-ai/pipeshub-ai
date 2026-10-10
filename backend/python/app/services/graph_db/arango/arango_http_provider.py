@@ -24450,33 +24450,35 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             return []
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
+    ) -> dict[str, list[dict]]:
+        if not virtual_record_ids:
+            return {}
         query = f"""
-        LET vids = UNIQUE(
-            FOR r IN {CollectionNames.RECORDS.value}
-                FILTER r.connectorId == @connector_id AND r.virtualRecordId != null
-                RETURN r.virtualRecordId
-        )
-        FOR vid IN vids
-            LET other = FIRST(
-                FOR o IN {CollectionNames.RECORDS.value}
-                    FILTER o.virtualRecordId == vid
-                    AND o.connectorId != @connector_id
-                    AND o.isDeleted != true
-                    LIMIT 1
-                    RETURN 1
-            )
-            FILTER other != null
-            RETURN vid
+        FOR r IN {CollectionNames.RECORDS.value}
+            FILTER r.virtualRecordId IN @vrids AND r.orgId == @org_id
+            RETURN {{
+                vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
+                connectorName: r.connectorName, recordGroupId: r.recordGroupId,
+                recordName: r.recordName, webUrl: r.webUrl,
+                isDeleted: r.isDeleted == true
+            }}
         """
         results = await self.http_client.execute_aql(
-            query, {"connector_id": connector_id}, transaction
+            query,
+            {"vrids": list(dict.fromkeys(virtual_record_ids)), "org_id": org_id},
+            transaction,
         )
-        return [vid for vid in results or [] if vid]
+        holders: dict[str, list[dict]] = {}
+        for row in results or []:
+            vid = row.pop("vid", None)
+            if vid and row.get("id"):
+                holders.setdefault(vid, []).append(row)
+        return holders
 
     async def get_records_by_virtual_record_id(
         self,

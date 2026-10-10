@@ -11,6 +11,7 @@ import {
   storageEtcdPaths,
   STORAGE_WRITE_FAILED_MESSAGE,
   MAX_SIGNED_URL_TTL_SECONDS,
+  CONNECTOR_VRID_PAGE_DEFAULT,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -83,6 +84,110 @@ interface MatchedTreeDocument {
   isVersionedFile?: boolean;
   versionHistory?: DocumentVersion[];
   isDeleted?: boolean;
+  customMetadata?: CustomTags;
+}
+
+type CustomTags = { key: string; value?: unknown }[];
+
+interface ScopedDocument {
+  documentPath?: string;
+  customMetadata?: CustomTags;
+}
+
+interface ConnectorStorageScope {
+  prefixes: string[];
+  connectorTag: Record<string, unknown>;
+  underPrefixes: Record<string, unknown>[];
+  isInScope: (doc: ScopedDocument) => boolean;
+}
+
+interface RelocateMove {
+  virtualRecordId: string;
+  newPath: string;
+  connectorId: string;
+  recordGroupId?: string;
+}
+
+const ENVELOPE_PREFIXES = ['record_', 'metadata_'];
+// Same shape the relocate and purge routes accept.
+const VIRTUAL_RECORD_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+// The documents deleteByConnector removes: under the connector's prefixes, or
+// tagged with its connectorId wherever they are filed.
+function connectorStorageScope(
+  orgId: string,
+  connectorId: string,
+): ConnectorStorageScope {
+  const prefixes = [
+    getFullDocumentPath(orgId, `records/${connectorId}`),
+    getFullDocumentPath(orgId, `WebConnector/${connectorId}`),
+    getFullDocumentPath(orgId, `local-fs/${orgId}/${connectorId}`),
+  ];
+  const connectorTag = {
+    customMetadata: { $elemMatch: { key: 'connectorId', value: connectorId } },
+  };
+  const underPrefixes: Record<string, unknown>[] = prefixes.flatMap(
+    (prefix) => [
+      { documentPath: prefix },
+      // '/' is followed by '0' in ASCII: every path under "prefix/", and no sibling.
+      { documentPath: { $gte: `${prefix}/`, $lt: `${prefix}0` } },
+    ],
+  );
+  const isInScope = (doc: ScopedDocument): boolean =>
+    tagOf(doc, 'connectorId') === connectorId ||
+    prefixes.some(
+      (p) =>
+        doc.documentPath === p || (doc.documentPath ?? '').startsWith(`${p}/`),
+    );
+  return { prefixes, connectorTag, underPrefixes, isInScope };
+}
+
+function tagOf(doc: ScopedDocument, key: string): unknown {
+  return doc.customMetadata?.find((m) => m.key === key)?.value;
+}
+
+// A virtual record's `record_{id}` and `metadata_{id}` wherever they are filed,
+// plus anything at the flat `records/{id}` path older records used. orgId sits
+// in each branch so each one can use its own index.
+function virtualRecordDocumentsFilter(
+  orgIdText: string,
+  orgId: mongoose.Types.ObjectId,
+  virtualRecordId: string,
+): Record<string, unknown> {
+  return {
+    $or: [
+      {
+        orgId,
+        documentPath: getFullDocumentPath(
+          orgIdText,
+          `records/${virtualRecordId}`,
+        ),
+      },
+      {
+        orgId,
+        documentName: {
+          $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
+        },
+      },
+    ],
+  };
+}
+
+function virtualRecordIdOf(
+  orgId: string,
+  doc: { documentName?: string; documentPath?: string },
+): string | null {
+  const name = doc.documentName ?? '';
+  const prefix = ENVELOPE_PREFIXES.find((p) => name.startsWith(p));
+  const flatRoot = getFullDocumentPath(orgId, 'records/');
+  const path = doc.documentPath ?? '';
+  const candidate =
+    prefix !== undefined
+      ? name.slice(prefix.length)
+      : path.startsWith(flatRoot)
+        ? path.slice(flatRoot.length)
+        : '';
+  return VIRTUAL_RECORD_ID.test(candidate) ? candidate : null;
 }
 
 // TODO: Remove these globals
@@ -470,21 +575,9 @@ export class StorageController {
       const orgIdText = extractOrgId(req);
       const orgId = new mongoose.Types.ObjectId(orgIdText);
       const virtualRecordId = String(req.params.virtualRecordId);
-      // orgId sits in each branch so each one can use its own index.
-      const documents = await DocumentModel.find({
-        $or: [
-          {
-            orgId,
-            documentPath: getFullDocumentPath(orgIdText, `records/${virtualRecordId}`),
-          },
-          {
-            orgId,
-            documentName: {
-              $in: [`record_${virtualRecordId}`, `metadata_${virtualRecordId}`],
-            },
-          },
-        ],
-      });
+      const documents = await DocumentModel.find(
+        virtualRecordDocumentsFilter(orgIdText, orgId, virtualRecordId),
+      );
       await this.purgeDocuments(documents, orgId, req);
       res.status(HTTP_STATUS.OK).json({ purged: documents.length });
     } catch (error) {
@@ -614,27 +707,17 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = String(extractOrgId(req));
-      const { connectorId } = req.params;
-
-      const prefixes = [
-        getFullDocumentPath(orgId, `records/${connectorId}`),
-        getFullDocumentPath(orgId, `WebConnector/${connectorId}`),
-        getFullDocumentPath(orgId, `local-fs/${orgId}/${connectorId}`),
-      ];
+      const connectorId = String(req.params.connectorId);
+      const { prefixes, connectorTag, underPrefixes } = connectorStorageScope(
+        orgId,
+        connectorId,
+      );
 
       const adapter = await this.initializeStorageAdapter(req);
       const orgObjectId = new mongoose.Types.ObjectId(orgId);
-      const connectorTag = {
-        customMetadata: { $elemMatch: { key: 'connectorId', value: connectorId } },
-      };
 
-      const underPrefixes: Record<string, unknown>[] = [];
       for (const prefix of prefixes) {
         await adapter.deleteTree(prefix);
-        underPrefixes.push(
-          { documentPath: prefix },
-          { documentPath: { $gte: `${prefix}/`, $lt: `${prefix}0` } },
-        );
       }
 
       // A tagged document can live outside those prefixes (e.g. the flat
@@ -667,6 +750,138 @@ export class StorageController {
       res.status(HTTP_STATUS.OK).json({
         deleted: deleteResult.deletedCount,
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Pages the virtual record ids whose documents deleteByConnector would
+   * remove for this connector, so a caller can hand shared ones over first.
+   */
+  async listConnectorVirtualRecords(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = extractOrgId(req);
+      const connectorId = String(req.params.connectorId);
+      const after =
+        typeof req.query.after === 'string' ? req.query.after : undefined;
+      const limit = Number(req.query.limit ?? CONNECTOR_VRID_PAGE_DEFAULT);
+      const { connectorTag, underPrefixes } = connectorStorageScope(
+        orgId,
+        connectorId,
+      );
+      const filter: Record<string, unknown> = {
+        orgId: new mongoose.Types.ObjectId(orgId),
+        $or: [connectorTag, ...underPrefixes],
+      };
+      if (after !== undefined) {
+        filter._id = { $gt: new mongoose.Types.ObjectId(after) };
+      }
+      const docs = await DocumentModel.find(filter)
+        .sort({ _id: 1 })
+        .limit(limit)
+        .select('_id documentName documentPath')
+        .lean<
+          { _id: unknown; documentName?: string; documentPath?: string }[]
+        >();
+      const ids = new Set<string>();
+      for (const doc of docs) {
+        const vrid = virtualRecordIdOf(orgId, doc);
+        if (vrid !== null) ids.add(vrid);
+      }
+      const last = docs[docs.length - 1];
+      res.status(HTTP_STATUS.OK).json({
+        virtualRecordIds: [...ids],
+        next:
+          docs.length === limit && last !== undefined ? String(last._id) : null,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Hands a deleted connector's copies of shared virtual records over to a
+   * surviving holder: each document moves to `newPath` and is re-tagged with
+   * the holder's connector. The `_id` is kept, so the virtual record mapping
+   * stays valid. Only documents `fromConnectorId` would delete are moved; a
+   * document already at `newPath` with the new tag counts as moved, so a
+   * retry is safe.
+   */
+  async relocateVirtualRecords(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const { fromConnectorId, moves } = req.body as {
+        fromConnectorId: string;
+        moves: RelocateMove[];
+      };
+      const { isInScope } = connectorStorageScope(orgIdText, fromConnectorId);
+      const storageType = await this.getConfiguredStorageType(req);
+      const adapter = await this.initializeStorageAdapter(req);
+
+      const moved: string[] = [];
+      const failed: string[] = [];
+      const missing: string[] = [];
+      for (const move of moves) {
+        const newFullPath = getFullDocumentPath(orgIdText, move.newPath);
+        const docs = await DocumentModel.find(
+          virtualRecordDocumentsFilter(orgIdText, orgId, move.virtualRecordId),
+        )
+          .select(
+            '_id documentPath documentName extension isVersionedFile versionHistory customMetadata',
+          )
+          .lean<MatchedTreeDocument[]>();
+        const handedOver = (d: MatchedTreeDocument): boolean =>
+          d.documentPath === newFullPath &&
+          tagOf(d, 'connectorId') === move.connectorId;
+        const toMove = docs.filter((d) => !handedOver(d) && isInScope(d));
+        if (toMove.length === 0) {
+          (docs.some(handedOver) ? moved : missing).push(move.virtualRecordId);
+          continue;
+        }
+        let ok = true;
+        for (const doc of toMove) {
+          const tags = (doc.customMetadata ?? []).filter(
+            (m) => m.key !== 'connectorId' && m.key !== 'recordGroupId',
+          );
+          tags.push({ key: 'connectorId', value: move.connectorId });
+          if (move.recordGroupId !== undefined) {
+            tags.push({ key: 'recordGroupId', value: move.recordGroupId });
+          }
+          if (
+            !(await this.relocateDocument(
+              adapter,
+              storageType,
+              doc,
+              newFullPath,
+              orgIdText,
+              {
+                customMetadata: tags,
+              },
+            ))
+          ) {
+            ok = false;
+          }
+        }
+        (ok ? moved : failed).push(move.virtualRecordId);
+      }
+
+      this.logger.info('relocate: shared virtual records handed over', {
+        fromConnectorId,
+        moved: moved.length,
+        failed: failed.length,
+        missing: missing.length,
+      });
+      res.status(HTTP_STATUS.OK).json({ moved, failed, missing });
     } catch (error) {
       next(error);
     }
@@ -920,99 +1135,139 @@ export class StorageController {
     for (let i = 0; i < matched.length; i += batchSize) {
       const batch = matched.slice(i, i + batchSize);
       for (const doc of batch) {
-        const docId = String(doc._id);
-        const relativeSuffix = doc.documentPath.slice(oldFullPath.length);
-        const docNewFullPath = `${newFullPath}${relativeSuffix}`;
-
-        const oldRoot = getDocumentRootPath(
-          String(orgId),
-          docId,
-          undefined,
-          doc.documentPath,
-        );
-        const newRoot = getDocumentRootPath(
-          String(orgId),
-          docId,
-          undefined,
-          docNewFullPath,
-        );
-
-        // Same-path move: nothing to relocate (doc root and leaf filename
-        // are both unchanged without a rename).
-        if (oldRoot === newRoot) {
-          continue;
-        }
-
-        const ext = normalizeExtension(doc.extension ?? '');
-        const oldFilePath = getCurrentFilePath(
-          oldRoot,
-          doc.documentName,
-          ext,
-          !!doc.isVersionedFile,
-        );
-        const newFilePath = getCurrentFilePath(
-          newRoot,
-          doc.documentName,
-          ext,
-          !!doc.isVersionedFile,
-        );
-
-        try {
-          if (doc.isVersionedFile) {
-            await adapter.copyTree(`${oldRoot}/versions`, `${newRoot}/versions`);
-          }
-          await adapter.renameObject(oldFilePath, newFilePath);
-        } catch (error) {
-          // StorageError wraps the real provider error (e.g. the actual AWS
-          // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
-          // `.message` alone is just the generic "Failed to rename object in
-          // S3" wrapper text and hides the reason the operation failed.
-          const detail =
-            error instanceof StorageError
-              ? (error.metadata?.['originalError'] ?? error.message)
-              : ((error as Error)?.message ?? error);
-          this.logger.warn(
-            `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
-            { documentId: docId, oldFilePath, newFilePath, error: detail },
-          );
-          failedIds.push(docId);
-          continue;
-        }
-
-        // Commit this document's documentPath + URL fields in the same
-        // write the moment its blob move succeeds -- this is the fix for the
-        // data-loss window described above.
-        const set: Record<string, unknown> = {
-          documentPath: docNewFullPath,
-          ...this.buildStorageUrlSet(adapter, storageType, doc, docNewFullPath, doc.documentName, orgId),
-        };
-        try {
-          await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
-        } catch (error) {
-          // The blob already moved but Mongo didn't take the update -- this
-          // document is now genuinely inconsistent and needs manual repair.
-          // Reporting it (instead of silently continuing) is the best we can
-          // do without a cross-system transaction.
-          this.logger.warn(
-            `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
-            { documentId: docId, error: (error as Error)?.message ?? error },
-          );
-          failedIds.push(docId);
-          continue;
-        }
-
-        // Only delete the old blob once Mongo already points at the new path
-        // -- deleting before the update risked orphaning a row that still
-        // referenced the (now-gone) old object if the process crashed in between.
-        try {
-          await adapter.deleteTree(oldRoot);
-        } catch {
-          // best-effort cleanup; a stale blob at the old path is not fatal
+        const docNewFullPath = `${newFullPath}${doc.documentPath.slice(oldFullPath.length)}`;
+        if (
+          !(await this.relocateDocument(
+            adapter,
+            storageType,
+            doc,
+            docNewFullPath,
+            orgId,
+          ))
+        ) {
+          failedIds.push(String(doc._id));
         }
       }
     }
 
     return { failedIds };
+  }
+
+  /**
+   * Moves one document's files to docNewFullPath and commits its Mongo row
+   * (documentPath, URL fields, plus `extraSet`) in one write. Returns false,
+   * leaving the document fully unmoved, when its blob could not be relocated.
+   */
+  private async relocateDocument(
+    adapter: StorageServiceAdapter,
+    storageType: string,
+    doc: MatchedTreeDocument,
+    docNewFullPath: string,
+    orgId: string | undefined,
+    extraSet: Record<string, unknown> = {},
+  ): Promise<boolean> {
+    const docId = String(doc._id);
+    const oldRoot = getDocumentRootPath(
+      String(orgId),
+      docId,
+      undefined,
+      doc.documentPath,
+    );
+    const newRoot = getDocumentRootPath(
+      String(orgId),
+      docId,
+      undefined,
+      docNewFullPath,
+    );
+
+    // Same-path move: nothing to relocate (doc root and leaf filename are
+    // both unchanged without a rename).
+    if (oldRoot === newRoot) {
+      if (Object.keys(extraSet).length === 0) {
+        return true;
+      }
+      try {
+        await DocumentModel.updateOne({ _id: doc._id }, { $set: extraSet });
+        return true;
+      } catch (error) {
+        this.logger.warn(`relocate: could not update document ${docId}`, {
+          documentId: docId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
+    }
+
+    const ext = normalizeExtension(doc.extension ?? '');
+    const oldFilePath = getCurrentFilePath(
+      oldRoot,
+      doc.documentName,
+      ext,
+      !!doc.isVersionedFile,
+    );
+    const newFilePath = getCurrentFilePath(
+      newRoot,
+      doc.documentName,
+      ext,
+      !!doc.isVersionedFile,
+    );
+
+    try {
+      if (doc.isVersionedFile) {
+        await adapter.copyTree(`${oldRoot}/versions`, `${newRoot}/versions`);
+      }
+      await adapter.renameObject(oldFilePath, newFilePath);
+    } catch (error) {
+      // StorageError wraps the real provider error (e.g. the actual AWS
+      // AccessDenied/NoSuchKey reason) in `metadata.originalError` --
+      // `.message` alone is just the generic "Failed to rename object in
+      // S3" wrapper text and hides the reason the operation failed.
+      const detail =
+        error instanceof StorageError
+          ? (error.metadata?.['originalError'] ?? error.message)
+          : ((error as Error)?.message ?? error);
+      this.logger.warn(
+        `moveTree: failed to relocate blob for document ${docId}; leaving it at its old path`,
+        { documentId: docId, oldFilePath, newFilePath, error: detail },
+      );
+      return false;
+    }
+
+    // For S3/Azure, renameObject is copy-then-delete-the-source, so the row
+    // is committed the moment this document's own blob moved: a later
+    // document failing can never leave this one pointing at a deleted object.
+    const set: Record<string, unknown> = {
+      documentPath: docNewFullPath,
+      ...this.buildStorageUrlSet(
+        adapter,
+        storageType,
+        doc,
+        docNewFullPath,
+        doc.documentName,
+        orgId,
+      ),
+      ...extraSet,
+    };
+    try {
+      await DocumentModel.updateOne({ _id: doc._id }, { $set: set });
+    } catch (error) {
+      // The blob already moved but Mongo didn't take the update -- this
+      // document is now genuinely inconsistent and needs manual repair.
+      this.logger.warn(
+        `moveTree: blob relocated for document ${docId} but the Mongo update failed; document needs manual repair`,
+        { documentId: docId, error: (error as Error)?.message ?? error },
+      );
+      return false;
+    }
+
+    // Only delete the old blob once Mongo already points at the new path, so
+    // a crash in between never orphans a row that references a gone object.
+    try {
+      await adapter.deleteTree(oldRoot);
+    } catch {
+      // best-effort cleanup; a stale blob at the old path is not fatal
+    }
+    return true;
   }
 
   private buildStorageUrlSet(

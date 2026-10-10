@@ -142,6 +142,8 @@ class Routes(Enum):
     STORAGE_PURGE_VIRTUAL_RECORD = "/api/v1/document/internal/records/{virtualRecordId}/purge"
     STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
     STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
+    STORAGE_CONNECTOR_VIRTUAL_RECORDS = "/api/v1/document/internal/connector/{connector_id}/virtual-records"
+    STORAGE_RELOCATE_RECORDS = "/api/v1/document/internal/records/relocate"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

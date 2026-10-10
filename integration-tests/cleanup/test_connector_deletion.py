@@ -16,11 +16,12 @@ store, or one survivor, so a failure names what went wrong.
 
 What a connector delete does today (``event_service.py`` ``_handle_delete``):
 it clears the graph, the vector database and the connector's config, then
-deletes the connector's whole ``records/{connectorId}`` storage tree in blob
-storage and MongoDB. That tree holds the shared envelope too, so it then
-re-indexes the twin's copy (``repair_shared_records``), which files a new
-envelope under the twin's own folder. The twin is checked against that: its
-own content untouched, the shared content whole again in its folder.
+releases the connector's ``records/{connectorId}`` storage tree in blob storage
+and MongoDB (``StorageCleanupHelper.release_connector_storage``). That tree
+holds the shared envelope too, so it is first handed over to the twin: moved,
+same document id, under the twin's own folder; then the rest of the tree is
+deleted. The twin is checked against that: its own content untouched, the
+shared content whole in its folder.
 """
 
 from __future__ import annotations
@@ -120,7 +121,7 @@ async def connector_delete(
         )
         fp.assert_every_store_holds_it(doomed_before)
 
-        # The twin's copy of the shared content is re-indexed by the delete, so it is
+        # The twin's copy of the shared content is handed over by the delete, so it is
         # left out of the twin's snapshot (with the twin's connector-wide point count,
         # which includes it) and counted on its own.
         holder = twin_records[names["twin_shared"]]
@@ -233,10 +234,10 @@ class TestWhatSurvivesAConnectorDelete:
         )
 
     @pytest.mark.asyncio(loop_scope="session")
-    async def test_the_content_it_shared_is_rebuilt_under_the_other_connector(
+    async def test_the_content_it_shared_is_handed_over_to_the_other_connector(
         self, connector_delete, graph_provider, vector_store, blob_store, mongo_store, test_org_id
     ) -> None:
-        await fp.assert_rebuilt(
+        await fp.assert_handed_over(
             connector_delete["shared_before"], graph_provider, vector_store, blob_store, mongo_store,
             org_id=test_org_id, connector_id=connector_delete["twin_id"],
             holder=connector_delete["holder"], vendor=connector_delete["vendor"],

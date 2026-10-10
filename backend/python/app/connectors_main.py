@@ -29,6 +29,7 @@ from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
+from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import AccountType, AppStatus, CollectionNames
 from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
@@ -871,6 +872,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.trash_purge_task = asyncio.create_task(
         run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
     )
+    # Retries the storage release of connector/KB deletes that did not finish it.
+    from app.connectors.services.storage_release import run_storage_release_loop
+    async def _org_config_service(org_id: str) -> ConfigurationService:
+        # The store connectors read their credentials from, so a release deletes them there.
+        config_service, _ = await scope_org_resources(app_container, data_store, org_id)
+        return config_service
+
+    app.state.storage_release_task = asyncio.create_task(
+        run_storage_release_loop(app_container, graph_provider, config_service_for=_org_config_service),
+        name="storage_release",
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -885,7 +897,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    for task_name in ("connector_metrics_task", "trash_purge_task"):
+    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task"):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
             task.cancel()

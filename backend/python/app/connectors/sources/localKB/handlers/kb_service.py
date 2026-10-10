@@ -19,6 +19,11 @@ from app.connectors.services.entity_cleanup_intents import (
     record_pending_entity_cleanup,
 )
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.storage_release import (
+    StorageReleaseIntentError,
+    record_pending_storage_release,
+    release_connector_storage,
+)
 from app.connectors.services.trash_purge import load_purge_settings
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
@@ -776,30 +781,31 @@ class KnowledgeBaseService:
             self.logger.info(f"🔐 User {user_key} has OWNER permission - proceeding with deletion")
 
             # Recorded before anything is removed: a lost deleteConnectorEntities
-            # is then still reconciled by the indexing service.
+            # is then still reconciled by the indexing service, and an unfinished
+            # storage release by the connectors service.
             try:
                 await record_pending_entity_cleanup(
                     self.config_service, org_id=org_id, connector_id=kb_id,
                     connector_name=Connectors.KNOWLEDGE_BASE.value,
                 )
-            except EntityCleanupIntentError:
-                self.logger.error("❌ Could not record entity cleanup for KB %s; not deleting it", kb_id)
+                await record_pending_storage_release(
+                    self.config_service, org_id=org_id, connector_id=kb_id,
+                )
+            except (EntityCleanupIntentError, StorageReleaseIntentError):
+                self.logger.error("❌ Could not record the cleanup owed by KB %s; not deleting it", kb_id)
                 return {
                     "success": False,
                     "reason": action_failed("delete this knowledge base"),
                     "code": 500,
                 }
+            self.logger.info("Storage release intent recorded | org=%s connector=%s", org_id, kb_id)
 
+            # A failed delete leaves the intent: a concurrent delete of this KB
+            # may have committed and still owe its release, and the reconciler
+            # drops the intent once stale if the KB does still exist.
             refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
             if refused:
                 return refused
-
-            # Deduplicated content stored under this KB may be read by records in
-            # other connectors; only answerable before this KB's records go.
-            cleanup_helper = StorageCleanupHelper(
-                self.logger, self.graph_provider, self.config_service
-            )
-            shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(kb_id)
 
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=kb_id, org_id=org_id
@@ -853,7 +859,7 @@ class KnowledgeBaseService:
             # background so the API response is not blocked (mirrors the async
             # connector-delete pattern in event_service._handle_delete).
             task = asyncio.create_task(
-                self._cleanup_kb_storage(cleanup_helper, org_id, kb_id, shared_vrids),
+                self._cleanup_kb_storage(org_id, kb_id),
                 name=f"kb-cleanup-{kb_id}",
             )
             _BACKGROUND_TASKS.add(task)
@@ -954,38 +960,13 @@ class KnowledgeBaseService:
             description=f"publish {event['eventType']} for KB {kb_id}",
         )
 
-    async def _cleanup_kb_storage(
-        self,
-        cleanup_helper: StorageCleanupHelper,
-        org_id: str,
-        kb_id: str,
-        shared_vrids: list[str] | None,
-    ) -> None:
-        """Background task: delete blob storage for a deleted KB, then re-index
-        records elsewhere whose shared stored content went with it."""
-        if shared_vrids is None:
-            self.logger.error(
-                f"❌ Skipped blob storage deletion for KB {kb_id}: content shared "
-                f"with other connectors could not be determined."
-            )
-            return
+    async def _cleanup_kb_storage(self, org_id: str, kb_id: str) -> None:
+        """Background task: hand shared content over, then delete the KB's
+        blob storage; an unfinished release keeps its intent for a retry."""
+        cleanup_helper = StorageCleanupHelper(self.logger, self.graph_provider, self.config_service)
         try:
-            deleted = await cleanup_helper.delete_connector_storage(org_id, kb_id)
-            self.logger.info(f"✅ Deleted {deleted} storage documents for KB {kb_id}")
-        except Exception as storage_err:
-            self.logger.error(
-                f"❌ Failed to delete blob storage for KB {kb_id}: {storage_err}. "
-                f"Orphaned blobs may remain in storage."
-            )
-        # Runs even after a failed delete: part of it may have gone through.
-        try:
-            await cleanup_helper.repair_shared_records(
-                org_id, shared_vrids, self.kafka_service.publish_event
-            )
-        except Exception as repair_err:
-            self.logger.error(
-                f"❌ Failed to re-index records sharing content with deleted KB {kb_id}: "
-                f"{repair_err}. Re-index them to restore their stored content."
+            await release_connector_storage(
+                self.logger, cleanup_helper, self.config_service, org_id=org_id, connector_id=kb_id,
             )
         finally:
             await cleanup_helper.close()

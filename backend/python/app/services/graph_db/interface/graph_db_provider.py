@@ -3640,23 +3640,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
-        """VRIDs of this connector's records that a live record elsewhere also holds.
+    ) -> dict[str, list[dict]]:
+        """Every record of ``org_id`` holding each of these VRIDs, trashed ones included.
 
         Deduplicated content is stored once, under whichever connector indexed
-        it first, and every other record with that VRID reads the same storage
-        documents. Before a connector's storage is deleted, these are the VRIDs
-        whose documents must survive.
+        it first; before that connector's storage is deleted its copy is handed
+        over to one of these holders. A trashed holder counts: a restore needs
+        the content, and the trash purge releases it later. VRIDs nobody holds
+        are absent from the result. Each holder carries ``id``, ``connectorId``,
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
+        ``isDeleted`` (a bool).
 
-        Same liveness rule as ``get_records_by_virtual_record_id``: soft-deleted
-        records do not count, and the lookup is not scoped by connector type.
-
-        Raises on failure rather than returning an empty list — an empty answer
-        tells the caller it may delete shared storage.
+        Raises on failure rather than returning an empty mapping, which would
+        read as "nothing is shared" and let the caller delete shared storage.
         """
         raise NotImplementedError
 

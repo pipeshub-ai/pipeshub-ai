@@ -474,7 +474,6 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
-    "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -648,16 +647,14 @@ async def test_vector_delete_authority(world: _World) -> None:
     assert set(got) == {world.ids["live_shared"]}
 
 
-async def test_content_shared_outside_a_deleted_connector(world: _World) -> None:
-    """Shared with a live record elsewhere: rebuilt. Shared only with the trash elsewhere: not."""
+async def test_holders_of_shared_content_include_the_trash(world: _World) -> None:
+    """A deleted connector's shared copy goes to a holder; a trashed one still needs it."""
     g = world.graph
-    shares = {"kb_live": "live", "kb_child_live": "trashed", "kb_trashed": "live_failed"}
-    for kb_record, outside in shares.items():
-        await g.update_node(
-            world.ids[kb_record], CollectionNames.RECORDS.value, {"virtualRecordId": world.vrids[outside]}
-        )
-    got = await g.get_virtual_record_ids_shared_outside_connector(world.kb_id)
-    assert set(got) == {world.vrids["live"], world.vrids["live_failed"]}, got
+    got = await g.get_virtual_record_holders([world.shared_vrid, "no-such-vrid"], world.org_id)
+    assert set(got) == {world.shared_vrid}, got
+    holders = {h["id"]: h["isDeleted"] for h in got[world.shared_vrid]}
+    assert holders == {world.ids["live_shared"]: False, world.ids["trashed_shared"]: True}, holders
+    assert await g.get_virtual_record_holders([world.shared_vrid], "another-org") == {}
 
 
 async def test_knowledge_hub_browse(world: _World) -> None:

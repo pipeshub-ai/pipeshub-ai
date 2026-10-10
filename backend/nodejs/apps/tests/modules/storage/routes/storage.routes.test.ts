@@ -38,6 +38,8 @@ describe('Storage Routes', () => {
       abortDirectUpload: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
       moveTree: sinon.stub().resolves(),
+      relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      listConnectorVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
       watchStorageType: sinon.stub(),
     }
 
@@ -285,8 +287,9 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 16 service-token /internal routes (incl. move-tree, connector delete and the two purges) + updateAppConfig
-      expect(routes.length).to.equal(17)
+// 18 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair and the two purges) + updateAppConfig
+      expect(routes.length).to.equal(19)
     })
   })
 
@@ -761,6 +764,76 @@ describe('Storage Routes', () => {
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('shared-content handover routes', () => {
+    const serve = async (fn: (port: number) => Promise<void>) => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      try {
+        await fn((server.address() as AddressInfo).port)
+      } finally {
+        server.close()
+      }
+    }
+    const relocate = (port: number, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/v1/document/internal/records/relocate`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const move = { virtualRecordId: 'v1', newPath: 'records/conn-b/Drive', connectorId: 'conn-b' }
+
+    it('guards both routes with the storage service token', () => {
+      const router = createStorageRouter(container)
+      for (const [path, method] of [
+        ['/internal/records/relocate', 'post'],
+        ['/internal/connector/:connectorId/virtual-records', 'get'],
+      ] as const) {
+        const index = (router as any).stack
+          .filter((l: any) => l.route)
+          .findIndex((l: any) => l.route.path === path && l.route.methods[method])
+        expect(index, path).to.be.greaterThan(-1)
+        const layer = (router as any).stack.filter((l: any) => l.route)[index]
+        expect(layer.route.stack[0].handle).to.equal(
+          mockAuthMiddleware.scopedTokenValidator.getCall(index).returnValue,
+        )
+        expect(mockAuthMiddleware.scopedTokenValidator.getCall(index).args[0]).to.equal('storage:token')
+      }
+    })
+
+    it('accepts a valid relocate batch and refuses unsafe or oversized ones', async () => {
+      await serve(async (port) => {
+        expect((await relocate(port, { fromConnectorId: 'conn-a', moves: [move] })).status).to.equal(200)
+        const refused = [
+          { fromConnectorId: 'conn-a', moves: [] },
+          { fromConnectorId: 'conn-a', moves: Array(101).fill(move) },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'records/../x' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'attachments/r1' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, virtualRecordId: 'v1/../x' }] },
+          { moves: [move] },
+        ]
+        for (const body of refused) {
+          expect((await relocate(port, body)).status, JSON.stringify(body).slice(0, 80)).to.equal(400)
+        }
+        expect(mockStorageController.relocateVirtualRecords.calledOnce).to.be.true
+      })
+    })
+
+    it('routes the virtual-record listing and validates its paging', async () => {
+      await serve(async (port) => {
+        const url = `http://127.0.0.1:${port}/api/v1/document/internal/connector/conn-a/virtual-records`
+        const headers = { authorization: 'Bearer service-token' }
+        expect((await fetch(`${url}?limit=10&after=65f000000000000000000001`, { headers })).status).to.equal(200)
+        expect((await fetch(`${url}?limit=5000`, { headers })).status).to.equal(400)
+        expect((await fetch(`${url}?after=nope`, { headers })).status).to.equal(400)
+        expect(mockStorageController.listConnectorVirtualRecords.calledOnce).to.be.true
+        expect(mockStorageController.getDocumentById.called).to.be.false
+      })
     })
   })
 })

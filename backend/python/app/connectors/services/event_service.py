@@ -36,6 +36,10 @@ from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
 )
 from app.connectors.services.entity_cleanup_intents import record_pending_entity_cleanup
+from app.connectors.services.storage_release import (
+    record_pending_storage_release,
+    release_connector_storage,
+)
 from app.connectors.services.vector_cleanup_events import (
     build_connector_cleanup_events,
     log_cleanup_publish_failure,
@@ -98,6 +102,11 @@ def connector_cache_max() -> int:
 #: Eviction closes the connector's sessions on the loop; hold a reference so the
 #: task is not garbage collected mid-flight.
 _evict_tasks: set = set()
+
+#: A release pages through all of a connector's storage; it runs off the sync
+#: consumer so one large delete does not hold up every other connector's events.
+#: Its intent, recorded before the graph delete, covers a process that dies mid-run.
+_storage_release_tasks: set[asyncio.Task] = set()
 
 
 class EventService:
@@ -1197,23 +1206,21 @@ class EventService:
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
 
-    async def _repair_shared_records(
+    async def _release_storage(
         self,
         cleanup_helper: StorageCleanupHelper,
+        config_service: ConfigurationService,
         org_id: str,
         connector_id: str,
-        shared_vrids: list[str],
     ) -> None:
-        async def publish(topic: str, event: dict) -> bool:
-            return await self.app_container.messaging_producer.send_message(topic=topic, message=event)
-
         try:
-            await cleanup_helper.repair_shared_records(org_id, shared_vrids, publish)
-        except Exception as e:
-            self.logger.error(
-                f"❌ Failed to re-index records sharing content with deleted connector "
-                f"{connector_id}: {e}. Re-index them to restore their stored content."
+            await release_connector_storage(
+                self.logger, cleanup_helper, config_service,
+                org_id=org_id, connector_id=connector_id,
+                org_config_service=self._config_service_for(org_id),
             )
+        finally:
+            await cleanup_helper.close()
 
     async def _handle_delete(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """
@@ -1234,6 +1241,7 @@ class EventService:
 
         self.logger.info(f"🗑️ Processing async deletion for {connector_name} connector {connector_id}")
 
+        graph_deleted = False
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1273,22 +1281,22 @@ class EventService:
             await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
             await self._await_remote_sync_stop(connector_id)
 
-            # Deduplicated content may be stored under this connector while other
-            # connectors' records read it. Only answerable while this connector's
-            # records are still in the graph, so it is asked before deleting them.
-            cleanup_helper = StorageCleanupHelper(
-                self.logger, self.graph_provider, self.app_container.config_service()
-            )
-            shared_vrids = await cleanup_helper.find_shared_virtual_record_ids(connector_id)
-
             # Recorded before the graph rows go: a lost deleteConnectorEntities
-            # is then still reconciled by the indexing service. Raises, which
-            # aborts the delete, when the intent cannot be recorded.
-            # The service-wide store, not the org's: the indexing service reads
-            # these back without knowing which org a key belongs to.
+            # is then still reconciled by the indexing service, and an unfinished
+            # storage release by this service. Raises, which aborts the delete,
+            # when an intent cannot be recorded.
+            # The service-wide store, not the org's: the reconcilers read these
+            # back without knowing which org a key belongs to.
+            config_service = self.app_container.config_service()
             await record_pending_entity_cleanup(
-                self.app_container.config_service(),
+                config_service,
                 org_id=org_id, connector_id=connector_id, connector_name=connector_name,
+            )
+            await record_pending_storage_release(
+                config_service, org_id=org_id, connector_id=connector_id,
+            )
+            self.logger.info(
+                f"Storage release intent recorded | org={org_id} connector={connector_id}"
             )
 
             # Delete from graph DB
@@ -1298,7 +1306,21 @@ class EventService:
             )
 
             if not result.get("success"):
+                # The intent stays either way: the reconciler drops it once stale
+                # if the connector does still exist.
+                if await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                ) is None:
+                    # A redelivery after this delete committed: its storage and
+                    # credentials are the reconciler's, and a retry would re-record
+                    # the intent and push the reconciler's grace back.
+                    self.logger.warning(
+                        f"Connector {connector_id} is already deleted from the graph; "
+                        f"its storage release stays pending"
+                    )
+                    return True
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
+            graph_deleted = True
 
             self.logger.info(
                 f"✅ Graph DB deletion complete for connector {connector_id}. "
@@ -1345,40 +1367,16 @@ class EventService:
                 )
             await free_lane_of_deleted_connector(self.logger, connector_id)
 
-            # Delete connector credentials from etcd/config store
-            try:
-                config_service = self._config_service_for(org_id)
-                config_path = f"/services/connectors/{connector_id}/config"
-                await config_service.delete_config(config_path)
-                self.logger.info(f"✅ Deleted etcd config for connector {connector_id}")
-            except Exception as config_err:
-                self.logger.error(
-                    f"❌ Failed to delete etcd config for connector {connector_id}: {config_err}. "
-                    f"Orphaned configuration may remain."
-                )
-
-            # Delete blob storage and MongoDB storage documents
-            if shared_vrids is None:
-                self.logger.error(
-                    f"❌ Skipped blob storage deletion for connector {connector_id}: "
-                    f"content shared with other connectors could not be determined."
-                )
-            else:
-                try:
-                    deleted = await cleanup_helper.delete_connector_storage(
-                        org_id, connector_id
-                    )
-                    self.logger.info(
-                        f"✅ Deleted {deleted} storage documents for connector {connector_id}"
-                    )
-                except Exception as storage_err:
-                    self.logger.error(
-                        f"❌ Failed to delete blob storage for connector {connector_id}: {storage_err}. "
-                        f"Orphaned blobs may remain in storage."
-                    )
-                # Runs even after a failed delete: part of it may have gone through.
-                await self._repair_shared_records(cleanup_helper, org_id, connector_id, shared_vrids)
-            await cleanup_helper.close()
+            # Shared content is handed over before the connector's storage goes,
+            # and its credentials go with it; an unfinished release keeps its
+            # intent and is retried.
+            cleanup_helper = StorageCleanupHelper(self.logger, self.graph_provider, config_service)
+            task = asyncio.get_running_loop().create_task(
+                self._release_storage(cleanup_helper, config_service, org_id, connector_id),
+                name=f"storage_release_{connector_id}",
+            )
+            _storage_release_tasks.add(task)
+            task.add_done_callback(_storage_release_tasks.discard)
 
             self.logger.info(f"✅ Async deletion complete for connector {connector_id}")
             return True
@@ -1388,7 +1386,19 @@ class EventService:
                 f"❌ Async deletion failed for connector {connector_id}: {e}",
                 exc_info=True
             )
+            if graph_deleted:
+                # Nothing to revert; the reconciler owns the storage release and
+                # the credentials, and a redelivery would re-record its intent.
+                return True
             try:
+                # An upsert would recreate a connector that is already gone
+                # (MERGE on Neo4j), and the reconciler would then treat its owed
+                # storage release as a reverted delete.
+                if await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                ) is None:
+                    self.logger.warning(f"Connector {connector_id} is not in the graph; nothing to revert")
+                    return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{
                         "id": connector_id,
