@@ -36,6 +36,7 @@ from app.utils.chat_helpers import resolve_frontend_url
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
+from .ops.id_recovery import ids_in_text
 from .ops.scope import resolve_scope
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
@@ -486,12 +487,12 @@ class KnowledgeGraph:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
+        text = render_navigation_view(view, page, record_id_shortener)
         remember_record_ids(
             state,
-            _record_ids_in_view(view),
+            ids_in_text(_record_ids_in_view(view), text, record_id_shortener),
             names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
         )
-        text = render_navigation_view(view, page, record_id_shortener)
 
         # Sparse-result retry nudge: only fires when time filters were
         # actually applied, so a plain (unfiltered) empty/near-empty listing
@@ -614,7 +615,6 @@ class KnowledgeGraph:
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        remember_record_ids(state, [m.id for m in result.matches], names={m.id: m.name for m in result.matches})
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -625,6 +625,11 @@ class KnowledgeGraph:
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
         text = render_lookup_result(result, record_id_shortener)
+        remember_record_ids(
+            state,
+            ids_in_text([m.id for m in result.matches], text, record_id_shortener),
+            names={m.id: m.name for m in result.matches},
+        )
         # "Zero accessible results" is a legitimate lookup outcome, not a
         # tool failure — `success=False` renders as a red failed-tool-call
         # in the frontend and tells the model "the tool broke" rather than

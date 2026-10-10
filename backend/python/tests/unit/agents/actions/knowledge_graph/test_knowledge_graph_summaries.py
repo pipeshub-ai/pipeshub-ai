@@ -452,7 +452,7 @@ class TestLookupRecord:
     @pytest.mark.asyncio
     @patch("app.utils.chat_helpers.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.remember_record_ids")
-    @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result", return_value="Match found")
+    @patch("app.agents.actions.knowledge_graph.knowledge_graph.render_lookup_result", return_value="Record ID: rec-1")
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.resolve_scope", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.RecordResolver")
     @patch("app.agents.actions.knowledge_graph.knowledge_graph.ConnectorCatalog.build", new_callable=AsyncMock)
@@ -479,7 +479,7 @@ class TestLookupRecord:
         })
         ok, text = await kg.lookup_record("JIRA-1")
         assert ok is True
-        assert text == "Match found"
+        assert text == "Record ID: rec-1"
         mock_remember.assert_called_once_with(kg.state, ["rec-1"], names={"rec-1": "Login bug"})
 
     @pytest.mark.asyncio

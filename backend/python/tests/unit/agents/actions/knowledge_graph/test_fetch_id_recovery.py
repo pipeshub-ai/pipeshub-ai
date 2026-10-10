@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+from app.agents.actions.knowledge_graph.ops.id_recovery import ids_in_text
 from app.modules.agents.qna.chat_state import remember_record_ids
 
 if TYPE_CHECKING:
@@ -130,6 +131,30 @@ class TestUnknownIdRecovery:
         listed = [line for line in output.error.splitlines() if line.startswith("- ")]
         assert listed == [f"- {ids[i]} (Doc {i})" for i in range(29, 9, -1)]
 
+    async def test_one_long_listing_keeps_its_top_rows(self) -> None:
+        """A navigate page shows 50 rows and its Next hint points at the first
+        ones; a cap that kept the tail would drop exactly those."""
+        ids = [f"{i:02x}{REAL[2:]}" if i else REAL for i in range(50)]
+        state = _shown({rid: f"Row {i}" for i, rid in enumerate(ids)})
+
+        output = await _fetch([MISTYPED], state)
+
+        bullets = [line[2:] for line in output.error.splitlines() if line.startswith("- ")]
+        assert bullets == [f"{ids[i]} (Row {i})" for i in range(20)]
+        assert f"The closest to the id you used is {REAL} (Row 0)." in output.error
+
+    async def test_a_closest_id_is_always_one_of_the_listed(self) -> None:
+        state: dict[str, Any] = {}
+        remember_record_ids(state, [REAL], names={REAL: "Call notes"})
+        for i in range(25):
+            rid = f"{i:08x}-0000-4000-8000-000000000000"
+            remember_record_ids(state, [rid], names={rid: f"Doc {i}"})
+
+        output = await _fetch([MISTYPED], state)
+
+        assert REAL not in output.error
+        assert "closest" not in output.error
+
     async def test_an_unrelated_id_names_no_closest(self) -> None:
         state = _shown({OTHER: "Q3 roadmap", REAL: "Call notes"})
 
@@ -213,3 +238,14 @@ class TestUnknownIdRecovery:
             output = await _fetch([MISTYPED], state)
 
         assert "Records returned earlier" not in output.error
+
+
+class TestIdsInText:
+    def test_keeps_only_ids_that_survived_the_byte_cap(self) -> None:
+        text = f"- Call notes | record_id={REAL}\n[truncated]"
+        assert ids_in_text([REAL, OTHER], text) == [REAL]
+
+    def test_a_short_label_is_not_found_inside_a_longer_one(self) -> None:
+        shortener = MagicMock()
+        shortener.shorten_if_known = MagicMock(side_effect={REAL: "R1", OTHER: "R12"}.get)
+        assert ids_in_text([REAL, OTHER], "record_id=R12", shortener) == [OTHER]
