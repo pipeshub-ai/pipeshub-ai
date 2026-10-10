@@ -48,6 +48,7 @@ from helper.clients.org_client import OrgClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
+from strict_openapi import outside_request_contract  # noqa: E402
 
 logger = logging.getLogger("org-integration-test")
 
@@ -192,6 +193,10 @@ class TestUpdateOrganizationDetails(OrgTestBase):
     def _put_org(self, body: dict[str, object]) -> requests.Response:
         return self.org.put("/", json=body)
 
+    def _restore_org(self, body: dict[str, object]) -> requests.Response:
+        with outside_request_contract("restores the address as GET /org returned it; the validator drops its _id"):
+            return self._put_org(body)
+
     def test_update_org_single_field_response_schemas(self) -> None:
         """Partial PUTs — one logical field per step; response must match updateOrganization."""
         baseline = self._get_current_org()
@@ -238,7 +243,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
         if original_addr is not None:
-            self._put_org({"permanentAddress": original_addr})
+            self._restore_org({"permanentAddress": original_addr})
 
         resp = self._put_org({
             "permanentAddress": {
@@ -251,7 +256,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
         if original_addr is not None:
-            self._put_org({"permanentAddress": original_addr})
+            self._restore_org({"permanentAddress": original_addr})
 
         resp = self._put_org({
             "permanentAddress": {
@@ -263,7 +268,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
         if original_addr is not None:
-            self._put_org({"permanentAddress": original_addr})
+            self._restore_org({"permanentAddress": original_addr})
 
     def test_update_org_multiple_fields_response_schemas(self) -> None:
         """PUT /api/v1/org — update multiple fields at once; response must match schema."""
@@ -313,7 +318,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         restore: dict[str, object] = {"shortName": original.get("shortName", "")}
         if original_addr is not None:
             restore["permanentAddress"] = original_addr
-        self._put_org(restore)
+        self._restore_org(restore)
 
         current = self._get_current_org()
         original_addr = current.get("permanentAddress")
@@ -330,7 +335,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         )
         assert_response_matches_openapi_operation(resp.json(), "updateOrganization")
         if original_addr is not None:
-            self._put_org({"permanentAddress": original_addr})
+            self._restore_org({"permanentAddress": original_addr})
 
         current = self._get_current_org()
         original_addr = current.get("permanentAddress")
@@ -359,7 +364,7 @@ class TestUpdateOrganizationDetails(OrgTestBase):
         }
         if original_addr is not None:
             restore["permanentAddress"] = original_addr
-        self._put_org(restore)
+        self._restore_org(restore)
 
     def test_update_org_empty_body_response_schemas(self) -> None:
         """PUT /api/v1/org — empty body (no-op update); response must still match schema."""

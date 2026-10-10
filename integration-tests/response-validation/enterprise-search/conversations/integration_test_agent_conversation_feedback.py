@@ -32,6 +32,7 @@ from helper.agui_sse import (
     run_finished_result,
 )
 from helper.clients.conversations_client import AgentConversationsClient
+from strict_openapi import outside_request_contract  # noqa: E402
 from openapi_schema_validator import (
     assert_request_body_matches_openapi_operation,
     assert_response_matches_openapi_operation,
@@ -345,13 +346,14 @@ class TestAgentConversationMessageFeedback(AgentConversationsTestBase):
             )
         )
         payload = {**_MINIMAL_FEEDBACK_PAYLOAD, "unexpectedTopLevelField": "drop-me"}
-        resp = self.conversations.submit_message_feedback(
-            self.agent_key,
-            conversation_id,
-            bot_id,
-            **payload,
-            timeout=self.timeout,
-        )
+        with outside_request_contract("an unknown field is sent to show the validator strips it"):
+            resp = self.conversations.submit_message_feedback(
+                self.agent_key,
+                conversation_id,
+                bot_id,
+                **payload,
+                timeout=self.timeout,
+            )
         assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
         body = resp.json()
         assert_response_matches_openapi_operation(

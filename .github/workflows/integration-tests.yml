@@ -184,10 +184,12 @@ jobs:
         # against a real model. Each test costs model calls, so it runs on the
         # nightly and on a full manual run, never on a pull request; core leaves
         # its marker out everywhere, so on a pull request it does not run at all.
+        # "spec-audit" runs only the strict OpenAPI checks (-m spec_audit, not part
+        # of `integration`) on its own stack, so they add no time to core.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","core","demo","spec-audit"]') || '["connectors-1","connectors-2","connectors-3","core","demo","ai_agents","spec-audit"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -356,6 +358,13 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # Stores the response-validation tests read and clean up directly. They
+      # match the compose stack's published ports and default credentials.
+      TEST_MONGO_URI: mongodb://admin:password@localhost:27017/?authSource=admin
+      TEST_MONGO_DB_NAME: es
+      REDIS_HOST: localhost
+      REDIS_PORT: '6379'
+      MAILPIT_URL: http://localhost:8025
       # The SMB connector syncs from the smb-source Samba share in the compose
       # stack, started by the smb-source profile for connectors-2 (or a dispatch
       # of smb). The connector reaches it by service name; the test process
@@ -473,6 +482,10 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
+        env:
+          MAX_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_AUTH_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
         run: docker compose -f docker-compose.integration.neo4j.yml up -d
 
       - name: 'Neo4j: Wait for core services'
@@ -555,7 +568,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'Neo4j: Run integration tests'
-        if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
+        if: matrix.shard != 'spec-audit' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -604,6 +617,22 @@ jobs:
           TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
+
+      # Strict OpenAPI checks (-m spec_audit). Serial: they change org-wide
+      # settings (SSO, AI models, web search, auth methods) and restore them.
+      # Its stack starts with high rate limits: the audit sends far more than
+      # the defaults a minute, and no deliberate 429 test runs on this shard.
+      - name: 'Neo4j: Run strict OpenAPI spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'spec-audit' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        timeout-minutes: 120
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: neo4j
+          STRICT_OPENAPI_GATE: '1'
+        run: |
+          source .venv/bin/activate
+          pytest -m spec_audit response-validation -n 0 --tb=short \
+            --junitxml=reports/neo4j-spec-audit-results.xml 2>&1
 
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
@@ -655,6 +684,10 @@ jobs:
       - name: 'ArangoDB: Start services'
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
+        env:
+          MAX_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
+          MAX_AUTH_REQUESTS_PER_MINUTE: ${{ matrix.shard == 'spec-audit' && '100000' || '' }}
         run: docker compose -f docker-compose.integration.arango.yml up -d
 
       - name: 'ArangoDB: Wait for core services'
@@ -737,7 +770,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && matrix.shard != 'spec-audit' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -789,6 +822,22 @@ jobs:
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
         run: npm run test:e2e 2>&1
 
+      - name: 'ArangoDB: Run strict OpenAPI spec audit'
+        if: ${{ !cancelled() && matrix.shard == 'spec-audit' && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        timeout-minutes: 120
+        working-directory: integration-tests
+        env:
+          TEST_GRAPH_DB_TYPE: arango
+          TEST_ARANGO_URL: http://localhost:8529
+          TEST_ARANGO_USERNAME: root
+          TEST_ARANGO_PASSWORD: ${{ env.ARANGO_PASSWORD }}
+          TEST_ARANGO_DB_NAME: es
+          STRICT_OPENAPI_GATE: '1'
+        run: |
+          source .venv/bin/activate
+          pytest -m spec_audit response-validation -n 0 --tb=short \
+            --junitxml=reports/arango-spec-audit-results.xml 2>&1
+
       - name: 'ArangoDB: Dump docker logs'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
@@ -837,7 +886,7 @@ jobs:
           TOTAL_TESTS=0
           BACKENDS_RUN=""
 
-          for xml in reports/neo4j-results.xml reports/neo4j-resilience-results.xml reports/neo4j-storage-results.xml reports/arango-results.xml; do
+          for xml in reports/neo4j-results.xml reports/neo4j-spec-audit-results.xml reports/neo4j-resilience-results.xml reports/neo4j-storage-results.xml reports/arango-results.xml reports/arango-spec-audit-results.xml; do
             if [ -f "$xml" ]; then
               backend=$(basename "$xml" -results.xml)
               BACKENDS_RUN="${BACKENDS_RUN:+$BACKENDS_RUN, }$backend"
@@ -1152,9 +1201,11 @@ jobs:
           for xml_path in [
               'reports/unit-results.xml',
               'reports/neo4j-results.xml',
+              'reports/neo4j-spec-audit-results.xml',
               'reports/neo4j-resilience-results.xml',
               'reports/neo4j-storage-results.xml',
               'reports/arango-results.xml',
+              'reports/arango-spec-audit-results.xml',
               'reports/playwright/playwright-junit.xml',
           ]:
               if not os.path.exists(xml_path):
