@@ -1,4 +1,5 @@
 """Tests for app.api.routes.agent helper functions and models."""
+import importlib.util
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -6,6 +7,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
+
+
+# The EE build replaces get_services and _enrich_agent_models when it loads
+# and tests its own versions.
+oss_agent_services = pytest.mark.skipif(
+    importlib.util.find_spec("app.ee") is not None,
+    reason="replaced in the EE build",
+)
 
 
 async def _drain(response) -> str:
@@ -510,6 +519,7 @@ class TestEnrichUserInfo:
 class TestGetServices:
     """Tests for the get_services helper that extracts services from container."""
 
+    @oss_agent_services
     @pytest.mark.asyncio
     async def test_returns_all_services(self) -> None:
         from app.api.routes.agent import get_services
@@ -1073,6 +1083,7 @@ class TestParseRequestBodyEdgeCases:
 # ---------------------------------------------------------------------------
 
 
+@oss_agent_services
 class TestEnrichAgentModelsOrgDefault:
     @pytest.mark.asyncio
     async def test_enriches_matching_model(self) -> None:
@@ -1556,6 +1567,7 @@ class TestParseRequestBody:
 # _enrich_agent_models
 # ---------------------------------------------------------------------------
 
+@oss_agent_services
 class TestEnrichAgentModels:
     @pytest.mark.asyncio
     async def test_enriches_models(self) -> None:
@@ -3904,6 +3916,7 @@ class TestParseModelsEdgeCases:
         assert entries == ["mk1"]
 
 
+@oss_agent_services
 class TestEnrichAgentModelsFullCoverage:
     @pytest.mark.asyncio
     async def test_enriches_with_matching_config(self) -> None:
@@ -4058,6 +4071,12 @@ class TestCreateKnowledgeEdgesFullCoverage:
 
 
 class TestServiceAccountAgentRoutes:
+    @pytest.fixture(autouse=True)
+    def _service_accounts_shared_org_wide(self):
+        """Pin the edition hook these rules branch on, so they run the same in either edition."""
+        with patch("app.api.routes.agent.sa_forces_org_sharing", return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_create_agent_service_account_forces_org_permission(self) -> None:
         from app.api.routes.agent import create_agent

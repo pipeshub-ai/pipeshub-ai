@@ -28,12 +28,21 @@ Targets additional coverage for:
 - _create_toolset_edges: batch upsert returns None
 """
 
+import importlib.util
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+
+# The EE build replaces get_services and _enrich_agent_models when it loads
+# and tests its own versions.
+oss_agent_services = pytest.mark.skipif(
+    importlib.util.find_spec("app.ee") is not None,
+    reason="replaced in the EE build",
+)
 
 
 
@@ -343,6 +352,7 @@ class TestParseKnowledgeSourcesExtended:
 # ============================================================================
 
 
+@oss_agent_services
 class TestEnrichAgentModelsExtended:
     @pytest.mark.asyncio
     async def test_comma_separated_model_name(self):

@@ -10,6 +10,10 @@ on:
 # test file, scripts/connector_coverage.py); leaving the checkout token in
 # .git/config would let that code read it. No job pushes, commits or tags, so
 # none needs it.
+#
+# Jobs that diff against main check out with fetch-depth: 0, which already
+# fetches origin/main. They must not run `git fetch` again: with no stored
+# credentials that fetch fails on a private copy of this repository.
 permissions:
   contents: read
 
@@ -37,7 +41,6 @@ jobs:
 
       - name: Lint backend (changed files)
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
           CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
           if [ -n "$CHANGED_FILES" ]; then
@@ -133,7 +136,6 @@ jobs:
 
       - name: Run all ruff rules on changed Python files
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
           CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
@@ -190,7 +192,6 @@ jobs:
 
       - name: Run pyright on changed Python files
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
           CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
@@ -216,7 +217,6 @@ jobs:
       - name: Check changed deployment files
         id: changes
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
           CHANGED_FILES=$(git diff --diff-filter=d --name-only "$MERGE_BASE" -- \
             'deployment/docker-compose/**' \

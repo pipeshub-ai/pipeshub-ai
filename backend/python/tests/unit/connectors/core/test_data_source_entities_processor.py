@@ -16,6 +16,7 @@ Focuses on:
 - on_new_app_users error path
 """
 
+import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -56,6 +57,14 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
+
+
+# An edition whose processor accepts `org_agnostic` refuses to guess an org, so it
+# has no first-org fallback to test.
+_falls_back_to_first_org = pytest.mark.skipif(
+    "org_agnostic" in inspect.signature(DataSourceEntitiesProcessor.initialize).parameters,
+    reason="initialize() requires an explicit org_id on this edition",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -3758,6 +3767,7 @@ class TestProcessRecordSQLTypes:
 
 
 class TestInitialize:
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_sets_org_id(self):
         """initialize() sets org_id from the first organization in DB."""
@@ -3776,6 +3786,7 @@ class TestInitialize:
 
         assert proc.org_id == "my-org"
 
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_no_orgs_warns_and_returns(self):
         """initialize() logs a warning and returns when no organizations found."""
@@ -3796,6 +3807,7 @@ class TestInitialize:
         proc.logger.warning.assert_called_once()
         assert "No organizations found" in proc.logger.warning.call_args[0][0]
 
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_fallback_to_key(self):
         """initialize() falls back to _key when id not present."""

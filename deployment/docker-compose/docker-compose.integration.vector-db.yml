@@ -33,6 +33,9 @@ services:
       # admin/admin credentials are then ignored.
       - DISABLE_INSTALL_DEMO_CONFIG=true
       - plugins.security.disabled=true
+      # A CI runner's disk is often past the 95% flood stage, and OpenSearch
+      # then blocks index creation for the whole cluster.
+      - cluster.routing.allocation.disk.threshold_enabled=false
     ulimits:
       memlock:
         soft: -1

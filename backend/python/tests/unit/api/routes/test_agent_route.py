@@ -5,11 +5,20 @@ Covers helper functions, exception classes, parsers, route endpoints, and
 streaming logic.
 """
 
+import importlib.util
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+
+# The EE build replaces get_services and _enrich_agent_models when it loads
+# and tests its own versions.
+oss_agent_services = pytest.mark.skipif(
+    importlib.util.find_spec("app.ee") is not None,
+    reason="replaced in the EE build",
+)
 
 # =============================================================================
 # Exception classes
@@ -585,6 +594,7 @@ class TestEnrichUserInfo:
 # =============================================================================
 
 
+@oss_agent_services
 class TestEnrichAgentModels:
     @pytest.mark.asyncio
     async def test_enrich_matching_model(self) -> None:

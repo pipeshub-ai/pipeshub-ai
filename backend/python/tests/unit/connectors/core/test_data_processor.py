@@ -1,5 +1,6 @@
 """Tests for app.connectors.core.base.data_processor.data_source_entities_processor."""
 
+import inspect
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -27,6 +28,14 @@ from app.models.entities import (
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+
+
+# An edition whose processor accepts `org_agnostic` refuses to guess an org, so it
+# has no first-org fallback to test.
+_falls_back_to_first_org = pytest.mark.skipif(
+    "org_agnostic" in inspect.signature(DataSourceEntitiesProcessor.initialize).parameters,
+    reason="initialize() requires an explicit org_id on this edition",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -132,6 +141,7 @@ class TestConstructor:
 
 
 class TestInitialize:
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_success(self):
         """Initialize sets up messaging_producer and org_id."""
@@ -165,6 +175,7 @@ class TestInitialize:
         assert proc.org_id == "org-1"
         mock_producer.initialize.assert_awaited_once()
 
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_no_orgs_warns_and_returns(self):
         """Initialize logs a warning and returns when no organizations found."""
@@ -200,6 +211,7 @@ class TestInitialize:
         logger.warning.assert_called_once()
         assert "No organizations found" in logger.warning.call_args[0][0]
 
+    @_falls_back_to_first_org
     @pytest.mark.asyncio
     async def test_initialize_bootstrap_servers_as_list(self):
         """Initialize handles bootstrap_servers already as a list."""

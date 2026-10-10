@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import logging
 import uuid
@@ -5,6 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+
+
+# The EE build replaces get_services and _enrich_agent_models when it loads
+# and tests its own versions.
+oss_agent_services = pytest.mark.skipif(
+    importlib.util.find_spec("app.ee") is not None,
+    reason="replaced in the EE build",
+)
 
 
 class TestParseKnowledgeSourcesEdgeCases:
@@ -175,6 +184,7 @@ class TestParseModelsEdgeCases:
         assert entries == ["mk1"]
 
 
+@oss_agent_services
 class TestEnrichAgentModels:
     @pytest.mark.asyncio
     async def test_enriches_with_matching_config(self):
@@ -906,6 +916,12 @@ class TestGetAssistantAgent:
 
 
 class TestUpdateAgentServiceAccountGuards:
+    @pytest.fixture(autouse=True)
+    def _service_accounts_shared_org_wide(self):
+        """Pin the edition hook these rules branch on, so they run the same in either edition."""
+        with patch("app.api.routes.agent.sa_forces_org_sharing", return_value=True):
+            yield
+
     @pytest.mark.asyncio
     async def test_no_reasoning_model(self):
         """Line 2621-2622 — missing reasoning model."""

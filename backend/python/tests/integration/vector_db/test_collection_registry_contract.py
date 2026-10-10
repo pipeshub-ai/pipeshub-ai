@@ -67,8 +67,8 @@ class _CollectionRegistryContractTests:
         registry = _make_registry(vector_service)
         col = make_collection(f"{vector_service.get_service_name()}_reg")
         ctx = RecordContext(org_id="org-registry-contract")
+        name = await registry.ensure_collection(ctx, embedding_size=DIM)
         try:
-            name = await registry.ensure_collection(ctx, embedding_size=DIM)
             assert await vector_service.collection_exists(name)
 
             # create-again is a no-op: same name, no error, dimension re-verified

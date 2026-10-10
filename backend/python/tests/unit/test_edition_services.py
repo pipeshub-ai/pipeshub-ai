@@ -1,8 +1,18 @@
-"""Tests for app.edition_services — OSS edition service registry and lazy imports."""
+"""Tests for app.edition_services — OSS edition service registry and lazy imports.
 
+The EE build swaps in subclasses of these services, so class checks use issubclass
+and the OSS-only return values are skipped there (covered under ee/tests).
+"""
+
+import importlib.util
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+oss_only = pytest.mark.skipif(
+    importlib.util.find_spec("app.ee") is not None,
+    reason="the EE build returns its own value",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +40,7 @@ class TestReExports:
 
 
 class TestGetattr:
-    """The module's __getattr__ returns concrete classes by name."""
+    """The module's __getattr__ returns the edition's classes by name."""
 
     def test_event_service(self) -> None:
         import app.edition_services as mod
@@ -38,7 +48,7 @@ class TestGetattr:
         cls = getattr(mod, "EventService")
         from app.connectors.services.event_service import EventService
 
-        assert cls is EventService
+        assert issubclass(cls, EventService)
 
     def test_entity_event_service(self) -> None:
         import app.edition_services as mod
@@ -46,7 +56,7 @@ class TestGetattr:
         cls = getattr(mod, "EntityEventService")
         from app.services.messaging.kafka.handlers.entity import EntityEventService
 
-        assert cls is EntityEventService
+        assert issubclass(cls, EntityEventService)
 
     def test_record_event_handler(self) -> None:
         import app.edition_services as mod
@@ -54,7 +64,7 @@ class TestGetattr:
         cls = getattr(mod, "RecordEventHandler")
         from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
-        assert cls is RecordEventHandler
+        assert issubclass(cls, RecordEventHandler)
 
     def test_unknown_name_raises_attribute_error(self) -> None:
         import app.edition_services as mod
@@ -74,7 +84,7 @@ class TestGetConnectorRegistryCls:
         from app.connectors.core.registry.connector_registry import ConnectorRegistry
 
         result = get_connector_registry_cls()
-        assert result is ConnectorRegistry
+        assert issubclass(result, ConnectorRegistry)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +104,7 @@ class TestScopeOrgResources:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
+    @oss_only
     async def test_returns_config_service_and_data_store(self) -> None:
         from app.edition_services import scope_org_resources
 
@@ -124,6 +135,7 @@ class TestRegisterExtraConnectors:
 
 
 class TestGetStartupExtraKwargs:
+    @oss_only
     def test_returns_empty_dict(self) -> None:
         from app.edition_services import get_startup_extra_kwargs
 
@@ -158,4 +170,4 @@ class TestGetDataEntitiesProcessorCls:
         )
 
         result = get_data_entities_processor_cls()
-        assert result is DataSourceEntitiesProcessor
+        assert issubclass(result, DataSourceEntitiesProcessor)

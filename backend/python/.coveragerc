@@ -5,6 +5,8 @@ omit =
     app/sources/external/*
     app/services/graph_db/neo4j/*
     app/migrations/*
+    # An edition build's own code; that edition's suite measures it.
+    app/ee/*
 
 [report]
 exclude_lines =
