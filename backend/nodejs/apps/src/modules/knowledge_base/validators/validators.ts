@@ -309,6 +309,10 @@ export const deleteKBSchema = z.object({
 export const createFolderSchema = z.object({
   body: z.object({
     folderName: z.string().min(1).max(255),
+    parentId: z.unknown().optional(),
+    parent_id: z.unknown().optional(),
+  }).refine((data) => data.parentId === undefined && data.parent_id === undefined, {
+    message: "To create a subfolder, use the subfolder route.",
   }),
   params: z.object({
     kbId: z.string().uuid(),
