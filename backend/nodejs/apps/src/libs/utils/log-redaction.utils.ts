@@ -9,6 +9,8 @@
 
 const SENSITIVE_QUERY_PARAMS = new Set([
   'code',
+  // An OAuth callback's CSRF state: with the code, it completes the sign-in.
+  'state',
   'token',
   'access_token',
   'refresh_token',

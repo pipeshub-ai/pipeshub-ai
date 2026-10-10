@@ -88,6 +88,8 @@ class ToolCallStatus(str, Enum):
     SUCCESS = "success"
     ERROR = "error"
     BLOCKED = "blocked"
+    # Not run: left for a person to approve on a later turn (`PendingApproval`).
+    AWAITING_APPROVAL = "awaiting_approval"
 
 
 class AgentEvent(BaseModel):

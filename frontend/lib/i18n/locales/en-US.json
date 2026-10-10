@@ -833,6 +833,41 @@
     "showDiagramSource": "Show source",
     "hideDiagramSource": "Hide source",
     "stoppedMarker": "Stopped",
+    "toolCard": {
+      "arguments": "Arguments",
+      "result": "Result",
+      "error": "Error",
+      "blocked": "Blocked",
+      "awaitingApproval": "Waiting for approval",
+      "viewRaw": "View raw",
+      "hideRaw": "Hide raw",
+      "showingOf": "Showing {{shown}} of {{total}}",
+      "open": "Open"
+    },
+    "mcpConnect": {
+      "title": "Connect these MCP servers to use this agent",
+      "connect": "Connect",
+      "connecting": "Connecting…",
+      "connected": "Connected",
+      "removed": "Removed. Ask the agent's owner to update it.",
+      "waitingForAdmin": "Waiting for an admin to add the shared credential",
+      "setUpInBuilder": "Set up in Agent Builder",
+      "serviceAccount": "This agent uses its own credentials. Its owner sets them up in Agent Builder.",
+      "openAgentBuilder": "Open Agent Builder",
+      "allConnected": "All connected. Send your message again to continue.",
+      "tryAgain": "Try again",
+      "unavailable": "Couldn't start the sign-in here. Connect it in Workspace → MCP Servers."
+    },
+    "mcpSignIn": {
+      "title": "Sign in again to give these MCP servers the permission they asked for",
+      "needs": "Needs: {{scopes}}",
+      "signIn": "Sign in again",
+      "signingIn": "Signing in…",
+      "signedIn": "Signed in",
+      "askAnEditor": "Ask someone who can edit this agent to sign in again",
+      "allSignedIn": "Signed in. Try the request again.",
+      "retryMessage": "I signed in to {{servers}} again. Please try that again."
+    },
     "toasts": {
       "stopStreamTitle": "Stopping…",
       "stopStreamDescription": "The response will stop shortly. Any partial answer will be kept.",
@@ -1213,7 +1248,28 @@
     "sendMessage": "Send message",
     "demoHide": "Hide demo data",
     "demoRestrictedHint": "Pricing committee only, so you'll get no answer here. That's permissions at work.",
-    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer."
+    "demoRestrictedHintSignIn": "Pricing committee only, so you'll get no answer here. Sign in as {{email}} to see the answer.",
+    "toolApproval": {
+      "title": "Approve this action?",
+      "subtitle": "Run {{tool}} on {{server}}",
+      "noArguments": "No details",
+      "companyAlwaysAsk": "Your organization asks every time before this tool runs.",
+      "allowOnce": "Allow once",
+      "allowChat": "Allow for this chat",
+      "always": "Always allow",
+      "deny": "Deny",
+      "expired": "This request expired. Ask again if it's still needed.",
+      "sent": {
+        "allow_once": "Allow once: {{tool}} on {{server}}",
+        "allow_chat": "Allow for this chat: {{tool}} on {{server}}",
+        "always": "Always allow: {{tool}} on {{server}}",
+        "deny": "Deny: {{tool}} on {{server}}"
+      },
+      "showAll": "Show all",
+      "showLess": "Show less",
+      "partial": "Only the start of the details is shown: the full call is longer.",
+      "deletesData": "Deletes data"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -2678,6 +2734,7 @@
       "searchPlaceholder": "Search MCP servers...",
       "loading": "Loading MCP servers…",
       "noResults": "No MCP servers match your search",
+      "replacedNotice": "No longer maintained. Add {{name}} instead.",
       "addServer": "Add Server",
       "custom": "Custom",
       "inherited": "Inherited",
@@ -2686,17 +2743,33 @@
       "sharedAuth": "Shared admin auth",
       "toolsCount_one": "{{count}} tool",
       "toolsCount_other": "{{count}} tools",
+      "toolsCachedAt": "Tools as of {{time}}",
+      "editImpact": {
+        "title": "Remove saved sign-ins?",
+        "body": "Changing how this server is reached or signed in to removes the credentials people and agents saved for it. Everyone will need to connect again.",
+        "personalBody": "Changing how this server is reached or signed in to removes the credentials you and your agents saved for it. You will need to connect again.",
+        "sharedBody": "Turning off the shared credential removes it. Everyone will need to connect with their own.",
+        "confirm": "Save and remove sign-ins"
+      },
       "cta": {
         "manage": "Manage",
         "delete": "Delete",
         "reauthenticate": "Reauthenticate",
+        "reconnect": "Reconnect",
         "disconnect": "Disconnect",
         "connect": "Connect",
-        "addInstance": "Add instance"
+        "addInstance": "Add instance",
+        "edit": "Edit"
       },
       "status": {
         "ready": "Ready",
         "notConnected": "Not connected",
+        "reconnectNeeded": "Reconnect needed",
+        "waitingForAdmin": "Waiting for admin",
+        "sharedCredentialMissing": "Shared credential missing",
+        "blocked": "Blocked by policy",
+        "unreachable": "Can't reach server",
+        "slow": "Slow to respond",
         "needsAuth": "Needs auth",
         "disabled": "Disabled"
       },
@@ -2704,13 +2777,24 @@
         "title": "MCP Servers",
         "subtitle": "Connect Model Context Protocol servers to extend what your team's agents can do.",
         "emptyTitle": "No MCP servers yet",
-        "emptyDescription": "Add a server from the catalog or configure a custom one to get started."
+        "emptyDescription": "Add a server from the catalog or configure a custom one to get started.",
+        "userCreatedTitle": "User-created servers",
+        "userCreatedDescription": "Servers your users added for themselves. Only the person who added one can use it; you can remove it.",
+        "userCreatedOwner": "Added by {{name}}"
       },
       "personal": {
         "title": "MCP Servers",
-        "subtitle": "Authenticate with the MCP servers your admin has made available.",
+        "subtitle": "Connect to the MCP servers your admin has made available, or add your own.",
         "emptyTitle": "No MCP servers available",
-        "emptyDescription": "Your admin hasn't added any MCP servers yet."
+        "emptyDescription": "Add one of your own, or ask your admin to add one for everyone.",
+        "yourServersDescription": "Servers you added. Only you can see and use them, and they can't be added to agents shared with your organization.",
+        "tabs": {
+          "all": "All",
+          "connected": "Connected",
+          "notConnected": "Not connected"
+        },
+        "yours": "Yours",
+        "noneInTab": "No MCP servers here."
       },
       "details": {
         "breadcrumbLabel": "MCP Servers",
@@ -2730,12 +2814,14 @@
         "authBannerTitle": "Authentication required",
         "authBannerDescription": "Authenticate this MCP server so your team's agents can use it.",
         "authBannerAuthenticatedTitle": "Connected",
+        "reconnectBannerDescription": "The sign-in for this server expired or was rejected. Reconnect to keep using it.",
         "authBannerAuthenticatedDescription": "You can reauthenticate or disconnect this MCP server.",
         "createdBy": "Created by"
       },
       "deleteDialog": {
         "title": "Delete MCP server?",
-        "body": "The server named \"{{name}}\" will be permanently removed. Any team members using it will lose access."
+        "body": "The server named \"{{name}}\" will be permanently removed. Any team members using it will lose access.",
+        "personalBody": "The server named \"{{name}}\" and its saved credentials will be permanently removed."
       },
       "toasts": {
         "loadError": "Failed to load MCP servers",
@@ -2749,10 +2835,15 @@
         "disconnected": "Disconnected successfully",
         "disconnectError": "Failed to disconnect",
         "credentialsSaveError": "Server saved, but credentials could not be saved. You can add them later from Manage.",
+        "credentialsSaved": "Credentials saved",
+        "credentialsReset": "MCP server updated. Saved credentials were removed because the connection changed; connect again to use it.",
+        "oauthTimedOut": "Sign-in took too long and was stopped. Try again.",
+        "oauthProviderError": "Sign-in failed: {{message}}",
         "discoveryError": "Failed to discover tools"
       },
       "authDialog": {
         "title": "Authenticate with {{name}}",
+        "docsLink": "Where to find this",
         "description": "Enter your credentials to connect this MCP server."
       },
       "form": {
@@ -2764,6 +2855,7 @@
         "argsPlaceholder": "Add an argument",
         "requiredEnv": "Required env",
         "requiredEnvPlaceholder": "Add an env var name (e.g. API_KEY)",
+        "defaultTokenEnvHint": "With no variables listed, the token is passed to the command as {{name}}.",
         "url": "URL",
         "authMode": "Auth Mode",
         "headerName": "Header Name",
@@ -2779,14 +2871,55 @@
         "credentialsHint": "Add credentials now, or skip and connect later from the Connection & Tools tab.",
         "multiEnvIncomplete": "Fill in every required environment variable, or leave them all blank to connect later.",
         "oauthPairRequired": "Enter both the client ID and client secret, or leave both blank.",
-        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it."
+        "connectAfterCreateHint": "Save this server, then reopen Manage to connect it.",
+        "timeoutsHeading": "Timeouts",
+        "connectTimeout": "Connect timeout (seconds)",
+        "callTimeout": "Tool call timeout (seconds)",
+        "timeoutRange": "Enter a number from {{min}} to {{max}}, or leave it blank for the default."
       },
       "configPanel": {
         "editTitle": "Edit MCP Server",
         "createTitle": "Add MCP Server",
         "tabs": {
           "configuration": "Configuration",
-          "connection": "Connection & Tools"
+          "tools": "Tools & approvals"
+        },
+        "synced": "Synced {{time}}",
+        "refreshTools": "Refresh the tool list",
+        "signInForTools": "Sign in to see this server's tools.",
+        "toolsError": "Couldn't load the tool list",
+        "toolsErrorSignIn": "The server wants you to sign in again.",
+        "rulesKept": "Your saved approval rules are kept.",
+        "tryAgain": "Try again",
+        "findingTools": "Finding tools on this server",
+        "rulesUnlock": "Approval rules unlock once the list is ready.",
+        "unsaved_one": "{{count}} unsaved change",
+        "unsaved_other": "{{count}} unsaved changes",
+        "allSaved": "All rules saved",
+        "discard": "Discard",
+        "saveRules": "Save rules",
+        "discardTitle": "Discard unsaved rule changes?",
+        "discardBody_one": "You changed the rule of {{count}} tool. Closing now loses that change.",
+        "discardBody_other": "You changed the rules of {{count}} tools. Closing now loses those changes.",
+        "noSignIn": "No sign-in needed · {{transport}}",
+        "signInExpired": "Sign-in expired",
+        "sharedMissing": "Shared sign-in missing",
+        "signInExpiredBody": "Tools from this server can't run until someone signs in again.",
+        "notSignedIn": "Not signed in",
+        "notSignedInDetail": "Sign in to use this server's tools.",
+        "signedIn": "Signed in",
+        "sharedSignIn": "Shared sign-in",
+        "signedInDetail": "{{transport}} · signed in {{time}}",
+        "menu": {
+          "label": "More actions",
+          "copyUrl": "Copy server URL",
+          "copied": "Server URL copied",
+          "copyFailed": "Couldn't copy the server URL",
+          "addedBy": "Added by {{name}}",
+          "disconnectHint": "Signs you out. Settings and rules stay.",
+          "remove": "Remove server",
+          "removeHint": "Deletes it for everyone.",
+          "removeHintPersonal": "Deletes it and your sign-in."
         }
       },
       "oauthConfig": {
@@ -2826,6 +2959,99 @@
         "disabledDescription": "Custom STDIO servers run a command on the PipesHub server, so they stay off unless the operator sets {{flag}}=true in the deployment environment (Docker Compose .env, or config.mcpAllowCustomStdio in Helm). Agents can't use this server's tools until then. You can delete it or switch it to a remote (HTTP) server.",
         "unavailableHint": "Local command (STDIO) servers are turned off on this deployment. To allow them, the operator must set {{flag}}=true.",
         "enabledWarning": "This command runs on the PipesHub server with the service's privileges, including its network access and credentials. Only add commands you trust."
+      },
+      "addDialog": {
+        "title": "Add an MCP server",
+        "description": "Pick a server from the catalog, or connect any remote MCP server by its URL. Only you will see it.",
+        "custom": "Custom server",
+        "customDescription": "Any remote MCP server, by URL."
+      },
+      "toolRules": {
+        "open": "Tool approvals",
+        "title": "Tool approvals: {{name}}",
+        "description": {
+          "personal": "Choose what happens when the assistant wants to use one of these tools in your chats. Agents use their own rules.",
+          "company": "Rules here apply to everyone in your organization. Members can add stricter rules, never looser ones.",
+          "agent": "Choose what happens when this agent wants to use one of these tools, for everyone who chats with it."
+        },
+        "unattendedHint": "In Slack, the API and scheduled runs nobody can approve a call, so a tool that needs approval doesn't run there unless you turn on “Allow when no one can approve”.",
+        "viewOnly": "Only people who can edit this agent can change these.",
+        "loading": "Loading…",
+        "loadError": "Couldn't load the rules.",
+        "search": "Search by name or ID",
+        "empty": "No tools to show. Connect the server to see its tools, or add one by name.",
+        "notOffered": "Not offered now",
+        "rule": {
+          "allow": "Pre-approved",
+          "ask": "Allow on approval",
+          "block": "Deny"
+        },
+        "company": {
+          "none": "No limit",
+          "ask": "Allow on approval",
+          "block": "Deny"
+        },
+        "unattended": "Allow when no one can approve",
+        "unattendedFor": "Allow {{name}} when no one can approve",
+        "addPlaceholder": "Add a tool by name",
+        "add": "Add",
+        "saved": "Tool approvals saved",
+        "saveError": "Couldn't save the tool approvals",
+        "unattendedDetail": "Slack, the API and scheduled runs",
+        "unattendedDestructive": "Only where someone has allowed this tool",
+        "kind": {
+          "read": "Read-only",
+          "write": "Changes data",
+          "destructive": "Deletes data"
+        },
+        "kindSource": {
+          "name": "From its name",
+          "server": "As the server says",
+          "none": "No labels from the server"
+        },
+        "group": {
+          "destructive": "Deletes data",
+          "write": "Changes data",
+          "read": "Read-only",
+          "notOffered": "Not offered now",
+          "byName": "Rules set by name"
+        },
+        "groupHint": {
+          "destructive": "Review these first",
+          "read": "Only looks things up"
+        },
+        "filterLabel": "Show tools",
+        "filter": {
+          "all": "All",
+          "destructive": "Deletes data",
+          "write": "Changes data",
+          "read": "Read-only",
+          "hasRule": "Has a rule"
+        },
+        "noMatch": "No tools match your search.",
+        "clearFilters": "Clear search and filters",
+        "quickSetup": {
+          "text": "Quick setup: require approval for every tool that changes data.",
+          "apply": "Apply"
+        },
+        "legend": {
+          "own": "Pre-approved runs without asking · Allow on approval asks in the chat first · Deny never runs",
+          "company": "No limit – members decide · Allow on approval – someone approves each call · Deny – never runs"
+        }
+      },
+      "disconnectDialog": {
+        "title": "Disconnect {{name}}?",
+        "yours_one": "You'll stop using its {{count}} tool until you sign in again.",
+        "yours_other": "You'll stop using its {{count}} tools until you sign in again.",
+        "yoursUnknown": "You'll stop using its tools until you sign in again.",
+        "shared_one": "Agents in your organization will stop using its {{count}} tool right away, including in Slack and scheduled runs.",
+        "shared_other": "Agents in your organization will stop using its {{count}} tools right away, including in Slack and scheduled runs.",
+        "sharedUnknown": "Agents in your organization will stop using its tools right away, including in Slack and scheduled runs.",
+        "keeps": "Server settings and approval rules are kept",
+        "reconnect": "Reconnect any time by signing in again",
+        "deletesYours": "Your saved sign-in is deleted",
+        "deletesShared": "The shared sign-in is deleted",
+        "disconnecting": "Disconnecting…"
       }
     },
     "bots": {
@@ -3891,6 +4117,9 @@
     "configureMcpTooltip": "Manage credentials",
     "authenticateMcpTooltip": "Authenticate this MCP server",
     "mcpAuthUpdatedNotify": "MCP authentication updated.",
+    "mcpServersUnavailable": "This agent's MCP servers couldn't be loaded",
+    "mcpServersUnavailableHint": "They aren't shown here, and saving won't change them. Reload the page to try again.",
+    "mcpServersUnavailableNoDrop": "This agent's MCP servers couldn't be loaded, so none can be added until the page is reloaded.",
     "mcpAuthSaveError": "Failed to save MCP credentials.",
     "mcpAuthRemoveError": "Failed to remove MCP credentials.",
     "loadingSchema": "Loading schema…",
@@ -3989,7 +4218,7 @@
     "removeDeprecatedTools": "Remove Deprecated Tools",
     "showMore": "Show more",
     "showLess": "Show less",
-    "mcpServerAlreadyAttachedNotify": "{{name}} is already attached to this agent",
+    "mcpServerAlreadyAttachedNotify": "This agent already has another server of the same type as {{name}}. An agent can use one server of each type.",
     "webSearchOnlyOne": "Only one web search provider can be attached",
     "mcpServerNodeSubtitle": "Tools from an MCP server",
     "noMcpServersAvailable": "No MCP servers available",
@@ -4002,7 +4231,18 @@
     "mcpServerWithToolCount_one": "MCP server with {{count}} tool",
     "mcpServerWithToolCount_other": "MCP server with {{count}} tools",
     "deprecatedToolsBanner_one": "{{count}} tool on this agent is deprecated. Remove it: {{tools}}",
-    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}"
+    "deprecatedToolsBanner_other": "{{count}} tools on this agent are deprecated. Remove them: {{tools}}",
+    "mcpAllTools": "All tools",
+    "mcpAllToolsHint": "Includes tools the server adds later.",
+    "mcpServerUnavailable": "Not available",
+    "mcpServerUnavailableHint": "This server isn't among your MCP servers: it was deleted, or it isn't shared with you.",
+    "mcpToolNotOnServer": "Not on the server",
+    "mcpToolNotOnServerHint": "The server no longer offers this tool. Remove it, or the agent can't use it.",
+    "mcpAllToolsNoneYet": "The server hasn't listed any tools yet. The agent gets whatever it offers.",
+    "mcpNoToolsSelected": "No tools selected. Add tools, or turn on All tools.",
+    "mcpServerNeedsToolsTooltip": "Choose tools for every MCP server, or turn on All tools.",
+    "mcpServerNeedsToolsBanner": "Choose at least one tool for {{names}}, or turn on All tools.",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} is your personal MCP server. It can't be added to an agent shared with your organization or running as a service account."
   },
   "recordView": {
     "sections": {

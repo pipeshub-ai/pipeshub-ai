@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { toast } from '@/lib/store/toast-store';
@@ -13,11 +13,14 @@ import {
   selectFeatureFlagsLoaded,
 } from '@/lib/store/feature-flags-store';
 import { ConfirmationDialog } from '../../components';
-import { useMcpTeamStore } from './store';
+import { orgInstancesWithStatus, useMcpTeamStore } from './store';
 import { McpServersApi } from '../api';
-import { useMcpOAuthPopup } from '../hooks/use-mcp-oauth-popup';
-import { McpAuthDialog } from '../components';
-import type { McpMyServerEntry, McpToolInfo } from '../types';
+import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../hooks/use-mcp-oauth-popup';
+import { McpAuthDialog, McpDisconnectDialog } from '../components';
+import type { McpMyServerEntry, McpPersonalInstanceSummary, McpToolInfo } from '../types';
+import { isPersonalMcpInstance } from '../types';
+import { isOfferedForNewServers, replacementFor } from '../catalog-replacement';
+import { UsersApi } from '../../users/api';
 import {
   McpCatalogLayout,
   McpServerDetailsLayout,
@@ -38,7 +41,9 @@ function TeamMcpServersPageContent() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
   const [authDialogInstance, setAuthDialogInstance] = useState<McpMyServerEntry | null>(null);
+  const [disconnecting, setDisconnecting] = useState<McpMyServerEntry | null>(null);
   const [toolsState, setToolsState] = useState<Record<string, ToolsResult | undefined>>({});
+  const [ownerNames, setOwnerNames] = useState<Record<string, string>>({});
 
   const typeId = searchParams.get('typeId');
 
@@ -54,17 +59,36 @@ function TeamMcpServersPageContent() {
     }
   }, [flagsLoaded, mcpEnabled, router]);
 
+  // Only the newest load's owner lookup may set the names: an older one can answer last.
+  const ownerLookup = useRef(0);
+
   const loadData = useCallback(async () => {
     const s = useMcpTeamStore.getState();
     s.setLoading(true);
     try {
-      const [catalogRes, myServersRes] = await Promise.all([
+      const [catalogRes, myServersRes, allInstancesRes] = await Promise.all([
         McpServersApi.getCatalog({ limit: 200 }),
         McpServersApi.getMyMcpServers(false),
+        McpServersApi.listInstances({ includePersonal: true }),
       ]);
       s.setTemplates(catalogRes.templates);
       s.setCustomStdioAllowed(catalogRes.customStdioAllowed === true);
-      s.setInstances(myServersRes.instances);
+      // The admin's own personal servers live on their personal page, not in the org catalog.
+      s.setInstances(orgInstancesWithStatus(allInstancesRes.instances, myServersRes.instances));
+      const userCreated: McpPersonalInstanceSummary[] = allInstancesRes.instances.filter((i) => isPersonalMcpInstance(i));
+      s.setUserCreatedInstances(userCreated);
+      const ownerIds = [...new Set(userCreated.map((i) => i.createdBy))];
+      const lookup = ++ownerLookup.current;
+      if (ownerIds.length === 0) {
+        setOwnerNames({});
+      } else {
+        void UsersApi.getUsersByIds(ownerIds)
+          .then((users) => Object.fromEntries(users.map((u) => [u.userId, u.name || u.email || u.userId])))
+          .catch(() => ({}))
+          .then((names) => {
+            if (lookup === ownerLookup.current) setOwnerNames(names);
+          });
+      }
     } catch {
       toast.error(t('workspace.mcpServers.toasts.loadError'));
     } finally {
@@ -110,9 +134,14 @@ function TeamMcpServersPageContent() {
             displayName: detailsTemplate.displayName,
             description: detailsTemplate.description,
             icon: detailsTemplate.icon,
+            notice: isOfferedForNewServers(detailsTemplate)
+              ? null
+              : t('workspace.mcpServers.replacedNotice', {
+                  name: replacementFor(detailsTemplate, store.templates)?.displayName ?? detailsTemplate.replacedBy,
+                }),
           }
         : null,
-    [detailsTemplate]
+    [detailsTemplate, store.templates, t]
   );
   const detailsInstances = useMemo(
     () => store.instances.filter((i) => i.typeId === typeId),
@@ -144,8 +173,11 @@ function TeamMcpServersPageContent() {
       void loadData();
       toast.success(t('workspace.mcpServers.toasts.authenticated'));
     },
-    onFailed: () => {
+    onFailed: (failure) => {
       setBusyInstanceId(null);
+      toast.error(mcpOAuthFailureMessage(t, failure));
+      // The stored tokens are untouched by a failed sign-in, but show the list as it is now.
+      void loadData();
     },
   });
 
@@ -164,15 +196,10 @@ function TeamMcpServersPageContent() {
   const handleReauthenticate = useCallback(
     async (instance: McpMyServerEntry) => {
       if (instance.authMode === 'oauth') {
+        // A new sign-in replaces the stored tokens only when it succeeds, so a blocked or
+        // cancelled popup leaves the working connection as it was.
         setBusyInstanceId(instance._id);
-        try {
-          await McpServersApi.reauthenticate(instance._id);
-          await startOAuthPopup(instance._id);
-        } catch (error) {
-          setBusyInstanceId(null);
-          const detail = isProcessedError(error) ? error.message : undefined;
-          toast.error(t('workspace.mcpServers.toasts.authenticateError'), detail ? { description: detail } : undefined);
-        }
+        void startOAuthPopup(instance._id);
         return;
       }
       setAuthDialogInstance(instance);
@@ -223,12 +250,16 @@ function TeamMcpServersPageContent() {
           instances={detailsInstances}
           isLoading={store.isLoading}
           onBack={handleBackToList}
-          onAddInstance={() => detailsTemplate && store.openCreateFromTemplate(detailsTemplate)}
+          onAddInstance={
+            detailsTemplate && isOfferedForNewServers(detailsTemplate)
+              ? () => store.openCreateFromTemplate(detailsTemplate)
+              : undefined
+          }
           onManageInstance={(instance) => store.openEditInstance(instance)}
           onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
           onAuthenticate={handleAuthenticate}
           onReauthenticate={(instance) => void handleReauthenticate(instance)}
-          onDisconnect={(instance) => void handleDisconnect(instance)}
+          onDisconnect={setDisconnecting}
           busyInstanceId={busyInstanceId}
           onRefreshAll={() => void loadData()}
           toolsState={toolsState}
@@ -248,6 +279,9 @@ function TeamMcpServersPageContent() {
           onEditInstance={(instance) => store.openEditInstance(instance)}
           onDeleteInstance={(instance) => store.openDeleteDialog(instance)}
           onRefresh={() => void loadData()}
+          userCreatedInstances={store.userCreatedInstances}
+          ownerNames={ownerNames}
+          onDeleteUserCreated={(instance) => store.openDeleteDialog(instance)}
         />
       )}
 
@@ -267,8 +301,20 @@ function TeamMcpServersPageContent() {
         onDisconnect={(instance) => void handleDisconnect(instance)}
       />
 
+      <McpDisconnectDialog
+        instance={disconnecting}
+        onOpenChange={(open) => {
+          if (!open) setDisconnecting(null);
+        }}
+        onConfirm={() => {
+          if (disconnecting) void handleDisconnect(disconnecting);
+          setDisconnecting(null);
+        }}
+      />
+
       <McpAuthDialog
         instance={authDialogInstance}
+        template={store.templates.find((tpl) => tpl.typeId === authDialogInstance?.typeId) ?? null}
         open={authDialogInstance !== null}
         onOpenChange={(open) => {
           if (!open) setAuthDialogInstance(null);
@@ -282,7 +328,12 @@ function TeamMcpServersPageContent() {
           if (!open) store.closeDeleteDialog();
         }}
         title={t('workspace.mcpServers.deleteDialog.title')}
-        message={t('workspace.mcpServers.deleteDialog.body', { name: store.deleteTarget?.name ?? '' })}
+        message={t(
+          isPersonalMcpInstance(store.deleteTarget)
+            ? 'workspace.mcpServers.deleteDialog.personalBody'
+            : 'workspace.mcpServers.deleteDialog.body',
+          { name: store.deleteTarget?.name ?? '' }
+        )}
         confirmLabel={t('workspace.mcpServers.cta.delete')}
         confirmVariant="danger"
         isLoading={isDeleting}

@@ -2681,6 +2681,46 @@ class TestDeleteAgent:
                 "a1", "k1", "o1", transaction="txn-1"
             )
 
+    @staticmethod
+    def _services(agent: dict) -> dict:
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": MagicMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=agent)
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+        return services
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("is_service_account", "removes"), [(True, True), (False, False)])
+    async def test_a_service_account_agent_takes_its_mcp_credentials_with_it(
+        self, is_service_account: bool, removes: bool,
+    ) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": is_service_account})
+        remove = AsyncMock(return_value=[])
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=remove):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        if removes:
+            remove.assert_awaited_once_with(services["config_service"], "o1", "a1")
+        else:
+            remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_mcp_cleanup_does_not_fail_the_delete(self) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": True})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=AsyncMock(side_effect=RuntimeError("down"))):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
         from app.api.routes.agent import AgentNotFoundError, delete_agent

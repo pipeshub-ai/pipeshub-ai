@@ -347,6 +347,22 @@ class TestSSEEventEmitterTranslation:
             {"event": "tool_result", "data": {"tool": "jira_search", "result": "blocked after 3 failures", "status": "error"}}
         )
 
+    async def test_a_call_awaiting_approval_is_an_unrun_call_for_legacy_clients(self) -> None:
+        sink = MagicMock()
+        sink.write = AsyncMock(return_value=True)
+        emitter = SSEEventEmitter(sink)
+
+        await emitter.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "mcp_jira_create_issue", "reason": "Waiting for your approval.",
+                "status": ToolCallStatus.AWAITING_APPROVAL,
+            })
+        )
+
+        sink.write.assert_awaited_once_with(
+            {"event": "tool_result", "data": {"tool": "mcp_jira_create_issue", "result": "Waiting for your approval.", "status": "error"}}
+        )
+
     async def test_unmapped_event_types_are_silently_dropped(self) -> None:
         sink = MagicMock()
         sink.write = AsyncMock(return_value=True)

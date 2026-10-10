@@ -260,6 +260,18 @@ describe('when the answer fails', () => {
     expect(useChatStore.getState().pendingConversations[slotId]).toBeUndefined();
   });
 
+  it('keeps the error code and details so the thread can offer a fix', async () => {
+    const slotId = newSlot();
+    const details = { agentId: 'a-1', serviceAccount: false, servers: [{ instanceId: 'inst-1', name: 'GitHub', problem: 'not_connected' }] };
+    respondWith([frame('RUN_ERROR', { message: 'Connect GitHub first.', code: 'mcp_server_config_missing', details })]);
+
+    await streamMessageForSlot(slotId, Q, request());
+
+    const reply = slot(slotId).messages[1];
+    expect(getThreadMessagePlainText(reply)).toBe('Connect GitHub first.');
+    expect(reply.metadata?.custom?.streamError).toEqual({ code: 'mcp_server_config_missing', details });
+  });
+
   it('says PipesHub is busy when the request is rate limited', async () => {
     const slotId = newSlot();
     respondWith(jsonResponse(429, {}, { 'retry-after': '3' }));

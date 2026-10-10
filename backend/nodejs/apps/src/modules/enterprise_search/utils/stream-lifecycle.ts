@@ -1,3 +1,4 @@
+import type { IMessagePart } from '../types/conversation.interfaces';
 import { Readable } from 'stream';
 import { Logger } from '../../../libs/services/logger.service';
 
@@ -129,6 +130,7 @@ export function isUpstreamAbortError(error: unknown): boolean {
 export class StreamedContentAccumulator {
   private text = '';
   private rootRunId: string | null = null;
+  private approvedCalls: IMessagePart[] = [];
 
   /** AG-UI `TEXT_MESSAGE_CONTENT` frames carry a `delta`, appended in order. */
   feedTextMessageContent(data: {
@@ -161,6 +163,29 @@ export class StreamedContentAccumulator {
 
   getText(): string {
     return this.text;
+  }
+
+  /** An AG-UI `TOOL_CALL_START` frame's JSON: a call a person approved is kept as a part. */
+  feedToolCallStart(dataLine: string): void {
+    try {
+      const data = JSON.parse(dataLine) as { toolCallId?: unknown; toolCallName?: unknown; approved?: unknown };
+      if (data.approved === true && typeof data.toolCallId === 'string') {
+        this.approvedCalls.push({
+          type: 'tool_call',
+          toolCallId: data.toolCallId,
+          toolName: typeof data.toolCallName === 'string' ? data.toolCallName : 'tool',
+          status: 'completed',
+          approved: true,
+        });
+      }
+    } catch {
+      // Not ours to fail: the frame is still forwarded.
+    }
+  }
+
+  /** What a stopped reply saves besides its text: the approved calls it ran, so it isn't regenerated. */
+  getParts(): IMessagePart[] {
+    return [...this.approvedCalls];
   }
 
   hasContent(): boolean {

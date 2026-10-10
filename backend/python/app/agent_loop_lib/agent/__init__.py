@@ -649,6 +649,9 @@ class Agent:
         # makes, so middleware can reach `ctx.scope.turn.run...` uniformly
         # regardless of which event fired.
         turn_scope = TurnScope(run=self._scope, turn_index=turn_index)
+        # Created before anything is spawned this turn, so children inherit the same holder.
+        from app.agent_loop_lib.agent.tool_loop import PENDING_APPROVAL
+        approval_holder = self._scope.get(PENDING_APPROVAL)
 
         try:
             await hooks.dispatch_pre_turn(self._hooks, turn_index, scope=turn_scope)
@@ -1048,6 +1051,11 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+            # A sub-agent left a call waiting for a person: this run waits for the answer too.
+            pending = approval_holder.pending
+            if not task_done and pending is not None and pending.end_turn:
+                task_done = True
+                final_output = pending.message
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision

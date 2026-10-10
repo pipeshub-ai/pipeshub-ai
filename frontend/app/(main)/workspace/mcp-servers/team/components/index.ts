@@ -3,3 +3,4 @@ export { McpInstanceCard } from './mcp-instance-card';
 export { McpServerDetailsLayout } from './mcp-server-details-layout';
 export { McpInstanceRow } from './mcp-instance-row';
 export { McpInstanceConfigPanel } from './mcp-instance-config-panel';
+export { McpUserCreatedSection } from './mcp-user-created-section';

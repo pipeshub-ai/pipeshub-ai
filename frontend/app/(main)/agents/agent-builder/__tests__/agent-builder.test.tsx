@@ -75,12 +75,11 @@ vi.mock('@/app/(main)/toolsets/api', async (importOriginal) => ({
 vi.mock('@/app/(main)/workspace/skills/personal/api', () => ({
   SkillsApi: { listAssignableSkills: vi.fn(async () => []) },
 }));
-vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({
-  McpServersApi: {
-    getMyMcpServers: vi.fn(async () => ({ instances: [] })),
-    getAgentMcpServers: vi.fn(async () => ({ instances: [] })),
-  },
+const mcpApi = vi.hoisted(() => ({
+  getMyMcpServers: vi.fn(async () => ({ instances: [] as unknown[] })),
+  getAgentMcpServers: vi.fn(async () => ({ instances: [] as unknown[] })),
 }));
+vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: mcpApi }));
 vi.mock('@/app/(main)/workspace/web-search/api', () => ({
   WebSearchApi: { getConfig: vi.fn(async () => ({ providers: [] })) },
 }));
@@ -494,6 +493,55 @@ describe('editing an agent', () => {
     expect(lastSavedPayload(agentsApi.updateAgent).toolsets).toEqual([
       expect.objectContaining({ tools: [expect.objectContaining({ name: 'create_issue' })] }),
     ]);
+  });
+});
+
+describe("an agent's MCP servers", () => {
+  const attached = {
+    _key: 'mcp-1',
+    instanceId: 'inst-1',
+    name: 'github',
+    displayName: 'GitHub',
+    typeId: 'github',
+    allTools: false,
+    tools: [{ name: 'list_issues', fullName: 'mcp_github_list_issues', description: '' }],
+  };
+  const live = {
+    _id: 'inst-1', orgId: 'org-1', createdBy: 'u-1', name: 'github', typeId: 'github',
+    transport: 'streamable_http', authMode: 'none', useAdminAuth: false, args: [], requiredEnv: [],
+    optionalEnv: [], scopes: [], isCustom: false, createdAt: 1, updatedAt: 1, isAuthenticated: true,
+    tools: [
+      { name: 'list_issues', namespacedName: 'mcp_github_list_issues', inputSchema: {} },
+      { name: 'create_pr', namespacedName: 'mcp_github_create_pr', inputSchema: {} },
+    ],
+  };
+
+  beforeEach(() => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: true, ENABLE_SKILLS: false } });
+  });
+
+  it("the live server's tools don't count as an unsaved change", async () => {
+    mcpApi.getMyMcpServers.mockResolvedValue({ instances: [live] });
+    await renderExistingAgent({ mcpServers: [attached] });
+
+    await waitFor(() => expect(canvasNode('Github')).toBeTruthy());
+    expect(saveButton(/save changes/i)).toHaveProperty('disabled', true);
+  });
+
+  it('a server missing from the live list is marked on its node', async () => {
+    mcpApi.getMyMcpServers.mockResolvedValue({ instances: [] });
+    await renderExistingAgent({ mcpServers: [attached] });
+
+    await waitFor(() => expect(within(canvasNode('Github')!).getByText('Not available')).toBeTruthy());
+  });
+
+  it("a failed load doesn't mark the agent's servers as gone", async () => {
+    mcpApi.getMyMcpServers.mockRejectedValue(new Error('network'));
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await renderExistingAgent({ mcpServers: [attached] });
+
+    await waitFor(() => expect(canvasNode('Github')).toBeTruthy());
+    expect(within(canvasNode('Github')!).queryByText('Not available')).toBeNull();
   });
 });
 

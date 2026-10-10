@@ -106,6 +106,10 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import {
+  createMcpClientMetadataHandler,
+  MCP_CLIENT_METADATA_PATH,
+} from './modules/mcp_servers/routes/mcp_client_metadata';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
@@ -668,6 +672,14 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+    // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
+    // ahead of the static files and the SPA fallback, which answer a .json path with 404.
+    this.app.get(
+      MCP_CLIENT_METADATA_PATH,
+      createMcpClientMetadataHandler(
+        KeyValueStoreService.getInstance(loadConfigurationManagerConfig()),
+      ),
     );
 
     // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope

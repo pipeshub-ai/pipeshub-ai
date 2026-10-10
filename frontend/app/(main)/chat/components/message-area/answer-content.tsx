@@ -27,6 +27,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 
@@ -569,18 +570,11 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
  * and syntax-highlighted body that adapts to light / dark theme.
  */
 function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
-  const [copied, setCopied] = useState(false);
+  const { copied, copy } = useCopyText();
   const [isHovered, setIsHovered] = useState(false);
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const { t } = useTranslation();
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(codeText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
 
   // CSS variables resolve light/dark automatically — no manual isDark checks needed.
   const headerBg = 'var(--slate-2)';
@@ -622,7 +616,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         </Text>
         <button
           type="button"
-          onClick={handleCopy}
+          onClick={() => void copy(codeText)}
           onMouseEnter={() => setIsHovered(true)}
           onMouseLeave={() => setIsHovered(false)}
           style={{

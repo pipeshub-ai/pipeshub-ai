@@ -717,8 +717,17 @@ export interface ReasoningTurn {
  * `resultPreview` is always a bounded preview (~500 chars), never the full
  * external tool result — the server never sends more than that.
  */
+/** On an `mcp_sign_in` part: an MCP server whose sign-in lacked permission this turn (Python `mcp_sign_in.py`). */
+export interface McpSignInServer {
+  instanceId: string;
+  serverName: string;
+  scopes: string[];
+  /** Set for a service-account agent's own sign-in, redone through the agent's route. */
+  agentKey?: string;
+}
+
 export interface MessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -726,10 +735,18 @@ export interface MessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
   resultSummary?: string;
+  /** A table or field list of the result, built server-side; unchecked here, see `toolResultView`. */
+  resultView?: unknown;
+  /** On an `awaiting_approval` call: what the approval card shows. */
+  approval?: ToolApprovalDetails;
+  /** The call a person approved, run at the start of their answer's turn. */
+  approved?: boolean;
+  /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
+  servers?: McpSignInServer[];
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -899,6 +916,36 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /** The person's answer to a tool approval card; the call itself is saved server-side. */
+  toolApproval?: ToolApprovalAnswer;
+}
+
+export type ToolApprovalDecision = 'allow_once' | 'allow_chat' | 'always' | 'deny';
+
+export interface ToolApprovalAnswer {
+  approvalId: string;
+  decision: ToolApprovalDecision;
+}
+
+/** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
+export interface ToolApprovalDetails {
+  approvalId: string;
+  instanceId: string;
+  serverName: string;
+  toolName: string;
+  toolTitle?: string | null;
+  readOnly?: boolean;
+  /** What the tool does to data; a deleting tool is marked on the card. */
+  kind?: 'read' | 'write' | 'destructive' | null;
+  /** "Always allow" is offered: an agent editor, or a person in their own assistant chat. */
+  canAlwaysAllow?: boolean;
+  /** The company asks every time for this tool, so only this one call can be answered. */
+  companyAlwaysAsk?: boolean;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+  /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
+  arguments?: Record<string, unknown> | null;
+  argumentsPreview?: string;
 }
 
 /**

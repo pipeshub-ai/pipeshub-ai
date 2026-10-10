@@ -51,10 +51,12 @@ __all__ = [
     "domain_of",
     "first_line",
     "error_message",
+    "inline_args",
 ]
 
 _MAX_SUMMARY_ITEMS = 5
 _MAX_ERROR_PREVIEW_CHARS = 200
+_MAX_INLINE_ARG_CHARS = 80
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +101,32 @@ def domain_of(url: str) -> str:
         return urlparse(url).netloc or url
     except ValueError:
         return url
+
+
+def _inline_value(value: Any) -> str:  # noqa: ANN401
+    if isinstance(value, str):
+        text = value.strip()
+        if len(text) > _MAX_INLINE_ARG_CHARS:
+            text = text[: _MAX_INLINE_ARG_CHARS - 1] + "…"
+        return f'"{text}"'
+    if isinstance(value, list):
+        return f"[{len(value)} item{'s' if len(value) != 1 else ''}]"
+    if isinstance(value, dict):
+        return "{…}"
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    return str(value)
+
+
+def inline_args(args: dict[str, Any], *, max_items: int = 3) -> str | None:
+    """`key: "value", key2: 5, …` — a one-line view of a call's arguments for
+    tools with no dedicated summarizer. `None` when there are no arguments."""
+    if not args:
+        return None
+    items = [f"{key}: {_inline_value(value)}" for key, value in list(args.items())[:max_items]]
+    if len(args) > max_items:
+        items.append("…")
+    return ", ".join(items)
 
 
 def bullet_list(items: list[str], *, total: int | None = None) -> str:

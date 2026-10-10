@@ -211,6 +211,7 @@ class EntityEventService(BaseEventService):
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
+            await self._remove_mcp_data("org", payload["orgId"])
             return True
 
         except Exception as e:
@@ -390,11 +391,28 @@ class EntityEventService(BaseEventService):
                 [user_data], CollectionNames.USERS.value
             )
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            if payload.get("userId"):
+                await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
+
+    async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
+        """MCP servers and credentials go with their user or org, so nothing keeps refreshing
+        their tokens. The graph change is already done, so a failure here is logged, not raised."""
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+
+        try:
+            config_service = self.app_container.config_service()
+            if owner_kind == "org":
+                removed = await mcp_lifecycle.remove_org_mcp_data(config_service, org_id)
+            else:
+                removed = await mcp_lifecycle.remove_user_mcp_data(config_service, org_id, user_id or "")
+            self.logger.info(f"Removed {len(removed)} MCP keys for deleted {owner_kind} {user_id or org_id}")
+        except Exception as e:
+            self.logger.error(f"Could not remove MCP data for deleted {owner_kind} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:

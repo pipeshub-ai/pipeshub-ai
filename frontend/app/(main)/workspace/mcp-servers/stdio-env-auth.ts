@@ -23,6 +23,14 @@ export function buildMultiEnvAuthPayload(
   };
 }
 
+const SECRET_NAME_PARTS = /TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PWD|KEY|CREDENTIAL|COOKIE|SESSION|PRIVATE|SIGNATURE|AUTH/;
+
+/** Whether a credential field named after an env var should be masked (`CLIENT_SECRET`, `DB_PASSWORD`, `GITHUB_PAT`). */
+export function isSecretFieldName(name: string): boolean {
+  const upper = name.toUpperCase();
+  return SECRET_NAME_PARTS.test(upper) || /(^|_)PAT($|_)/.test(upper);
+}
+
 export function isMultiEnvAuthComplete(
   requiredEnv: string[],
   values: Record<string, string>

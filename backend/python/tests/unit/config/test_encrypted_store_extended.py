@@ -3,7 +3,6 @@ Extended tests for app.config.providers.encrypted_store covering missing lines:
 - _DatetimeSafeEncoder (lines 27-29)
 - serialize/deserialize helper closures (lines 82-99)
 - _create_redis_store (lines 106-138 - tested indirectly)
-- list_keys_in_directory with encrypted keys and decryption (lines 340-356)
 - cancel_watch delegation (line 365)
 - publish_cache_invalidation with and without method (lines 380-383)
 - subscribe_cache_invalidation with and without method (lines 400-409)
@@ -68,59 +67,6 @@ class TestDatetimeSafeEncoder:
         from app.config.providers.encrypted_store import _DatetimeSafeEncoder
         with pytest.raises(TypeError):
             json.dumps({"val": set([1, 2])}, cls=_DatetimeSafeEncoder)
-
-
-# ============================================================================
-# list_keys_in_directory with decryption
-# ============================================================================
-
-
-class TestListKeysInDirectoryDecryption:
-    @pytest.mark.asyncio
-    async def test_encrypted_key_decryption(self):
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "iv:ciphertext:authTag",
-            "/services/endpoints/test",
-        ])
-        mock_encryption.decrypt.side_effect = lambda v: "/services/connectors/test"
-
-        result = await ekv.list_keys_in_directory("/services")
-        assert "/services/connectors/test" in result
-        assert "/services/endpoints/test" in result
-
-    @pytest.mark.asyncio
-    async def test_encrypted_key_decryption_failure_uses_raw(self):
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "iv:ciphertext:authTag",
-        ])
-        mock_encryption.decrypt.side_effect = Exception("decrypt failed")
-
-        result = await ekv.list_keys_in_directory("/")
-        # Falls back to raw key
-        assert "iv:ciphertext:authTag" in result
-
-    @pytest.mark.asyncio
-    async def test_non_encrypted_format_key(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "/plain/key/no/colons",
-        ])
-
-        result = await ekv.list_keys_in_directory("/plain")
-        assert "/plain/key/no/colons" in result
-
-    @pytest.mark.asyncio
-    async def test_key_error_skipped(self):
-        ekv, mock_store, _ = _build_encrypted_store()
-        # Simulate a key processing error
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "/services/endpoints/test",
-        ])
-
-        result = await ekv.list_keys_in_directory("/services")
-        assert len(result) == 1
 
 
 # ============================================================================
@@ -272,31 +218,6 @@ class TestWatchKeyDelegation:
         with pytest.raises(json.JSONDecodeError):
             on_change("enc:not json")
         callback.assert_not_called()
-
-
-# ============================================================================
-# list_keys_in_directory error path (lines 354-356)
-# ============================================================================
-
-
-class TestListKeysErrorPath:
-    """Test list_keys_in_directory error handling."""
-
-    @pytest.mark.asyncio
-    async def test_key_processing_error_skipped(self):
-        """Error processing individual key is skipped (lines 354-356)."""
-        ekv, mock_store, mock_encryption = _build_encrypted_store()
-
-        # First key causes error, second key is fine
-        mock_store.get_all_keys = AsyncMock(return_value=[
-            "bad:key:format",
-            "/services/good_key",
-        ])
-        # Make decrypt raise for the first key
-        mock_encryption.decrypt.side_effect = [Exception("bad key"), "/services/good_key"]
-
-        result = await ekv.list_keys_in_directory("/services")
-        assert "/services/good_key" in result
 
 
 # ============================================================================

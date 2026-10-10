@@ -1006,6 +1006,7 @@ li > blockquote {
 }
 
 .agent-builder-draggable-row {
+  min-height: 36px;
   border: 1px solid transparent;
   border-radius: var(--radius-1);
   transition:
@@ -1023,6 +1024,13 @@ li > blockquote {
 
 .agent-builder-draggable-row--disabled {
   cursor: not-allowed;
+}
+
+/* Same breakpoint as `useIsMobile`. */
+@media (max-width: 768px) {
+  .agent-builder-draggable-row {
+    min-height: 44px;
+  }
 }
 
 .agent-builder-palette-nest {

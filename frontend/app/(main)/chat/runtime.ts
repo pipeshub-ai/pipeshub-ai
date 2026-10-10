@@ -32,6 +32,7 @@ import {
   type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
+  type ToolApprovalAnswer,
 } from './types';
 import {
   buildCitationMapsFromApi,
@@ -188,11 +189,17 @@ function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
 /**
  * Build the streaming POST body for the given slot (agent vs assistant, filters,
  * tools, model). Used by questionnaire submit and the chat composer bridge.
+ *
+ * `toolApproval` answers an approval card. Only an agent run can ask, so in an
+ * assistant chat the answer goes in Agent mode even if the mode was switched since.
  */
 export function buildStreamChatRequestForSlot(
   slotId: string,
   query: string,
-  outgoingMessage?: ThreadMessageLike
+  outgoingMessage?: ThreadMessageLike,
+  toolApproval?: ToolApprovalAnswer,
+  /** `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is. */
+  options?: { agentMode?: boolean }
 ): StreamChatRequest | null {
   const currentState = useChatStore.getState();
   const currentSlot = currentState.slots[slotId];
@@ -207,7 +214,8 @@ export function buildStreamChatRequestForSlot(
   const effectiveAgentId = effectiveAgentIdForSlot(currentSlot);
 
   const isUniversalAgentMode =
-    !effectiveAgentId && currentState.settings.queryMode === 'agent';
+    !effectiveAgentId &&
+    (currentState.settings.queryMode === 'agent' || Boolean(toolApproval) || Boolean(options?.agentMode));
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
@@ -251,7 +259,7 @@ export function buildStreamChatRequestForSlot(
   const resolvedAgentKnowledge =
     isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-  const isWebSearch = currentState.settings.queryMode === 'web-search';
+  const isWebSearch = currentState.settings.queryMode === 'web-search' && !isUniversalAgentMode;
   const resolvedScopedKnowledge = isAgent
     ? resolvedAgentKnowledge
     : projectScope && !isWebSearch
@@ -299,7 +307,9 @@ export function buildStreamChatRequestForSlot(
     query,
     ...effectiveModel,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...buildStreamRequestModeFields(currentState.settings, isAgent),
+    ...(isUniversalAgentMode
+      ? { chatMode: 'agent' as const }
+      : buildStreamRequestModeFields(currentState.settings, isAgent)),
     timezone: getClientTimezone(),
     currentTime: getClientCurrentTime(),
     filters: resolvedFilters,
@@ -331,6 +341,7 @@ export function buildStreamChatRequestForSlot(
             agentCapabilities: currentState.settings.agentCapabilities,
           }
         : {}),
+    ...(toolApproval ? { toolApproval } : {}),
   };
 
   return request;
@@ -602,10 +613,12 @@ export function loadHistoricalMessages(
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
+      // The sign-in part alone isn't something the user saw stream.
+      const shownParts = msg.parts?.some((part) => part.type !== 'mcp_sign_in') ?? false;
       if (
         msg.status === 'stopped' &&
         !answerText.trim() &&
-        !msg.parts?.length &&
+        !shownParts &&
         !capturedPayload &&
         !peekFollowingAskPayload(messages, i)
       ) {

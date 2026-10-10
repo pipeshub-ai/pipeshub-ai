@@ -187,6 +187,17 @@ describe('stream-lifecycle', () => {
       const acc = new StreamedContentAccumulator()
       expect(acc.getText()).to.equal('')
       expect(acc.hasContent()).to.be.false
+      expect(acc.getParts()).to.deep.equal([])
+    })
+
+    it('keeps the calls a person approved, so a stopped reply that ran one keeps the mark', () => {
+      const acc = new StreamedContentAccumulator()
+      acc.feedToolCallStart(JSON.stringify({ toolCallId: 'approved_1', toolCallName: 'mcp_jira_create_issue', approved: true }))
+      acc.feedToolCallStart(JSON.stringify({ toolCallId: 'call-2', toolCallName: 'search' }))
+      acc.feedToolCallStart('not json')
+      expect(acc.getParts()).to.deep.equal([
+        { type: 'tool_call', toolCallId: 'approved_1', toolName: 'mcp_jira_create_issue', status: 'completed', approved: true },
+      ])
     })
 
     it('appends deltas from TEXT_MESSAGE_CONTENT frames in order', () => {

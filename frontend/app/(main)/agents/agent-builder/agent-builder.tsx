@@ -42,7 +42,8 @@ import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
 } from './sidebar-toolset-utils';
-import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
+import { findMcpServersWithoutTools, type McpInstanceIdFlowNode } from './sidebar-mcp-utils';
+import { McpAgentRulesContext, McpLiveServersContext } from './mcp-live-servers';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
@@ -89,6 +90,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     configuredConnectors,
     toolsets,
     mcpServers,
+    mcpServersLoaded,
     loading,
     loadedAgent,
     error,
@@ -167,6 +169,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       : t('agentBuilder.viewerPaletteDragBlocked');
   }, [isAgentStructureLocked, isServiceAccountToolsetOrgLocked, t]);
 
+  useEffect(() => {
+    if (!loadedAgent?.mcpServersUnavailable) return;
+    toast.warning(t('agentBuilder.mcpServersUnavailable'), {
+      description: t('agentBuilder.mcpServersUnavailableHint'),
+    });
+  }, [loadedAgent?._key, loadedAgent?.mcpServersUnavailable, t]);
+
   type DeprecatedToolEntry = { fullName: string; toolName: string; toolsetLabel: string };
 
   const deprecatedToolsFromAgent = useMemo<DeprecatedToolEntry[]>(() => {
@@ -207,6 +216,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const showDeprecatedBanner = deprecatedToolsInGraph.length > 0;
   const saveBlockedByDeprecatedTools = showDeprecatedBanner;
+
+  const mcpServersWithoutTools = useMemo(() => findMcpServersWithoutTools(nodes, edges), [nodes, edges]);
+  const saveBlockedByEmptyMcpServers = mcpServersWithoutTools.length > 0;
 
   const handleRemoveDeprecatedTools = useCallback(() => {
     const deprecatedFullNames = new Set(deprecatedToolsFromAgent.map((d) => d.fullName));
@@ -608,7 +620,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const handleSave = useCallback(async () => {
     if (!canPersist) return;
-    if (saveBlockedByDeprecatedTools) return;
+    if (saveBlockedByDeprecatedTools || saveBlockedByEmptyMcpServers) return;
     if (saveRef.current) return;
     if (!agentName.trim()) {
       showInlineAgentNameRequired();
@@ -667,6 +679,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     edges,
     canPersist,
     saveBlockedByDeprecatedTools,
+    saveBlockedByEmptyMcpServers,
     showInlineAgentNameRequired,
     isServiceAccount,
     loadedAgent,
@@ -821,6 +834,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           isFlowStructureLocked={isAgentStructureLocked}
           canPersist={canPersist}
           saveBlockedByDeprecatedTools={saveBlockedByDeprecatedTools}
+          saveBlockedReason={saveBlockedByEmptyMcpServers ? t('agentBuilder.mcpServerNeedsToolsTooltip') : undefined}
           isServiceAccount={isServiceAccount}
           editing={Boolean(loadedAgent)}
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
@@ -832,7 +846,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           createdBy={loadedAgent?.createdBy ?? null}
         />
 
-        {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner) && (
+        {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner || saveBlockedByEmptyMcpServers) && (
           <Flex
             direction="column"
             gap="2"
@@ -931,6 +945,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
                 );
               })()
             ) : null}
+            {saveBlockedByEmptyMcpServers ? (
+              <Callout.Root color="amber" variant="surface" size="1">
+                <Callout.Text>
+                  {t('agentBuilder.mcpServerNeedsToolsBanner', { names: mcpServersWithoutTools.join(', ') })}
+                </Callout.Text>
+              </Callout.Root>
+            ) : null}
             {success ? (
               <Callout.Root color="green" variant="surface" size="1">
                 <Flex align="start" justify="between" gap="3" wrap="wrap">
@@ -962,6 +983,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             onNotify={setBanner}
             agentKey={effectiveAgentKey}
             isServiceAccount={isServiceAccount}
+            shareWithOrg={shareWithOrg}
             paletteStructureLocked={isAgentStructureLocked}
             paletteDragBlockedMessage={paletteDragBlockedMessage}
             toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
@@ -979,27 +1001,34 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
                   }
             }
           />
-          <AgentBuilderCanvas
-            sidebarOpen={sidebarOpen}
-            sidebarWidth={AGENT_BUILDER_SIDEBAR_WIDTH}
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onEdgeClick={onEdgeClick}
-            setNodes={setNodes}
-            setEdges={setEdges}
-            nodeTemplates={nodeTemplates}
-            configuredConnectors={configuredConnectors}
-            activeAgentConnectors={activeAgentConnectors}
-            onNodeDelete={(id) => {
-              setNodeToDelete(id);
-              setDeleteDialogOpen(true);
-            }}
-            onError={(m) => setBanner(m)}
-            readOnly={isAgentStructureLocked}
-          />
+          <McpLiveServersContext.Provider value={mcpServersLoaded && !loading ? mcpServers : null}>
+            <McpAgentRulesContext.Provider value={effectiveAgentKey}>
+              <AgentBuilderCanvas
+                sidebarOpen={sidebarOpen}
+                sidebarWidth={AGENT_BUILDER_SIDEBAR_WIDTH}
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onEdgeClick={onEdgeClick}
+                setNodes={setNodes}
+                setEdges={setEdges}
+                nodeTemplates={nodeTemplates}
+                configuredConnectors={configuredConnectors}
+                activeAgentConnectors={activeAgentConnectors}
+                onNodeDelete={(id) => {
+                  setNodeToDelete(id);
+                  setDeleteDialogOpen(true);
+                }}
+                onError={(m) => setBanner(m)}
+                readOnly={isAgentStructureLocked}
+                mcpDropBlockedMessage={
+                  loadedAgent?.mcpServersUnavailable ? t('agentBuilder.mcpServersUnavailableNoDrop') : undefined
+                }
+              />
+            </McpAgentRulesContext.Provider>
+          </McpLiveServersContext.Provider>
         </Flex>
 
         <Flex

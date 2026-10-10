@@ -10,10 +10,11 @@ import { McpServersApi } from '../../../workspace/mcp-servers/api';
 import {
   buildMultiEnvAuthPayload,
   isMultiEnvAuthComplete,
+  isSecretFieldName,
   needsMultiEnvAuth,
 } from '../../../workspace/mcp-servers/stdio-env-auth';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
-import { useMcpOAuthPopup } from '../../../workspace/mcp-servers/hooks/use-mcp-oauth-popup';
+import { mcpOAuthFailureMessage, useMcpOAuthPopup } from '../../../workspace/mcp-servers/hooks/use-mcp-oauth-popup';
 import {
   toolsetDialogBackdropStyle,
   toolsetDialogFooterPrimaryClusterStyle,
@@ -74,6 +75,7 @@ export function McpCredentialsDialog({
 
   const { startOAuthPopup, status: oauthStatus } = useMcpOAuthPopup({
     verifyAuthenticated,
+    onFailed: (failure) => setError(mcpOAuthFailureMessage(t, failure)),
     onVerified: () => {
       setIsAuthenticated(true);
       onNotify?.(t('agentBuilder.mcpAuthUpdatedNotify'));
@@ -152,17 +154,9 @@ export function McpCredentialsDialog({
     }
   };
 
+  // Reconnecting is a new sign-in: the stored tokens are replaced only when it succeeds.
   const handleOAuthConnect = async () => {
     setError(null);
-    if (isAuthenticated) {
-      try {
-        if (isAgentScoped) await McpServersApi.reauthenticateAgentInstance(agentKey!, instance._id);
-        else await McpServersApi.reauthenticate(instance._id);
-      } catch (e) {
-        setError(extractErrorDetail(e) || t('agentBuilder.mcpAuthSaveError'));
-        return;
-      }
-    }
     await startOAuthPopup(instance._id);
   };
 
@@ -274,7 +268,7 @@ export function McpCredentialsDialog({
                       </Text>
                       <TextField.Root
                         size="2"
-                        type={envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('key') ? 'password' : 'text'}
+                        type={isSecretFieldName(envKey) ? 'password' : 'text'}
                         value={envValues[envKey] ?? ''}
                         onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                         disabled={busy}

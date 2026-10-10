@@ -209,6 +209,13 @@ class ChatState(TypedDict):
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
     has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
+    client_name: str | None
+    agent_key: str | None
+    is_assistant_chat: bool
+    can_edit_agent: bool
+    chat_streaming: bool
+    tool_approval: dict[str, Any] | None
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -664,4 +671,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
         "has_ui_client": bool(client_name),
+        "client_name": client_name,
+        "agent_key": chat_query.get("agentKey"),
+        "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),
+        "can_edit_agent": bool(chat_query.get("canEditAgent", False)),
+        "chat_streaming": chat_query.get("chatStreaming", True) is not False,
+        "tool_approval": chat_query.get("toolApproval"),
     }

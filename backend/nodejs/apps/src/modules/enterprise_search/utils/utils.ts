@@ -728,7 +728,12 @@ const toolResultsFromParts = (
         ...(args && { args }),
         result: part.resultSummary || part.resultPreview || '',
         ...(part.resultSummary && { result_summary: part.resultSummary }),
-        status: part.status === 'failed' ? ('error' as const) : ('success' as const),
+        // A blocked call, or one still waiting for approval, never ran: replaying it as a
+        // success would tell the next turn it had.
+        status:
+          part.status === 'failed' || part.status === 'blocked' || part.status === 'awaiting_approval'
+            ? ('error' as const)
+            : ('success' as const),
         ...(part.artifactId && { artifact_id: part.artifactId }),
       };
     });
@@ -1684,7 +1689,7 @@ export const savePartialConversation = async (
   conversation: IChatSessionDocument,
   partialText: string,
   session?: ClientSession | null,
-  options?: { replaceMessageId?: mongoose.Types.ObjectId | string },
+  options?: { replaceMessageId?: mongoose.Types.ObjectId | string; parts?: IMessagePart[] },
 ): Promise<void> => {
   try {
     const partialMessage: IMessage = {
@@ -1692,6 +1697,7 @@ export const savePartialConversation = async (
       content: partialText,
       contentFormat: 'MARKDOWN',
       status: 'stopped',
+      ...(options?.parts?.length ? { parts: options.parts } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -2311,6 +2317,9 @@ export const handleRegenerationStreamData = (
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.replace(/^data: ?/, ''));
       const dataLine = dataLines.join('\n');
+      if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+        accumulator?.feedToolCallStart(dataLine);
+      }
 
       if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
         // Mirrors the legacy `complete` branch below — `result` on

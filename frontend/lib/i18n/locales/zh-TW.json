@@ -834,6 +834,41 @@
     "showDiagramSource": "顯示原始碼",
     "hideDiagramSource": "隱藏原始碼",
     "stoppedMarker": "已停止",
+    "toolCard": {
+      "arguments": "引數",
+      "result": "結果",
+      "error": "錯誤",
+      "blocked": "已封鎖",
+      "awaitingApproval": "等待核准",
+      "viewRaw": "檢視原始資料",
+      "hideRaw": "隱藏原始資料",
+      "showingOf": "顯示 {{total}} 筆中的 {{shown}} 筆",
+      "open": "開啟"
+    },
+    "mcpConnect": {
+      "title": "連線這些 MCP 伺服器以使用此代理程式",
+      "connect": "連線",
+      "connecting": "正在連線…",
+      "connected": "已連線",
+      "removed": "已移除。請代理程式的擁有者更新它。",
+      "waitingForAdmin": "等待管理員新增共用憑證",
+      "setUpInBuilder": "在 Agent Builder 中設定",
+      "serviceAccount": "此代理程式使用自己的憑證，由其擁有者在 Agent Builder 中設定。",
+      "openAgentBuilder": "開啟 Agent Builder",
+      "allConnected": "已全部連線。請重新傳送訊息以繼續。",
+      "tryAgain": "重試",
+      "unavailable": "無法在此開始登入。請在 Workspace → MCP 伺服器中連線。"
+    },
+    "mcpSignIn": {
+      "title": "重新登入，為這些 MCP 伺服器授予它們要求的權限",
+      "needs": "需要：{{scopes}}",
+      "signIn": "重新登入",
+      "signingIn": "正在登入…",
+      "signedIn": "已登入",
+      "askAnEditor": "請可以編輯此代理程式的人重新登入",
+      "allSignedIn": "已登入。請重試該請求。",
+      "retryMessage": "我已重新登入 {{servers}}。請再試一次。"
+    },
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "回應即將停止，已產生的部分內容將被保留。",
@@ -1211,7 +1246,28 @@
       "webSearch": "網路搜尋"
     },
     "resizePanels": "調整對話與預覽面板大小",
-    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。"
+    "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
+    "toolApproval": {
+      "title": "是否核准此操作？",
+      "subtitle": "在 {{server}} 上執行 {{tool}}",
+      "noArguments": "無詳細資訊",
+      "companyAlwaysAsk": "貴組織要求每次執行此工具前都要確認。",
+      "allowOnce": "允許一次",
+      "allowChat": "在此聊天中允許",
+      "always": "一律允許",
+      "deny": "拒絕",
+      "expired": "此請求已過期。如仍需要，請再次提出。",
+      "sent": {
+        "allow_once": "允許一次：{{server}} 上的 {{tool}}",
+        "allow_chat": "在此聊天中允許：{{server}} 上的 {{tool}}",
+        "always": "一律允許：{{server}} 上的 {{tool}}",
+        "deny": "拒絕：{{server}} 上的 {{tool}}"
+      },
+      "showAll": "顯示全部",
+      "showLess": "收合",
+      "partial": "僅顯示詳細資訊的開頭部分：完整呼叫更長。",
+      "deletesData": "刪除資料"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -2669,6 +2725,7 @@
       "searchPlaceholder": "搜尋 MCP 伺服器...",
       "loading": "正在載入 MCP 伺服器…",
       "noResults": "沒有符合您搜尋條件的 MCP 伺服器",
+      "replacedNotice": "已不再維護。請改為新增 {{name}}。",
       "addServer": "新增伺服器",
       "custom": "自訂",
       "inherited": "繼承",
@@ -2677,17 +2734,33 @@
       "sharedAuth": "共用管理員驗證",
       "toolsCount_one": "{{count}} 個工具",
       "toolsCount_other": "{{count}} 個工具",
+      "toolsCachedAt": "截至 {{time}} 的工具",
+      "editImpact": {
+        "title": "移除已儲存的登入？",
+        "body": "變更此伺服器的連線或登入方式會移除使用者和代理程式為其儲存的憑證。所有人都需要重新連線。",
+        "personalBody": "變更此伺服器的連線或登入方式會移除你和你的代理程式為其儲存的憑證。你需要重新連線。",
+        "sharedBody": "關閉共用憑證會將其移除。所有人都需要使用自己的憑證連線。",
+        "confirm": "儲存並移除登入"
+      },
       "cta": {
         "manage": "管理",
         "delete": "刪除",
         "reauthenticate": "重新驗證",
+        "reconnect": "重新連線",
         "disconnect": "中斷連線",
         "connect": "連線",
-        "addInstance": "新增執行個體"
+        "addInstance": "新增執行個體",
+        "edit": "編輯"
       },
       "status": {
         "ready": "就緒",
         "notConnected": "未連線",
+        "reconnectNeeded": "需要重新連線",
+        "waitingForAdmin": "等待管理員",
+        "sharedCredentialMissing": "缺少共用憑證",
+        "blocked": "已被政策封鎖",
+        "unreachable": "無法連線到伺服器",
+        "slow": "回應緩慢",
         "needsAuth": "需要驗證",
         "disabled": "已停用"
       },
@@ -2695,13 +2768,24 @@
         "title": "MCP 伺服器",
         "subtitle": "連接 Model Context Protocol 伺服器，擴充團隊代理程式的能力。",
         "emptyTitle": "尚無 MCP 伺服器",
-        "emptyDescription": "從目錄中新增伺服器，或設定自訂伺服器以開始使用。"
+        "emptyDescription": "從目錄中新增伺服器，或設定自訂伺服器以開始使用。",
+        "userCreatedTitle": "使用者建立的伺服器",
+        "userCreatedDescription": "使用者為自己新增的伺服器。只有新增者本人可以使用；您可以將其移除。",
+        "userCreatedOwner": "由 {{name}} 新增"
       },
       "personal": {
         "title": "MCP 伺服器",
-        "subtitle": "與管理員提供的 MCP 伺服器進行驗證。",
+        "subtitle": "連接管理員提供的 MCP 伺服器，或新增您自己的伺服器。",
         "emptyTitle": "沒有可用的 MCP 伺服器",
-        "emptyDescription": "您的管理員尚未新增任何 MCP 伺服器。"
+        "emptyDescription": "新增您自己的伺服器，或請管理員為所有人新增一個。",
+        "yourServersDescription": "您新增的伺服器。只有您可以檢視和使用，且無法新增到與組織共用的代理程式中。",
+        "tabs": {
+          "all": "全部",
+          "connected": "已連線",
+          "notConnected": "未連線"
+        },
+        "yours": "我的",
+        "noneInTab": "這裡沒有 MCP 伺服器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 伺服器",
@@ -2721,12 +2805,14 @@
         "authBannerTitle": "需要驗證",
         "authBannerDescription": "請驗證此 MCP 伺服器，讓您團隊的代理程式可以使用它。",
         "authBannerAuthenticatedTitle": "已連線",
+        "reconnectBannerDescription": "此伺服器的登入已過期或遭拒。請重新連線以繼續使用。",
         "authBannerAuthenticatedDescription": "您可以重新驗證或中斷此 MCP 伺服器的連線。",
         "createdBy": "建立者"
       },
       "deleteDialog": {
         "title": "要刪除 MCP 伺服器嗎？",
-        "body": "名為「{{name}}」的伺服器將被永久移除。使用中的團隊成員將失去存取權限。"
+        "body": "名為「{{name}}」的伺服器將被永久移除。使用中的團隊成員將失去存取權限。",
+        "personalBody": "名為「{{name}}」的伺服器及其儲存的憑證將被永久移除。"
       },
       "toasts": {
         "loadError": "無法載入 MCP 伺服器",
@@ -2740,10 +2826,15 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "credentialsSaved": "憑證已儲存",
+        "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
+        "oauthTimedOut": "登入時間過長，已停止。請再試一次。",
+        "oauthProviderError": "登入失敗：{{message}}",
         "discoveryError": "無法探索工具"
       },
       "authDialog": {
         "title": "與 {{name}} 進行驗證",
+        "docsLink": "在哪裡找到",
         "description": "輸入您的憑證以連接此 MCP 伺服器。"
       },
       "form": {
@@ -2755,6 +2846,7 @@
         "argsPlaceholder": "新增引數",
         "requiredEnv": "必要環境變數",
         "requiredEnvPlaceholder": "新增環境變數名稱（例如 API_KEY）",
+        "defaultTokenEnvHint": "未列出變數時，權杖會以 {{name}} 傳給指令。",
         "url": "URL",
         "authMode": "驗證模式",
         "headerName": "標頭名稱",
@@ -2770,14 +2862,55 @@
         "credentialsHint": "立即新增憑證，或先跳過並稍後從「連線與工具」分頁進行連線。",
         "multiEnvIncomplete": "請填寫所有必要的環境變數，或全部留白以便稍後連線。",
         "oauthPairRequired": "請同時輸入用戶端 ID 和用戶端密鑰，或兩者皆留白。",
-        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。"
+        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。",
+        "timeoutsHeading": "逾時",
+        "connectTimeout": "連線逾時（秒）",
+        "callTimeout": "工具呼叫逾時（秒）",
+        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
         "createTitle": "新增 MCP 伺服器",
         "tabs": {
           "configuration": "設定",
-          "connection": "連線與工具"
+          "tools": "工具與核准"
+        },
+        "synced": "{{time}}同步",
+        "refreshTools": "重新整理工具清單",
+        "signInForTools": "登入以查看此伺服器的工具。",
+        "toolsError": "無法載入工具清單",
+        "toolsErrorSignIn": "伺服器要求您重新登入。",
+        "rulesKept": "您儲存的核准規則會保留。",
+        "tryAgain": "重試",
+        "findingTools": "正在尋找此伺服器上的工具",
+        "rulesUnlock": "清單就緒後即可設定核准規則。",
+        "unsaved_one": "{{count}} 項未儲存的變更",
+        "unsaved_other": "{{count}} 項未儲存的變更",
+        "allSaved": "所有規則已儲存",
+        "discard": "捨棄",
+        "saveRules": "儲存規則",
+        "discardTitle": "捨棄未儲存的規則變更？",
+        "discardBody_one": "您變更了 {{count}} 個工具的規則。現在關閉將遺失這些變更。",
+        "discardBody_other": "您變更了 {{count}} 個工具的規則。現在關閉將遺失這些變更。",
+        "noSignIn": "無需登入 · {{transport}}",
+        "signInExpired": "登入已過期",
+        "sharedMissing": "缺少共用登入資訊",
+        "signInExpiredBody": "在有人重新登入之前，此伺服器的工具無法執行。",
+        "notSignedIn": "未登入",
+        "notSignedInDetail": "登入以使用此伺服器的工具。",
+        "signedIn": "已登入",
+        "sharedSignIn": "共用登入",
+        "signedInDetail": "{{transport}} · {{time}}登入",
+        "menu": {
+          "label": "更多動作",
+          "copyUrl": "複製伺服器 URL",
+          "copied": "已複製伺服器 URL",
+          "copyFailed": "無法複製伺服器 URL",
+          "addedBy": "由 {{name}} 新增",
+          "disconnectHint": "將您登出。設定和規則會保留。",
+          "remove": "移除伺服器",
+          "removeHint": "為所有人刪除它。",
+          "removeHintPersonal": "刪除它及您的登入資訊。"
         }
       },
       "oauthConfig": {
@@ -2817,6 +2950,99 @@
         "disabledDescription": "自訂 STDIO 伺服器會在 PipesHub 伺服器上執行指令，因此在維運人員於部署環境中設定 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前會保持關閉。在此之前，代理程式無法使用此伺服器的工具。你可以刪除它，或改為遠端（HTTP）伺服器。",
         "unavailableHint": "此部署已關閉本機指令（STDIO）伺服器。如需允許，維運人員必須設定 {{flag}}=true。",
         "enabledWarning": "此指令以服務的權限在 PipesHub 伺服器上執行，包括其網路存取與憑證。請只新增你信任的指令。"
+      },
+      "addDialog": {
+        "title": "新增 MCP 伺服器",
+        "description": "從目錄中選擇伺服器，或透過 URL 連接任何遠端 MCP 伺服器。只有您能看到它。",
+        "custom": "自訂伺服器",
+        "customDescription": "透過 URL 連接任何遠端 MCP 伺服器。"
+      },
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": {
+          "personal": "選擇助理在您的聊天中想使用這些工具時如何處理。代理程式使用各自的規則。",
+          "company": "這裡的規則適用於組織中的所有人。成員可以新增更嚴格的規則，但不能更寬鬆。",
+          "agent": "選擇此代理程式想使用這些工具時如何處理，適用於所有與它聊天的人。"
+        },
+        "unattendedHint": "在 Slack、API 和排程執行中無人能核准呼叫，因此需要核准的工具不會在那裡執行，除非您開啟「無人能核准時允許」。",
+        "viewOnly": "只有可以編輯此代理程式的人才能變更這些規則。",
+        "loading": "正在載入…",
+        "loadError": "無法載入規則。",
+        "search": "依名稱或 ID 搜尋",
+        "empty": "沒有可顯示的工具。連接伺服器以查看其工具，或依名稱新增工具。",
+        "notOffered": "目前未提供",
+        "rule": {
+          "allow": "預先核准",
+          "ask": "核准後允許",
+          "block": "拒絕"
+        },
+        "company": {
+          "none": "不限制",
+          "ask": "核准後允許",
+          "block": "拒絕"
+        },
+        "unattended": "無人能核准時允許",
+        "unattendedFor": "無人能核准時允許 {{name}}",
+        "addPlaceholder": "依名稱新增工具",
+        "add": "新增",
+        "saved": "工具核准已儲存",
+        "saveError": "無法儲存工具核准",
+        "unattendedDetail": "Slack、API 和排程執行",
+        "unattendedDestructive": "僅在有人允許此工具的地方",
+        "kind": {
+          "read": "唯讀",
+          "write": "變更資料",
+          "destructive": "刪除資料"
+        },
+        "kindSource": {
+          "name": "依名稱",
+          "server": "依伺服器",
+          "none": "伺服器未標示"
+        },
+        "group": {
+          "destructive": "刪除資料",
+          "write": "變更資料",
+          "read": "唯讀",
+          "notOffered": "目前未提供",
+          "byName": "依名稱設定的規則"
+        },
+        "groupHint": {
+          "destructive": "請先檢查這些",
+          "read": "僅查詢資訊"
+        },
+        "filterLabel": "顯示工具",
+        "filter": {
+          "all": "全部",
+          "destructive": "刪除資料",
+          "write": "變更資料",
+          "read": "唯讀",
+          "hasRule": "已設規則"
+        },
+        "noMatch": "沒有符合搜尋的工具。",
+        "clearFilters": "清除搜尋和篩選",
+        "quickSetup": {
+          "text": "快速設定：對所有變更資料的工具要求核准。",
+          "apply": "套用"
+        },
+        "legend": {
+          "own": "預先核准：不詢問即執行 · 核准後允許：先在聊天中詢問 · 拒絕：永不執行",
+          "company": "不限制 – 由成員決定 · 核准後允許 – 每次呼叫都需有人核准 · 拒絕 – 永不執行"
+        }
+      },
+      "disconnectDialog": {
+        "title": "中斷 {{name}} 的連線？",
+        "yours_one": "在您重新登入之前，您將無法使用它的 {{count}} 個工具。",
+        "yours_other": "在您重新登入之前，您將無法使用它的 {{count}} 個工具。",
+        "yoursUnknown": "在您重新登入之前，您將無法使用它的工具。",
+        "shared_one": "您組織中的代理程式將立即停止使用它的 {{count}} 個工具，包括在 Slack 和排程執行中。",
+        "shared_other": "您組織中的代理程式將立即停止使用它的 {{count}} 個工具，包括在 Slack 和排程執行中。",
+        "sharedUnknown": "您組織中的代理程式將立即停止使用它的工具，包括在 Slack 和排程執行中。",
+        "keeps": "伺服器設定和核准規則會保留",
+        "reconnect": "隨時重新登入即可重新連線",
+        "deletesYours": "您儲存的登入資訊將被刪除",
+        "deletesShared": "共用的登入資訊將被刪除",
+        "disconnecting": "正在中斷連線…"
       }
     },
     "bots": {
@@ -3880,6 +4106,9 @@
     "configureMcpTooltip": "管理憑證",
     "authenticateMcpTooltip": "驗證此 MCP 伺服器",
     "mcpAuthUpdatedNotify": "MCP 驗證已更新。",
+    "mcpServersUnavailable": "無法載入此代理程式的 MCP 伺服器",
+    "mcpServersUnavailableHint": "此處不會顯示它們，儲存也不會變更它們。請重新整理頁面再試一次。",
+    "mcpServersUnavailableNoDrop": "無法載入此代理程式的 MCP 伺服器，重新整理頁面前無法新增。",
     "mcpAuthSaveError": "儲存 MCP 憑證失敗。",
     "mcpAuthRemoveError": "移除 MCP 憑證失敗。",
     "loadingSchema": "載入結構描述中…",
@@ -3978,7 +4207,7 @@
     "removeDeprecatedTools": "移除已淘汰的工具",
     "showMore": "顯示更多",
     "showLess": "顯示較少",
-    "mcpServerAlreadyAttachedNotify": "{{name}} 已附加至此代理程式",
+    "mcpServerAlreadyAttachedNotify": "此代理程式已有另一個與 {{name}} 同類型的伺服器。每種類型的伺服器，一個代理程式只能使用一個。",
     "webSearchOnlyOne": "只能附加一個網路搜尋供應商",
     "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
     "noMcpServersAvailable": "沒有可用的 MCP 伺服器",
@@ -3989,7 +4218,18 @@
     "toolsetOAuthServerError": "驗證失敗。請重試或聯絡您的管理員。",
     "attached": "已附加",
     "mcpServerWithToolCount_other": "包含 {{count}} 個工具的 MCP 伺服器",
-    "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}"
+    "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}",
+    "mcpAllTools": "所有工具",
+    "mcpAllToolsHint": "包括伺服器之後新增的工具。",
+    "mcpServerUnavailable": "無法使用",
+    "mcpServerUnavailableHint": "此伺服器不在你的 MCP 伺服器中：它已被刪除，或未與你共用。",
+    "mcpToolNotOnServer": "伺服器上已沒有",
+    "mcpToolNotOnServerHint": "伺服器不再提供此工具。請將其移除，否則代理程式無法使用它。",
+    "mcpAllToolsNoneYet": "伺服器尚未列出任何工具。代理程式將取得它提供的所有工具。",
+    "mcpNoToolsSelected": "未選擇工具。請新增工具，或開啟「所有工具」。",
+    "mcpServerNeedsToolsTooltip": "請為每個 MCP 伺服器選擇工具，或開啟「所有工具」。",
+    "mcpServerNeedsToolsBanner": "請為 {{names}} 至少選擇一個工具，或開啟「所有工具」。",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的個人 MCP 伺服器，無法新增到與組織共用或以服務帳戶執行的代理程式中。"
   },
   "recordView": {
     "sections": {

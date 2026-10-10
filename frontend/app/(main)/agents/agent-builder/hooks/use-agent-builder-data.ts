@@ -161,7 +161,7 @@ async function fetchAgentAndToolsets(editingAgentKey: string | null) {
     loadToolsetsForAgentContext(agentDetails, editingAgentKey),
     loadMcpServersForAgentContext(agentDetails, editingAgentKey).catch((err) => {
       console.error('Failed to fetch MCP servers:', err);
-      return [] as McpMyServerEntry[];
+      return null;
     }),
   ]);
   return { agentDetails, allToolsets, mcpServers };
@@ -177,6 +177,8 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
   const [configuredConnectors, setConfiguredConnectors] = useState<Connector[]>([]);
   const [toolsets, setToolsets] = useState<BuilderSidebarToolset[]>([]);
   const [mcpServers, setMcpServers] = useState<McpMyServerEntry[]>([]);
+  // False until a list arrives, and after a failed load: an empty list isn't "no servers" then.
+  const [mcpServersLoaded, setMcpServersLoaded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadedAgent, setLoadedAgent] = useState<AgentDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -222,6 +224,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
           ? await McpServersApi.getAgentMcpServers(agentKey!, true)
           : await McpServersApi.getMyMcpServers(true);
         setMcpServers(instances);
+        setMcpServersLoaded(true);
       } catch (err) {
         // Matches loadMcpServersForAgentContext's callers: this is awaited inside
         // Promise.all in refreshAgent (a rejection here would otherwise also discard the
@@ -229,6 +232,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
         // message listener, where a rejection would be silently unhandled either way.
         console.error('Failed to refresh MCP servers:', err);
         setMcpServers([]);
+        setMcpServersLoaded(false);
       }
     },
     []
@@ -275,7 +279,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
             loadToolsetsForAgentContext(agentPromise, editingAgentKey),
             loadMcpServersForAgentContext(agentPromise, editingAgentKey).catch((err) => {
               console.error('Failed to fetch MCP servers:', err);
-              return [] as McpMyServerEntry[];
+              return null;
             }),
           ]);
 
@@ -283,7 +287,8 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           setLoadedAgent(agentPromise ?? null);
           setToolsets(allToolsets);
-          setMcpServers(mcpServerEntries);
+          setMcpServers(mcpServerEntries ?? []);
+          setMcpServersLoaded(mcpServerEntries !== null);
           staticResourcesLoadedRef.current = true;
         } else {
           toolsetsSearchRef.current = '';
@@ -296,7 +301,8 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
 
           setLoadedAgent(agentDetails);
           setToolsets(allToolsets);
-          setMcpServers(mcpServerEntries);
+          setMcpServers(mcpServerEntries ?? []);
+          setMcpServersLoaded(mcpServerEntries !== null);
         }
       } catch (e) {
         if (!cancelled) {
@@ -330,6 +336,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     configuredConnectors,
     toolsets,
     mcpServers,
+    mcpServersLoaded,
     loading,
     loadedAgent,
     error,

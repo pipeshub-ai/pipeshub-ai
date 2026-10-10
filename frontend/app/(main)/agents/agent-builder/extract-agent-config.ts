@@ -335,11 +335,13 @@ export function extractAgentConfigFromFlow(
         name,
         displayName: (cfg.displayName as string) || undefined,
         typeId: (cfg.typeId as string) || undefined,
+        allTools: cfg.allTools === true,
         tools: toolsCfg
           .filter((tool) => tool.name)
           .map((tool) => ({
             name: tool.name!,
-            fullName: tool.fullName || `${name}.${tool.name}`,
+            // Empty when unknown: the server fills in the name discovery gives the tool.
+            fullName: tool.fullName || '',
             description: tool.description || '',
           })),
       });
@@ -388,7 +390,9 @@ export function extractAgentConfigFromFlow(
     toolsets,
     knowledge,
     skills,
-    mcpServers,
+    // When the server couldn't read them, the canvas never showed the agent's MCP servers:
+    // sending the empty list would detach them all. Left out, the save keeps what is stored.
+    ...(currentAgent?.mcpServersUnavailable ? {} : { mcpServers }),
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

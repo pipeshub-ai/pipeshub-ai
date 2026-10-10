@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame, new_id
+from app.agents.agent_loop.protocol.result_views import ResultViewBudget
 from app.utils.streaming import parse_confidence_from_answer, strip_partial_confidence_trailer
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ class AGUIEventEmitter(EventEmitter):
         # (and its partial forms) from TEXT_MESSAGE_CONTENT frames.
         self._text_buffers: dict[str, str] = {}
         self._emitted_len: dict[str, int] = {}
+        self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
         for sse_event in self._translate(event):
@@ -123,6 +125,8 @@ class AGUIEventEmitter(EventEmitter):
             display_name = payload.get("display_name")
             if display_name:
                 start_kwargs["displayName"] = display_name
+            if payload.get("approved") is True:
+                start_kwargs["approved"] = True
             return [
                 frame(AGUIEventType.TOOL_CALL_START, **start_kwargs),
                 frame(
@@ -144,20 +148,29 @@ class AGUIEventEmitter(EventEmitter):
             # `agui-event-handler.ts`) show the same running/completed/
             # failed/blocked state `TranscriptCollector` persists, instead
             # of only ever knowing "the call ended".
-            if payload.get("status") == ToolCallStatus.BLOCKED:
+            approval = None
+            result_view = None
+            if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
                 content = payload.get("reason")
-                status = "blocked"
+                status = "blocked" if payload.get("status") == ToolCallStatus.BLOCKED else "awaiting_approval"
                 result_summary = None
+                # What the client's approval card shows; the transcript keeps it on the part.
+                approval = payload.get("approval") if status == "awaiting_approval" else None
             else:
                 content = payload.get("content")
                 status = "failed" if payload.get("is_error") else "completed"
                 result_summary = payload.get("result_summary")
+                result_view = self._view_budget.admit(payload.get("result_view"))
+            result_fields: dict[str, Any] = {"resultSummary": result_summary}
+            if approval:
+                result_fields["approval"] = approval
+            if result_view:
+                result_fields["resultView"] = result_view
             return [
                 frame(AGUIEventType.TOOL_CALL_END, toolCallId=tool_call_id, runId=run_id),
                 frame(
                     AGUIEventType.TOOL_CALL_RESULT, toolCallId=tool_call_id,
-                    content=content, role="tool", status=status, runId=run_id,
-                    resultSummary=result_summary,
+                    content=content, role="tool", status=status, runId=run_id, **result_fields,
                 ),
             ]
 

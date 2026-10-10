@@ -426,3 +426,9 @@ class Tool(ABC):
 
         Override via `@tool(result_summary=...)` — see `decorators.py`."""
         return None
+
+    def result_view(self, args: dict[str, Any], result: "CoreToolResult") -> dict[str, Any] | None:
+        """A small, JSON-safe view of this call's outcome for the tool card (a table of records,
+        a record's fields), computed from the FULL result. It is stored with the conversation,
+        so keep it small. `None` (the default): the card shows the raw preview."""
+        return None

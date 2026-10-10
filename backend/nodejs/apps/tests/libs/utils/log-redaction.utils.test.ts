@@ -16,6 +16,14 @@ describe('log-redaction.utils', () => {
       expect(out).to.contain(`code=${encodeURIComponent(REDACTED)}`)
     })
 
+    it('redacts an OAuth state', () => {
+      const out = redactSensitiveQueryParams(
+        '/api/v1/mcp-servers/oauth/callback?code=abc123&state=st-secret',
+      )
+      expect(out).to.not.contain('st-secret')
+      expect(out).to.contain(`state=${encodeURIComponent(REDACTED)}`)
+    })
+
     it('keeps the path and non-sensitive params intact', () => {
       const out = redactSensitiveQueryParams('/api/v1/docs?page=2&sort=name')
       expect(out).to.equal('/api/v1/docs?page=2&sort=name')

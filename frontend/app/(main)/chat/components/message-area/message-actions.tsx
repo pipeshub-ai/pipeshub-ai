@@ -65,6 +65,8 @@ interface MessageActionsProps {
   appliedFilters?: AppliedFilters;
   /** Persisted feedback value — initialises the like/dislike button state on load */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /** False for a reply that ran an action a person approved: regenerating could run it again. */
+  canRegenerate?: boolean;
 }
 
 /**
@@ -117,6 +119,7 @@ export function MessageActions({
   isLastMessage = false,
   appliedFilters,
   feedbackInfo,
+  canRegenerate = true,
 }: MessageActionsProps) {
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
@@ -694,13 +697,14 @@ export function MessageActions({
         </Tooltip>
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId &&(
+        {isLastMessage && messageId && canRegenerate && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               disabled={!messageId}
+              aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
                 margin: 0,

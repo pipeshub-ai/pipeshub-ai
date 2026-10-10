@@ -48,6 +48,7 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -223,6 +224,7 @@ function applyAskUserQuestionSse(
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
  * replace it with the error text. Otherwise append a new assistant error row.
+ * `streamError` (the server's error code and details) lets the thread offer a fix.
  */
 function pendingAfterStreamFailure(
   pending: PendingAskUserQuestion | null | undefined,
@@ -242,18 +244,21 @@ function notifyAskUserQuestionResumeFailed(detail: string): void {
 
 function withStreamingErrorMessage(
   currentMessages: ThreadMessageLike[],
-  errorText: string
+  errorText: string,
+  streamError?: ChatStreamErrorInfo
 ): ThreadMessageLike[] {
+  const withError = (metadata?: ThreadMessageLike['metadata']) =>
+    streamError ? { metadata: { ...metadata, custom: { ...metadata?.custom, streamError } } } : {};
   const last = currentMessages[currentMessages.length - 1];
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }] },
+      { ...last, content: [{ type: 'text' as const, text: errorText }], ...withError(last.metadata) },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }] },
+    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }], ...withError() },
   ];
 }
 
@@ -1094,7 +1099,7 @@ export async function streamMessageForSlot(
           pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
           messages: resumeAskUserQuestion
             ? currentMessages
-            : withStreamingErrorMessage(currentMessages, err),
+            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error)),
         });
         if (resumeAskUserQuestion) {
           notifyAskUserQuestionResumeFailed(err);

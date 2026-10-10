@@ -215,7 +215,7 @@ dependencies = [
     "fastapi==0.136.3",
     # Starlette comes in through FastAPI, whose range admits releases with known advisories.
     "starlette==1.7.0",
-    "fastmcp==3.2.0",
+    "mcp==2.3.0",
     "fastembed==0.5.1",
     "faster-whisper>=1.0.0",
     "feedparser>=6.0.0",
@@ -223,6 +223,8 @@ dependencies = [
     "html-to-markdown==2.3.0",
     "markdownify==1.2.2",
     "httpx==0.28.1",
+    # mcp 2.x's HTTP library (a renamed httpx fork); MCP traffic goes through it.
+    "httpx2==2.12.0",
     "prometheus-client==0.21.1",
     "PyGithub==2.8.1",
     "python-gitlab==6.4.0",

@@ -13,6 +13,12 @@ import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
 import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
+import { McpConnectRequiredCard } from './mcp-connect-required-card';
+import { McpSignInCard } from './mcp-sign-in-card';
+import { ToolApprovalCard } from './tool-approval-card';
+import { findToolApproval, hasApprovedCall } from '../../tool-approval';
+import { mcpSignInServers } from '../../mcp-sign-in';
+import { mcpConfigMissingDetails, type ChatStreamErrorInfo } from '../../stream-error';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
@@ -125,6 +131,8 @@ interface ChatResponseProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /** The server's error code and details when this reply is a failed run. */
+  streamError?: ChatStreamErrorInfo;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
@@ -159,10 +167,12 @@ export const ChatResponse = React.memo(function ChatResponse({
   persistedAskUserQuestionAnswers,
   feedbackInfo,
   status,
+  streamError,
   unanswered = false,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
+  const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
   const isMobile = useIsMobile();
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
@@ -500,6 +510,17 @@ export const ChatResponse = React.memo(function ChatResponse({
   // block follows), it's settled into the timeline and cleared from the
   // answer buffer in the same update, so it never renders in both places.
   const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
+  // A turn that ended waiting for approval; shown once the reply is settled.
+  const toolApproval = useMemo(
+    () => (isStreaming ? null : findToolApproval(effectiveParts)),
+    [effectiveParts, isStreaming],
+  );
+  const ranApprovedCall = useMemo(() => hasApprovedCall(effectiveParts), [effectiveParts]);
+  // Servers that refused for missing permission: signed in to again from the latest, settled reply.
+  const signInServers = useMemo(
+    () => (isStreaming || !isLastMessage ? [] : mcpSignInServers(effectiveParts)),
+    [effectiveParts, isStreaming, isLastMessage],
+  );
   // Drives both the "Answer" separator and the collapsible-summary wrapper
   // around a completed activity timeline — computed with the exact same
   // filtering the timeline itself applies, so it never disagrees with what
@@ -645,10 +666,15 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
+            {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
+            {mcpConnectDetails && (
+              <McpConnectRequiredCard details={mcpConnectDetails} question={question} />
+            )}
+
             {/* Continuation / final answer — below the question card so the
                 turn reads tools → question → answer. Hidden while the card
                 is still waiting for answers. */}
-            {visibleAnswer && !questionPending && (
+            {visibleAnswer && !questionPending && !mcpConnectDetails && (
               <Box
                 style={{
                   marginTop:
@@ -663,6 +689,18 @@ export const ChatResponse = React.memo(function ChatResponse({
                   citationCallbacks={wrappedCallbacks}
                   isStreaming={isStreaming}
                 />
+              </Box>
+            )}
+
+            {toolApproval && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+              <Box mt="3">
+                <ToolApprovalCard key={toolApproval.approvalId} approval={toolApproval} isLatest={isLastMessage} />
+              </Box>
+            )}
+
+            {signInServers.length > 0 && (
+              <Box mt="3">
+                <McpSignInCard servers={signInServers} />
               </Box>
             )}
 
@@ -916,6 +954,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           isLastMessage={isLastMessage && !questionPending}
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
+          canRegenerate={!ranApprovedCall}
         />
       )}
 

@@ -5,10 +5,11 @@ import { useTranslation } from 'react-i18next';
 import { Badge, Flex, Text } from '@radix-ui/themes';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { EntityRowActionMenu } from '../../../components';
+import { EntityRowActionMenu, type RowAction } from '../../../components';
 import type { McpMyServerEntry } from '../../types';
-import { MCP_TRANSPORT_LABELS } from '../../types';
+import { MCP_TRANSPORT_LABELS, isPersonalMcpInstance } from '../../types';
 import { isMcpInstanceDisabled, McpDisabledBadge } from '../../components';
+import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
 
 interface McpPersonalServerCardProps {
   instance: McpMyServerEntry;
@@ -16,6 +17,11 @@ interface McpPersonalServerCardProps {
   onAuthenticate: () => void;
   onReauthenticate: () => void;
   onRemoveCredentials: () => void;
+  /** The person's own approval rules for this server's tools (their assistant chats). */
+  onToolApprovals?: () => void;
+  /** Set for the caller's own personal servers only. */
+  onEdit?: () => void;
+  onDelete?: () => void;
 }
 
 export function McpPersonalServerCard({
@@ -24,13 +30,56 @@ export function McpPersonalServerCard({
   onAuthenticate,
   onReauthenticate,
   onRemoveCredentials,
+  onToolApprovals,
+  onEdit,
+  onDelete,
 }: McpPersonalServerCardProps) {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
 
-  const managedByAdmin = instance.useAdminAuth;
-  const needsAuth = instance.authMode !== 'none' && !managedByAdmin;
+  const needsAuth = instance.authMode !== 'none' && !usesSharedCredential(instance);
   const connectorType = resolveConnectorType(instance.typeId || instance.name);
+  const state = mcpConnectionState(instance);
+  const signInAction =
+    state === 'needs_connect'
+      ? { icon: 'link', label: t('workspace.mcpServers.cta.connect'), onClick: onAuthenticate }
+      : state === 'needs_reconnect'
+        ? { icon: 'autorenew', label: t('workspace.mcpServers.cta.reconnect'), onClick: onReauthenticate }
+        : null;
+
+  const actions: RowAction[] = [];
+  if (needsAuth && instance.isAuthenticated) {
+    actions.push(
+      {
+        icon: 'autorenew',
+        label: t('workspace.mcpServers.cta.reauthenticate'),
+        onClick: onReauthenticate,
+        disabled: isBusy,
+      },
+      {
+        icon: 'link_off',
+        label: t('workspace.mcpServers.cta.disconnect'),
+        variant: 'danger',
+        onClick: onRemoveCredentials,
+        disabled: isBusy,
+      }
+    );
+  }
+  if (onToolApprovals) {
+    actions.push({ icon: 'rule', label: t('workspace.mcpServers.toolRules.open'), onClick: onToolApprovals, disabled: isBusy });
+  }
+  if (onEdit) {
+    actions.push({ icon: 'edit', label: t('workspace.mcpServers.cta.edit'), onClick: onEdit, disabled: isBusy });
+  }
+  if (onDelete) {
+    actions.push({
+      icon: 'delete',
+      label: t('workspace.mcpServers.cta.delete'),
+      variant: 'danger',
+      onClick: onDelete,
+      disabled: isBusy,
+    });
+  }
 
   return (
     <Flex
@@ -65,33 +114,26 @@ export function McpPersonalServerCard({
           <ConnectorIcon type={connectorType} size={16} color="var(--gray-10)" />
         </Flex>
         <Flex align="center" gap="1" flexShrink="0">
-          <StatusBadge instance={instance} />
-          {needsAuth && instance.isAuthenticated && (
-            <EntityRowActionMenu
-              actions={[
-                {
-                  icon: 'autorenew',
-                  label: t('workspace.mcpServers.cta.reauthenticate'),
-                  onClick: onReauthenticate,
-                  disabled: isBusy,
-                },
-                {
-                  icon: 'link_off',
-                  label: t('workspace.mcpServers.cta.disconnect'),
-                  variant: 'danger',
-                  onClick: onRemoveCredentials,
-                  disabled: isBusy,
-                },
-              ]}
-            />
+          {isMcpInstanceDisabled(instance) ? (
+            <McpDisabledBadge instance={instance} />
+          ) : (
+            <McpStatusBadge state={state} />
           )}
+          {actions.length > 0 && <EntityRowActionMenu actions={actions} />}
         </Flex>
       </Flex>
 
       <Flex direction="column" gap="1" style={{ width: '100%' }}>
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-          {instance.name}
-        </Text>
+        <Flex align="center" gap="2" style={{ minWidth: 0 }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {instance.name}
+          </Text>
+          {isPersonalMcpInstance(instance) && (
+            <Badge size="1" color="gray" variant="soft" title={t('workspace.mcpServers.personal.yourServersDescription')} style={{ flexShrink: 0 }}>
+              {t('workspace.mcpServers.personal.yours')}
+            </Badge>
+          )}
+        </Flex>
         <Text
           size="1"
           style={{
@@ -107,47 +149,48 @@ export function McpPersonalServerCard({
           {instance.description || MCP_TRANSPORT_LABELS[instance.transport]}
         </Text>
         {instance.isAuthenticated && instance.tools.length > 0 && (
-          <Text size="1" style={{ color: 'var(--gray-9)' }}>
+          <Text
+            size="1"
+            style={{ color: 'var(--gray-9)' }}
+            title={
+              instance.toolsCachedAt
+                ? t('workspace.mcpServers.toolsCachedAt', { time: new Date(instance.toolsCachedAt).toLocaleString() })
+                : undefined
+            }
+          >
             {t('workspace.mcpServers.toolsCount', { count: instance.tools.length })}
           </Text>
         )}
         {instance.toolsError && (
-          <Text size="1" style={{ color: 'var(--red-11)' }}>
+          <Text
+            size="1"
+            title={instance.toolsError}
+            style={{
+              // A slow server still works in chat, so it isn't shown as a failure.
+              color: state === 'slow' ? 'var(--gray-10)' : 'var(--red-11)',
+              overflow: 'hidden',
+              display: '-webkit-box',
+              WebkitLineClamp: 2,
+              WebkitBoxOrient: 'vertical',
+              wordBreak: 'break-word',
+            }}
+          >
             {instance.toolsError}
           </Text>
         )}
       </Flex>
 
-      {needsAuth && !instance.isAuthenticated && (
+      {signInAction && (
         <Flex align="center" style={{ width: '100%', minWidth: 0, marginTop: 'auto', flexShrink: 0 }}>
           <ActionButton
-            icon="link"
-            label={t('workspace.mcpServers.cta.connect')}
-            onClick={onAuthenticate}
+            icon={signInAction.icon}
+            label={signInAction.label}
+            onClick={signInAction.onClick}
             disabled={isBusy}
           />
         </Flex>
       )}
     </Flex>
-  );
-}
-
-function StatusBadge({ instance }: { instance: McpMyServerEntry }) {
-  const { t } = useTranslation();
-  if (isMcpInstanceDisabled(instance)) {
-    return <McpDisabledBadge instance={instance} />;
-  }
-  if (instance.authMode === 'none' || instance.useAdminAuth || instance.isAuthenticated) {
-    return (
-      <Badge color="green" size="1">
-        {t('workspace.mcpServers.status.ready')}
-      </Badge>
-    );
-  }
-  return (
-    <Badge color="amber" size="1">
-      {t('workspace.mcpServers.status.notConnected')}
-    </Badge>
   );
 }
 

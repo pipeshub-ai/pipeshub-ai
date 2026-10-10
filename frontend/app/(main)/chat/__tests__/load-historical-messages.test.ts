@@ -40,6 +40,16 @@ describe('loadHistoricalMessages', () => {
     expect(messages.map((m) => m.role)).toEqual(['user']);
   });
 
+  it('drops an empty stopped reply whose only part is the sign-in card', () => {
+    const parts = [{ type: 'mcp_sign_in', servers: [{ instanceId: 'inst-drive', serverName: 'Drive', scopes: [] }] }];
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
+      message({ _id: 'a', messageType: 'bot_response', content: '', status: 'stopped', parts } as Partial<ConversationMessage>),
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['user']);
+  });
+
   it('keeps a stopped reply that has text, with its Stopped status', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'A question' }),

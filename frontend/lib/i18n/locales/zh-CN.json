@@ -834,6 +834,41 @@
     "showDiagramSource": "显示源代码",
     "hideDiagramSource": "隐藏源代码",
     "stoppedMarker": "已停止",
+    "toolCard": {
+      "arguments": "参数",
+      "result": "结果",
+      "error": "错误",
+      "blocked": "已阻止",
+      "awaitingApproval": "等待批准",
+      "viewRaw": "查看原始数据",
+      "hideRaw": "隐藏原始数据",
+      "showingOf": "显示 {{total}} 条中的 {{shown}} 条",
+      "open": "打开"
+    },
+    "mcpConnect": {
+      "title": "连接这些 MCP 服务器以使用此智能体",
+      "connect": "连接",
+      "connecting": "正在连接…",
+      "connected": "已连接",
+      "removed": "已移除。请让智能体的所有者更新它。",
+      "waitingForAdmin": "等待管理员添加共享凭据",
+      "setUpInBuilder": "在 Agent Builder 中设置",
+      "serviceAccount": "此智能体使用自己的凭据，由其所有者在 Agent Builder 中设置。",
+      "openAgentBuilder": "打开 Agent Builder",
+      "allConnected": "已全部连接。请重新发送消息以继续。",
+      "tryAgain": "重试",
+      "unavailable": "无法在此处开始登录。请在 Workspace → MCP 服务器中连接。"
+    },
+    "mcpSignIn": {
+      "title": "重新登录，为这些 MCP 服务器授予它们请求的权限",
+      "needs": "需要：{{scopes}}",
+      "signIn": "重新登录",
+      "signingIn": "正在登录…",
+      "signedIn": "已登录",
+      "askAnEditor": "请可以编辑此智能体的人重新登录",
+      "allSignedIn": "已登录。请重试该请求。",
+      "retryMessage": "我已重新登录 {{servers}}。请再试一次。"
+    },
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "响应即将停止，已生成的部分内容将被保留。",
@@ -1211,7 +1246,28 @@
       "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
-    "mobileProfileComingSoon": "移动端个人资料页面即将推出。"
+    "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
+    "toolApproval": {
+      "title": "是否批准此操作？",
+      "subtitle": "在 {{server}} 上运行 {{tool}}",
+      "noArguments": "无详细信息",
+      "companyAlwaysAsk": "贵组织要求每次运行此工具前都进行确认。",
+      "allowOnce": "允许一次",
+      "allowChat": "在此聊天中允许",
+      "always": "始终允许",
+      "deny": "拒绝",
+      "expired": "此请求已过期。如仍需要，请再次提出。",
+      "sent": {
+        "allow_once": "允许一次：{{server}} 上的 {{tool}}",
+        "allow_chat": "在此聊天中允许：{{server}} 上的 {{tool}}",
+        "always": "始终允许：{{server}} 上的 {{tool}}",
+        "deny": "拒绝：{{server}} 上的 {{tool}}"
+      },
+      "showAll": "显示全部",
+      "showLess": "收起",
+      "partial": "仅显示详细信息的开头部分：完整调用更长。",
+      "deletesData": "删除数据"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -2669,6 +2725,7 @@
       "searchPlaceholder": "搜索 MCP 服务器...",
       "loading": "正在加载 MCP 服务器…",
       "noResults": "没有符合搜索条件的 MCP 服务器",
+      "replacedNotice": "已不再维护。请改为添加 {{name}}。",
       "addServer": "添加服务器",
       "custom": "自定义",
       "inherited": "继承",
@@ -2677,17 +2734,33 @@
       "sharedAuth": "共享管理员认证",
       "toolsCount_one": "{{count}} 个工具",
       "toolsCount_other": "{{count}} 个工具",
+      "toolsCachedAt": "截至 {{time}} 的工具",
+      "editImpact": {
+        "title": "移除已保存的登录？",
+        "body": "更改此服务器的访问或登录方式会移除用户和智能体为其保存的凭据。所有人都需要重新连接。",
+        "personalBody": "更改此服务器的访问或登录方式会移除你和你的智能体为其保存的凭据。你需要重新连接。",
+        "sharedBody": "关闭共享凭据会将其移除。所有人都需要使用自己的凭据连接。",
+        "confirm": "保存并移除登录"
+      },
       "cta": {
         "manage": "管理",
         "delete": "删除",
         "reauthenticate": "重新认证",
+        "reconnect": "重新连接",
         "disconnect": "断开连接",
         "connect": "连接",
-        "addInstance": "添加实例"
+        "addInstance": "添加实例",
+        "edit": "编辑"
       },
       "status": {
         "ready": "就绪",
         "notConnected": "未连接",
+        "reconnectNeeded": "需要重新连接",
+        "waitingForAdmin": "等待管理员",
+        "sharedCredentialMissing": "缺少共享凭据",
+        "blocked": "已被策略阻止",
+        "unreachable": "无法连接服务器",
+        "slow": "响应缓慢",
         "needsAuth": "需要认证",
         "disabled": "已禁用"
       },
@@ -2695,13 +2768,24 @@
         "title": "MCP 服务器",
         "subtitle": "连接 Model Context Protocol 服务器，扩展团队智能体的能力。",
         "emptyTitle": "暂无 MCP 服务器",
-        "emptyDescription": "从目录中添加服务器，或配置自定义服务器以开始使用。"
+        "emptyDescription": "从目录中添加服务器，或配置自定义服务器以开始使用。",
+        "userCreatedTitle": "用户创建的服务器",
+        "userCreatedDescription": "用户为自己添加的服务器。只有添加者本人可以使用；您可以将其删除。",
+        "userCreatedOwner": "由 {{name}} 添加"
       },
       "personal": {
         "title": "MCP 服务器",
-        "subtitle": "通过管理员提供的 MCP 服务器进行认证。",
+        "subtitle": "连接管理员提供的 MCP 服务器，或添加您自己的服务器。",
         "emptyTitle": "没有可用的 MCP 服务器",
-        "emptyDescription": "您的管理员尚未添加任何 MCP 服务器。"
+        "emptyDescription": "添加您自己的服务器，或请管理员为所有人添加一个。",
+        "yourServersDescription": "您添加的服务器。只有您可以查看和使用，且不能添加到与组织共享的智能体中。",
+        "tabs": {
+          "all": "全部",
+          "connected": "已连接",
+          "notConnected": "未连接"
+        },
+        "yours": "我的",
+        "noneInTab": "这里没有 MCP 服务器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 服务器",
@@ -2721,12 +2805,14 @@
         "authBannerTitle": "需要认证",
         "authBannerDescription": "认证此 MCP 服务器，让您团队的智能体可以使用它。",
         "authBannerAuthenticatedTitle": "已连接",
+        "reconnectBannerDescription": "此服务器的登录已过期或被拒绝。请重新连接以继续使用。",
         "authBannerAuthenticatedDescription": "您可以重新认证或断开此 MCP 服务器的连接。",
         "createdBy": "创建者"
       },
       "deleteDialog": {
         "title": "删除 MCP 服务器？",
-        "body": "名为“{{name}}”的服务器将被永久移除。正在使用它的团队成员将失去访问权限。"
+        "body": "名为“{{name}}”的服务器将被永久移除。正在使用它的团队成员将失去访问权限。",
+        "personalBody": "名为“{{name}}”的服务器及其保存的凭据将被永久删除。"
       },
       "toasts": {
         "loadError": "加载 MCP 服务器失败",
@@ -2740,10 +2826,15 @@
         "disconnected": "已成功断开连接",
         "disconnectError": "断开连接失败",
         "credentialsSaveError": "服务器已保存，但凭证无法保存。您可以稍后在“管理”中添加。",
+        "credentialsSaved": "凭据已保存",
+        "credentialsReset": "MCP 服务器已更新。由于连接已更改，已保存的凭证已被删除；请重新连接后再使用。",
+        "oauthTimedOut": "登录用时过长，已停止。请重试。",
+        "oauthProviderError": "登录失败：{{message}}",
         "discoveryError": "发现工具失败"
       },
       "authDialog": {
         "title": "通过 {{name}} 认证",
+        "docsLink": "在哪里找到",
         "description": "输入您的凭证以连接此 MCP 服务器。"
       },
       "form": {
@@ -2755,6 +2846,7 @@
         "argsPlaceholder": "添加参数",
         "requiredEnv": "必需的环境变量",
         "requiredEnvPlaceholder": "添加环境变量名称（例如 API_KEY）",
+        "defaultTokenEnvHint": "未列出变量时，令牌会以 {{name}} 传给命令。",
         "url": "URL",
         "authMode": "认证模式",
         "headerName": "标头名称",
@@ -2770,14 +2862,55 @@
         "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
         "oauthPairRequired": "请同时输入客户端 ID 和客户端密钥，或两者都留空。",
-        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。"
+        "connectAfterCreateHint": "保存此服务器，然后重新打开“管理”进行连接。",
+        "timeoutsHeading": "超时",
+        "connectTimeout": "连接超时（秒）",
+        "callTimeout": "工具调用超时（秒）",
+        "timeoutRange": "请输入 {{min}} 到 {{max}} 之间的数字，或留空以使用默认值。"
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
         "createTitle": "添加 MCP 服务器",
         "tabs": {
           "configuration": "配置",
-          "connection": "连接与工具"
+          "tools": "工具与审批"
+        },
+        "synced": "{{time}}同步",
+        "refreshTools": "刷新工具列表",
+        "signInForTools": "登录以查看此服务器的工具。",
+        "toolsError": "无法加载工具列表",
+        "toolsErrorSignIn": "服务器要求您重新登录。",
+        "rulesKept": "您保存的审批规则会保留。",
+        "tryAgain": "重试",
+        "findingTools": "正在查找此服务器上的工具",
+        "rulesUnlock": "列表就绪后即可设置审批规则。",
+        "unsaved_one": "{{count}} 项未保存的更改",
+        "unsaved_other": "{{count}} 项未保存的更改",
+        "allSaved": "所有规则已保存",
+        "discard": "放弃",
+        "saveRules": "保存规则",
+        "discardTitle": "放弃未保存的规则更改？",
+        "discardBody_one": "您更改了 {{count}} 个工具的规则。现在关闭将丢失这些更改。",
+        "discardBody_other": "您更改了 {{count}} 个工具的规则。现在关闭将丢失这些更改。",
+        "noSignIn": "无需登录 · {{transport}}",
+        "signInExpired": "登录已过期",
+        "sharedMissing": "缺少共享登录信息",
+        "signInExpiredBody": "在有人重新登录之前，此服务器的工具无法运行。",
+        "notSignedIn": "未登录",
+        "notSignedInDetail": "登录以使用此服务器的工具。",
+        "signedIn": "已登录",
+        "sharedSignIn": "共享登录",
+        "signedInDetail": "{{transport}} · {{time}}登录",
+        "menu": {
+          "label": "更多操作",
+          "copyUrl": "复制服务器 URL",
+          "copied": "已复制服务器 URL",
+          "copyFailed": "无法复制服务器 URL",
+          "addedBy": "由 {{name}} 添加",
+          "disconnectHint": "将您登出。设置和规则会保留。",
+          "remove": "移除服务器",
+          "removeHint": "为所有人删除它。",
+          "removeHintPersonal": "删除它及您的登录信息。"
         }
       },
       "oauthConfig": {
@@ -2817,6 +2950,99 @@
         "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
         "unavailableHint": "此部署已关闭本地命令（STDIO）服务器。如需允许，运维人员必须设置 {{flag}}=true。",
         "enabledWarning": "此命令以服务的权限在 PipesHub 服务器上运行，包括其网络访问和凭据。请只添加你信任的命令。"
+      },
+      "addDialog": {
+        "title": "添加 MCP 服务器",
+        "description": "从目录中选择服务器，或通过 URL 连接任意远程 MCP 服务器。只有您能看到它。",
+        "custom": "自定义服务器",
+        "customDescription": "通过 URL 连接任意远程 MCP 服务器。"
+      },
+      "toolRules": {
+        "open": "工具审批",
+        "title": "工具审批：{{name}}",
+        "description": {
+          "personal": "选择助手在您的聊天中想要使用这些工具时如何处理。智能体使用各自的规则。",
+          "company": "这里的规则适用于组织中的所有人。成员可以添加更严格的规则，但不能更宽松。",
+          "agent": "选择此智能体想要使用这些工具时如何处理，适用于所有与它聊天的人。"
+        },
+        "unattendedHint": "在 Slack、API 和计划运行中无人可以审批调用，因此需要批准的工具不会在那里运行，除非您打开“无人可审批时允许”。",
+        "viewOnly": "只有可以编辑此智能体的人才能更改这些规则。",
+        "loading": "正在加载…",
+        "loadError": "无法加载规则。",
+        "search": "按名称或 ID 搜索",
+        "empty": "没有可显示的工具。连接服务器以查看其工具，或按名称添加工具。",
+        "notOffered": "当前未提供",
+        "rule": {
+          "allow": "预先批准",
+          "ask": "批准后允许",
+          "block": "拒绝"
+        },
+        "company": {
+          "none": "不限制",
+          "ask": "批准后允许",
+          "block": "拒绝"
+        },
+        "unattended": "无人可审批时允许",
+        "unattendedFor": "无人可审批时允许 {{name}}",
+        "addPlaceholder": "按名称添加工具",
+        "add": "添加",
+        "saved": "工具审批已保存",
+        "saveError": "无法保存工具审批",
+        "unattendedDetail": "Slack、API 和计划运行",
+        "unattendedDestructive": "仅在有人允许此工具的地方",
+        "kind": {
+          "read": "只读",
+          "write": "更改数据",
+          "destructive": "删除数据"
+        },
+        "kindSource": {
+          "name": "根据名称",
+          "server": "根据服务器",
+          "none": "服务器未标注"
+        },
+        "group": {
+          "destructive": "删除数据",
+          "write": "更改数据",
+          "read": "只读",
+          "notOffered": "当前未提供",
+          "byName": "按名称设置的规则"
+        },
+        "groupHint": {
+          "destructive": "请先检查这些",
+          "read": "仅查询信息"
+        },
+        "filterLabel": "显示工具",
+        "filter": {
+          "all": "全部",
+          "destructive": "删除数据",
+          "write": "更改数据",
+          "read": "只读",
+          "hasRule": "已设规则"
+        },
+        "noMatch": "没有与您的搜索匹配的工具。",
+        "clearFilters": "清除搜索和筛选",
+        "quickSetup": {
+          "text": "快速设置：对所有更改数据的工具要求批准。",
+          "apply": "应用"
+        },
+        "legend": {
+          "own": "预先批准：无需询问即运行 · 批准后允许：先在聊天中询问 · 拒绝：从不运行",
+          "company": "不限制 – 由成员决定 · 批准后允许 – 每次调用都需有人批准 · 拒绝 – 从不运行"
+        }
+      },
+      "disconnectDialog": {
+        "title": "断开 {{name}}？",
+        "yours_one": "在您重新登录之前，您将无法使用它的 {{count}} 个工具。",
+        "yours_other": "在您重新登录之前，您将无法使用它的 {{count}} 个工具。",
+        "yoursUnknown": "在您重新登录之前，您将无法使用它的工具。",
+        "shared_one": "您组织中的智能体将立即停止使用它的 {{count}} 个工具，包括在 Slack 和计划运行中。",
+        "shared_other": "您组织中的智能体将立即停止使用它的 {{count}} 个工具，包括在 Slack 和计划运行中。",
+        "sharedUnknown": "您组织中的智能体将立即停止使用它的工具，包括在 Slack 和计划运行中。",
+        "keeps": "服务器设置和审批规则会保留",
+        "reconnect": "随时重新登录即可重新连接",
+        "deletesYours": "您保存的登录信息将被删除",
+        "deletesShared": "共享的登录信息将被删除",
+        "disconnecting": "正在断开…"
       }
     },
     "bots": {
@@ -3880,6 +4106,9 @@
     "configureMcpTooltip": "管理凭据",
     "authenticateMcpTooltip": "认证此 MCP 服务器",
     "mcpAuthUpdatedNotify": "MCP 身份验证已更新。",
+    "mcpServersUnavailable": "无法加载此智能体的 MCP 服务器",
+    "mcpServersUnavailableHint": "此处不显示它们，保存也不会更改它们。请刷新页面重试。",
+    "mcpServersUnavailableNoDrop": "无法加载此智能体的 MCP 服务器，刷新页面前无法添加。",
     "mcpAuthSaveError": "保存 MCP 凭据失败。",
     "mcpAuthRemoveError": "移除 MCP 凭据失败。",
     "loadingSchema": "正在加载架构…",
@@ -3978,7 +4207,7 @@
     "removeDeprecatedTools": "移除已弃用的工具",
     "showMore": "显示更多",
     "showLess": "显示更少",
-    "mcpServerAlreadyAttachedNotify": "{{name}} 已附加到此智能体",
+    "mcpServerAlreadyAttachedNotify": "此智能体已有另一个与 {{name}} 同类型的服务器。每种类型的服务器，一个智能体只能使用一个。",
     "webSearchOnlyOne": "只能附加一个网络搜索提供方",
     "mcpServerNodeSubtitle": "来自 MCP 服务器的工具",
     "noMcpServersAvailable": "没有可用的 MCP 服务器",
@@ -3989,7 +4218,18 @@
     "toolsetOAuthServerError": "认证失败。请重试或联系您的管理员。",
     "attached": "已附加",
     "mcpServerWithToolCount_other": "包含 {{count}} 个工具的 MCP 服务器",
-    "deprecatedToolsBanner_other": "此智能体上有 {{count}} 个工具已弃用。请移除它们：{{tools}}"
+    "deprecatedToolsBanner_other": "此智能体上有 {{count}} 个工具已弃用。请移除它们：{{tools}}",
+    "mcpAllTools": "全部工具",
+    "mcpAllToolsHint": "包括服务器以后新增的工具。",
+    "mcpServerUnavailable": "不可用",
+    "mcpServerUnavailableHint": "此服务器不在你的 MCP 服务器中：它已被删除，或未与你共享。",
+    "mcpToolNotOnServer": "服务器上已没有",
+    "mcpToolNotOnServerHint": "服务器不再提供此工具。请将其移除，否则智能体无法使用它。",
+    "mcpAllToolsNoneYet": "服务器尚未列出任何工具。智能体将获得它提供的所有工具。",
+    "mcpNoToolsSelected": "未选择工具。请添加工具，或开启“全部工具”。",
+    "mcpServerNeedsToolsTooltip": "请为每个 MCP 服务器选择工具，或开启“全部工具”。",
+    "mcpServerNeedsToolsBanner": "请为 {{names}} 至少选择一个工具，或开启“全部工具”。",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的个人 MCP 服务器，不能添加到与组织共享或以服务账号运行的智能体中。"
   },
   "recordView": {
     "sections": {

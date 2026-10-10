@@ -7,7 +7,7 @@ import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/u
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
-import { Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, startStream } from './streaming-flows'
+import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, startStream } from './streaming-flows'
 
 describe('es_controller streaming answers', () => {
   afterEach(() => {
@@ -268,6 +268,67 @@ describe('es_controller streaming answers', () => {
     expect(conversation.conversationErrors[0]).to.include({ message: CHAT_ERROR_MESSAGES.failed })
     expect(run.res.body).to.not.contain('secret-internal.ts')
     expect(run.conversation().conversationErrors?.[0]?.stack, 'the stack is still kept for the logs and admins').to.contain('secret-internal.ts')
+  })
+
+  it('regenerateAnswers: a reply that ran an approved action is not regenerated', async () => {
+    const store = new InMemoryChatStore()
+    const ai = new FakeAIBackend()
+    store.install()
+    ai.install()
+    const session = store.addSession({ orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Approvals', sessionType: 'chat' })
+    store.addMessage(session, { messageType: 'user_query', content: 'Allow once: create_issue on Jira' })
+    const bot = store.addMessage(session, {
+      messageType: 'bot_response', content: 'Created it.',
+      parts: [{ type: 'sub_agent', parts: [{ type: 'tool_call', toolCallId: 'approved_1', toolName: 'mcp_jira_create_issue', approved: true }] }],
+    } as never)
+    const res = new FakeSSEResponse()
+
+    await controllerModule.regenerateAnswers(appConfig)(
+      {
+        headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id) }, body: {}, query: {},
+        user: { userId: OWNER, orgId: ORG }, context: {},
+      } as never,
+      res as never,
+    )
+    await settle()
+
+    expect(res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/ran an action you approved/)
+    expect(ai.streamCalls).to.deep.equal([])
+  })
+
+  it('regenerateAgentAnswers: a reply that ran an approved action is not regenerated', async () => {
+    const store = new InMemoryChatStore()
+    const ai = new FakeAIBackend()
+    store.install()
+    ai.install()
+    const session = store.addSession({
+      orgId: ORG, userId: OWNER, initiator: OWNER, title: 'Approvals', sessionType: 'agent', agentKey: AGENT_KEY, conversationSource: 'agent_chat',
+    })
+    store.addMessage(session, { messageType: 'user_query', content: 'Allow once: create_issue on Jira' })
+    const bot = store.addMessage(session, {
+      messageType: 'bot_response', content: 'Created it.',
+      parts: [{ type: 'tool_call', toolCallId: 'approved_1', toolName: 'mcp_jira_create_issue', approved: true }],
+    } as never)
+    const res = new FakeSSEResponse()
+
+    await controllerModule.regenerateAgentAnswers(appConfig)(
+      {
+        headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
+        body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
+      } as never,
+      res as never,
+    )
+    await settle()
+
+    expect(res.eventsOf('RUN_ERROR')[0]?.data.message).to.match(/ran an action you approved/)
+    expect(ai.streamCalls).to.deep.equal([])
+  })
+
+  it('ranApprovedCall finds the mark at any depth, and only that', () => {
+    expect(controllerModule.ranApprovedCall([{ type: 'tool_call', approved: true } as never])).to.equal(true)
+    expect(controllerModule.ranApprovedCall([{ type: 'text', parts: [{ type: 'tool_call', approved: true }] } as never])).to.equal(true)
+    expect(controllerModule.ranApprovedCall([{ type: 'tool_call' } as never])).to.equal(false)
+    expect(controllerModule.ranApprovedCall(undefined)).to.equal(false)
   })
 
   it('regenerateAnswers: only the last answer of the conversation can be regenerated', async () => {
