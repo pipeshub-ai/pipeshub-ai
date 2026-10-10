@@ -54,7 +54,10 @@
     "errorFallback": "Se ha producido un error. Inténtelo de nuevo.",
     "askQuestionResumeFailed": "No se pudieron enviar tus respuestas. Envía de nuevo para reintentar.",
     "copyCode": "Copiar",
-    "copiedCode": "Copiado"
+    "copiedCode": "Copiado",
+    "remoteImageBlocked": "Imagen externa no cargada",
+    "remoteImageFrom": "de {{host}}",
+    "remoteImageLoad": "Cargar imagen"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Error al subir",

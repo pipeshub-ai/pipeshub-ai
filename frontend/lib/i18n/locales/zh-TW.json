@@ -133,7 +133,10 @@
     "errorFallback": "發生錯誤。請再試一次。",
     "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
     "copyCode": "複製",
-    "copiedCode": "已複製"
+    "copiedCode": "已複製",
+    "remoteImageBlocked": "未載入外部圖片",
+    "remoteImageFrom": "來自 {{host}}",
+    "remoteImageLoad": "載入圖片"
   },
   "uploadProgress": {
     "uploadFailedDefault": "上傳失敗",

@@ -53,7 +53,10 @@
     "errorFallback": "Ein Fehler ist aufgetreten. Bitte erneut versuchen.",
     "askQuestionResumeFailed": "Antworten konnten nicht gesendet werden. Zum Wiederholen erneut senden.",
     "copyCode": "Kopieren",
-    "copiedCode": "Kopiert"
+    "copiedCode": "Kopiert",
+    "remoteImageBlocked": "Externes Bild nicht geladen",
+    "remoteImageFrom": "von {{host}}",
+    "remoteImageLoad": "Bild laden"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload fehlgeschlagen",
