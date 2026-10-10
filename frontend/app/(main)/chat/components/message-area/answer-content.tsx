@@ -26,6 +26,7 @@ import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
 
@@ -498,6 +499,7 @@ function imageHostLabel(src: string): string {
 
 function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [isAllowed, setIsAllowed] = useState(false);
   const needsConsent = Boolean(src) && !isAllowed && isThirdPartyImageSrc(src!);
 
@@ -523,7 +525,14 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
           <Text size="1" as="span" style={{ color: 'var(--slate-10)', wordBreak: 'break-all' }}>
             {t('chatStream.remoteImageFrom', { host: imageHostLabel(src!) })}
           </Text>
-          <Button type="button" size="1" variant="soft" color="gray" onClick={() => setIsAllowed(true)}>
+          <Button
+            type="button"
+            size="1"
+            variant="soft"
+            color="gray"
+            style={isMobile ? { minWidth: 44, minHeight: 44 } : undefined}
+            onClick={() => setIsAllowed(true)}
+          >
             {t('chatStream.remoteImageLoad')}
           </Button>
         </Flex>

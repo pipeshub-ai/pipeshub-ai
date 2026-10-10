@@ -1,11 +1,17 @@
 import React from 'react';
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { render, cleanup, fireEvent } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 import { AnswerContent } from '../answer-content';
 import type { CitationMaps } from '../response-tabs/citations';
 
-afterEach(() => cleanup());
+const mockIsMobile = vi.hoisted(() => ({ value: false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => mockIsMobile.value }));
+
+afterEach(() => {
+  cleanup();
+  mockIsMobile.value = false;
+});
 
 const h = React.createElement;
 
@@ -32,6 +38,18 @@ describe('AnswerContent — third-party images need a click to load', () => {
     expect(getByText('External image not loaded')).toBeTruthy();
     expect(getByText('Load image')).toBeTruthy();
     expect(container.innerHTML).not.toContain('secret-from-document');
+  });
+
+  it('gives the load button a 44px touch target on mobile only', () => {
+    const desktop = renderAnswer(`![chart](${EXFIL})`);
+    expect((desktop.getByText('Load image') as HTMLElement).style.minHeight).toBe('');
+    cleanup();
+
+    mockIsMobile.value = true;
+    const mobile = renderAnswer(`![chart](${EXFIL})`);
+    const button = mobile.getByText('Load image') as HTMLElement;
+    expect(button.style.minHeight).toBe('44px');
+    expect(button.style.minWidth).toBe('44px');
   });
 
   it('keeps the alt text visible while the image is blocked', () => {
