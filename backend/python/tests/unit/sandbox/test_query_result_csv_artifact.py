@@ -63,10 +63,11 @@ class _Graph(FakeGraphProvider):
         )
         return {"role": edge["role"]} if edge else None
 
-    async def batch_delete_edges(self, edges: list[dict], collection: str) -> bool:
+    async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         doomed = {(e["from_id"], e["to_id"]) for e in edges}
+        before = len(self.edges[collection])
         self.edges[collection] = [e for e in self.edges[collection] if (e["from_id"], e["to_id"]) not in doomed]
-        return True
+        return before - len(self.edges[collection])
 
 
 def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, ArtifactRegistryService]:
