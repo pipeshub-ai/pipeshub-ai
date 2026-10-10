@@ -1164,6 +1164,20 @@ class TestHandleDelete:
         config_svc.delete_config.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with current_coordinator() as mock_stm, patch(
+            "app.connectors.services.event_service.build_connector_cleanup_events",
+            side_effect=RuntimeError("after the graph delete"),
+        ):
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is True
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_revert_whose_read_fails_writes_nothing(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "DB error"

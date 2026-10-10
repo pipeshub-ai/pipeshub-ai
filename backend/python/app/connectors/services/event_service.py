@@ -1240,6 +1240,7 @@ class EventService:
 
         self.logger.info(f"🗑️ Processing async deletion for {connector_name} connector {connector_id}")
 
+        graph_deleted = False
         try:
             # Stop any sync before deleting the data underneath it.
             #
@@ -1304,10 +1305,20 @@ class EventService:
             )
 
             if not result.get("success"):
-                # The intent stays: "not found" is a redelivery after this delete
-                # committed, and the reconciler drops it once stale if the
-                # connector does still exist.
+                # The intent stays either way: the reconciler drops it once stale
+                # if the connector does still exist.
+                if await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value, raise_on_error=True
+                ) is None:
+                    # A redelivery after this delete committed; retrying could redo
+                    # nothing, and each retry would push the reconciler's grace back.
+                    self.logger.warning(
+                        f"Connector {connector_id} is already deleted from the graph; "
+                        f"its storage release stays pending"
+                    )
+                    return True
                 raise Exception(result.get("error", "Unknown deletion failure from graph DB"))
+            graph_deleted = True
 
             self.logger.info(
                 f"✅ Graph DB deletion complete for connector {connector_id}. "
@@ -1384,20 +1395,19 @@ class EventService:
                 f"❌ Async deletion failed for connector {connector_id}: {e}",
                 exc_info=True
             )
+            if graph_deleted:
+                # Nothing to revert, and a redelivery would only find the
+                # connector gone; the reconciler owns the storage release.
+                return True
             try:
-                # An upsert would recreate a connector the graph delete already
-                # removed (MERGE on Neo4j), and the reconciler would then treat
-                # its owed storage release as a reverted delete. A redelivery
-                # cannot redo anything either, and each one would push the
-                # reconciler's grace period back.
+                # An upsert would recreate a connector that is already gone
+                # (MERGE on Neo4j), and the reconciler would then treat its owed
+                # storage release as a reverted delete.
                 if await self.graph_provider.get_document(
                     connector_id, CollectionNames.APPS.value, raise_on_error=True
                 ) is None:
-                    self.logger.warning(
-                        f"Connector {connector_id} is already deleted from the graph; "
-                        f"the delete is done, its storage release stays pending"
-                    )
-                    return True
+                    self.logger.warning(f"Connector {connector_id} is not in the graph; nothing to revert")
+                    return False
                 await self.graph_provider.batch_upsert_nodes(
                     [{
                         "id": connector_id,
