@@ -505,6 +505,7 @@ class AgentContext(BaseModel):
             # Written by the knowledge tools that surface Record IDs without a
             # citation payload — see `remember_record_ids()` in chat_state.py.
             "known_record_ids": set(),
+            "known_record_names": {},
             "tool_records": [],
             "citation_ref_mapper": None,
             # TEMPORARY token-savings experiment — see `RecordIdShortener` in

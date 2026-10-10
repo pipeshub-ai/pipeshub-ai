@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from logging import Logger
 from typing import Any
 
@@ -179,6 +179,7 @@ class ChatState(TypedDict):
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
+    known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -373,7 +374,11 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
-def remember_record_ids(state: ChatState | dict[str, Any] | None, record_ids: Iterable[str]) -> None:
+def remember_record_ids(
+    state: ChatState | dict[str, Any] | None,
+    record_ids: Iterable[str],
+    names: Mapping[str, str] | None = None,
+) -> None:
     """Note that the model has now been shown these Record IDs.
 
     `dynamic_fetch_full_record` is registered mid-run only once the model
@@ -388,17 +393,52 @@ def remember_record_ids(state: ChatState | dict[str, Any] | None, record_ids: It
 
     Mutates the existing set in place when present — `state` IS the live
     `AgentContext.tool_state` dict the hook reads.
+
+    `known_record_names` keeps the same ids in the order they were shown,
+    with their names when the caller has them, so a fetch of an id that does
+    not resolve can point the model back at what it was actually given
+    (`knowledge_graph/ops/id_recovery.py`). Only tools that applied the
+    user's permissions may write here: that list is shown to the model.
     """
     if state is None:
         return
-    ids = {rid for rid in record_ids if rid}
-    if not ids:
+    ordered = list(dict.fromkeys(rid for rid in record_ids if rid))
+    if not ordered:
         return
     existing = state.get("known_record_ids")
     if isinstance(existing, set):
-        existing.update(ids)
+        existing.update(ordered)
     else:
-        state["known_record_ids"] = ids
+        state["known_record_ids"] = set(ordered)
+
+    shown = state.get("known_record_names")
+    if not isinstance(shown, dict):
+        shown = {}
+        state["known_record_names"] = shown
+    for rid in ordered:
+        previous = shown.pop(rid, "")
+        shown[rid] = (names or {}).get(rid) or previous
+
+
+def remember_shown_results(
+    state: ChatState | dict[str, Any] | None,
+    results: Iterable[dict[str, Any]],
+    virtual_record_id_to_result: Mapping[str, Any],
+) -> None:
+    """`remember_record_ids` for the records a search actually rendered.
+
+    Takes the rendered blocks rather than the map: the map is filled before
+    the results are trimmed, so it can hold records the model never saw.
+    """
+    names: dict[str, str] = {}
+    for entry in results:
+        record = virtual_record_id_to_result.get(entry.get("virtual_record_id") or "")
+        if not isinstance(record, dict):
+            continue
+        rid = record.get("id") or record.get("_key")
+        if rid and rid not in names:
+            names[rid] = record.get("record_name") or record.get("recordName") or ""
+    remember_record_ids(state, names, names=names)
 
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
@@ -628,6 +668,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
         "known_record_ids": set(),
+        "known_record_names": {},
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),

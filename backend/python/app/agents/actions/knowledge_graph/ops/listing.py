@@ -218,7 +218,11 @@ async def execute_list_files(
         )
 
         from app.modules.agents.qna.chat_state import remember_record_ids
-        remember_record_ids(state, _record_ids_in_items(response.items))
+        remember_record_ids(
+            state,
+            _record_ids_in_items(response.items),
+            names={item.id: item.name for item in response.items or []},
+        )
 
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)

@@ -347,7 +347,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
     are not granted (see ``factory._initial_entity_tool_grant``).
     """
-    from app.modules.agents.qna.chat_state import build_initial_state
+    from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
     from app.modules.transformers.blob_storage import BlobStorage
     from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
     from app.utils.fetch_slack_thread import connector_instances_have_slack
@@ -519,6 +519,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 context.tool_state["tool_records"] = [
                     *context.tool_state.get("tool_records", []), *prefetch_result.tool_records,
                 ]
+                remember_shown_results(
+                    context.tool_state,
+                    prefetch_result.final_results,
+                    prefetch_result.virtual_record_id_to_result,
+                )
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`
