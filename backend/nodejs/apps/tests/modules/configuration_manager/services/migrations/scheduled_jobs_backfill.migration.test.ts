@@ -344,6 +344,33 @@ describe('ScheduledJobsBackfillMigration', () => {
   // Enumeration failures: do NOT set flag (so next boot retries)
   // ------------------------------------------------------------
   describe('enumeration failures', () => {
+    it('does not set the flag when a page omitted connectors after a config read failure', async () => {
+      const logger = makeLogger();
+      const kv = makeKvStore(null);
+      const scheduler = makeScheduler();
+      executeStub.resolves({
+        statusCode: 200,
+        data: {
+          success: true,
+          items: [sampleScheduledItem],
+          hasMore: false,
+          partial: true,
+        },
+      });
+
+      const m = new ScheduledJobsBackfillMigration(
+        logger as any,
+        kv as any,
+        scheduler as any,
+        makeAppConfig(),
+      );
+      await m.run();
+
+      expect(scheduler.scheduleJob.callCount).to.equal(1);
+      expect(kv.set.called).to.equal(false);
+      expect(logger.warn.called).to.equal(true);
+    });
+
     it('does not set flag when Python returns non-2xx', async () => {
       const logger = makeLogger();
       const kv = makeKvStore(null);

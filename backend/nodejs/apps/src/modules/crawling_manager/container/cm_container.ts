@@ -8,6 +8,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { CrawlingWorkerService } from '../services/crawling_worker';
 import { CrawlingSchedulerService } from '../services/crawling_service';
+import { ConnectorScheduleSweepService } from '../services/connector_schedule_sweep';
 import { RedisConfig } from '../../../libs/types/redis.types';
 import { ConnectorsCrawlingService } from '../services/connectors/connectors';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
@@ -105,6 +106,11 @@ export class CrawlingManagerContainer {
 
       logger.info('Crawling worker service started successfully');
 
+      // Not awaited: a slow Redis must not hold up startup for a repair job.
+      void container
+        .get<ConnectorScheduleSweepService>(ConnectorScheduleSweepService)
+        .start();
+
       this.logger.info('Crawling Manager services initialized successfully');
     } catch (error) {
       const logger = container.get<Logger>('Logger');
@@ -145,6 +151,15 @@ export class CrawlingManagerContainer {
         if (crawlingWorkerService) {
           await crawlingWorkerService.close();
         }
+
+        const scheduleSweepService = this.instance.isBound(
+          ConnectorScheduleSweepService,
+        )
+          ? this.instance.get<ConnectorScheduleSweepService>(
+              ConnectorScheduleSweepService,
+            )
+          : null;
+        await scheduleSweepService?.close();
 
         const keyValueStoreService = this.instance.isBound(KeyValueStoreService)
           ? this.instance.get<KeyValueStoreService>(KeyValueStoreService)
@@ -195,5 +210,10 @@ export function setupCrawlingDependencies(
   container
     .bind<CrawlingWorkerService>(CrawlingWorkerService)
     .to(CrawlingWorkerService)
+    .inSingletonScope();
+
+  container
+    .bind<ConnectorScheduleSweepService>(ConnectorScheduleSweepService)
+    .to(ConnectorScheduleSweepService)
     .inSingletonScope();
 }

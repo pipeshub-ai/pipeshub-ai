@@ -111,9 +111,10 @@ class TestFetchConnectorSyncBlock:
         config_service.get_config = AsyncMock(return_value=None)
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
-        assert result is None
+        assert sync is None
+        assert read_failed is False
         logger.debug.assert_called()
 
     @pytest.mark.asyncio
@@ -122,9 +123,10 @@ class TestFetchConnectorSyncBlock:
         config_service.get_config = AsyncMock(return_value="not a dict")
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
-        assert result is None
+        assert sync is None
+        assert read_failed is False
 
     @pytest.mark.asyncio
     async def test_config_with_no_sync_key_returns_empty_dict(self):
@@ -132,10 +134,11 @@ class TestFetchConnectorSyncBlock:
         config_service.get_config = AsyncMock(return_value={"auth": {}})
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
         # sync = config.get("sync") or {} → empty dict, but isinstance({}, dict) is True
-        assert result == {}
+        assert sync == {}
+        assert read_failed is False
 
     @pytest.mark.asyncio
     async def test_non_dict_sync_returns_none(self):
@@ -143,9 +146,10 @@ class TestFetchConnectorSyncBlock:
         config_service.get_config = AsyncMock(return_value={"sync": "not-a-dict"})
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
-        assert result is None
+        assert sync is None
+        assert read_failed is False
         logger.debug.assert_called()
 
     @pytest.mark.asyncio
@@ -155,20 +159,33 @@ class TestFetchConnectorSyncBlock:
         config_service.get_config = AsyncMock(return_value={"sync": sync_block})
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
-        assert result == sync_block
+        assert sync == sync_block
+        assert read_failed is False
 
     @pytest.mark.asyncio
-    async def test_config_service_exception_returns_none(self):
+    async def test_config_service_exception_is_a_failed_read(self):
         config_service = AsyncMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("etcd down"))
         logger = MagicMock()
 
-        result = await _fetch_connector_sync_block("conn-1", config_service, logger)
+        sync, read_failed = await _fetch_connector_sync_block("conn-1", config_service, logger)
 
-        assert result is None
+        assert sync is None
+        assert read_failed is True
         logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_asks_the_store_to_raise_instead_of_answering_none(self):
+        # ConfigurationService swallows an unreadable value into None unless
+        # asked, which would read as "not scheduled" rather than a failed read.
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"sync": {}})
+
+        await _fetch_connector_sync_block("conn-1", config_service, MagicMock())
+
+        assert config_service.get_config.await_args.kwargs.get("raise_on_error") is True
 
 
 # ---------------------------------------------------------------------------
@@ -291,6 +308,23 @@ class TestAllScheduledStrategyFiltering:
 
         assert len(result["items"]) == 1
         assert result["items"][0]["connectorId"] == "conn-1"
+        assert result["partial"] is False
+
+    @pytest.mark.asyncio
+    async def test_config_read_failure_marks_the_page_partial(self):
+        docs = [
+            _active_doc("conn-1", "Confluence"),
+            _active_doc("conn-2", "Slack"),
+        ]
+        request = _make_request(
+            page_docs=docs,
+            sync_configs=[_scheduled_sync(), RuntimeError("etcd down")],
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        assert result["partial"] is True
+        assert [item["connectorId"] for item in result["items"]] == ["conn-1"]
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +385,54 @@ class TestAllScheduledPagination:
 
         call = request.app.state.graph_provider.get_documents_paginated.call_args
         assert call[1]["filters"] == {"isActive": True}
+
+    @pytest.mark.asyncio
+    async def test_db_errors_raise_and_pages_are_stably_sorted(self):
+        request = _make_request(page_docs=[])
+
+        await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        call = request.app.state.graph_provider.get_documents_paginated.call_args
+        assert call[1]["raise_on_error"] is True
+        assert call[1]["sort_field"] == "_key"
+
+
+# ---------------------------------------------------------------------------
+# get_all_scheduled_connector_instances_internal — org ownership
+# ---------------------------------------------------------------------------
+
+
+class TestAllScheduledOrgOwnership:
+    @pytest.mark.asyncio
+    async def test_each_connector_keeps_its_own_org(self):
+        docs = [
+            {**_active_doc("conn-a", "Confluence"), "orgId": "org-a"},
+            {**_active_doc("conn-b", "Slack"), "orgId": "org-b"},
+        ]
+        request = _make_request(
+            orgs=[{"_key": "org-a"}, {"_key": "org-b"}],
+            page_docs=docs,
+            sync_configs=[_scheduled_sync(), _scheduled_sync()],
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        assert {i["connectorId"]: i["orgId"] for i in result["items"]} == {
+            "conn-a": "org-a",
+            "conn-b": "org-b",
+        }
+
+    @pytest.mark.asyncio
+    async def test_legacy_doc_without_org_falls_back_to_first_org(self):
+        request = _make_request(
+            orgs=[{"_key": "org-1"}],
+            page_docs=[_active_doc("conn-1", "Confluence")],
+            sync_configs=[_scheduled_sync()],
+        )
+
+        result = await get_all_scheduled_connector_instances_internal(request, page=1, limit=50)
+
+        assert result["items"][0]["orgId"] == "org-1"
 
 
 # ---------------------------------------------------------------------------

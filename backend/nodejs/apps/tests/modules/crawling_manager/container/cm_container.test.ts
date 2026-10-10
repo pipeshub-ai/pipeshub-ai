@@ -9,6 +9,7 @@ import { SyncEventProducer } from '../../../../src/modules/knowledge_base/servic
 import { CrawlingWorkerService } from '../../../../src/modules/crawling_manager/services/crawling_worker'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
 import { ConnectorsCrawlingService } from '../../../../src/modules/crawling_manager/services/connectors/connectors'
+import { ConnectorScheduleSweepService } from '../../../../src/modules/crawling_manager/services/connector_schedule_sweep'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 
 describe('CrawlingManagerContainer', () => {
@@ -307,6 +308,7 @@ describe('CrawlingManagerContainer - coverage', () => {
       expect(container.isBound(ConnectorsCrawlingService)).to.be.true
       expect(container.isBound(CrawlingSchedulerService)).to.be.true
       expect(container.isBound(CrawlingWorkerService)).to.be.true
+      expect(container.isBound(ConnectorScheduleSweepService)).to.be.true
     })
   })
 
@@ -461,6 +463,17 @@ describe('CrawlingManagerContainer - coverage', () => {
       expect(mockKvStore.disconnect.calledOnce).to.be.true
       expect(mockMessageProducer.disconnect.calledOnce).to.be.true
       expect(mockCrawlingWorker.close.calledOnce).to.be.true
+    })
+
+    it('should close the schedule sweep when bound', async () => {
+      const mockSweep = { close: sinon.stub().resolves() }
+      const container = new Container()
+      container.bind<any>(ConnectorScheduleSweepService).toConstantValue(mockSweep)
+
+      ;(CrawlingManagerContainer as any).instance = container
+
+      await CrawlingManagerContainer.dispose()
+      expect(mockSweep.close.calledOnce).to.be.true
     })
 
     it('should handle dispose when services are not connected', async () => {
