@@ -44,9 +44,7 @@
 
 <h2 id="about-pipeshub">PipesHub - Explainable & Extensible</h2>
 
-<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
-
-Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
+<strong>[PipesHub](https://www.pipeshub.com/)</strong> is an Apache-2.0 workplace AI platform you run yourself. It connects company systems such as Slack, Google Drive, GitHub, Microsoft 365, and Notion, answers with a citation to the source block, and only returns what that person is allowed to open. The same context is available to agents, workflows, and MCP clients, using a model you choose.
 
 > [!TIP]
 > Deploy with a single command:
@@ -262,9 +260,25 @@ Want to join our community of developers? Please check out our [Contributing Gui
 
 ### What is PipesHub?
 
-PipesHub is an open-source platform for connecting AI applications to the knowledge stored across your company's business systems.
+PipesHub is an Apache-2.0 workplace AI platform you run yourself. It connects company systems such as Slack, Google Drive, GitHub, Microsoft 365, and Notion, answers with a citation to the source block, and only returns what that person is allowed to open. The same context is available to agents, workflows, and MCP clients, using a model you choose.
 
-It connects systems such as Slack, Google Drive, GitHub, Microsoft 365 and Notion, then makes what they hold available in two ways: permission-aware search with citations for your team, and trusted context for your AI agents through APIs, SDKs and MCP. Agents get the same governed view of your company's knowledge that a person would, with the same access controls applied, so they can answer from real company data instead of guessing across tools. You can use the built-in search experience, or build your own agents, workflows and applications on top of it.
+You can use the built-in search and chat, or build your own agents, workflows, and applications on top of it. An agent sees the same records the signed-in person is allowed to open.
+
+### Is PipesHub open source?
+
+Yes. PipesHub is released under the Apache License 2.0. The code is in this repository. You can audit it, fork it, and run it on your own machines.
+
+### Can I self-host PipesHub?
+
+Yes. The default install is Docker Compose. Kubernetes is supported with the Helm chart in `deployment/helm`. You bring the LLM. Indexed data stays on your infrastructure. See [How do I deploy PipesHub?](#how-do-i-deploy-pipeshub).
+
+### Does search follow source permissions?
+
+Yes. Search and answers only return records the signed-in person can open in the source system. A citation points at the block of that document.
+
+### Is PipesHub an open-source alternative to Glean?
+
+Yes. PipesHub is open source and self-hosted. Glean is a closed-source hosted product. PipesHub cites the block of the source document, and you choose the model. A longer comparison is on [PipesHub vs Glean](https://pipeshub.com/pipeshub-vs-glean).
 
 ### How is PipesHub different from other workplace AI tools?
 
