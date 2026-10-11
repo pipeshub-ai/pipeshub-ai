@@ -17,11 +17,12 @@ from app.config.constants.arangodb import ExtensionTypes
 # instance-URL field to source one from.
 
 # REST "core" budget (authenticated) is 5,000 req/hr, shared with every other
-# tool on the token owner's account. The data source stops sending once a
-# reserve of it is left (github_async._check_reserve). A rate limit that
+# tool on the token owner's account. Sync and listing stop sending once a
+# reserve of it is left (github_async._check_reserve); streaming a record to
+# indexing does not, and stops only when the pool is spent. A rate limit that
 # resets within _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS is waited out in ds_call;
 # a longer one fails fast: the sync aborts with its checkpoint withheld and
-# the scheduler retries later, and a stream answers 429 so indexing retries.
+# the scheduler retries later, and a stream answers 429 with Retry-After.
 # (The timestamp backfill runs on GraphQL's separate point budget.)
 
 # Search API budget is a *separate*, much smaller pool: 30 req/min. Used by

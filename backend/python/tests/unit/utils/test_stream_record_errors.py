@@ -95,6 +95,19 @@ class TestRaiseForStreamFetch:
             )
         assert exc_info.value.status_code == 403
 
+    @pytest.mark.parametrize("retry_after", [1800, "1800"])
+    def test_rate_limit_carries_retry_after(self, retry_after: int | str) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            raise_for_stream_fetch(
+                success=False,
+                has_payload=False,
+                connector="GitHub",
+                status=429,
+                retry_after=retry_after,
+            )
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.headers == {"Retry-After": "1800"}
+
     def test_failure_without_status_raises_runtime_error(self) -> None:
         """No proven status must not invent a 404 — to_stream_error maps this to 500."""
         with pytest.raises(RuntimeError, match="rate limited"):

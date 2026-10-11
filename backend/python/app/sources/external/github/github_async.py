@@ -20,6 +20,8 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import quote
@@ -34,7 +36,7 @@ from app.sources.client.github.github import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Generator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,22 @@ _TRUNCATION_MARKERS = ("diff too large", "binary file", "file is too large", "la
 _RESERVED_RESOURCES = frozenset({"core", "graphql"})
 _DEFAULT_RESERVE_PERCENT = 10
 _RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
+
+# Set while a record is streamed to indexing. Indexing gives a 429 only a few
+# quick retries before it fails the record for good, and the sync that listed
+# the record has already moved its checkpoint past it, so holding back quota
+# GitHub would still grant would cost the record. Those calls stop only once
+# the pool is actually spent.
+_reserve_exempt: ContextVar[bool] = ContextVar("github_rate_limit_reserve_exempt", default=False)
+
+
+@contextmanager
+def rate_limit_reserve_exempt() -> Generator[None, None, None]:
+    token = _reserve_exempt.set(True)
+    try:
+        yield
+    finally:
+        _reserve_exempt.reset(token)
 
 
 class GitHubHTTPError(Exception):
@@ -88,12 +106,13 @@ class GitHubRateLimitReserveError(GitHubHTTPError):
     user's hourly budget for their other tools on the same account."""
 
     def __init__(self, resource: str, remaining: int, limit: int, wait_seconds: int) -> None:
+        reason = "reserve reached" if remaining > 0 else "exhausted"
         super().__init__(
             HttpStatusCode.TOO_MANY_REQUESTS.value,
             f"PipesHub paused GitHub {resource} requests with {remaining} of {limit} left "
             f"until the limit resets in {wait_seconds}s",
             headers={"retry-after": str(wait_seconds)},
-            api_message=f"GitHub {resource} rate limit reserve reached",
+            api_message=f"GitHub {resource} rate limit {reason}",
         )
 
 
@@ -213,7 +232,8 @@ class GitHubAsyncRESTClient:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._reserve_percent = _resolve_reserve_percent()
-        # resource -> (limit, remaining, reset epoch), from the last response.
+        # resource -> (limit, lowest remaining seen, reset epoch) for the
+        # window that is running.
         self._budgets: dict[str, tuple[int, int, int]] = {}
 
     @property
@@ -272,24 +292,48 @@ class GitHubAsyncRESTClient:
         return response
 
     def _record_budget(self, headers: Mapping[str, str]) -> None:
+        """Keep the lowest remaining count seen in the running window.
+
+        GitHub serves requests from several regions, so a response in the same
+        window can report more remaining than an earlier one, and overlapping
+        calls finish out of order. Taking the latest value would reopen a pool
+        the reserve had closed. Only a window whose reset has passed gives way
+        to the next one; a response from an older window is ignored.
+        """
         resource = headers.get("x-ratelimit-resource")
         limit = headers.get("x-ratelimit-limit", "")
         remaining = headers.get("x-ratelimit-remaining", "")
         reset = headers.get("x-ratelimit-reset", "")
-        if resource and limit.isdigit() and remaining.isdigit() and reset.isdigit():
-            self._budgets[resource] = (int(limit), int(remaining), int(reset))
+        if not (resource and limit.isdigit() and remaining.isdigit() and reset.isdigit()):
+            return
+        seen = (int(limit), int(remaining), int(reset))
+        current = self._budgets.get(resource)
+        if current is None:
+            self._budgets[resource] = seen
+            return
+        current_limit, current_remaining, current_reset = current
+        if seen[2] < current_reset:
+            return
+        if time.time() < current_reset:
+            self._budgets[resource] = (current_limit, min(current_remaining, seen[1]), current_reset)
+        else:
+            self._budgets[resource] = seen
 
     def _check_reserve(self, path: str) -> None:
-        """Refuse to spend the last ``_reserve_percent`` of an hourly pool."""
-        if not self._reserve_percent:
-            return
+        """Refuse to spend the last ``_reserve_percent`` of an hourly pool.
+
+        Under ``rate_limit_reserve_exempt``, or with the reserve set to 0, only
+        a spent pool is refused: GitHub would reject that request anyway.
+        """
+        exempt = _reserve_exempt.get()
         resource = _resource_for(path)
         budget = self._budgets.get(resource) if resource in _RESERVED_RESOURCES else None
         if budget is None:
             return
         limit, remaining, reset = budget
         wait_seconds = reset - int(time.time())
-        if wait_seconds <= 0 or remaining > math.ceil(limit * self._reserve_percent / 100):
+        floor = 0 if exempt else math.ceil(limit * self._reserve_percent / 100)
+        if wait_seconds <= 0 or remaining > floor:
             return
         raise GitHubRateLimitReserveError(resource, remaining, limit, wait_seconds)
 

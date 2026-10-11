@@ -183,4 +183,5 @@ def failed_response(error: str = "error", status_code: int | None = None) -> Mag
     # Real GitHubResponse carries the HTTP status; callers distinguish a
     # structural 403/404 from a transient failure by it.
     res.status_code = status_code
+    res.retry_after_seconds = None
     return res

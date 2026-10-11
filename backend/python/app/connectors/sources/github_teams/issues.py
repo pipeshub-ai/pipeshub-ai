@@ -532,6 +532,7 @@ class IssuesSync:
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
@@ -543,6 +544,7 @@ class IssuesSync:
                 has_payload=bool(issue_res.data),
                 connector=c.display_name,
                 status=issue_res.status_code,
+                retry_after=issue_res.retry_after_seconds,
                 message=issue_res.error,
             )
         issue = issue_res.data

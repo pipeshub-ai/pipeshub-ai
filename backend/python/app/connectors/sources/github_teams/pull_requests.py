@@ -302,6 +302,7 @@ class PullRequestsSync:
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
@@ -313,6 +314,7 @@ class PullRequestsSync:
                 has_payload=bool(pr_res.data),
                 connector=c.display_name,
                 status=pr_res.status_code,
+                retry_after=pr_res.retry_after_seconds,
                 message=pr_res.error,
             )
         pull_request = pr_res.data

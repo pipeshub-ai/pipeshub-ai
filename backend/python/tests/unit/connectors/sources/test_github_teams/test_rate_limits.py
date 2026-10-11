@@ -10,7 +10,9 @@ HTTP layer is an ``httpx.MockTransport``.
 """
 from __future__ import annotations
 
+import asyncio
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -21,6 +23,7 @@ from fastapi import HTTPException
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
+from app.connectors.sources.github_teams.streaming import StreamingHelper
 from app.models.entities import TicketRecord
 from app.sources.client.github.github import (
     GitHubClient,
@@ -29,7 +32,11 @@ from app.sources.client.github.github import (
     github_retry_after_seconds,
     is_github_rate_limit,
 )
-from app.sources.external.github.github_async import GitHubAsyncDataSource
+from app.sources.external.github import github_async
+from app.sources.external.github.github_async import (
+    GitHubAsyncDataSource,
+    rate_limit_reserve_exempt,
+)
 from tests.unit.connectors.sources.test_github_teams.conftest import make_mock_connector
 
 if TYPE_CHECKING:
@@ -256,6 +263,126 @@ class TestReserve:
         assert (await ds.get_issue("acme", "widgets", 2)).is_rate_limited is True
 
 
+def _ok(*, remaining: int, reset_at: int, resource: str = "core") -> httpx.Response:
+    return httpx.Response(200, json={"number": 1}, headers={
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": str(remaining),
+        "x-ratelimit-reset": str(reset_at),
+        "x-ratelimit-resource": resource,
+    })
+
+
+class TestReserveWindow:
+    """The reserve must hold for the whole window once it has tripped."""
+
+    async def test_a_late_higher_remaining_does_not_reopen_the_pool(self) -> None:
+        reset_at = int(time.time()) + 1800
+        slow_may_finish = asyncio.Event()
+        sent: list[int] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            number = int(request.url.path.rsplit("/", 1)[-1])
+            sent.append(number)
+            if number == 1:
+                # Served by a region that has not yet counted the other calls.
+                await slow_may_finish.wait()
+                return _ok(remaining=4000, reset_at=reset_at)
+            return _ok(remaining=400, reset_at=reset_at)
+
+        ds = _data_source(handler)
+        slow = asyncio.create_task(ds.get_issue("acme", "widgets", 1))
+        await asyncio.sleep(0)
+        assert (await ds.get_issue("acme", "widgets", 2)).success is True
+        slow_may_finish.set()
+        assert (await slow).success is True
+
+        res = await ds.get_issue("acme", "widgets", 3)
+
+        assert res.is_rate_limited is True
+        assert res.exception_type == "GitHubRateLimitReserveError"
+        assert sent == [1, 2]
+
+    async def test_the_pool_reopens_once_its_window_resets(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        now = {"t": 1_000_000}
+        monkeypatch.setattr(github_async, "time", SimpleNamespace(time=lambda: now["t"]))
+        responses = iter([
+            _ok(remaining=400, reset_at=1_001_800),
+            _ok(remaining=4999, reset_at=1_005_400),
+            # A straggler from the window that just ended must not close the new one.
+            _ok(remaining=0, reset_at=1_001_800),
+            _ok(remaining=4997, reset_at=1_005_400),
+        ])
+        sent: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request.url.path)
+            return next(responses)
+
+        ds = _data_source(handler)
+        await ds.get_issue("acme", "widgets", 1)
+        assert (await ds.get_issue("acme", "widgets", 2)).is_rate_limited is True
+
+        now["t"] = 1_001_800
+        assert (await ds.get_issue("acme", "widgets", 3)).success is True
+        assert (await ds.get_issue("acme", "widgets", 4)).success is True
+        assert (await ds.get_issue("acme", "widgets", 5)).success is True
+        assert len(sent) == 4
+
+
+class TestStreamIsExemptFromTheReserve:
+    async def test_stream_calls_spend_the_reserve(self) -> None:
+        reset_at = int(time.time()) + 1800
+        ds = _data_source(lambda request: _ok(remaining=400, reset_at=reset_at))
+        await ds.get_issue("acme", "widgets", 1)
+        assert (await ds.get_issue("acme", "widgets", 2)).is_rate_limited is True
+
+        with rate_limit_reserve_exempt():
+            assert (await ds.get_issue("acme", "widgets", 3)).success is True
+
+        assert (await ds.get_issue("acme", "widgets", 4)).is_rate_limited is True
+
+    async def test_stream_calls_stop_at_a_spent_pool(self) -> None:
+        sent: list[str] = []
+        reset_at = int(time.time()) + 1800
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request.url.path)
+            return _ok(remaining=0, reset_at=reset_at)
+
+        ds = _data_source(handler)
+        with rate_limit_reserve_exempt():
+            await ds.get_issue("acme", "widgets", 1)
+            res = await ds.get_issue("acme", "widgets", 2)
+
+        assert len(sent) == 1
+        assert res.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+        assert res.api_message == "GitHub core rate limit exhausted"
+        assert 1790 <= (res.retry_after_seconds or 0) <= 1800
+
+    async def test_stream_record_streams_a_ticket_past_the_reserve(self, no_sleep: AsyncMock) -> None:
+        reset_at = int(time.time()) + 1800
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repositories/42":
+                return httpx.Response(200, json={"id": 42, "name": "widgets", "owner": {"login": "acme"}},
+                                      headers=_ok(remaining=400, reset_at=reset_at).headers)
+            return httpx.Response(200, json={"number": 7, "title": "Crash", "body": "b"},
+                                  headers=_ok(remaining=399, reset_at=reset_at).headers)
+
+        ds = _data_source(handler)
+        c, _runtime = _runtime_over(ds)
+        c.issues = IssuesSync(c)
+        c.comments.embed_images_as_base64 = AsyncMock(return_value="body")
+        c.comments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
+        c.comments.build_issue_comment_blocks = AsyncMock(return_value=([], []))
+        await ds.get_issue("acme", "widgets", 1)
+        assert (await ds.get_issue("acme", "widgets", 2)).is_rate_limited is True
+
+        response = await StreamingHelper(c).stream_record(TestStreamReportsRateLimitNotAccessDenied._ticket())
+
+        assert response.status_code == HttpStatusCode.SUCCESS.value
+
+
 class TestDsCallWaitsOutShortLimits:
     async def test_waits_for_retry_after_then_succeeds(self, no_sleep: AsyncMock) -> None:
         calls = {"n": 0}
@@ -366,6 +493,7 @@ class TestStreamReportsRateLimitNotAccessDenied:
 
         assert exc.value.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
         assert "permission" not in str(exc.value.detail).lower()
+        assert 1790 <= int((exc.value.headers or {})["Retry-After"]) <= 1800
 
     async def test_denied_issue_still_streams_as_403(self, no_sleep: AsyncMock) -> None:
         def handler(request: httpx.Request) -> httpx.Response:

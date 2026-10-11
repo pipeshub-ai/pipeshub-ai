@@ -145,6 +145,7 @@ def raise_for_stream_fetch(
     connector: str | None = None,
     status: int | None = None,
     message: str | None = None,
+    retry_after: int | str | None = None,
 ) -> None:
     """Map a source fetch result onto a stream HTTPException, or return if OK.
 
@@ -163,7 +164,11 @@ def raise_for_stream_fetch(
     if success and has_payload:
         return
     if _is_error_status(status):
-        raise map_source_status(status, connector=connector)  # type: ignore[arg-type]
+        raise map_source_status(
+            status,  # type: ignore[arg-type]
+            connector=connector,
+            retry_after=None if retry_after is None else str(retry_after),
+        )
     if success:
         raise not_found_at_source(connector)
     raise RuntimeError(message or "Failed to fetch from source")

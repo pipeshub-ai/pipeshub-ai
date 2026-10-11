@@ -20,6 +20,7 @@ from app.config.constants.arangodb import MimeTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
+from app.sources.external.github.github_async import rate_limit_reserve_exempt
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
 
@@ -44,6 +45,15 @@ class StreamingHelper:
     # ------------------------------------------------------------------
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record to indexing without holding back the quota reserve.
+
+        See ``rate_limit_reserve_exempt``: the reserve is for sync and listing,
+        which can simply run again later.
+        """
+        with rate_limit_reserve_exempt():
+            return await self._stream_record(record)
+
+    async def _stream_record(self, record: Record) -> StreamingResponse:
         """Build and return an HTTP streaming response for a GitHub record.
 
         - TICKET / PULL_REQUEST: serialises the full blocks container in a
