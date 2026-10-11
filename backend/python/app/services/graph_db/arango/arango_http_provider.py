@@ -2001,22 +2001,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
         if not connector_id:
             return
         coll = CollectionNames.RECORDS.value
         excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
+        if only_statuses is not None and not included:
+            return
         try:
             exclude_clause = (
                 "FILTER doc.indexingStatus NOT IN @exclude_statuses"
                 if excluded
                 else ""
             )
+            include_clause = (
+                "FILTER doc.indexingStatus IN @only_statuses" if included else ""
+            )
+            # AQL rejects a declared-but-unused bind var, so only bind it here.
+            reason_field = ", reason: @reason" if reason is not None else ""
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
-                UPDATE doc WITH {{ indexingStatus: @status }} IN @@collection
+                {include_clause}
+                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
@@ -2025,6 +2037,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
             if excluded:
                 bind_vars["exclude_statuses"] = excluded
+            if included:
+                bind_vars["only_statuses"] = included
+            if reason is not None:
+                bind_vars["reason"] = reason
             await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
         except Exception as e:
             # Must not be swallowed: the rebuild drops the vector collection

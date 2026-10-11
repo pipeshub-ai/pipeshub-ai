@@ -1914,10 +1914,15 @@ class IGraphDBProvider(ABC):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
         """Set indexingStatus for every record on a connector in one query.
 
         ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
+        ``only_statuses``, when given, limits the write to records holding one
+        of them. ``reason``, when given, is written alongside the status.
         """
         pass
 

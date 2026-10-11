@@ -26,6 +26,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from app.utils.user_errors import CONNECTOR_OFF
 
 
 # ---------------------------------------------------------------------------
@@ -706,12 +707,12 @@ class TestAppDisabledDrainsQueuedRecords:
         args, kwargs = gp.reset_indexing_status_for_connector.await_args
         assert args[0] == "conn-1"
         assert args[1] == ProgressStatus.AUTO_INDEX_OFF.value
-        # IN_PROGRESS is mid-pipeline and COMPLETED is already done; taking
-        # either out from under a running index is its own race.
-        assert set(kwargs["exclude_statuses"]) == {
-            ProgressStatus.IN_PROGRESS.value,
-            ProgressStatus.COMPLETED.value,
-        }
+        # Only the backlog, marked as parked by the turn-off: a record the
+        # connector's filters keep out of auto-indexing is AUTO_INDEX_OFF too,
+        # and stamping it CONNECTOR_OFF would have it queued on the next enable.
+        assert kwargs["only_statuses"] == [ProgressStatus.QUEUED.value]
+        assert kwargs["reason"] == CONNECTOR_OFF
+        assert "exclude_statuses" not in kwargs
 
     @pytest.mark.asyncio
     async def test_sweep_failure_does_not_abort_the_disable(self):

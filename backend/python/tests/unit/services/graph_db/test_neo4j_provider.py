@@ -2138,6 +2138,28 @@ class TestUserAndOrganizationLookups:
         assert params["connector_id"] == "app-1"
         assert params["status"] == "NOT_STARTED"
         assert params["exclude_statuses"] == ["IN_PROGRESS"]
+        assert "n.reason" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.indexingStatus IN $only_statuses" in query
+        assert "n.reason = $reason" in query
+        assert params["only_statuses"] == ["QUEUED"]
+        assert params["reason"] == "off"
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_with_an_empty_status_list_writes_nothing(self, neo4j_provider: Neo4jProvider):
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=[]
+        )
+        neo4j_provider.client.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_departments_with_and_without_org(self, neo4j_provider: Neo4jProvider):

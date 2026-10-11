@@ -1752,6 +1752,30 @@ class TestVectorStoreRebuildGraphQueries:
         assert bind["connector_id"] == "app-1"
         assert bind["status"] == "NOT_STARTED"
         assert bind["exclude_statuses"] == ["IN_PROGRESS"]
+        # Unused bind vars are an AQL error.
+        assert "only_statuses" not in bind and "reason" not in bind
+
+    @pytest.mark.asyncio
+    async def test_reset_limited_to_statuses_and_stamping_a_reason(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+        )
+        query = connected_provider.execute_query.await_args.args[0]
+        bind = connected_provider.execute_query.await_args.kwargs["bind_vars"]
+        assert "doc.indexingStatus IN @only_statuses" in query
+        assert "reason: @reason" in query
+        assert bind["only_statuses"] == ["QUEUED"]
+        assert bind["reason"] == "off"
+        assert "exclude_statuses" not in bind
+
+    @pytest.mark.asyncio
+    async def test_reset_with_an_empty_status_list_writes_nothing(self, connected_provider):
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=[]
+        )
+        connected_provider.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reset_failure_propagates(self, connected_provider):

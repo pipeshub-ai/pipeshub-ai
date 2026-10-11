@@ -13769,20 +13769,31 @@ class Neo4jProvider(IGraphDBProvider):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
     ) -> None:
         if not connector_id:
             return
         excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
+        if only_statuses is not None and not included:
+            return
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
             exclude_clause = (
                 "AND NOT n.indexingStatus IN $exclude_statuses" if excluded else ""
             )
+            include_clause = (
+                "AND n.indexingStatus IN $only_statuses" if included else ""
+            )
+            reason_clause = ", n.reason = $reason" if reason is not None else ""
             query = f"""
             MATCH (n:{label})
             WHERE n.connectorId = $connector_id
             {exclude_clause}
-            SET n.indexingStatus = $status
+            {include_clause}
+            SET n.indexingStatus = $status{reason_clause}
             """
             parameters: dict = {
                 "connector_id": connector_id,
@@ -13790,6 +13801,10 @@ class Neo4jProvider(IGraphDBProvider):
             }
             if excluded:
                 parameters["exclude_statuses"] = excluded
+            if included:
+                parameters["only_statuses"] = included
+            if reason is not None:
+                parameters["reason"] = reason
             await self.client.execute_query(
                 query,
                 parameters=parameters,
