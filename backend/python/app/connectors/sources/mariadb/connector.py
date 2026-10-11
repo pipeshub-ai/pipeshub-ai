@@ -681,6 +681,16 @@ class MariaDBConnector(BaseConnector):
         if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
+        # The save publishes nothing for this record, so indexing never writes its
+        # statuses and checksum back; left at the defaults, the upsert would erase
+        # them. A failed record keeps the defaults so its retry starts clean.
+        if (
+            existing is not None
+            and not changed
+            and existing.indexing_status == ProgressStatus.COMPLETED.value
+        ):
+            self.data_entities_processor._preserve_indexing_state(record, existing)
+
         return record, existing
 
     async def _process_tables_generator(

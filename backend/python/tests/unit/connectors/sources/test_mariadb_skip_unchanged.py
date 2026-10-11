@@ -148,8 +148,14 @@ class Harness:
         return False
 
     def index_everything(self) -> None:
+        """Leave each stored record as a finished indexing run does."""
         for r in self.stored.values():
             r.indexing_status = ProgressStatus.COMPLETED.value
+            r.parsing_status = ProgressStatus.COMPLETED.value
+            r.extraction_status = ProgressStatus.COMPLETED.value
+            r.md5_hash = f"md5-{r.external_record_id}"
+            r.size_in_bytes = 2048
+            r.storage_document_id = f"doc-{r.external_record_id}"
 
     def record(self, table: str) -> Record:
         return self.stored[f"{DB}.{table}"]
@@ -179,6 +185,18 @@ class TestFullSyncSkipsUnchangedTables:
         h = await _indexed_harness()
         assert await h.full_sync() == []
         assert h.record("orders").indexing_status == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_unchanged_table_keeps_what_indexing_stored(self):
+        h = await _indexed_harness()
+        before = h.record("orders")
+        assert await h.full_sync() == []
+        after = h.record("orders")
+        assert after.parsing_status == ProgressStatus.COMPLETED.value
+        assert after.extraction_status == ProgressStatus.COMPLETED.value
+        assert after.md5_hash == before.md5_hash
+        assert after.size_in_bytes == before.size_in_bytes
+        assert after.storage_document_id == before.storage_document_id
 
     @pytest.mark.asyncio
     async def test_changed_rows_are_queued_again(self):
@@ -211,7 +229,12 @@ class TestFullSyncSkipsUnchangedTables:
     async def test_unchanged_table_that_failed_indexing_is_retried(self):
         h = await _indexed_harness()
         h.record("customers").indexing_status = ProgressStatus.FAILED.value
+        h.record("customers").reason = "embedding service timed out"
         assert await h.full_sync() == [("newRecord", h.record("customers").id)]
+        retried = h.record("customers")
+        assert retried.parsing_status == ProgressStatus.NOT_STARTED.value
+        assert retried.md5_hash is None
+        assert retried.reason is None
 
     @pytest.mark.asyncio
     async def test_dropped_table_is_still_deleted(self):
