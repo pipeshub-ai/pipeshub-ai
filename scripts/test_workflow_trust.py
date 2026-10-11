@@ -174,16 +174,31 @@ APPROVAL_GATED_ENVIRONMENTS = {
 }
 
 
+def _yaml_scalar(raw: str) -> str:
+    """A one-line YAML scalar as GitHub reads it; anything unusual comes back unmatched."""
+    raw = raw.strip()
+    if raw[:1] in ("'", '"'):
+        quote = raw[0]
+        end = raw.find(quote, 1)
+        rest = raw[end + 1:].strip() if end != -1 else "x"
+        if end == -1 or (rest and not rest.startswith("#")) or "\\" in raw[1:end]:
+            return raw
+        return raw[1:end]
+    if raw.startswith("#"):
+        return ""
+    return raw.split(" #", 1)[0].rstrip()
+
+
 def _job_environment(block: str, key_indent: int) -> str | None:
     """The job's environment name, from `environment: x` or its `name:` child."""
     match = re.search(rf"^ {{{key_indent}}}environment:[ \t]*(.*)$", block, re.M)
     if match is None:
         return None
-    value = match.group(1).split(" #")[0].strip()
+    value = _yaml_scalar(match.group(1))
     if value:
-        return value.strip("'\"")
+        return value
     child = re.search(rf"\A\n {{{key_indent + 1},}}name:[ \t]*(.*)$", block[match.end():], re.M)
-    return child.group(1).split(" #")[0].strip().strip("'\"") if child else None
+    return _yaml_scalar(child.group(1)) if child else None
 
 
 def _ungated_secret_jobs(text: str) -> list[str]:
@@ -286,8 +301,23 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "    environment: unprotected\n"
             "    steps:\n"
             "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  stray_quote:\n"
+            "    environment: integration-test-dev'\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  hash_in_quotes:\n"
+            "    environment:\n"
+            "      name: \"integration-test-dev # x\"\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  quoted_with_comment:\n"
+            "    environment: 'integration-test-dev' # the gated one\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
         )
-        self.assertEqual(_ungated_secret_jobs(workflow), ["daily", "made_up"])
+        self.assertEqual(
+            _ungated_secret_jobs(workflow), ["daily", "made_up", "stray_quote", "hash_in_quotes"]
+        )
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):
