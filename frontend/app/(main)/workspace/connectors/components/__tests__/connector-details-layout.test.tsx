@@ -31,6 +31,9 @@ import {
 
 type Props = React.ComponentProps<typeof ConnectorDetailsLayout>;
 
+const NOTICE =
+  "Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in Jira won't reach PipesHub until you enable it again. To remove the records, delete the connector.";
+
 function renderLayout(overrides: Partial<Props> = {}) {
   const props: Props = {
     connector: makeConnector({ isConfigured: true }),
@@ -198,10 +201,38 @@ describe('ConnectorDetailsLayout: enabling and disabling sync', () => {
     await waitFor(() => expect(props.onToggleSyncActive).toHaveBeenCalledWith(instance));
   });
 
+  it('asks before disabling sync and says the records stay searchable', async () => {
+    const instance = makeInstance({ isActive: true });
+    const props = renderLayout({ instances: [instance] });
+
+    fireEvent.click(screen.getByRole('switch'));
+
+    const dialog = await screen.findByRole('alertdialog');
+    expect(within(dialog).getByText('Disable sync for Jira (Engineering)?')).toBeTruthy();
+    expect(within(dialog).getByText(NOTICE)).toBeTruthy();
+    expect(props.onToggleSyncActive).not.toHaveBeenCalled();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disable sync' }));
+
+    await waitFor(() => expect(props.onToggleSyncActive).toHaveBeenCalledWith(instance));
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+  });
+
+  it('leaves sync on when the admin cancels the disable prompt', async () => {
+    const props = renderLayout({ instances: [makeInstance({ isActive: true })] });
+
+    fireEvent.click(screen.getByRole('switch'));
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(props.onToggleSyncActive).not.toHaveBeenCalled();
+  });
+
   it('ignores extra clicks while a toggle is still in flight', async () => {
     let finish: () => void = () => {};
     const onToggleSyncActive = vi.fn(() => new Promise<void>((r) => (finish = r)));
-    renderLayout({ instances: [makeInstance({ isActive: true })], onToggleSyncActive });
+    renderLayout({ instances: [makeInstance({ isActive: false })], onToggleSyncActive });
 
     fireEvent.click(screen.getByRole('switch'));
     await waitFor(() => expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(true));

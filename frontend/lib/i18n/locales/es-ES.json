@@ -2207,6 +2207,12 @@
         "confirm": "Detener sincronización",
         "confirmFull": "Detener sincronización completa"
       },
+      "disableSyncConfirm": {
+        "title": "¿Deshabilitar la sincronización de {{name}}?",
+        "confirm": "Deshabilitar sincronización",
+        "confirming": "Deshabilitando..."
+      },
+      "disabledSearchNotice": "Los registros de este conector siguen apareciendo en las búsquedas, con el acceso que tenían cuando lo deshabilitó. Los cambios de uso compartido en {{source}} no llegarán a PipesHub hasta que lo vuelva a habilitar. Para eliminar los registros, elimine el conector.",
       "fullSync": {
         "disabledTooltip": "Detenga la sincronización en curso antes de iniciar una sincronización completa"
       },

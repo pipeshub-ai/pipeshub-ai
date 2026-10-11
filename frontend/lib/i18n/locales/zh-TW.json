@@ -2328,6 +2328,12 @@
         "confirm": "停止同步",
         "confirmFull": "停止完整同步"
       },
+      "disableSyncConfirm": {
+        "title": "要停用 {{name}} 的同步嗎？",
+        "confirm": "停用同步",
+        "confirming": "正在停用..."
+      },
+      "disabledSearchNotice": "此連接器中的記錄仍可搜尋，存取權限維持停用時的狀態。在 {{source}} 中對共用設定所做的變更，在重新啟用之前不會同步到 PipesHub。若要移除這些記錄，請刪除該連接器。",
       "fullSync": {
         "disabledTooltip": "請先停止進行中的同步，再開始完整同步"
       },

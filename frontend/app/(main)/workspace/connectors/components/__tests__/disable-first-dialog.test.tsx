@@ -19,7 +19,13 @@ import {
   clearToasts,
 } from '../../__tests__/fixtures';
 
-function renderDialog(props: { connectorName?: string; onProceed?: () => void | Promise<void> } = {}) {
+function renderDialog(
+  props: {
+    connectorName?: string;
+    disabledNoticeSource?: string;
+    onProceed?: () => void | Promise<void>;
+  } = {}
+) {
   const onOpenChange = vi.fn();
   const onProceed = vi.fn(props.onProceed ?? (() => {}));
   renderInTheme(
@@ -29,6 +35,7 @@ function renderDialog(props: { connectorName?: string; onProceed?: () => void | 
       connectorId="conn-1"
       connectorName={'connectorName' in props ? props.connectorName : 'Jira (Engineering)'}
       actionLabel="remove this connector instance"
+      disabledNoticeSource={props.disabledNoticeSource}
       onProceed={onProceed}
     />
   );
@@ -61,6 +68,16 @@ describe('DisableFirstDialog', () => {
         'This connector is currently enabled. To remove this connector instance, it will be automatically disabled first. Do you want to proceed?'
       )
     ).toBeTruthy();
+  });
+
+  it('says the records stay searchable when the connector stays disabled', () => {
+    renderDialog({ disabledNoticeSource: 'Jira' });
+    expect(screen.getByText("Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in Jira won't reach PipesHub until you enable it again. To remove the records, delete the connector.")).toBeTruthy();
+  });
+
+  it('leaves the searchable-records notice out unless asked for', () => {
+    renderDialog();
+    expect(screen.queryByText(/stay searchable/)).toBeNull();
   });
 
   it('does nothing to the connector when the user cancels', () => {
