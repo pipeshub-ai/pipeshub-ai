@@ -334,6 +334,8 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_OFF,
+                                    # See connector_off_updates.
+                                    "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                                 },
                             )
                             results["skipped"] += 1
@@ -947,6 +949,8 @@ async def _sweep_queued_records_for_inactive_connectors(
                             "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                             "processingStartedAt": None,
                             "reason": CONNECTOR_OFF,
+                            # See connector_off_updates.
+                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         },
                     )
                     swept += 1
@@ -1050,7 +1054,10 @@ async def _republish_stranded_records(
     these at once (EntityEventService._requeue_records_parked_while_off); this
     is the net for what that single pass missed -- a refused send, a pass that
     died -- and for a record parked just after it ran. Such a record keeps its
-    status here, as the others do, so the same age and back-off bound it.
+    status here, as the others do, so the same age and back-off bound it. Every
+    path that parks one restarts its queuedAtTimestamp, so the minimum age
+    counts from the park: a record queued long before the pause is not sent
+    here alongside the turn-on re-queue.
     """
     after_seconds = messaging_env.stranded_record_republish_after_seconds
     if after_seconds <= 0:

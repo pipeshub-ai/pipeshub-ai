@@ -210,7 +210,10 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         container.messaging_producer = producer
         service = EntityEventService(logger, graph, container)
 
+        # Queued long before the pause: parking must restart this clock.
+        await graph.update_node(ids["queued-1"], CollectionNames.RECORDS.value, {"queuedAtTimestamp": 1})
         await _set_active(graph, connector_id, False)
+        paused_at = get_epoch_timestamp_in_ms()
         with patch.object(entity_module, "get_coordinator", return_value=None):
             assert await service.process_event(
                 "appDisabled", {"orgId": ORG_ID, "apps": ["jira"], "connectorId": connector_id}
@@ -220,6 +223,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             doc = await stored(name)
             assert doc["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value, name
             assert doc["reason"] == CONNECTOR_OFF, name
+            assert doc["queuedAtTimestamp"] >= paused_at, name
         assert (await stored("in-flight"))["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
         assert (await stored("manual-only")).get("reason") is None
         failed = await stored("failed")

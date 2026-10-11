@@ -555,6 +555,8 @@ class EntityEventService(BaseEventService):
                     only_statuses=[ProgressStatus.QUEUED.value],
                     reason=CONNECTOR_OFF,
                     visibility=RecordVisibility.LIVE,
+                    # The sweep ages parked records on it; see connector_off_updates.
+                    queued_at=get_epoch_timestamp_in_ms(),
                 )
                 self.logger.info(
                     f"✅ Moved queued records for connector {connector_id} to manual indexing"

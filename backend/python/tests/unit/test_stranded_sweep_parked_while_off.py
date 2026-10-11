@@ -14,16 +14,24 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, OriginTypes, ProgressStatus
-from app.indexing_main import _republish_stranded_records
+from app.indexing_main import (
+    _republish_stranded_records,
+    _sweep_queued_records_for_inactive_connectors,
+)
+from app.modules.indexing.connector_off_events import connector_off_updates
 from app.services.messaging.kafka.handlers import entity as entity_module
 from app.services.messaging.kafka.handlers.entity import EntityEventService
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 ON, OFF = "github-on", "github-off"
 
@@ -65,8 +73,29 @@ class FakeGraph:
         return rows[skip:skip + limit]
 
     async def update_node(self, key, collection, updates, transaction=None) -> bool:
-        self.records[key].update(updates)
+        target = self.apps if collection == CollectionNames.APPS.value else self.records
+        target[key].update(updates)
         return True
+
+    async def batch_upsert_nodes(self, nodes, collection, transaction=None) -> bool:
+        for node in nodes:
+            self.apps.setdefault(node["id"], {}).update(node)
+        return True
+
+    async def reset_indexing_status_for_connector(
+        self, connector_id, status, exclude_statuses=None, transaction=None,
+        *, only_statuses=None, reason=None, visibility=None, queued_at=None,
+    ) -> None:
+        for doc in self.records.values():
+            if doc["connectorId"] != connector_id or doc.get("isDeleted"):
+                continue
+            if only_statuses is not None and doc["indexingStatus"] not in only_statuses:
+                continue
+            doc["indexingStatus"] = status
+            if reason is not None:
+                doc["reason"] = reason
+            if queued_at is not None:
+                doc["queuedAtTimestamp"] = queued_at
 
     async def update_nodes_fields_if_match(self, collection, rows, transaction=None) -> list[str]:
         applied = []
@@ -230,4 +259,90 @@ async def test_a_parked_record_with_a_checksum_is_still_sent() -> None:
     graph.records["r0"] = _parked("r0", md5Checksum="abc", virtualRecordId="vr-1", version=1)
 
     assert await _sweep(graph, producer) == 1
+    assert producer.sent == ["r0"]
+
+
+# A record queued more than an hour before the pause is already past the
+# sweep's minimum age. Every path that parks it must restart its queue clock,
+# or a sweep tick running beside the turn-on re-queue sends it a second time.
+
+HOUR_MS = 3600 * 1000
+
+
+def _waiting_since_long_ago(key: str) -> dict[str, Any]:
+    return _parked(key, indexingStatus=ProgressStatus.QUEUED.value, reason=None)
+
+
+async def _park_by_turning_off(graph: FakeGraph, svc: EntityEventService) -> None:
+    graph.apps[ON]["isActive"] = False
+    with patch.object(entity_module, "get_coordinator", return_value=None):
+        assert await svc.process_event(
+            "appDisabled", {"orgId": "org-1", "apps": ["github"], "connectorId": ON}
+        )
+
+
+async def _park_by_the_inactive_connector_sweep(graph: FakeGraph, svc: EntityEventService) -> None:
+    graph.apps[ON]["isActive"] = False
+    assert await _sweep_queued_records_for_inactive_connectors(
+        graph_provider=graph, logger=logging.getLogger("t"), page_size=100
+    ) == 1
+
+
+async def _park_as_the_handler_and_read_filter_do(graph: FakeGraph, svc: EntityEventService) -> None:
+    graph.apps[ON]["isActive"] = False
+    graph.records["r0"].update(connector_off_updates(graph.records["r0"]))
+
+
+PARK_PATHS = [
+    pytest.param(_park_by_turning_off, id="disable-sweep"),
+    pytest.param(_park_by_the_inactive_connector_sweep, id="inactive-connector-sweep"),
+    pytest.param(_park_as_the_handler_and_read_filter_do, id="connector-off-write"),
+]
+
+
+@pytest.mark.parametrize("park", PARK_PATHS)
+@pytest.mark.asyncio
+async def test_a_long_waiting_record_is_sent_only_by_the_resume(
+    park: Callable[[FakeGraph, EntityEventService], Awaitable[None]],
+) -> None:
+    graph, producer = FakeGraph(), Producer()
+    graph.records["r0"] = _waiting_since_long_ago("r0")
+    svc = _resume(graph, producer)
+
+    await park(graph, svc)
+    assert graph.records["r0"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+    assert graph.records["r0"]["reason"] == CONNECTOR_OFF
+
+    graph.apps[ON]["isActive"] = True
+    send_batch = producer.send_messages
+    ticks: list[int] = []
+
+    async def send_then_a_sweep_tick(topic, messages) -> list[bool]:
+        acked = await send_batch(topic, messages)
+        # A tick landing between the resume's send and its status write.
+        ticks.append(await _sweep(graph, producer))
+        return acked
+
+    producer.send_messages = send_then_a_sweep_tick
+    assert await svc._requeue_records_parked_while_off(ON) == 1
+
+    assert ticks == [0]
+    assert producer.sent == ["r0"]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_send_is_sent_once_the_minimum_age_has_passed() -> None:
+    graph, producer = FakeGraph(), Producer()
+    graph.records["r0"] = _waiting_since_long_ago("r0")
+    svc = _resume(graph, producer)
+    await _park_by_turning_off(graph, svc)
+    graph.apps[ON]["isActive"] = True
+    producer.refuse = {"r0"}
+
+    assert await svc._requeue_records_parked_while_off(ON) == 0
+    assert await _sweep(graph, producer) == 0
+
+    later = get_epoch_timestamp_in_ms() + HOUR_MS + 60_000
+    with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=later):
+        assert await _sweep(graph, producer) == 1
     assert producer.sent == ["r0"]

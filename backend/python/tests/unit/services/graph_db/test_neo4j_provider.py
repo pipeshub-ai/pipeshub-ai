@@ -2144,14 +2144,16 @@ class TestUserAndOrganizationLookups:
     async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.reset_indexing_status_for_connector(
-            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off", queued_at=42
         )
         query = neo4j_provider.client.execute_query.await_args.args[0]
         params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
         assert "n.indexingStatus IN $only_statuses" in query
         assert "n.reason = $reason" in query
+        assert "n.queuedAtTimestamp = $queued_at" in query
         assert params["only_statuses"] == ["QUEUED"]
         assert params["reason"] == "off"
+        assert params["queued_at"] == 42
         assert "isDeleted" not in query
 
     @pytest.mark.asyncio

@@ -13800,6 +13800,7 @@ class Neo4jProvider(IGraphDBProvider):
         only_statuses: list[str] | None = None,
         reason: str | None = None,
         visibility: RecordVisibility = RecordVisibility.ALL,
+        queued_at: int | None = None,
     ) -> None:
         if not connector_id:
             return
@@ -13821,13 +13822,16 @@ class Neo4jProvider(IGraphDBProvider):
                 else f"AND {cypher_record_visibility('n', visibility)}"
             )
             reason_clause = ", n.reason = $reason" if reason is not None else ""
+            queued_at_clause = (
+                ", n.queuedAtTimestamp = $queued_at" if queued_at is not None else ""
+            )
             query = f"""
             MATCH (n:{label})
             WHERE n.connectorId = $connector_id
             {exclude_clause}
             {include_clause}
             {visibility_clause}
-            SET n.indexingStatus = $status{reason_clause}
+            SET n.indexingStatus = $status{reason_clause}{queued_at_clause}
             """
             parameters: dict = {
                 "connector_id": connector_id,
@@ -13839,6 +13843,8 @@ class Neo4jProvider(IGraphDBProvider):
                 parameters["only_statuses"] = included
             if reason is not None:
                 parameters["reason"] = reason
+            if queued_at is not None:
+                parameters["queued_at"] = queued_at
             await self.client.execute_query(
                 query,
                 parameters=parameters,
