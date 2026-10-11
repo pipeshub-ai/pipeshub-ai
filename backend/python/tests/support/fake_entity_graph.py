@@ -223,6 +223,11 @@ class FakeGraph:
 
     async def get_edge(self, from_key, from_collection, to_key, to_collection, edge_collection,
                        transaction=None, *, raise_on_error=False) -> dict[str, Any] | None:
+        if self.fail_edge_reads:
+            error = self.fail_edge_reads.pop(0)
+            if raise_on_error:
+                raise error
+            return None
         return self.edges.get(
             (edge_collection, f"{from_collection}/{from_key}", f"{to_collection}/{to_key}")
         )
