@@ -352,7 +352,7 @@ class SemanticCacheService:
                 return int(val)
             return 1
         except Exception as exc:
-            self._logger.warning("Failed to read epoch for org: %s", exc)
+            self._logger.warning("Failed to read epoch for org: %s", type(exc).__name__)
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return 1
@@ -368,7 +368,7 @@ class SemanticCacheService:
             self._circuit_breaker.record_success()
             return int(val)
         except Exception as exc:
-            self._logger.warning("Failed to increment epoch for org: %s", exc)
+            self._logger.warning("Failed to increment epoch for org: %s", type(exc).__name__)
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return 1
@@ -444,7 +444,7 @@ class SemanticCacheService:
             )
             self._circuit_breaker.record_success()
         except Exception as exc:
-            self._logger.warning("Redis lookup error on bucket: %s", exc)
+            self._logger.warning("Redis lookup error on bucket: %s", type(exc).__name__)
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return CacheLookupResult(
@@ -468,8 +468,26 @@ class SemanticCacheService:
             try:
                 entry_data_raw = json.loads(raw_str)
                 if not isinstance(entry_data_raw, dict):
+                    _ = asyncio.create_task(
+                        self._cleanup_orphan_entry(
+                            redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                        )
+                    )
                     continue
                 entry_data = cast("dict[str, object]", entry_data_raw)
+                ver = entry_data.get("schema_version")
+                if ver is not None and ver != STORAGE_SCHEMA_VERSION:
+                    self._logger.warning(
+                        "Incompatible metadata schema version %r; evicting entry %s",
+                        ver,
+                        field_name,
+                    )
+                    _ = asyncio.create_task(
+                        self._cleanup_orphan_entry(
+                            redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                        )
+                    )
+                    continue
                 created_at = float(str(entry_data.get("created_at", 0.0)))
                 # READ-TIME TTL: an entry older than ttl_seconds is dropped even if bucket key is alive
                 if now_ts - created_at > config.ttl_seconds:
@@ -477,6 +495,11 @@ class SemanticCacheService:
                     continue
                 active_entries.append(entry_data)
             except Exception:
+                _ = asyncio.create_task(
+                    self._cleanup_orphan_entry(
+                        redis, bucket_key, lru_key, field_name, f"{data_prefix}{field_name}"
+                    )
+                )
                 continue
 
         # Best-effort async cleanup of expired entries
@@ -620,20 +643,83 @@ class SemanticCacheService:
         data_key: str,
         entry_id: str,
     ) -> dict[str, object] | None:
-        """Fetch completion data from data key; if missing, clean up orphan and return None."""
+        """Fetch completion data from data key; validate schema, required keys and types;
+        if missing, corrupt, or invalid, evict entry and return None."""
         try:
             val = await redis.get(data_key)
             if val is None:
                 # Missing data key => miss plus cleanup
                 _ = asyncio.create_task(
-                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id)
+                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
                 return None
             val_str = val.decode("utf-8") if isinstance(val, bytes) else str(val)
             parsed = json.loads(val_str)
-            return cast("dict[str, object]", parsed) if isinstance(parsed, dict) else None
+            if not isinstance(parsed, dict):
+                self._logger.warning("Cache data entry at %s is not a dict; evicting", data_key)
+                _ = asyncio.create_task(
+                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                )
+                return None
+
+            # 1. Schema version validation
+            schema_ver = parsed.get("schema_version")
+            if schema_ver is not None and schema_ver != STORAGE_SCHEMA_VERSION:
+                self._logger.warning(
+                    "Cache entry has incompatible schema version %r (expected %r); evicting",
+                    schema_ver,
+                    STORAGE_SCHEMA_VERSION,
+                )
+                _ = asyncio.create_task(
+                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                )
+                return None
+
+            # 2. Required keys and types: "answer" must be present and a string
+            if "answer" not in parsed or not isinstance(parsed["answer"], str):
+                self._logger.warning(
+                    "Cache entry missing or invalid 'answer' field; evicting entry %s",
+                    entry_id,
+                )
+                _ = asyncio.create_task(
+                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                )
+                return None
+
+            # 3. Optional keys type checks if present
+            citations = parsed.get("citations")
+            if citations is not None and not isinstance(citations, list):
+                self._logger.warning(
+                    "Cache entry citations is not a list; evicting entry %s",
+                    entry_id,
+                )
+                _ = asyncio.create_task(
+                    self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+                )
+            # Pop storage schema version envelope key so returned completion_data matches caller's payload
+            _ = parsed.pop("schema_version", None)
+            return cast("dict[str, object]", parsed)
+        except json.JSONDecodeError as exc:
+            self._logger.warning(
+                "Corrupt JSON in data key %s: %s; evicting entry %s",
+                data_key,
+                type(exc).__name__,
+                entry_id,
+            )
+            _ = asyncio.create_task(
+                self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+            )
+            return None
         except Exception as exc:
-            self._logger.warning("Error reading data key: %s", exc)
+            self._logger.warning(
+                "Error reading data key %s: %s; evicting entry %s",
+                data_key,
+                type(exc).__name__,
+                entry_id,
+            )
+            _ = asyncio.create_task(
+                self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
+            )
             return None
 
     async def _touch_lru(
@@ -644,12 +730,19 @@ class SemanticCacheService:
             await redis.zadd(lru_key, {entry_id: now_ts})
 
     async def _cleanup_orphan_entry(
-        self, redis: RedisClient, bucket_key: str, lru_key: str, entry_id: str
+        self,
+        redis: RedisClient,
+        bucket_key: str,
+        lru_key: str,
+        entry_id: str,
+        data_key: str | None = None,
     ) -> None:
-        """Remove orphaned entry from lookup hash and LRU."""
+        """Remove orphaned or invalid entry from lookup hash, LRU, and data key."""
         with contextlib.suppress(Exception):
             _ = await cast(Any, redis).hdel(bucket_key, entry_id)
             _ = await cast(Any, redis).zrem(lru_key, entry_id)
+            if data_key:
+                _ = await cast(Any, redis).delete(data_key)
 
     async def _cleanup_expired_entries(
         self,
@@ -715,7 +808,11 @@ class SemanticCacheService:
         now_ts = self._clock()
         packed_emb = pack_embedding(query_embedding)
 
+        payload = dict(completion_data)
+        _ = payload.setdefault("schema_version", STORAGE_SCHEMA_VERSION)
+
         metadata: dict[str, object] = {
+            "schema_version": STORAGE_SCHEMA_VERSION,
             "entry_id": entry_id,
             "norm_query": norm_query,
             "query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
@@ -727,7 +824,7 @@ class SemanticCacheService:
         }
 
         metadata_json = json.dumps(metadata)
-        completion_json = json.dumps(completion_data)
+        completion_json = json.dumps(payload)
 
         try:
             _ = await cast(Any, redis).eval(  # pyright: ignore[reportUnknownMemberType]
@@ -748,7 +845,7 @@ class SemanticCacheService:
             self.metrics.writes += 1
             return True
         except Exception as exc:
-            self._logger.warning("Failed to store entry in semantic cache: %s", exc)
+            self._logger.warning("Failed to store entry in semantic cache: %s", type(exc).__name__)
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return False
@@ -780,7 +877,7 @@ class SemanticCacheService:
             self._circuit_breaker.record_success()
             return True
         except Exception as exc:
-            self._logger.warning("Failed to evict entry: %s", exc)
+            self._logger.warning("Failed to evict entry: %s", type(exc).__name__)
             self._circuit_breaker.record_failure()
             self.metrics.errors += 1
             return False

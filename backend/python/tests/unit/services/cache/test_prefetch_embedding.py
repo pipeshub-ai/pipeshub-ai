@@ -150,8 +150,8 @@ class TestSearchWithFiltersByteIdenticalResponse:
 
 class TestPrefetchFingerprintsAndEmbeddingHandoff:
     @pytest.mark.asyncio
-    async def test_prefetch_carries_embedding_and_matching_fingerprints(self) -> None:
-        """When all tool records have matching raw graph records, fingerprints are built deterministically."""
+    async def test_prefetch_retrieval_carries_dense_embedding(self) -> None:
+        """Prefetch retrieval extracts and carries dense query embedding on PrefetchResult."""
         dummy_vector = [0.01, 0.02, 0.03]
 
         async def _fake_search_with_filters(*args, **kwargs) -> dict[str, object]:
@@ -194,6 +194,45 @@ class TestPrefetchFingerprintsAndEmbeddingHandoff:
         assert isinstance(result, PrefetchResult)
         assert result.is_empty is False
         assert result.query_embedding == dummy_vector
+
+    @pytest.mark.asyncio
+    async def test_prefetch_builds_record_fingerprints_matching_raw_records(self) -> None:
+        """When all tool records have matching raw graph records, fingerprints are built deterministically."""
+        async def _fake_search_with_filters(*args, **kwargs) -> dict[str, object]:
+            return {
+                "status_code": 200,
+                "searchResults": [{"metadata": {"virtualRecordId": "vr1", "recordId": "r1"}}],
+                "virtual_to_record_map": {
+                    "vr1": {
+                        "id": "r1",
+                        "_key": "r1",
+                        "updatedAtTimestamp": 1700000000,
+                        "sourceLastModifiedTimestamp": 1699999000,
+                        "version": 3,
+                        "md5Checksum": "md5_hash_1",
+                    }
+                },
+            }
+
+        retrieval_service = MagicMock()
+        retrieval_service.search_with_filters = AsyncMock(side_effect=_fake_search_with_filters)
+
+        flattened = [{"virtual_record_id": "vr1", "recordId": "r1"}]
+
+        async def _fake_get_flattened_results(*args, **kwargs) -> list[dict[str, object]]:
+            vr_to_result = args[4] if len(args) > 4 else kwargs.get("virtual_record_id_to_result", {})
+            if isinstance(vr_to_result, dict):
+                vr_to_result["vr1"] = {"virtual_record_id": "vr1", "id": "r1"}
+            return flattened
+
+        with patch("app.agents.chat_modes.prefetch.get_flattened_results", side_effect=_fake_get_flattened_results), \
+             patch("app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()), \
+             patch("app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock()), \
+             patch("app.agents.chat_modes.prefetch.build_message_content_array", return_value=([[{"type": "text", "text": "policy text"}]], MagicMock())):
+
+            result = await prefetch_retrieval(**_make_dummy_prefetch_kwargs(retrieval_service=retrieval_service))
+
+        assert isinstance(result, PrefetchResult)
         assert result.record_fingerprints is not None
         assert len(result.record_fingerprints) == 1
         assert result.record_fingerprints[0] == ("r1", 1700000000, 1699999000, 3, "md5_hash_1")

@@ -493,10 +493,10 @@ class TestCapEvictionAndOrphanCleanup:
 
         # Store entry 1 at t=100
         now = 100.0
-        await service.store("org_1", "u1", "what is company query number one?", [1.0, 0.0], {"a": 1}, context_digest, config_hash)
+        await service.store("org_1", "u1", "what is company query number one?", [1.0, 0.0], {"answer": "ans 1", "a": 1}, context_digest, config_hash)
         # Store entry 2 at t=200
         now = 200.0
-        await service.store("org_1", "u1", "what is company query number two?", [0.0, 1.0], {"a": 2}, context_digest, config_hash)
+        await service.store("org_1", "u1", "what is company query number two?", [0.0, 1.0], {"answer": "ans 2", "a": 2}, context_digest, config_hash)
 
         # Both entries exist
         res1 = await service.lookup("org_1", "u1", "what is company query number one?", [1.0, 0.0], context_digest, config_hash)
@@ -510,7 +510,7 @@ class TestCapEvictionAndOrphanCleanup:
 
         # Store entry 3 at t=400 (exceeds cap of 2 -> entry 2 should be evicted)
         now = 400.0
-        await service.store("org_1", "u1", "what is company query number three?", [0.5, 0.5], {"a": 3}, context_digest, config_hash)
+        await service.store("org_1", "u1", "what is company query number three?", [0.5, 0.5], {"answer": "ans 3", "a": 3}, context_digest, config_hash)
 
         # Entry 1 should still hit
         res1_after = await service.lookup("org_1", "u1", "what is company query number one?", [1.0, 0.0], context_digest, config_hash)

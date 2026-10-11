@@ -93,7 +93,7 @@ async def get_semantic_cache_config(
         logger.warning(
             "Failed to evaluate ENABLE_SEMANTIC_CACHE flag for org %s; falling back to off: %s",
             org_id,
-            exc,
+            type(exc).__name__,
         )
         return default_off
 
@@ -117,7 +117,7 @@ async def get_semantic_cache_config(
             "Failed to read %s from ConfigurationService for org %s: %s; falling back to off",
             key,
             org_id,
-            exc,
+            type(exc).__name__,
         )
         _config_cache[org_id] = (default_off, now)
         return default_off
@@ -145,30 +145,41 @@ async def get_semantic_cache_config(
         mode = "off"
 
     try:
-        raw_thresh = raw_dict.get("similarity_threshold", DEFAULT_SIMILARITY_THRESHOLD)
+        raw_thresh = raw_dict.get("similarity_threshold")
+        if raw_thresh is None:
+            raw_thresh = raw_dict.get("similarityThreshold", DEFAULT_SIMILARITY_THRESHOLD)
         sim_val = float(str(raw_thresh)) if raw_thresh is not None else DEFAULT_SIMILARITY_THRESHOLD
         sim_threshold = _clamp_float(sim_val, MIN_SIMILARITY_THRESHOLD, MAX_SIMILARITY_THRESHOLD)
     except (TypeError, ValueError):
         sim_threshold = DEFAULT_SIMILARITY_THRESHOLD
 
     try:
-        raw_ttl = raw_dict.get("ttl_seconds", DEFAULT_TTL_SECONDS)
+        raw_ttl = raw_dict.get("ttl_seconds")
+        if raw_ttl is None:
+            raw_ttl = raw_dict.get("ttlSeconds", DEFAULT_TTL_SECONDS)
         ttl_val = int(str(raw_ttl)) if raw_ttl is not None else DEFAULT_TTL_SECONDS
         ttl_seconds = _clamp_int(ttl_val, MIN_TTL_SECONDS, MAX_TTL_SECONDS)
     except (TypeError, ValueError):
         ttl_seconds = DEFAULT_TTL_SECONDS
 
     try:
-        raw_max = raw_dict.get("max_entries_per_context", DEFAULT_MAX_ENTRIES)
+        raw_max = raw_dict.get("max_entries_per_context")
+        if raw_max is None:
+            raw_max = raw_dict.get("maxEntriesPerContext", DEFAULT_MAX_ENTRIES)
         max_val = int(str(raw_max)) if raw_max is not None else DEFAULT_MAX_ENTRIES
         max_entries = _clamp_int(max_val, MIN_MAX_ENTRIES, MAX_MAX_ENTRIES)
     except (TypeError, ValueError):
         max_entries = DEFAULT_MAX_ENTRIES
 
-    share_across_org = bool(raw_dict.get("share_across_org", False))
+    raw_share = raw_dict.get("share_across_org")
+    if raw_share is None:
+        raw_share = raw_dict.get("shareAcrossOrg", False)
+    share_across_org = bool(raw_share)
 
     try:
-        raw_jaccard = raw_dict.get("jaccard_threshold", DEFAULT_JACCARD_THRESHOLD)
+        raw_jaccard = raw_dict.get("jaccard_threshold")
+        if raw_jaccard is None:
+            raw_jaccard = raw_dict.get("jaccardThreshold", DEFAULT_JACCARD_THRESHOLD)
         jaccard_val = float(str(raw_jaccard)) if raw_jaccard is not None else DEFAULT_JACCARD_THRESHOLD
         jaccard_threshold = _clamp_float(jaccard_val, MIN_JACCARD_THRESHOLD, MAX_JACCARD_THRESHOLD)
     except (TypeError, ValueError):

@@ -175,6 +175,30 @@ class TestSemanticCacheConfigRead:
         assert cfg.jaccard_threshold == 0.65
 
     @pytest.mark.asyncio
+    async def test_camel_case_config_parsed_successfully(self) -> None:
+        """When config uses camelCase keys, all fields parse identically to snake_case."""
+        config_service = _make_mock_config_service(
+            flag_enabled=True,
+            kv_value={
+                "mode": "shadow",
+                "similarityThreshold": 0.95,
+                "ttlSeconds": 3600,
+                "maxEntriesPerContext": 15,
+                "shareAcrossOrg": True,
+                "jaccardThreshold": 0.75,
+            },
+        )
+
+        cfg = await get_semantic_cache_config(config_service, org_id="org_camel")
+
+        assert cfg.mode == "shadow"
+        assert cfg.similarity_threshold == 0.95
+        assert cfg.ttl_seconds == 3600
+        assert cfg.max_entries_per_context == 15
+        assert cfg.share_across_org is True
+        assert cfg.jaccard_threshold == 0.75
+
+    @pytest.mark.asyncio
     async def test_kv_error_falls_back_to_mode_off(self) -> None:
         """When reading KV store throws an exception, safe fallback returns mode='off'."""
         config_service = _make_mock_config_service(flag_enabled=True, raise_kv_error=True)
