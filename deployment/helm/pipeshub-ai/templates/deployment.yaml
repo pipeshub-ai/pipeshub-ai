@@ -22,7 +22,11 @@ spec:
       {{- include "pipeshub-ai.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
+      {{- $podAnnotations := deepCopy (.Values.podAnnotations | default dict) }}
+      {{- if include "pipeshub-ai.createSecrets" . }}
+      {{- $_ := set $podAnnotations "checksum/qdrant-api-key" (include "pipeshub-ai.qdrantApiKeyChecksum" .) }}
+      {{- end }}
+      {{- with $podAnnotations }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}

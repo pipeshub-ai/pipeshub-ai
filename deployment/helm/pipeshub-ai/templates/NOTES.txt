@@ -21,6 +21,7 @@ To learn more about the release, try:
   {{- if .Values.arango.enabled }}
   ArangoDB: --set arango.auth.rootPassword=<secure-password>
   {{- end }}
+  Qdrant: --set qdrant.apiKey=$(openssl rand -hex 32)
   App Secret: --set secretKey=$(openssl rand -hex 32)
 
 {{- end }}
