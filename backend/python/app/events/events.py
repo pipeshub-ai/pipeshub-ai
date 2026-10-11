@@ -65,6 +65,7 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
+from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
@@ -502,9 +503,10 @@ class EventProcessor:
             prev_virtual_record_id=prev_virtual_record_id,
         )
 
-        ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-            ctx, self.logger, self.sink_orchestrator
-        )
+        with stage("reconcile"):
+            ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                ctx, self.logger, self.sink_orchestrator
+            )
 
         defer_extraction = (
             ctx.settings.get("defer_extraction")
@@ -529,28 +531,31 @@ class EventProcessor:
             )
         else:
             try:
-                departments = await self.graph_provider.get_departments(org_id)
-                semantic_metadata = await self.extraction_client.classify(
-                    block_container=block_container,
-                    org_id=org_id,
-                    departments=departments or [],
-                    record_name=record.record_name,
-                    record_type=record.record_type.value,
-                )
+                with stage("extract"):
+                    departments = await self.graph_provider.get_departments(org_id)
+                    semantic_metadata = await self.extraction_client.classify(
+                        block_container=block_container,
+                        org_id=org_id,
+                        departments=departments or [],
+                        record_name=record.record_name,
+                        record_type=record.record_type.value,
+                    )
 
                 record.semantic_metadata = semantic_metadata
                 if semantic_metadata:
                     # Taxonomy names must be resolved before the summary,
                     # blob and graph writes below all consume them.
-                    await self.sink_orchestrator.resolve_entities(ctx)
+                    with stage("entities.resolve"):
+                        await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
-                    await self.sink_orchestrator.vector_store.index_record_summary(
-                        record_id,
-                        virtual_record_id,
-                        org_id,
-                        semantic_metadata,
-                        record,
-                    )
+                    with stage("summary.index"):
+                        await self.sink_orchestrator.vector_store.index_record_summary(
+                            record_id,
+                            virtual_record_id,
+                            org_id,
+                            semantic_metadata,
+                            record,
+                        )
 
                 await self.sink_orchestrator.enrich(ctx)
                 self.logger.info(
@@ -573,7 +578,8 @@ class EventProcessor:
                 )
 
         try:
-            await self.sink_orchestrator.blob_storage.apply(ctx)
+            with stage("blob.write"):
+                await self.sink_orchestrator.blob_storage.apply(ctx)
         except Exception as blob_exc:
             self.logger.error(
                 "❌ Blob storage status update failed for record %s (document remains searchable): %s",
