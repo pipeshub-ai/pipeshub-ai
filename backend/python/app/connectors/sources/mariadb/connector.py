@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from logging import Logger
@@ -91,6 +92,8 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
+
+_AUTO_INCREMENT_OPTION = re.compile(r"\s+AUTO_INCREMENT=\d+")
 
 
 class MariaDBTableState(BaseModel):
@@ -516,6 +519,191 @@ class MariaDBConnector(BaseConnector):
             entity_type=EntityType.ORG,
         )]
 
+    def _max_rows_per_table(self, sync_filters: FilterCollection) -> int:
+        return min(
+            int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
+            MAX_ROWS_PER_TABLE_LIMIT,
+        )
+
+    async def _read_table_content(
+        self,
+        database: str,
+        table: str,
+        sync_filters: Optional[FilterCollection] = None,
+    ) -> Dict[str, Any]:
+        """The table as indexing receives it: columns, rows, keys and DDL.
+
+        Raises a stream error when any part cannot be read. ``sync_filters``
+        defaults to freshly loaded ones, read only once the table is known to exist.
+        """
+        table_info_response = await self.data_source.get_table_info(table, database)
+        if not table_info_response.success:
+            self.logger.error(f"❌ Failed to get table info for {database}.{table}: {table_info_response.error}")
+            raise to_sql_response_error(
+                table_info_response.error, connector=self.display_name
+            )
+        detail = TableDetail.model_validate(table_info_response.data)
+        columns: List[ColumnInfo] = detail.columns
+        self.logger.debug(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
+
+        # These queries only fail on a driver error — a table with no
+        # constraints succeeds with an empty list — so degrading here
+        # would stream a table whose keys were refused, not absent.
+        fks_response = await self.data_source.get_foreign_keys(table, database)
+        if not fks_response.success:
+            self.logger.error(f"❌ Failed to get foreign keys for {database}.{table}: {fks_response.error}")
+            raise to_sql_response_error(
+                fks_response.error, connector=self.display_name
+            )
+        foreign_keys = [
+            ForeignKeyInfo.model_validate(fk) for fk in (fks_response.data or [])
+        ]
+
+        pks_response = await self.data_source.get_primary_keys(table, database)
+        if not pks_response.success:
+            self.logger.error(f"❌ Failed to get primary keys for {database}.{table}: {pks_response.error}")
+            raise to_sql_response_error(
+                pks_response.error, connector=self.display_name
+            )
+        primary_keys: List[str] = [
+            PrimaryKeyInfo.model_validate(pk).column_name
+            for pk in (pks_response.data or [])
+        ]
+
+        if sync_filters is None:
+            sync_filters, _ = await load_connector_filters(
+                self.config_service, "mariadb", self.connector_id, self.logger
+            )
+        max_rows = self._max_rows_per_table(sync_filters)
+        try:
+            # Without a primary key the rows come back in storage order, which is
+            # stable while the table is unchanged; sorting by every column would
+            # cost a full sort, and a different order only means one extra reindex.
+            rows = await self.data_source.fetch_table_rows(
+                database, table, limit=max_rows, order_by=primary_keys
+            )
+        except Exception as e:
+            self.logger.error(f"❌ Failed to read rows for {database}.{table}: {e}")
+            raise to_sql_stream_error(e, connector=self.display_name) from e
+
+        ddl_response = await self.data_source.get_table_ddl(table, database)
+        if not ddl_response.success:
+            self.logger.error(f"❌ Failed to get DDL for {database}.{table}: {ddl_response.error}")
+            raise to_sql_response_error(
+                ddl_response.error, connector=self.display_name
+            )
+        ddl = DDLResult.model_validate(ddl_response.data).ddl
+
+        return {
+            "table_name": table,
+            "database_name": database,
+            "columns": [col.model_dump() for col in columns],
+            "rows": rows,
+            "foreign_keys": [fk.model_dump() for fk in foreign_keys],
+            "primary_keys": primary_keys,
+            "ddl": ddl,
+            "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
+        }
+
+    async def _table_fingerprint(self, database: str, table: str) -> Optional[str]:
+        """Hash of the content indexing would receive for this table, or None if unreadable.
+
+        MariaDB's UPDATE_TIME is NULL or reset after a restart for InnoDB, and
+        TABLE_ROWS is an estimate, so neither can prove a table is unchanged.
+        """
+        try:
+            content = await self._read_table_content(database, table, self.sync_filters)
+        except Exception as e:
+            self.logger.warning(
+                f"Could not read {database}.{table} to check it for changes, so it will be indexed again: {e}"
+            )
+            return None
+        # information_schema returns foreign keys in no fixed order.
+        content["foreign_keys"] = sorted(
+            content["foreign_keys"], key=lambda fk: json.dumps(fk, sort_keys=True, default=str)
+        )
+        # SHOW CREATE TABLE carries the next AUTO_INCREMENT value, which moves on
+        # every insert, even one past the row limit that never reaches the index.
+        content["ddl"] = _AUTO_INCREMENT_OPTION.sub("", content["ddl"] or "")
+        serialized = json.dumps(content, sort_keys=True, default=str)
+        return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+    async def _build_table_record(
+        self,
+        database_name: str,
+        table: MariaDBTable,
+    ) -> Tuple[SQLTableRecord, Optional[Record]]:
+        """Build the record for a table, with the stored record it replaces, if any."""
+        fqn = f"{database_name}.{table.name}"
+        existing = await self.data_entities_processor.get_record_by_external_id(
+            connector_id=self.connector_id,
+            external_record_id=fqn,
+        )
+
+        current_time = get_epoch_timestamp_in_ms()
+        # A fingerprint that matches the stored revision lets the save keep an
+        # indexed record COMPLETED instead of embedding it again. Without one,
+        # the timestamp never matches, so the table is indexed again.
+        revision = await self._table_fingerprint(database_name, table.name) or str(current_time)
+        changed = existing is None or existing.external_revision_id != revision
+        record_id = existing.id if existing else str(uuid.uuid4())
+
+        record = SQLTableRecord(
+            id=record_id,
+            record_name=table.name,
+            record_type=RecordType.SQL_TABLE,
+            record_group_type=RecordGroupType.SQL_DATABASE.value,
+            external_record_group_id=database_name,
+            external_record_id=fqn,
+            external_revision_id=revision,
+            origin=OriginTypes.CONNECTOR.value,
+            connector_name=self.connector_name,
+            connector_id=self.connector_id,
+            mime_type=MimeTypes.SQL_TABLE.value,
+            weburl=f"{self._frontend_url}/record/{record_id}" if self._frontend_url else "",
+            source_created_at=existing.source_created_at if existing else current_time,
+            source_updated_at=current_time if changed else existing.source_updated_at,
+            row_count=table.row_count,
+            # 0 on an existing record lets the save bump the stored version only
+            # when the revision changed.
+            version=0 if existing else 1,
+            inherit_permissions=True,
+        )
+
+        for fk in table.foreign_keys:
+            if not fk.foreign_table_name:
+                continue
+            target_database = fk.foreign_database or database_name
+            target_fqn = f"{target_database}.{fk.foreign_table_name}"
+            record.related_external_records.append(
+                RelatedExternalRecord(
+                    external_record_id=target_fqn,
+                    record_type=RecordType.SQL_TABLE,
+                    record_name=fk.foreign_table_name,
+                    relation_type=RecordRelations.FOREIGN_KEY,
+                    source_column=fk.column_name,
+                    target_column=fk.foreign_column_name,
+                    child_table_name=fqn,
+                    parent_table_name=target_fqn,
+                    constraint_name=fk.constraint_name,
+                )
+            )
+
+        if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+
+        # The save publishes nothing for this record, so indexing never writes its
+        # statuses and checksum back; left at the defaults, the upsert would erase
+        # them. A failed record keeps the defaults so its retry starts clean.
+        if (
+            existing is not None
+            and not changed
+            and existing.indexing_status == ProgressStatus.COMPLETED.value
+        ):
+            self.data_entities_processor._preserve_indexing_state(record, existing)
+
+        return record, existing
+
     async def _process_tables_generator(
         self,
         database_name: str,
@@ -524,55 +712,8 @@ class MariaDBConnector(BaseConnector):
         
         for table in tables:
             try:
-                fqn = f"{database_name}.{table.name}"
-                record_id = str(uuid.uuid4())
-                self._record_id_cache[fqn] = record_id
-                
-                weburl = f"{self._frontend_url}/record/{record_id}" if self._frontend_url else ""
-
-                current_time = get_epoch_timestamp_in_ms()
-                record = SQLTableRecord(
-                    id=record_id,
-                    record_name=table.name,
-                    record_type=RecordType.SQL_TABLE,
-                    record_group_type=RecordGroupType.SQL_DATABASE.value,
-                    external_record_group_id=database_name,
-                    external_record_id=fqn,
-                    external_revision_id=str(current_time), 
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    mime_type=MimeTypes.SQL_TABLE.value,
-                    weburl=weburl,
-                    source_created_at=current_time,
-                    source_updated_at=current_time,
-                    row_count=table.row_count,
-                    version=1,
-                    inherit_permissions=True,
-                )
-
-                if table.foreign_keys:
-                    for fk in table.foreign_keys:
-                        target_database = fk.foreign_database or database_name
-                        if fk.foreign_table_name:
-                            target_fqn = f"{target_database}.{fk.foreign_table_name}"
-                            record.related_external_records.append(
-                                RelatedExternalRecord(
-                                    external_record_id=target_fqn,
-                                    record_type=RecordType.SQL_TABLE,
-                                    record_name=fk.foreign_table_name,
-                                    relation_type=RecordRelations.FOREIGN_KEY,
-                                    source_column=fk.column_name,
-                                    target_column=fk.foreign_column_name,
-                                    child_table_name=fqn,
-                                    parent_table_name=target_fqn,
-                                    constraint_name=fk.constraint_name,
-                                )
-                            )
-                
-                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
-                    record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-
+                record, _ = await self._build_table_record(database_name, table)
+                self._record_id_cache[record.external_record_id] = record.id
                 yield (record, [])
                 await asyncio.sleep(0)
                 
@@ -611,60 +752,21 @@ class MariaDBConnector(BaseConnector):
         for table in tables:
             try:
                 fqn = f"{database_name}.{table.name}"
-                
-                existing_record = await self.data_entities_processor.get_record_by_external_id(
-                    connector_id=self.connector_id,
-                    external_record_id=fqn
-                )
-                
+                updated_record, existing_record = await self._build_table_record(database_name, table)
+
                 if not existing_record:
                     self.logger.warning(f"No existing record found for updated table {fqn}, skipping")
                     continue
-                
-                current_time = get_epoch_timestamp_in_ms()
-                
-                updated_record = SQLTableRecord(
-                    id=existing_record.id,
-                    record_name=table.name,
-                    record_type=RecordType.SQL_TABLE,
-                    record_group_type=RecordGroupType.SQL_DATABASE.value,
-                    external_record_group_id=database_name,
-                    external_record_id=fqn,
-                    external_revision_id=str(current_time),
-                    origin=OriginTypes.CONNECTOR.value,
-                    connector_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    mime_type=MimeTypes.SQL_TABLE.value,
-                    weburl=existing_record.weburl if hasattr(existing_record, 'weburl') else "",
-                    source_created_at=existing_record.source_created_at if hasattr(existing_record, 'source_created_at') else current_time,
-                    source_updated_at=current_time,
-                    row_count=table.row_count,
-                    version=(existing_record.version or 1) + 1,
-                    inherit_permissions=True,
-                )
 
-                if table.foreign_keys:
-                    for fk in table.foreign_keys:
-                        target_database = fk.foreign_database or database_name
-                        if fk.foreign_table_name:
-                            target_fqn = f"{target_database}.{fk.foreign_table_name}"
-                            updated_record.related_external_records.append(
-                                RelatedExternalRecord(
-                                    external_record_id=target_fqn,
-                                    record_type=RecordType.SQL_TABLE,
-                                    record_name=fk.foreign_table_name,
-                                    relation_type=RecordRelations.FOREIGN_KEY,
-                                    source_column=fk.column_name,
-                                    target_column=fk.foreign_column_name,
-                                    child_table_name=fqn,
-                                    parent_table_name=target_fqn,
-                                    constraint_name=fk.constraint_name,
-                                )
-                            )
-                
-                if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.TABLES.value):
-                    updated_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                
+                # The table stats flag a change on a restart or a row-estimate
+                # drift alone; the content says whether there is anything to embed.
+                if (
+                    existing_record.indexing_status == ProgressStatus.COMPLETED.value
+                    and existing_record.external_revision_id == updated_record.external_revision_id
+                ):
+                    self.logger.debug(f"Table {fqn} content is unchanged, not indexing it again")
+                    continue
+
                 await self.data_entities_processor.on_record_content_update(updated_record)
                 self.logger.debug(f"Published content update for table: {fqn}")
                 
@@ -692,71 +794,7 @@ class MariaDBConnector(BaseConnector):
                     raise HTTPException(status_code=500, detail="Invalid table FQN")
                 database, table = parts[0], parts[1]
 
-                table_info_response = await self.data_source.get_table_info(table, database)
-                if not table_info_response.success:
-                    self.logger.error(f"❌ Failed to get table info for {database}.{table}: {table_info_response.error}")
-                    raise to_sql_response_error(
-                        table_info_response.error, connector=self.display_name
-                    )
-                detail = TableDetail.model_validate(table_info_response.data)
-                columns: List[ColumnInfo] = detail.columns
-                self.logger.info(f"✅ Retrieved {len(columns)} columns for {database}.{table}")
-
-                # These queries only fail on a driver error — a table with no
-                # constraints succeeds with an empty list — so degrading here
-                # would stream a table whose keys were refused, not absent.
-                fks_response = await self.data_source.get_foreign_keys(table, database)
-                if not fks_response.success:
-                    self.logger.error(f"❌ Failed to get foreign keys for {database}.{table}: {fks_response.error}")
-                    raise to_sql_response_error(
-                        fks_response.error, connector=self.display_name
-                    )
-                foreign_keys = [
-                    ForeignKeyInfo.model_validate(fk) for fk in (fks_response.data or [])
-                ]
-
-                pks_response = await self.data_source.get_primary_keys(table, database)
-                if not pks_response.success:
-                    self.logger.error(f"❌ Failed to get primary keys for {database}.{table}: {pks_response.error}")
-                    raise to_sql_response_error(
-                        pks_response.error, connector=self.display_name
-                    )
-                primary_keys: List[str] = [
-                    PrimaryKeyInfo.model_validate(pk).column_name
-                    for pk in (pks_response.data or [])
-                ]
-
-                sync_filters, _ = await load_connector_filters(
-                    self.config_service, "mariadb", self.connector_id, self.logger
-                )
-                max_rows = min(
-                    int(sync_filters.get_value(IndexingFilterKey.MAX_ROWS_PER_TABLE, default=1000)),
-                    MAX_ROWS_PER_TABLE_LIMIT,
-                )
-                try:
-                    rows = await self.data_source.fetch_table_rows(database, table, limit=max_rows)
-                except Exception as e:
-                    self.logger.error(f"❌ Failed to read rows for {database}.{table}: {e}")
-                    raise to_sql_stream_error(e, connector=self.display_name) from e
-
-                ddl_response = await self.data_source.get_table_ddl(table, database)
-                if not ddl_response.success:
-                    self.logger.error(f"❌ Failed to get DDL for {database}.{table}: {ddl_response.error}")
-                    raise to_sql_response_error(
-                        ddl_response.error, connector=self.display_name
-                    )
-                ddl = DDLResult.model_validate(ddl_response.data).ddl
-
-                data = {
-                    "table_name": table,
-                    "database_name": database,
-                    "columns": [col.model_dump() for col in columns],
-                    "rows": rows,
-                    "foreign_keys": [fk.model_dump() for fk in foreign_keys],
-                    "primary_keys": primary_keys,
-                    "ddl": ddl,
-                    "connector_name": self.connector_name.value if hasattr(self.connector_name, "value") else str(self.connector_name),
-                }
+                data = await self._read_table_content(database, table)
 
                 json_bytes = json.dumps(data, default=str).encode("utf-8")
 
