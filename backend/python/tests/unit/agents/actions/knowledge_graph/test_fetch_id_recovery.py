@@ -24,6 +24,8 @@ from app.agents.actions.knowledge_graph.views import (
 from app.modules.agents.qna.chat_state import remember_record_ids
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from app.agent_loop_lib.tools.base import ToolOutput
 
 MISTYPED = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
@@ -337,3 +339,98 @@ class TestEmittedIds:
 
         assert OTHER in text and "Q3 roadmap" not in text
         assert emitted == [REAL]
+
+
+class _StorageGraph:
+    """The two calls `find_records` makes, answered like the real stores:
+    only readable records come back from the access check, keyed by
+    `_key` as `_neo4j_to_arango_node` returns them."""
+
+    def __init__(self, readable: dict[str, tuple[str, str]]) -> None:
+        self._readable = readable  # virtual record id -> (record id, name)
+
+    async def filter_accessible_virtual_record_ids(
+        self, virtual_record_ids: list[str], user_id: str, org_id: str, **_: object,
+    ) -> dict[str, str]:
+        return {v: self._readable[v][0] for v in virtual_record_ids if v in self._readable}
+
+    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str) -> list[dict[str, Any]]:
+        by_id = dict(self._readable.values())
+        return [{"_key": rid, "recordName": by_id[rid]} for rid in record_ids if rid in by_id]
+
+
+def _seed(tmp_path: Path, vrid: str, text: str) -> None:
+    folder = tmp_path / vrid
+    folder.mkdir()
+    (folder / f"record_{vrid}.json").write_text(f'{{"blocks": "{text}"}}')
+
+
+async def _storage_search(
+    tmp_path: Path, readable: dict[str, tuple[str, str]], **kwargs: int,
+) -> tuple[dict[str, Any], str]:
+    from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+
+    state: dict[str, Any] = {
+        "org_id": "org-1", "user_id": "user-1", "graph_provider": _StorageGraph(readable),
+    }
+    tool = StoragePatternMatch(state)
+
+    async def _connector_dir(_connector_id: str) -> tuple[str, None]:
+        return str(tmp_path), None
+
+    tool._resolve_connector_path = _connector_dir  # type: ignore[method-assign]
+    ok, output = await tool.find_records("c", 'grep -rl "marker" .', **kwargs)
+    assert ok is True
+    return state, output
+
+
+VRID_A = "aaaaaaaa-0000-4000-8000-000000000001"
+VRID_B = "bbbbbbbb-0000-4000-8000-000000000002"
+VRID_HIDDEN = "cccccccc-0000-4000-8000-000000000003"
+
+
+@pytest.mark.asyncio
+class TestStorageSearchRecovery:
+    async def test_a_storage_search_hit_is_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker call notes")
+
+        state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        output = await _fetch([MISTYPED], state)
+
+        assert f"- {REAL} (Call notes)" in output.error
+        assert f"The closest to the id you used is {REAL} (Call notes)." in output.error
+
+    async def test_a_hit_cut_by_max_results_is_not_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker")
+        _seed(tmp_path, VRID_B, "marker marker marker")
+        readable = {VRID_A: (REAL, "Call notes"), VRID_B: (OTHER, "Q3 roadmap")}
+
+        state, shown = await _storage_search(tmp_path, readable, max_results=1)
+        output = await _fetch([MISTYPED], state)
+
+        assert OTHER in shown and REAL not in shown
+        assert f"- {OTHER} (Q3 roadmap)" in output.error
+        assert REAL not in output.error
+        assert "closest" not in output.error
+
+    async def test_a_hit_the_user_cannot_read_is_not_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker")
+        _seed(tmp_path, VRID_HIDDEN, "marker")
+
+        state, _ = await _storage_search(tmp_path, {VRID_A: (OTHER, "Q3 roadmap")})
+
+        assert list(state["known_record_names"]) == [OTHER]
+
+    async def test_missing_and_unreadable_ids_stay_byte_identical(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker call notes")
+        missing_graph = _Graph()
+        unreadable_graph = _Graph(readable_by={MISTYPED: {"someone-else"}})
+
+        missing_state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        unreadable_state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        missing = await _fetch([MISTYPED], missing_state, missing_graph)
+        unreadable = await _fetch([MISTYPED], unreadable_state, unreadable_graph)
+
+        assert f"- {REAL} (Call notes)" in missing.error
+        assert missing.error.encode() == unreadable.error.encode()
+        assert missing_graph.calls == unreadable_graph.calls

@@ -39,7 +39,7 @@ from app.agent_loop_lib.tools.decorators import tool
 from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.chat_state import ChatState, remember_record_ids
 
 logger = logging.getLogger(__name__)
 
@@ -1902,6 +1902,12 @@ class StoragePatternMatch:
 
         if not records:
             return True, _NO_ACCESSIBLE_MATCH
+
+        remember_record_ids(
+            self.state,
+            [meta["record_id"] for meta in records],
+            names={meta["record_id"]: meta["record_name"] for meta in records},
+        )
 
         hint_parts = [
             "IMPORTANT: Do NOT blindly fetch all records. Review each record's "
