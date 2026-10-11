@@ -28,12 +28,20 @@ def _trigger(events: str) -> re.Pattern[str]:
 
 
 _PRIVILEGED_TRIGGER = _trigger("pull_request_target|workflow_run")
-# Expression property names are case-insensitive, and `x.y` may be written `x['y']`.
+# Read after _dotted(): expression property names are case-insensitive. head.repo
+# counts too, since checking out that repository on pull_request_target is the fork.
 _PR_HEAD_REF = re.compile(
-    r"github\.event\.pull_request\.head(?:\.|\[\s*['\"])(?:sha|ref)\b"
-    r"|github(?:\.|\[\s*['\"])head_ref\b|refs/pull/",
+    r"github\.event\.pull_request\.head\.(?:sha|ref|repo)\b|github\.head_ref\b|refs/pull/",
     re.IGNORECASE,
 )
+
+
+def _dotted(text: str) -> str:
+    """Expression property access in one spelling: `x['y']` and `x . y` become `x.y`."""
+    text = re.sub(r"\[\s*(['\"])([A-Za-z0-9_-]+)\1\s*\]", r".\2", text)
+    return re.sub(r"[ \t]*\.[ \t]*", ".", text)
+
+
 # Any use of the secrets context except GITHUB_TOKEN: dot or index access, any case
 # (secret names are case-insensitive), and whole-context uses such as toJSON(secrets).
 # String literals are skipped whole, so a `}` or the word "secrets" inside quotes
@@ -255,7 +263,7 @@ class TestWorkflowTrust(unittest.TestCase):
         offenders = [
             p.name
             for p in WORKFLOWS
-            if _privileged(_text(p)) and _PR_HEAD_REF.search(_text(p))
+            if _privileged(_text(p)) and _PR_HEAD_REF.search(_dotted(_text(p)))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
 
@@ -455,12 +463,17 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "github.event.pull_request.head.sha",
             "github.event.pull_request.head['sha']",
             'github.event.pull_request.head["ref"]',
+            "github.event.pull_request['head']['sha']",
+            "github.event.pull_request['head'].sha",
+            "github['event'].pull_request.head.sha",
+            "github.event.pull_request.head . sha",
+            "github.event.pull_request.head.repo.full_name",
             "GITHUB.EVENT.PULL_REQUEST.HEAD.SHA",
             "github['head_ref']",
         ):
             with self.subTest(ref=ref):
-                self.assertTrue(_PR_HEAD_REF.search(f"ref: ${{{{ {ref} }}}}"))
-        self.assertFalse(_PR_HEAD_REF.search("ref: ${{ github.event.pull_request.base.sha }}"))
+                self.assertTrue(_PR_HEAD_REF.search(_dotted(f"ref: ${{{{ {ref} }}}}")))
+        self.assertFalse(_PR_HEAD_REF.search(_dotted("ref: ${{ github.event.pull_request.base.sha }}")))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
