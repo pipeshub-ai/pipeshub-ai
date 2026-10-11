@@ -153,6 +153,18 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_link_record_to_group_answers_the_inherit_edges_removed(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.link_record_to_group = AsyncMock(return_value=1)
+
+        assert await tx_store.link_record_to_group("r1", "g1", inherit=False) == 1
+
+        mock_graph_provider.link_record_to_group.assert_awaited_once_with(
+            "r1", "g1", inherit=False, leaving_group_id=None, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
     async def test_deleting_a_record_drops_it_from_the_cache(
         self, tx_store, mock_graph_provider
     ) -> None:

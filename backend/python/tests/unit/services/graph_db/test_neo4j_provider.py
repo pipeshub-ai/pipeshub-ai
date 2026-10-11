@@ -2147,6 +2147,59 @@ class TestUserAndOrganizationLookups:
         assert params["connector_id"] == "app-1"
         assert params["status"] == "NOT_STARTED"
         assert params["exclude_statuses"] == ["IN_PROGRESS"]
+        assert "n.reason" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.indexingStatus IN $only_statuses" in query
+        assert "n.reason = $reason" in query
+        assert params["only_statuses"] == ["QUEUED"]
+        assert params["reason"] == "off"
+        assert "isDeleted" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_live_only_leaves_the_trash(self, neo4j_provider: Neo4jProvider) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], visibility=RecordVisibility.LIVE
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "(n.isDeleted IS NULL OR n.isDeleted = false)" in query
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_documents_paginated(
+            "records", limit=2, filters={"reason": "off"}, sort_field="_key", after_key="k1"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.id > $after_key" in query
+        # The filtered fields lead, so a (filters..., id) composite index
+        # serves the order; equality filters leave it the same order.
+        assert "ORDER BY n.reason, n.id ASC" in query
+        assert params["after_key"] == "k1"
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key_needs_key_order(self, neo4j_provider: Neo4jProvider) -> None:
+        with pytest.raises(ValueError):
+            await neo4j_provider.get_documents_paginated("records", after_key="k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_with_an_empty_status_list_writes_nothing(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=[]
+        )
+        neo4j_provider.client.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_departments_with_and_without_org(self, neo4j_provider: Neo4jProvider):
@@ -5844,8 +5897,33 @@ class TestRecordLinksAreOneStatement:
         assert "DELETE old" not in query
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("leaving", "inherit", "returned"),
+        [
+            ("old", False, "RETURN left_inherits + unlinked AS removed"),
+            ("old", True, "RETURN left_inherits AS removed"),
+            (None, False, "RETURN unlinked AS removed"),
+            (None, None, "RETURN 0 AS removed"),
+        ],
+    )
+    async def test_the_statement_counts_the_inherit_edges_it_removed(
+        self, neo4j_provider: Neo4jProvider, leaving: str | None, inherit: bool | None, returned: str
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"removed": 1}]
+
+        removed = await neo4j_provider.link_record_to_group("r1", "g1", inherit=inherit, leaving_group_id=leaving)
+
+        assert removed == 1
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.args[0].rstrip().endswith(returned)
+        if leaving:
+            assert "count(old_inherit) AS left_inherits" in call.args[0]
+            assert call.kwargs["parameters"]["inherit_type"] == "INHERIT_PERMISSIONS"
+
+    @pytest.mark.asyncio
     async def test_nothing_to_leave_or_join_runs_nothing(self, neo4j_provider: Neo4jProvider) -> None:
-        await neo4j_provider.link_record_to_group("r1", None, inherit=True)
+        assert await neo4j_provider.link_record_to_group("r1", None, inherit=True) == 0
 
         neo4j_provider.client.execute_query.assert_not_awaited()
 
