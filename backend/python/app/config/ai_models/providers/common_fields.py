@@ -46,6 +46,10 @@ DEPLOYMENT_NAME = AIModelField(
     field_type="TEXT",
     required=True,
     placeholder="Your deployment name",
+    description=(
+        "Usually the same as the model name. "
+        "Change it if your deployment is named differently."
+    ),
 )
 
 # ---------------------------------------------------------------------------

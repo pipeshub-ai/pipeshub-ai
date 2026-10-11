@@ -100,6 +100,8 @@ export interface DiscoveredModel {
   isReasoning?: boolean | null;
   supportsTools?: boolean | null;
   deprecated?: boolean;
+  /** Unix seconds, when the provider reports it. The server lists newest first. */
+  releasedAt?: number | null;
 }
 
 export interface DiscoveryResponse {

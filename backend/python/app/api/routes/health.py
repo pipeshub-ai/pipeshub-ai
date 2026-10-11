@@ -4,6 +4,7 @@ import ipaddress
 import os
 import shutil
 import socket
+from collections.abc import Awaitable
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -1324,20 +1325,45 @@ async def _check_one_llm(
             llm_config, model_name,
         )
 
-    if is_multimodal:
-        image_error = await _probe_vision(llm_model, logger)
-        if image_error is not None:
-            return _config_error(
-                image_error, llm_config, model_name,
-                hint="Uncheck Multimodal for this model, or choose a vision model.",
-            )
+    # The remaining probes are independent; run them together so a slow model
+    # (a "pro" tier can take a minute per call) is not charged for each in turn.
+    image_error, tool_calling, streaming = await _gather_or_cancel(
+        _probe_vision(llm_model, logger) if is_multimodal else _no_probe(),
+        _check_tool_calling(llm_model, logger),
+        _check_streaming(llm_model, logger),
+    )
+    if image_error is not None:
+        return _config_error(
+            image_error,
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     return {
         "model": model_name,
         "sample": sample,
-        "tool_calling": await _check_tool_calling(llm_model, logger),
-        "streaming": await _check_streaming(llm_model, logger),
+        "tool_calling": tool_calling,
+        "streaming": streaming,
     }
+
+
+async def _no_probe() -> None:
+    return None
+
+
+async def _gather_or_cancel(*probes: Awaitable[Any]) -> list[Any]:
+    """Like gather, but a raising probe cancels the others instead of leaving them
+    calling the provider. The original exception is re-raised unchanged, so callers'
+    TimeoutError / HTTPException handlers still match (a TaskGroup would wrap it)."""
+    tasks = [asyncio.ensure_future(probe) for probe in probes]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:

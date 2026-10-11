@@ -34,6 +34,7 @@ class RawModel(BaseModel):
     is_reasoning: bool | None = None
     supports_tools: bool | None = None
     deprecated: bool | None = None
+    released_at: int | None = None
 
 
 class DiscoveredModel(BaseModel):
@@ -47,6 +48,7 @@ class DiscoveredModel(BaseModel):
     is_reasoning: bool | None = Field(default=None, serialization_alias="isReasoning")
     supports_tools: bool | None = Field(default=None, serialization_alias="supportsTools")
     deprecated: bool = False
+    released_at: int | None = Field(default=None, serialization_alias="releasedAt")
     source: Literal["provider_api", "catalog", "heuristic"]
 
 

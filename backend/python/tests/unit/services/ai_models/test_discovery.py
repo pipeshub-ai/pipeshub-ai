@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -380,6 +381,39 @@ async def test_capability_filter_is_applied_after_the_cache_read():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("capability", ["text_generation", "reasoning"])
+async def test_registry_capability_returns_chat_models(capability: str) -> None:
+    service = _service(
+        lambda request: httpx.Response(200, json=_load("openai_models.json"))
+    )
+    result = await service.discover(
+        DiscoveryRequest(
+            provider="openAI",
+            capability=capability,
+            configuration={"apiKey": "sk-test"},
+        )
+    )
+    ids = {model.id for model in result.models}
+    assert "gpt-5.6-luna" in ids
+    assert "text-embedding-3-small" not in ids
+
+
+@pytest.mark.asyncio
+async def test_image_generation_capability_returns_image_models() -> None:
+    service = _service(
+        lambda request: httpx.Response(200, json=_load("openai_models.json"))
+    )
+    result = await service.discover(
+        DiscoveryRequest(
+            provider="openAI",
+            capability="image_generation",
+            configuration={"apiKey": "sk-test"},
+        )
+    )
+    assert any(model.capabilities == ["imageGeneration"] for model in result.models)
+
+
+@pytest.mark.asyncio
 async def test_private_endpoint_is_unreachable_not_a_server_error():
     result = await _service(lambda request: httpx.Response(200, json={"data": []})).discover(
         DiscoveryRequest(
@@ -449,3 +483,78 @@ async def test_bedrock_regions_do_not_share_a_cache_entry():
         await service.discover(DiscoveryRequest(provider="bedrock", configuration={**config, "region": "eu-west-1"}))
         await service.discover(DiscoveryRequest(provider="bedrock", configuration={**config, "region": "us-east-1"}))
     assert calls == ["us-east-1", "eu-west-1"]
+
+
+@pytest.mark.asyncio
+async def test_azure_model_is_deprecated_only_after_its_retirement_date() -> None:
+    payload = {
+        "data": [
+            {
+                "id": "gpt-6-luna",
+                "status": "succeeded",
+                "created_at": 1790035200,
+                "capabilities": {"chat_completion": True},
+                "deprecation": {"inference": 4102444800},
+            },
+            {
+                "id": "gpt-35-turbo-0301",
+                "status": "succeeded",
+                "created_at": 1678320000,
+                "capabilities": {"chat_completion": True},
+                "deprecation": {"inference": 1745971200},
+            },
+        ]
+    }
+    result = await _service(lambda request: httpx.Response(200, json=payload)).discover(
+        DiscoveryRequest(
+            provider="azureOpenAI",
+            capability="text_generation",
+            configuration={
+                "apiKey": "k",
+                "endpoint": "https://example.openai.azure.com",
+            },
+        )
+    )
+    deprecated = {model.id: model.deprecated for model in result.models}
+    assert deprecated == {"gpt-6-luna": False, "gpt-35-turbo-0301": True}
+
+
+@pytest.mark.asyncio
+async def test_models_are_listed_newest_release_first_and_undated_last() -> None:
+    payload = {
+        "data": [
+            {"id": "gpt-old", "created": 1600000000},
+            {"id": "gpt-undated"},
+            {"id": "gpt-new", "created": "2026-09-01T00:00:00Z"},
+        ]
+    }
+    with patch(
+        "app.services.ai_models.discovery.classifier.lookup_catalog", return_value=None
+    ):
+        result = await _service(
+            lambda request: httpx.Response(200, json=payload)
+        ).discover(
+            DiscoveryRequest(provider="openAI", configuration={"apiKey": "sk-test"}),
+        )
+    assert [model.id for model in result.models] == [
+        "gpt-new",
+        "gpt-old",
+        "gpt-undated",
+    ]
+    assert result.models[0].released_at == 1788220800
+
+
+@pytest.mark.skipif(not hasattr(time, "tzset"), reason="time.tzset is Unix-only")
+def test_a_timestamp_without_an_offset_is_read_as_utc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.ai_models.discovery.strategies import _epoch
+
+    monkeypatch.setenv("TZ", "America/Los_Angeles")
+    time.tzset()
+    try:
+        assert _epoch("2026-09-01T00:00:00") == 1788220800
+        assert _epoch("2026-09-01T00:00:00Z") == 1788220800
+    finally:
+        monkeypatch.undo()
+        time.tzset()

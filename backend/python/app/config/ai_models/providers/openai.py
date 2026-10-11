@@ -80,7 +80,7 @@ OPENAI_TTS_FORMAT = AIModelField(
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
     .add_field(OPENAI_BASE_URL, ModelCapability.TEXT_GENERATION) \
     .add_field(OPENAI_ORGANIZATION, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g., gpt-5, gpt-5-mini, gpt-5-nano"), ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g., gpt-6-luna, gpt-6.1-sol, gpt-6-astra"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \

@@ -10,6 +10,7 @@ import asyncio
 import json
 import time
 from collections import deque
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlencode
 
@@ -86,6 +87,27 @@ def _cap(rows: list[RawModel], warnings: list[str]) -> tuple[list[RawModel], lis
     return rows, warnings
 
 
+def _epoch(value: object) -> int | None:
+    """Unix seconds from epoch seconds or ISO 8601; a naive time is read as UTC."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            stamp = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            return int(stamp.timestamp())
+        except ValueError:
+            return None
+    return None
+
+
+def _released(row: dict[str, Any]) -> int | None:
+    return _epoch(row.get("created")) or _epoch(row.get("created_at"))
+
+
 def _static(pairs: list[tuple[str, list[str]]], *, deprecated: set[str] | None = None) -> list[RawModel]:
     retired = deprecated or set()
     return [
@@ -128,6 +150,7 @@ class _OpenAIList(DiscoveryStrategy):
                         capabilities=capabilities,
                         context_length=context if isinstance(context, int) else None,
                         deprecated=bool(shutdown) or row.get("active") is False,
+                        released_at=_released(row),
                     )
                 )
             if pages >= MAX_PAGES or len(models) >= MAX_MODELS:
@@ -175,6 +198,7 @@ class AnthropicStrategy(DiscoveryStrategy):
                         is_reasoning=bool(caps_obj.get("thinking")) if "thinking" in caps_obj else None,
                         supports_tools=True,
                         deprecated=bool(row.get("deprecated_at")) or row.get("lifecycle") == "deprecated",
+                        released_at=_released(row),
                     )
                 )
             if not (isinstance(payload, dict) and payload.get("has_more")):
@@ -263,7 +287,12 @@ class XAIStrategy(DiscoveryStrategy):
                 if isinstance(modalities, list) and modalities:
                     vision = "image" in modalities or "vision" in modalities
                 models.append(
-                    RawModel(id=model_id, capabilities=list(capabilities), is_multimodal=vision)
+                    RawModel(
+                        id=model_id,
+                        capabilities=list(capabilities),
+                        is_multimodal=vision,
+                        released_at=_released(row),
+                    )
                 )
         return _cap(models, [])
 
@@ -299,6 +328,7 @@ class OpenRouterStrategy(DiscoveryStrategy):
                     id=model_id,
                     display_name=row.get("name"),
                     capabilities=capabilities,
+                    released_at=_released(row),
                     context_length=row.get("context_length")
                     if isinstance(row.get("context_length"), int)
                     else None,
@@ -369,6 +399,7 @@ class MistralStrategy(DiscoveryStrategy):
                 RawModel(
                     id=model_id,
                     capabilities=capabilities,
+                    released_at=_released(row),
                     context_length=row.get("max_context_length")
                     if isinstance(row.get("max_context_length"), int)
                     else None,
@@ -407,6 +438,7 @@ class TogetherStrategy(DiscoveryStrategy):
                     id=model_id,
                     display_name=row.get("display_name"),
                     capabilities=type_map.get(kind),
+                    released_at=_released(row),
                     context_length=row.get("context_length")
                     if isinstance(row.get("context_length"), int)
                     else None,
@@ -821,18 +853,27 @@ class AzureOpenAIStrategy(DiscoveryStrategy):
                 capabilities = ["embedding"]
             elif flags.get("chat_completion"):
                 capabilities = ["llm"]
-            status = str(row.get("status") or "")
+            # Every row carries a scheduled retirement date; the model is only
+            # retired once that date has passed.
+            retirement = (
+                row.get("deprecation")
+                if isinstance(row.get("deprecation"), dict)
+                else {}
+            )
+            retires_at = _epoch(retirement.get("inference"))
+            lifecycle = str(
+                row.get("lifecycle_status") or row.get("status") or ""
+            ).lower()
             models.append(
                 RawModel(
                     id=model_id,
                     capabilities=capabilities,
-                    deprecated=status.lower() in {"deprecated", "deprecating"} or bool(row.get("deprecation")),
+                    deprecated=lifecycle in {"deprecated", "deprecating"}
+                    or (retires_at is not None and retires_at <= time.time()),
+                    released_at=_released(row),
                 )
             )
-        return _cap(
-            models,
-            ["These are base models. Calls still use the deployment name, which Azure does not list here."],
-        )
+        return _cap(models, [])
 
 
 class BedrockStrategy(DiscoveryStrategy):
