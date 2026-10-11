@@ -650,7 +650,10 @@ class EntityEventService(BaseEventService):
         producer = self.app_container.messaging_producer
         filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
         requeued = 0
-        after_key: str | None = None
+        # "" rather than None, so the first page has the key predicate too:
+        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
+        # when every property in it has one.
+        after_key = ""
         while True:
             page = await self.graph_provider.get_documents_paginated(
                 CollectionNames.RECORDS.value,

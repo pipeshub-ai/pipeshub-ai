@@ -2174,7 +2174,9 @@ class TestUserAndOrganizationLookups:
         query = neo4j_provider.client.execute_query.await_args.args[0]
         params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
         assert "n.id > $after_key" in query
-        assert "ORDER BY n.id ASC" in query
+        # The filtered fields lead, so a (filters..., id) composite index
+        # serves the order; equality filters leave it the same order.
+        assert "ORDER BY n.reason, n.id ASC" in query
         assert params["after_key"] == "k1"
 
     @pytest.mark.asyncio

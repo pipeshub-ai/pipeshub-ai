@@ -1,6 +1,6 @@
 """An in-memory graph holding only what the stranded-record sweep reads and writes.
 
-Records by key, read a page at a time by ``indexingStatus`` in key order, and
+Records by key, read a page at a time by equality filters in key order, and
 updated field by field. Returns copies, as a real store does, so a caller that
 mutates what it read does not change what is stored. A null removes the
 property, as Neo4j's ``SET +=`` does. Every connector is live.
@@ -46,11 +46,18 @@ class FakeRecordGraph:
         filters: dict | None = None,
         sort_field: str | None = None,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
+        if collection == CollectionNames.APPS.value:
+            apps = [{"_key": c, "isActive": True} for c in sorted({r["connectorId"] for r in self.records.values()})]
+            return apps[skip:skip + limit]
         assert collection == CollectionNames.RECORDS.value
-        status = (filters or {}).get("indexingStatus")
         matching = sorted(
-            (r for r in self.records.values() if r["indexingStatus"] == status),
+            (
+                r for r in self.records.values()
+                if all(r.get(field) == value for field, value in (filters or {}).items())
+                and (after_key is None or r["_key"] > after_key)
+            ),
             key=lambda r: r["_key"],
         )
         return [dict(r) for r in matching[skip:skip + limit]]

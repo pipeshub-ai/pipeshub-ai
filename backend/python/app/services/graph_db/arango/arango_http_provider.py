@@ -923,6 +923,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["indexingStatus"],
         )
 
+        # COMPOUND: records parked while their connector was off, read per
+        # connector by the turn-on re-queue and every stranded-record sweep, in
+        # a keyset on _key. With reason in the index a manual-indexing
+        # connector's AUTO_INDEX_OFF records (no reason) are never walked to
+        # find them, and _key trailing serves the cursor and the SORT. Not
+        # sparse: 3.12 does not take a sparse index that ends in _key for this
+        # read, and fell back to (connectorId, _key), filtering every record of
+        # the connector.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "indexingStatus", "reason", "_key"],
+        )
+
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
         # the few records with it set; unindexed that is a full scan per tick.
         await self.http_client.ensure_persistent_index(

@@ -1105,30 +1105,80 @@ async def _republish_stranded_records(
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
 
-    for status_value, filters in (
-        (ProgressStatus.QUEUED.value, {"indexingStatus": ProgressStatus.QUEUED.value}),
-        (ProgressStatus.NOT_STARTED.value, {"indexingStatus": ProgressStatus.NOT_STARTED.value}),
-        # Only the turn-off's reason: AUTO_INDEX_OFF from a connector's
-        # indexing filters has none and is never sent from here.
-        (
-            ProgressStatus.AUTO_INDEX_OFF.value,
-            {"indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value, "reason": CONNECTOR_OFF},
-        ),
-    ):
-        parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
+    async def _pages_in_status(status_value: str) -> AsyncGenerator[list[dict], None]:
         offset = 0
         while True:
             page = await graph_provider.get_documents_paginated(
                 CollectionNames.RECORDS.value,
                 skip=offset,
                 limit=page_size,
-                filters=filters,
+                filters={"indexingStatus": status_value},
                 sort_field="_key",
                 raise_on_error=False,
             )
             if not page:
-                break
+                return
+            yield page
+            if len(page) < page_size:
+                return
+            # Republished rows keep their status, so the filtered result does
+            # not shrink under the cursor — advance over the whole page.
+            offset += len(page)
 
+    async def _pages_parked_while_off() -> AsyncGenerator[list[dict], None]:
+        """Per connector that is on, so neither a paused connector's parked
+        backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
+        (no reason) is read on every pass; each read is a seek in the
+        (connectorId, indexingStatus, reason, key) index."""
+        active_ids: list[str] = []
+        offset = 0
+        while True:
+            apps = await graph_provider.get_documents_paginated(
+                CollectionNames.APPS.value,
+                skip=offset,
+                limit=page_size,
+                filters={"isActive": True},
+                sort_field="_key",
+                raise_on_error=False,
+            )
+            active_ids.extend(k for app in apps if (k := app.get("_key") or app.get("id")))
+            if len(apps) < page_size:
+                break
+            offset += len(apps)
+        for connector_id in active_ids:
+            # "" rather than None, so the first page has the key predicate
+            # too: Neo4j uses a composite index only when every property in
+            # it has one.
+            after_key = ""
+            while True:
+                page = await graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    limit=page_size,
+                    # Only the turn-off's reason: AUTO_INDEX_OFF from a
+                    # connector's indexing filters has none.
+                    filters={
+                        "connectorId": connector_id,
+                        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                        "reason": CONNECTOR_OFF,
+                    },
+                    sort_field="_key",
+                    raise_on_error=False,
+                    after_key=after_key,
+                )
+                if not page:
+                    break
+                yield page
+                after_key = page[-1].get("_key") or page[-1].get("id")
+                if len(page) < page_size or not after_key:
+                    break
+
+    for status_value, pages in (
+        (ProgressStatus.QUEUED.value, _pages_in_status(ProgressStatus.QUEUED.value)),
+        (ProgressStatus.NOT_STARTED.value, _pages_in_status(ProgressStatus.NOT_STARTED.value)),
+        (ProgressStatus.AUTO_INDEX_OFF.value, _pages_parked_while_off()),
+    ):
+        parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
+        async for page in pages:
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
@@ -1319,12 +1369,6 @@ async def _republish_stranded_records(
                                 record_key,
                                 release_exc,
                             )
-
-            if len(page) < page_size:
-                break
-            # Republished rows keep their status, so the filtered result does
-            # not shrink under the cursor — advance over the whole page.
-            offset += len(page)
 
     decided_without_the_queue = backlog_read and backlog is None
     logger.log(

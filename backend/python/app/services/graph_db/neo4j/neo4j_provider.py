@@ -795,6 +795,18 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Record) ON (n.indexingStatus)"
         )
 
+        # COMPOSITE: records parked while their connector was off, read per
+        # connector by the turn-on re-queue and every stranded-record sweep,
+        # in a keyset on id. Holds only records with a reason, so a
+        # manual-indexing connector's AUTO_INDEX_OFF records (no reason) are
+        # never walked to find them. id trails so the seek also serves the
+        # cursor and the order; without it the planner took (connectorId, id)
+        # and filtered every record of the connector.
+        indexes.append(
+            "CREATE INDEX record_parked_while_off IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
         # SINGLE: origin (heavily used in permission WHERE clauses)
         indexes.append(
             "CREATE INDEX record_origin IF NOT EXISTS "
@@ -1297,6 +1309,15 @@ class Neo4jProvider(IGraphDBProvider):
                 if neo4j_sort_field
                 else ""
             )
+            if after_key is not None and filters:
+                # The same order, since every filter is an equality, but
+                # spelled with the filtered fields first: Neo4j reads order
+                # from a composite (filters..., id) index only when ORDER BY
+                # names its properties in sequence. Otherwise each page sorts
+                # every match.
+                order_cypher = "ORDER BY " + ", ".join(
+                    [f"n.{field}" for field in filters] + ["n.id ASC"]
+                )
 
             query = f"""
             MATCH (n:{label})

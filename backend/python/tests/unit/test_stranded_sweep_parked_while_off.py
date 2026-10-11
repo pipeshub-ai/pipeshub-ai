@@ -34,6 +34,7 @@ class FakeGraph:
         self.records: dict[str, dict[str, Any]] = {}
         self.fail_reads_after: int | None = None
         self.reads = 0
+        self.record_reads: list[dict] = []
 
     async def get_document(self, key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         if collection == CollectionNames.APPS.value:
@@ -46,11 +47,17 @@ class FakeGraph:
         self, collection, skip=0, limit=50, filters=None, sort_field=None,
         transaction=None, *, raise_on_error=False, after_key=None,
     ) -> list[dict]:
-        self.reads += 1
-        if self.fail_reads_after is not None and self.reads > self.fail_reads_after:
-            raise RuntimeError("graph unavailable")
+        assert after_key is None or sort_field == "_key"
+        source = self.records
+        if collection == CollectionNames.APPS.value:
+            source = {key: {"_key": key, **app} for key, app in self.apps.items()}
+        else:
+            self.record_reads.append(dict(filters or {}))
+            self.reads += 1
+            if self.fail_reads_after is not None and self.reads > self.fail_reads_after:
+                raise RuntimeError("graph unavailable")
         rows = [
-            dict(doc) for doc in self.records.values()
+            dict(doc) for doc in source.values()
             if all(doc.get(f) == v for f, v in (filters or {}).items())
             and (after_key is None or doc["_key"] > after_key)
         ]
@@ -192,6 +199,28 @@ async def test_a_record_that_stays_parked_is_not_sent_every_pass() -> None:
     assert graph.records["r0"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
     assert await _sweep(graph, producer) == 0
     assert producer.sent == ["r0"]
+
+
+@pytest.mark.asyncio
+async def test_parked_records_are_read_only_per_connector_that_is_on() -> None:
+    """A paused connector's parked backlog, and a manual-indexing connector's
+    AUTO_INDEX_OFF records, are never read by the sweep: it asks for
+    AUTO_INDEX_OFF only with a connector that is on and the turn-off reason,
+    which the (connectorId, indexingStatus, reason, key) index answers directly."""
+    graph, producer = FakeGraph(), Producer()
+    graph.records["still-off"] = _parked("still-off", connector_id=OFF)
+
+    await _sweep(graph, producer)
+
+    parked_reads = [
+        f for f in graph.record_reads
+        if f.get("indexingStatus") == ProgressStatus.AUTO_INDEX_OFF.value
+    ]
+    assert parked_reads == [{
+        "connectorId": ON,
+        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+        "reason": CONNECTOR_OFF,
+    }]
 
 
 @pytest.mark.asyncio
