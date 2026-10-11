@@ -1189,7 +1189,7 @@ class GraphDataStore(DataStoreProvider):
         return await self.graph_provider.get_existing_record_keys(record_ids)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Create a graph database transaction store context manager.
 
@@ -1198,10 +1198,15 @@ class GraphDataStore(DataStoreProvider):
         - All operations pass txn_id in HTTP headers
         - commit/rollback are fully async HTTP calls
 
+        explicit=True makes the block all-or-nothing on Neo4j too, where each
+        statement otherwise commits on its own while NEO4J_EXPLICIT_TRANSACTIONS
+        is off. It holds its locks until commit, so keep such a block to a few
+        writes, with no slow calls inside.
         """
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
-            write=write_collections
+            write=write_collections,
+            explicit=explicit,
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
@@ -1248,22 +1253,23 @@ class GraphDataStore(DataStoreProvider):
                     self.logger.warning("Abort after a failed commit raised: %s", rb_err)
                 raise
 
-    async def execute_in_transaction(self, func, *args, **kwargs) -> None:
+    async def execute_in_transaction(self, func, *args, explicit: bool | None = None, **kwargs) -> None:
         """Execute function within graph database transaction.
 
         Re-run on a transient transaction failure (a deadlock between two
         writers on the same nodes, a lock timeout) -- but only when the
         provider says the failed attempt rolled back cleanly, which is what
         ``is_transient_error`` answers; the default is never to retry.
+        ``explicit`` is passed to :meth:`transaction`.
         """
         attempts = 0
         while True:
             attempts += 1
             try:
-                async with self.transaction() as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e, explicit=explicit):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1276,6 +1282,7 @@ class GraphDataStore(DataStoreProvider):
         self,
         func: Callable[..., Awaitable[_T]],
         *args: object,
+        explicit: bool | None = None,
         **kwargs: object,
     ) -> _T:
         """Run ``func(tx_store, ...)`` in a transaction, re-running it when it
@@ -1284,13 +1291,14 @@ class GraphDataStore(DataStoreProvider):
         Unlike :meth:`execute_in_transaction` this retries even where the
         failed attempt may have partly landed (Neo4j auto-commit), so
         ``func`` must be safe to run again from the start: read what is
-        there, then write only the difference.
+        there, then write only the difference. ``explicit`` is passed to
+        :meth:`transaction`.
         """
         attempts = 0
         while True:
             attempts += 1
             try:
-                async with self.transaction() as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):

@@ -453,6 +453,10 @@ class Neo4jProvider(IGraphDBProvider):
                 # locks until commit, so shared-node writes can deadlock and
                 # retry where they used to interleave.
                 explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
+                # The short creates (agents, teams, knowledge bases) ask for a
+                # real transaction while the flag above is off; false sends
+                # them back to auto-commit if their locks ever get in the way.
+                honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
             )
 
             # Connect
@@ -556,13 +560,18 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a Neo4j transaction.
 
         Args:
             read: Collections to read from (for compatibility)
             write: Collections to write to (for compatibility)
+            explicit: True for a real transaction even with
+                NEO4J_EXPLICIT_TRANSACTIONS off (unless NEO4J_CREATE_TRANSACTIONS
+                is false); None follows NEO4J_EXPLICIT_TRANSACTIONS
 
         Returns:
             str: Transaction ID
@@ -570,7 +579,7 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
-        return await self.client.begin_transaction(read, write)
+        return await self.client.begin_transaction(read, write, explicit=explicit)
 
     async def commit_transaction(self, transaction: str) -> None:
         """
@@ -584,12 +593,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         await self.client.commit_transaction(transaction)
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Only meaningful with explicit transactions: a deadlock or lock
         timeout then rolled back cleanly and the whole block can be re-run.
         With auto-commit sessions the earlier statements already landed, so
-        re-running the block would apply them twice."""
-        if self.client is None or not self.client.explicit_transactions:
+        re-running the block would apply them twice. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
+        if self.client is None or not self.client.opens_explicit_transaction(explicit):
             return False
         return isinstance(error, TransientError)
 
