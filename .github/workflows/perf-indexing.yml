@@ -44,6 +44,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
@@ -77,6 +78,15 @@ jobs:
         run: |
           [[ "$DOCS_INPUT" =~ ^[0-9]+$ ]] || { echo "docs must be a whole number"; exit 1; }
           [[ "$SEED_INPUT" =~ ^[0-9]+$ ]] || { echo "seed must be a whole number"; exit 1; }
+
+      # Spot runners share addresses, so anonymous pulls run into Docker Hub's
+      # hourly cap. The token is read-only: PR code on the runner can read it.
+      - name: Log in to Docker Hub (read-only)
+        if: env.DOCKERHUB_PULL_LOGIN == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
 
       - name: Pull pre-built base images
         run: |

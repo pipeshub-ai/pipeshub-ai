@@ -164,6 +164,20 @@ def _unguarded_secret_jobs(text: str) -> list[str]:
     return offenders
 
 
+def _ungated_secret_jobs(text: str) -> list[str]:
+    """Jobs of a pull_request workflow that read secrets with no deployment environment to approve."""
+    if not _PULL_REQUEST_TRIGGER.search(text):
+        return []
+    jobs_key = _JOBS_KEY.search(text)
+    workflow_level_secret = bool(jobs_key and _SECRET.search(text[: jobs_key.start()]))
+    return [
+        name
+        for name, (block, key_indent) in _jobs(text).items()
+        if (workflow_level_secret or _SECRET.search(block) or _SECRETS_INHERIT.search(block))
+        and not re.search(rf"^ {{{key_indent}}}environment:", block, re.M)
+    ]
+
+
 class TestWorkflowTrust(unittest.TestCase):
     def test_workflows_found(self) -> None:
         self.assertTrue(WORKFLOWS, f"no workflows under {REPO}/.github/workflows; set REPO_ROOT")
@@ -193,6 +207,44 @@ class TestWorkflowTrust(unittest.TestCase):
         # runner and keeps the intent explicit: secrets only for same-repo heads.
         offenders = [f"{p.name}:{job}" for p in WORKFLOWS for job in _unguarded_secret_jobs(_text(p))]
         self.assertEqual(offenders, [], "pull_request job reads secrets without its own fork guard")
+
+    def test_pull_request_jobs_with_secrets_wait_for_an_environment(self) -> None:
+        # A same-repo head passes the fork guard, and its own code runs with
+        # whatever the job logged in with, so a secret needs an approval first.
+        offenders = [f"{p.name}:{job}" for p in WORKFLOWS for job in _ungated_secret_jobs(_text(p))]
+        self.assertEqual(offenders, [], "pull_request job reads secrets with no environment approval")
+
+
+class TestUngatedSecretJobs(unittest.TestCase):
+    def test_a_secret_job_without_an_environment_is_flagged(self) -> None:
+        workflow = (
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  gated:\n"
+            "    environment: integration-test-dev\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  ungated:\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  token_only:\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.GITHUB_TOKEN }}\n"
+        )
+        self.assertEqual(_ungated_secret_jobs(workflow), ["ungated"])
+
+    def test_a_step_environment_variable_is_not_an_environment(self) -> None:
+        workflow = (
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  build:\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "        environment: nope\n"
+        )
+        self.assertEqual(_ungated_secret_jobs(workflow), ["build"])
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):

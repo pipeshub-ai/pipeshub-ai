@@ -60,6 +60,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       # SECRET_KEY stays at job scope because every `docker compose` call
       # interpolates it out of the compose file — build, up, ps, logs and down.
       # The credentials and the provider key are given only to the steps that
@@ -109,6 +110,15 @@ jobs:
             echo "PERF_LABEL=ci-$MODE_INPUT-neo4j-4cpu"
           } >> "$GITHUB_ENV"
           echo "Running the $MODE_INPUT mode over $DOCS_INPUT files."
+
+      # Spot runners share addresses, so anonymous pulls run into Docker Hub's
+      # hourly cap. The token is read-only: PR code on the runner can read it.
+      - name: Log in to Docker Hub (read-only)
+        if: env.DOCKERHUB_PULL_LOGIN == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
 
       - name: Pull pre-built base images
         run: |
