@@ -9,6 +9,7 @@ missing and no details for one this person may not read.
 """
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, patch
@@ -360,9 +361,11 @@ class _StorageGraph:
 
 
 def _seed(tmp_path: Path, vrid: str, text: str) -> None:
+    """A stored record file in the shape `_record_search_text` ranks by."""
     folder = tmp_path / vrid
     folder.mkdir()
-    (folder / f"record_{vrid}.json").write_text(f'{{"blocks": "{text}"}}')
+    stored = {"isCompressed": False, "record": {"block_containers": {"blocks": [{"data": text}]}}}
+    (folder / f"record_{vrid}.json").write_text(json.dumps(stored))
 
 
 async def _storage_search(
@@ -408,7 +411,10 @@ class TestStorageSearchRecovery:
         state, shown = await _storage_search(tmp_path, readable, max_results=1)
         output = await _fetch([MISTYPED], state)
 
-        assert OTHER in shown and REAL not in shown
+        assert json.loads(shown)["records"] == [
+            {"record_id": OTHER, "record_name": "Q3 roadmap", "virtual_record_id": VRID_B,
+             "matched_terms": "1", "match_count": "3", "match_preview": "marker marker marker"},
+        ]
         assert f"- {OTHER} (Q3 roadmap)" in output.error
         assert REAL not in output.error
         assert "closest" not in output.error
