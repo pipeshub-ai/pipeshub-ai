@@ -3211,6 +3211,7 @@ class TestGetInstanceStatus:
         config_service = AsyncMock()
 
         async def mock_get_config(path, default=None, use_cache=True):
+            """Return the OAuth instance and its authenticated credential record."""
             if "toolset-instances" in path:
                 return [{"_id": "i1", "orgId": "o1", "instanceName": "My Jira", "toolsetType": "jira", "authType": "OAUTH"}]
             if "toolsets/i1/u1" in path:
@@ -3223,6 +3224,36 @@ class TestGetInstanceStatus:
             result = await get_instance_status("i1", request, config_service=config_service)
             assert result["status"] == "success"
             assert result["isAuthenticated"] is True
+
+    @pytest.mark.asyncio
+    async def test_none_auth_type_returns_authenticated_without_credentials(self) -> None:
+        """NONE-auth toolsets do not require a stored credential record."""
+        from app.api.routes.toolsets import get_instance_status
+
+        request = MagicMock()
+        config_service = AsyncMock()
+
+        async def mock_get_config(path, default=None, use_cache=True):
+            """Return the NONE-auth instance and no stored credentials."""
+            if "toolset-instances" in path:
+                return [
+                    {
+                        "_id": "i1",
+                        "orgId": "o1",
+                        "instanceName": "Calculator",
+                        "toolsetType": "calculator",
+                        "authType": "NONE",
+                    }
+                ]
+            return None
+
+        config_service.get_config = mock_get_config
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}):
+            result = await get_instance_status("i1", request, config_service=config_service)
+
+        assert result["isAuthenticated"] is True
+        assert result["authType"] == "NONE"
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
@@ -7777,6 +7808,52 @@ class TestAgentScopedToolsets:
         assert result["filterCounts"]["notAuthenticated"] == 0
 
 
+    @pytest.mark.asyncio
+    async def test_build_toolsets_list_response_with_none_authtype_instance(self) -> None:
+        """NONE-auth instances are authenticated without credential records."""
+        from app.api.routes.toolsets import _build_toolsets_list_response
+
+        request = _make_request()
+        request.app.state.toolset_registry = _make_registry("calculator", supported_auth=["NONE"])
+        config_service = AsyncMock()
+        instances = [
+            {
+                "_id": "i1",
+                "orgId": "o1",
+                "toolsetType": "calculator",
+                "authType": "NONE",
+                "instanceName": "Calculator",
+            }
+        ]
+
+        with patch(
+            "app.api.routes.toolsets._load_toolset_instances",
+            new_callable=AsyncMock,
+            return_value=instances,
+        ):
+            result = await _build_toolsets_list_response(
+                request=request,
+                org_id="o1",
+                config_service=config_service,
+                search=None,
+                page=1,
+                limit=20,
+                include_registry=False,
+                fetch_auth_for_instance=AsyncMock(return_value=None),
+                include_has_credentials=True,
+            )
+
+        assert result["status"] == "success"
+        assert len(result["toolsets"]) == 1
+        toolset = result["toolsets"][0]
+        assert toolset["instanceId"] == "i1"
+        assert toolset["isAuthenticated"] is True
+        assert toolset["isConfigured"] is True
+        assert toolset["hasCredentials"] is False
+        assert result["filterCounts"]["authenticated"] == 1
+        assert result["filterCounts"]["notAuthenticated"] == 0
+
+
 class TestGetAuthenticatedToolsets:
     """Tests for get_authenticated_toolsets helper method."""
 
@@ -7982,6 +8059,123 @@ class TestGetAuthenticatedToolsets:
         assert toolset["isAuthenticated"] is True
         assert toolset["createdAtTimestamp"] == 1234567890
         assert toolset["updatedAtTimestamp"] == 1234567900
+
+
+    @pytest.mark.asyncio
+    async def test_treats_none_authtype_as_authenticated_without_credentials(self) -> None:
+        """NONE-auth toolsets must be available to agents without stored credentials."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {
+                "_id": "inst_none",
+                "orgId": "o1",
+                "toolsetType": "calculator",
+                "instanceName": "Calculator",
+                "authType": "NONE",
+            },
+            {
+                "_id": "inst_token_unauthed",
+                "orgId": "o1",
+                "toolsetType": "jira",
+                "instanceName": "Jira",
+                "authType": "API_TOKEN",
+            },
+        ]
+
+        async def mock_get_config(path, default=None):
+            """Return instances while simulating no stored user credentials."""
+            if "toolset-instances" in path:
+                return instances
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Calculator",
+            "description": "Performs math operations",
+            "tools": [{"name": "add", "description": "Add two numbers"}],
+        }
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+
+        assert len(result) == 1
+        assert result[0]["instanceId"] == "inst_none"
+        assert result[0]["authType"] == "NONE"
+        assert result[0]["isAuthenticated"] is True
+        assert auth_by_instance["inst_none"] == {
+            "isAuthenticated": True,
+            "authType": "NONE",
+        }
+        assert "inst_token_unauthed" not in auth_by_instance
+
+    @pytest.mark.asyncio
+    async def test_none_authtype_ignores_stale_unauthenticated_record(self) -> None:
+        """NONE-auth toolsets must synthesize authenticated state even if stale auth is false."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {
+                "_id": "inst_none",
+                "orgId": "o1",
+                "toolsetType": "calculator",
+                "instanceName": "Calculator",
+                "authType": "NONE",
+            }
+        ]
+
+        async def mock_get_config(path, default=None):
+            """Return a stale unauthenticated record for the NONE-auth instance."""
+            if "toolset-instances" in path:
+                return instances
+            if "inst_none" in path:
+                return {"isAuthenticated": False, "authType": "NONE"}
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "display_name": "Calculator",
+            "tools": [],
+        }
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+
+        assert len(result) == 1
+        assert result[0]["instanceId"] == "inst_none"
+        assert auth_by_instance["inst_none"] == {
+            "isAuthenticated": True,
+            "authType": "NONE",
+        }
+
+    @pytest.mark.asyncio
+    async def test_missing_empty_or_none_authtype_without_credentials_fails_closed(self) -> None:
+        """Missing or empty authType must not be interpreted as NONE."""
+        from app.api.routes.toolsets import get_authenticated_toolsets
+
+        config_service = AsyncMock()
+        instances = [
+            {"_id": "inst_missing", "orgId": "o1", "toolsetType": "custom"},
+            {"_id": "inst_empty", "orgId": "o1", "toolsetType": "custom", "authType": ""},
+            {"_id": "inst_none_value", "orgId": "o1", "toolsetType": "custom", "authType": None},
+        ]
+
+        async def mock_get_config(path, default=None):
+            """Return malformed auth-type instances without credential records."""
+            if "toolset-instances" in path:
+                return instances
+            return None
+
+        config_service.get_config = mock_get_config
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {"tools": []}
+
+        result, auth_by_instance = await get_authenticated_toolsets("u1", "o1", config_service, registry)
+
+        assert result == []
+        assert auth_by_instance == {}
 
 
 class TestIsActionsEnabled:
