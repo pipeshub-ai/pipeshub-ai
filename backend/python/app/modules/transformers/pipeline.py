@@ -12,6 +12,7 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
 
@@ -181,9 +182,10 @@ class IndexingPipeline:
                 return
 
             if ctx.reconciliation_context is None:
-                ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-                    ctx, self.logger, self.sink_orchestrator
-                )
+                with stage("reconcile"):
+                    ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                        ctx, self.logger, self.sink_orchestrator
+                    )
 
             # Phase 1: Index (VectorStore + BlobStorage)
             # Document becomes searchable after this call. Deferral is still a
@@ -208,22 +210,26 @@ class IndexingPipeline:
 
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
-        await self.document_extraction.apply(ctx)
+        with stage("extract"):
+            await self.document_extraction.apply(ctx)
 
         record = ctx.record
         if record.semantic_metadata:
             # Taxonomy names must be resolved before the blob, summary and
             # graph writes below all consume them.
-            await self.sink_orchestrator.resolve_entities(ctx)
-            await self.sink_orchestrator.blob_storage.apply(ctx)
+            with stage("entities.resolve"):
+                await self.sink_orchestrator.resolve_entities(ctx)
+            with stage("blob.write"):
+                await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
-                await self.sink_orchestrator.vector_store.index_record_summary(
-                    record.id,
-                    record.virtual_record_id,
-                    record.org_id,
-                    record.semantic_metadata,
-                    record,
-                )
+                with stage("summary.index"):
+                    await self.sink_orchestrator.vector_store.index_record_summary(
+                        record.id,
+                        record.virtual_record_id,
+                        record.org_id,
+                        record.semantic_metadata,
+                        record,
+                    )
 
         await self.sink_orchestrator.enrich(ctx)
 
