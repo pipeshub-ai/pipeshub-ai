@@ -7,8 +7,8 @@
 #
 # CI: test workflows pull ghcr.io/pipeshub-ai/pipeshub-ai-base:{python-deps,runtime}
 # (falling back to Docker Hub) before building the app image; avoid unconditional
-# Dockerfile.base builds in CI (slow). .github/workflows/base-images.yml keeps the GHCR
-# tags current: it rebuilds them on main and can mirror these Docker Hub tags there.
+# Dockerfile.base builds in CI (slow). After publishing a new base here, run
+# .github/workflows/base-images.yml (mode=mirror) to copy the tags to GHCR.
 #
 # Incremental rebuild (when only a few packages change in pyproject.toml):
 #   Pass the currently-published image as PYTHON_DEPS_BASE so uv skips already-satisfied

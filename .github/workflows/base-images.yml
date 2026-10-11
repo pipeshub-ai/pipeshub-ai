@@ -8,31 +8,24 @@ name: Base images
 # Docker Hub.
 #
 #   mode=mirror  copies the tags already on Docker Hub, every platform, as they
-#                are. Run it once to seed GHCR, or to bring GHCR back in line
-#                with Docker Hub after a hand-published base.
-#   mode=build   rebuilds every tag from main, as a push to main that changes
-#                Dockerfile.base or pyproject.toml also does.
+#                are. Run it once to seed GHCR, and again after each
+#                hand-published base, so CI tests on the base releases build from.
+#   mode=build   rebuilds every tag from main. Nothing runs it automatically:
+#                it would let CI drift ahead of the Docker Hub base.
 #
 # CI pulls these anonymously and falls back to Docker Hub when a tag is missing,
 # so the package must be public: Package settings -> Change visibility -> Public.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'Dockerfile.base'
-      - 'backend/python/pyproject.toml'
-      - '.github/workflows/base-images.yml'
   workflow_dispatch:
     inputs:
       mode:
-        description: 'build: rebuild from main; mirror: copy the current Docker Hub tags'
+        description: 'mirror: copy the current Docker Hub tags; build: rebuild from main'
         required: true
-        default: build
+        default: mirror
         type: choice
         options:
-          - build
           - mirror
+          - build
 
 permissions:
   contents: read
@@ -48,7 +41,7 @@ env:
 jobs:
   mirror:
     name: Mirror Docker Hub tags to GHCR
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'mirror'
+    if: inputs.mode == 'mirror'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -73,7 +66,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.tag }} (${{ matrix.arch }})
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'build')
+    if: github.ref == 'refs/heads/main' && inputs.mode == 'build'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     permissions:
