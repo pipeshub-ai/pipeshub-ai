@@ -8,7 +8,7 @@ The query service does not wire ``FeatureFlagService`` with an ``EtcdProvider``
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, cast
 
 from app.services.featureflag.config.config import CONFIG
 
@@ -22,7 +22,7 @@ PLATFORM_SETTINGS_KEY = "/services/platform/settings"
 
 async def read_platform_feature_flag(
     flag_name: str,
-    config_service: Any,
+    config_service: ConfigurationService,
     *,
     default: bool,
 ) -> bool:
@@ -33,17 +33,22 @@ async def read_platform_feature_flag(
     an absent flag key, or a read failure, returns ``default``.
     """
     try:
-        settings = await config_service.get_config(
+        raw_settings: object = await config_service.get_config(  # pyright: ignore[reportUnknownMemberType, reportUnknownVariableType]
             PLATFORM_SETTINGS_KEY, default={}, use_cache=False,
         )
-        flags = settings.get("featureFlags") if isinstance(settings, dict) else None
+        if not isinstance(raw_settings, dict):
+            return default
+        settings: dict[str, object] = cast("dict[str, object]", raw_settings)
+        flags = settings.get("featureFlags")
         if not isinstance(flags, dict):
             return default
+        flags_dict: dict[object, object] = cast("dict[object, object]", flags)
         # Keys are normalized to upper-case, matching `EtcdProvider`.
-        normalized = {str(k).upper(): v for k, v in flags.items()}
-        if str(flag_name).upper() not in normalized:
+        normalized: dict[str, object] = {str(k).upper(): v for k, v in flags_dict.items()}
+        target_key = str(flag_name).upper()
+        if target_key not in normalized:
             return default
-        return bool(normalized[str(flag_name).upper()])
+        return bool(normalized[target_key])
     except Exception as e:
         logger.error(
             "Failed to read %s for feature flag %s; using default=%s: %s",
@@ -57,7 +62,7 @@ async def read_platform_feature_flag(
 
 
 async def _platform_flag(
-    config_service: Optional["ConfigurationService"],
+    config_service: ConfigurationService | None,
     flag: str,
     *,
     default: bool,
@@ -90,7 +95,7 @@ async def _platform_flag(
         return default
 
 
-async def is_actions_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_actions_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Deployment-level gate for Actions: agents may only load/use toolset
     (connector) tools when this is true. Source of truth is the
     ``ENABLE_ACTIONS`` platform feature flag. Defaults to ENABLED — unlike
@@ -100,7 +105,7 @@ async def is_actions_enabled(config_service: Optional["ConfigurationService"] = 
     return await _platform_flag(config_service, CONFIG.ENABLE_ACTIONS, default=True)
 
 
-async def is_skills_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_skills_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Org-level gate for the whole Skills subsystem: UI, REST, agent-runtime
     skill tools, and builtin seeding. Source of truth is the ``ENABLE_SKILLS``
     platform feature flag. Defaults to ENABLED (Beta) — mirrors
@@ -121,7 +126,7 @@ async def is_soft_delete_enabled(config_service: ConfigurationService | None = N
     return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE, default=False)
 
 
-async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+async def is_user_context_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Org-level gate for injecting user/org profile into the default
     assistant and Universal Agent Mode system prompts. Source of truth is
     the ``ENABLE_USER_CONTEXT`` platform feature flag. Defaults to ENABLED
@@ -131,3 +136,13 @@ async def is_user_context_enabled(config_service: Optional["ConfigurationService
     own ``sendUserContext`` field.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)
+
+
+async def is_semantic_cache_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Deployment-level gate for Semantic Caching in plain-RAG chat.
+
+    Source of truth is the ``ENABLE_SEMANTIC_CACHE`` platform feature flag.
+    Defaults to DISABLED (opt-in per organization).
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_SEMANTIC_CACHE, default=False)
+
