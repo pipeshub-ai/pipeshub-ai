@@ -770,19 +770,17 @@ class DataSourceEntitiesProcessor:
                 # edge yet, so deleting one is a guaranteed no-op round trip —
                 # one per record, on the hot path of every full sync.
                 inherit = None
-            if narrowed_connectors is not None and await self._loses_inherited_access(
-                record, joining_group_id, leaving_group_id, inherit, tx_store
-            ):
-                narrowed_connectors.add(record.connector_id)
             # Leaving the old group and joining the new one are one write: on Neo4j
             # each statement commits on its own, so a failure in between left the
             # record out of its old group but still inheriting that group's permissions.
-            await tx_store.link_record_to_group(
+            removed_inherits = await tx_store.link_record_to_group(
                 existing_record.id if leaving_group_id else record.id,
                 joining_group_id,
                 inherit=inherit,
                 leaving_group_id=leaving_group_id,
             )
+            if narrowed_connectors is not None and (leaving_group_id or removed_inherits):
+                narrowed_connectors.add(record.connector_id)
 
         if record.shared_with_me_record_group_ids:
             # create_record_group_relation is an idempotent upsert and cannot
@@ -816,30 +814,6 @@ class DataSourceEntitiesProcessor:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
         return moved
-
-    @staticmethod
-    async def _loses_inherited_access(
-        record: Record,
-        joining_group_id: str | None,
-        leaving_group_id: str | None,
-        inherit: bool | None,
-        tx_store: TransactionStore,
-    ) -> bool:
-        if leaving_group_id:
-            return True
-        if inherit is not False or not joining_group_id:
-            return False
-        # Read only on this branch: an existing record that does not inherit is
-        # rewritten on every sync, and the edge is almost always already gone.
-        # Raising: answered as "no edge", the write below removed it unreported.
-        return await tx_store.get_edge(
-            record.id,
-            CollectionNames.RECORDS.value,
-            joining_group_id,
-            CollectionNames.RECORD_GROUPS.value,
-            CollectionNames.INHERIT_PERMISSIONS.value,
-            raise_on_error=True,
-        ) is not None
 
     async def _prepare_ticket_user_edge(
         self,

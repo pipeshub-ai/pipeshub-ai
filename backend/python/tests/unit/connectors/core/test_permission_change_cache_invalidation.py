@@ -287,7 +287,7 @@ class TestInheritedAccessRemovedInPlace:
 
     async def test_inherit_edge_removed_marks_the_connector(self, events) -> None:
         tx = AsyncMock()
-        tx.get_edge = AsyncMock(return_value={"_from": "records/rec-1"})
+        tx.link_record_to_group = AsyncMock(return_value=1)
         proc = _processor(tx, events)
         record = _record()
         record.inherit_permissions = False
@@ -298,10 +298,12 @@ class TestInheritedAccessRemovedInPlace:
         assert moved is False
         assert narrowed == {CONNECTOR}
         tx.link_record_to_group.assert_awaited_once()
+        # The write counts what it removed; reading the edge first cost a round trip per record per sync.
+        tx.get_edge.assert_not_called()
 
     async def test_no_inherit_edge_to_remove_marks_nothing(self, events) -> None:
         tx = AsyncMock()
-        tx.get_edge = AsyncMock(return_value=None)
+        tx.link_record_to_group = AsyncMock(return_value=0)
         proc = _processor(tx, events)
         record = _record()
         record.inherit_permissions = False
@@ -310,9 +312,11 @@ class TestInheritedAccessRemovedInPlace:
         await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
 
         assert narrowed == set()
+        tx.get_edge.assert_not_called()
 
     async def test_still_inheriting_reads_nothing(self, events) -> None:
         tx = AsyncMock()
+        tx.link_record_to_group = AsyncMock(return_value=0)
         proc = _processor(tx, events)
         record = _record()
         record.inherit_permissions = True
@@ -325,6 +329,7 @@ class TestInheritedAccessRemovedInPlace:
 
     async def test_leaving_a_group_marks_the_connector(self, events) -> None:
         tx = AsyncMock()
+        tx.link_record_to_group = AsyncMock(return_value=0)
         proc = _processor(tx, events)
         narrowed: set[str] = set()
 
@@ -405,11 +410,11 @@ class TestTrashingDropsTheConnector:
         notify.assert_not_called()
 
 
-class TestInheritProbeFailsLoudly:
-    async def test_unreadable_inherit_edge_stops_the_write(self, events) -> None:
-        """Answered as "no edge", the write removed it and the drop was skipped."""
+class TestAFailedGroupWrite:
+    async def test_is_raised_and_marks_nothing(self, events) -> None:
+        """The write is one statement or one transaction, so a failed one removed no edge."""
         tx = AsyncMock()
-        tx.get_edge = AsyncMock(side_effect=RuntimeError("graph down"))
+        tx.link_record_to_group = AsyncMock(side_effect=RuntimeError("graph down"))
         proc = _processor(tx, events)
         record = _record()
         record.inherit_permissions = False
@@ -418,9 +423,7 @@ class TestInheritProbeFailsLoudly:
         with pytest.raises(RuntimeError):
             await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
 
-        tx.get_edge.assert_awaited_once()
-        assert tx.get_edge.await_args.kwargs == {"raise_on_error": True}
-        tx.link_record_to_group.assert_not_called()
+        tx.get_edge.assert_not_called()
         assert narrowed == set()
 
 
@@ -443,8 +446,7 @@ class TestDropSurvivesARetriedWrite:
         )
 
     def _attempts(self, proc, tx) -> AsyncMock:
-        edge = {"_from": "records/rec-1"}
-        tx.get_edge = AsyncMock(side_effect=[edge, None])
+        tx.link_record_to_group = AsyncMock(side_effect=[1, 0])
         calls = {"n": 0}
 
         async def process(record, permissions, tx_store, moved=None, **kwargs) -> tuple[None, list]:
