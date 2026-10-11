@@ -1,0 +1,174 @@
+name: Base images
+
+# CI builds the app image FROM ghcr.io/pipeshub-ai/pipeshub-ai-base instead of
+# Docker Hub, so test runs neither hit Docker Hub's anonymous pull limit nor
+# show up in its pull counts. This workflow keeps those GHCR tags current.
+# Docker Hub's pipeshubai/pipeshub-ai-base, which releases build from, is still
+# published by hand (see the header of Dockerfile.base); nothing here pushes to
+# Docker Hub.
+#
+#   mode=mirror  copies the tags already on Docker Hub, every platform, as they
+#                are. Run it once to seed GHCR, or to bring GHCR back in line
+#                with Docker Hub after a hand-published base.
+#   mode=build   rebuilds every tag from main, as a push to main that changes
+#                Dockerfile.base or pyproject.toml also does.
+#
+# CI pulls these anonymously and falls back to Docker Hub when a tag is missing,
+# so the package must be public: Package settings -> Change visibility -> Public.
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile.base'
+      - 'backend/python/pyproject.toml'
+      - '.github/workflows/base-images.yml'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'build: rebuild from main; mirror: copy the current Docker Hub tags'
+        required: true
+        default: build
+        type: choice
+        options:
+          - build
+          - mirror
+
+permissions:
+  contents: read
+
+concurrency:
+  group: base-images
+  cancel-in-progress: false
+
+env:
+  GHCR_IMAGE: ghcr.io/pipeshub-ai/pipeshub-ai-base
+  HUB_IMAGE: docker.io/pipeshubai/pipeshub-ai-base
+
+jobs:
+  mirror:
+    name: Mirror Docker Hub tags to GHCR
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'mirror'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+
+      - name: Copy the tags
+        run: |
+          set -euo pipefail
+          for tag in python-deps python-deps-slim runtime; do
+            crane copy "${HUB_IMAGE}:${tag}" "${GHCR_IMAGE}:${tag}"
+          done
+
+  build:
+    name: Build ${{ matrix.tag }} (${{ matrix.arch }})
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.mode == 'build')
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      matrix:
+        tag: [python-deps, python-deps-slim, runtime]
+        arch: [amd64, arm64]
+        include:
+          - tag: python-deps
+            target: python-deps
+            bundle_bge: '1'
+          - tag: python-deps-slim
+            target: python-deps
+            bundle_bge: '0'
+          - tag: runtime
+            target: runtime-base
+            bundle_bge: '1'
+          # Native runners for each architecture; emulating arm64 would take
+          # hours for the Python dependencies.
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reclaim disk space
+        run: |
+          set -uo pipefail
+          before=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          after=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "free disk: ${before}G -> ${after}G"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Pushed under a per-architecture tag; the publish job joins the two, so
+      # the tag CI pulls never points at a half-built set of platforms.
+      - name: Build and push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.base
+          target: ${{ matrix.target }}
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          provenance: false
+          build-args: |
+            BUNDLE_BGE_EMBEDDING=${{ matrix.bundle_bge }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          tags: |
+            ${{ env.GHCR_IMAGE }}:${{ matrix.tag }}-${{ matrix.arch }}
+
+  publish:
+    name: Publish ${{ matrix.tag }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        tag: [python-deps, python-deps-slim, runtime]
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Join the architectures under ${{ matrix.tag }}
+        env:
+          TAG: ${{ matrix.tag }}
+          SOURCE: https://github.com/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools create \
+            --annotation "index:org.opencontainers.image.source=${SOURCE}" \
+            -t "${GHCR_IMAGE}:${TAG}" \
+            "${GHCR_IMAGE}:${TAG}-amd64" "${GHCR_IMAGE}:${TAG}-arm64"
+          docker buildx imagetools inspect "${GHCR_IMAGE}:${TAG}"
