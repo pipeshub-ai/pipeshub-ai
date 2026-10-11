@@ -124,6 +124,20 @@ class TestTimestampDefaults:
         doc["republishCount"] = 2
         jsonschema.validate(instance=doc, schema=schema)
 
+    def test_a_rate_limit_wait_is_declared_in_the_record_schema(self) -> None:
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["retryNotBefore"] = 1_800_000_000_000
+        doc["rateLimitedSince"] = 1_799_990_000_000
+        jsonschema.validate(instance=doc, schema=schema)
+        doc["retryNotBefore"] = None
+        doc["rateLimitedSince"] = None
+        jsonschema.validate(instance=doc, schema=schema)
+
 
 # ============================================================================
 # Record tests

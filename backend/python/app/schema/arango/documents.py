@@ -305,6 +305,11 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # A record whose source rate-limited its content fetch: when it may
+            # be sent again, and when this run of waits began (see
+            # app/modules/indexing/rate_limit_deferral.py).
+            "retryNotBefore": {"type": ["number", "null"]},
+            "rateLimitedSince": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [

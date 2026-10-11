@@ -92,6 +92,7 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -1312,9 +1313,10 @@ async def stream_record_internal(
             logger=logger,
         )
 
-        return await _invoke_connector_stream(
-            connector_obj, record, token_user_id
-        )
+        with streaming_for_indexing():
+            return await _invoke_connector_stream(
+                connector_obj, record, token_user_id
+            )
 
     except HTTPException:
         raise

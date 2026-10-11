@@ -59,11 +59,10 @@ _RESERVED_RESOURCES = frozenset({"core", "graphql"})
 _DEFAULT_RESERVE_PERCENT = 10
 _RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
 
-# Set while a record is streamed to indexing. Indexing gives a 429 only a few
-# quick retries before it fails the record for good, and the sync that listed
-# the record has already moved its checkpoint past it, so holding back quota
-# GitHub would still grant would cost the record. Those calls stop only once
-# the pool is actually spent.
+# Set while a record is streamed to a person who opened it: one request they
+# asked for, which the reserve would refuse although GitHub would grant it.
+# Those calls stop only once the pool is actually spent. Streaming to indexing
+# is not exempt; it waits out the reset instead (StreamingHelper.stream_record).
 _reserve_exempt: ContextVar[bool] = ContextVar("github_rate_limit_reserve_exempt", default=False)
 
 

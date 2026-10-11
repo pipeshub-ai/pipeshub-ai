@@ -1,7 +1,7 @@
 """An in-memory graph holding only what the stranded-record sweep reads and writes.
 
-Records by key, read a page at a time by ``indexingStatus`` in key order, and
-updated field by field. Returns copies, as a real store does, so a caller that
+Records by key, read one at a time or a page at a time by ``indexingStatus`` in
+key order, and updated field by field. Returns copies, as a real store does, so a caller that
 mutates what it read does not change what is stored. A null removes the
 property, as Neo4j's ``SET +=`` does. Every connector is live.
 """
@@ -15,6 +15,7 @@ __all__ = ["FakeRecordGraph"]
 class FakeRecordGraph:
     def __init__(self) -> None:
         self.records: dict[str, dict] = {}
+        self.connector_names: dict[str, str] = {}
 
     def add_queued(self, key: str, connector_id: str, queued_at_ms: int, **fields: object) -> None:
         self.records[key] = {
@@ -55,9 +56,12 @@ class FakeRecordGraph:
         )
         return [dict(r) for r in matching[skip:skip + limit]]
 
-    async def get_document(self, key: str, collection: str, **_kwargs: object) -> dict:
+    async def get_document(self, key: str, collection: str, **_kwargs: object) -> dict | None:
+        if collection == CollectionNames.RECORDS.value:
+            record = self.records.get(key)
+            return dict(record) if record is not None else None
         assert collection == CollectionNames.APPS.value
-        return {"_key": key, "isActive": True}
+        return {"_key": key, "isActive": True, "name": self.connector_names.get(key, key)}
 
     async def update_node(self, key: str, collection: str, fields: dict) -> bool:
         assert collection == CollectionNames.RECORDS.value
