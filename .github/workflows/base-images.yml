@@ -7,15 +7,20 @@ name: Base images
 # published by hand (see the header of Dockerfile.base); nothing here pushes to
 # Docker Hub.
 #
-#   mode=mirror  copies the tags already on Docker Hub, every platform, as they
-#                are. Run it once to seed GHCR, and again after each
-#                hand-published base, so CI tests on the base releases build from.
-#   mode=build   rebuilds every tag from main. Nothing runs it automatically:
-#                it would let CI drift ahead of the Docker Hub base.
+#   mirror  copies each Docker Hub tag, every platform, as it is, so CI tests on
+#           the base releases build from. It runs daily, so GHCR follows a
+#           hand-published base within a day; run it by hand to sync sooner. It
+#           compares digests first (a HEAD request, which Docker Hub does not
+#           count as a pull) and copies only the tags that differ.
+#   build   rebuilds every tag from main, by hand only: run automatically it
+#           would let CI drift ahead of the Docker Hub base. The next daily
+#           mirror puts the Docker Hub tags back.
 #
 # CI pulls these anonymously and falls back to Docker Hub when a tag is missing,
 # so the package must be public: Package settings -> Change visibility -> Public.
 on:
+  schedule:
+    - cron: '17 4 * * *'
   workflow_dispatch:
     inputs:
       mode:
@@ -41,7 +46,8 @@ env:
 jobs:
   mirror:
     name: Mirror Docker Hub tags to GHCR
-    if: inputs.mode == 'mirror'
+    # A fork's copy of the schedule must not try to push here.
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && (github.event_name == 'schedule' || inputs.mode == 'mirror')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -57,16 +63,30 @@ jobs:
       - name: Install crane
         uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
-      - name: Copy the tags
+      - name: Copy the tags that changed
         run: |
           set -euo pipefail
+          {
+            echo "| Tag | Result |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
           for tag in python-deps python-deps-slim runtime; do
-            crane copy "${HUB_IMAGE}:${tag}" "${GHCR_IMAGE}:${tag}"
+            if ! hub="$(crane digest "${HUB_IMAGE}:${tag}")"; then
+              echo "::error::Could not read ${HUB_IMAGE}:${tag} from Docker Hub. Check that the tag is published (see the header of Dockerfile.base), then run this workflow again."
+              exit 1
+            fi
+            ghcr="$(crane digest "${GHCR_IMAGE}:${tag}" 2>/dev/null || true)"
+            if [ "$hub" = "$ghcr" ]; then
+              echo "| \`${tag}\` | skipped, already ${hub} |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              crane copy "${HUB_IMAGE}:${tag}" "${GHCR_IMAGE}:${tag}"
+              echo "| \`${tag}\` | copied ${hub} (GHCR had ${ghcr:-nothing}) |" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done
 
   build:
     name: Build ${{ matrix.tag }} (${{ matrix.arch }})
-    if: github.ref == 'refs/heads/main' && inputs.mode == 'build'
+    if: github.repository == 'pipeshub-ai/pipeshub-ai' && github.ref == 'refs/heads/main' && inputs.mode == 'build'
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 150
     permissions:
