@@ -1221,7 +1221,20 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning("Rollback after transaction failure raised: %s", rb_err)
             raise
         else:
-            await tx_store.commit()
+            try:
+                await tx_store.commit()
+            except BaseException as e:
+                # A failed ArangoDB commit leaves the stream transaction open, holding
+                # its locks until the server's idle timeout, so abort it. Neo4j has
+                # already closed the session and answers the abort with ValueError.
+                self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
+                try:
+                    await tx_store.rollback()
+                except ValueError:
+                    pass
+                except Exception as rb_err:
+                    self.logger.warning("Abort after a failed commit raised: %s", rb_err)
+                raise
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
         """Execute function within graph database transaction.

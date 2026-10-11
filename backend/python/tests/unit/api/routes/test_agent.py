@@ -3296,7 +3296,9 @@ class TestCreateAgentTransactionOutcome:
         graph.rollback_transaction.assert_not_awaited()
         graph.commit_transaction.assert_not_awaited()
 
-    async def test_failed_commit_answers_500(self) -> None:
+    async def test_failed_commit_aborts_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
         graph = self._graph()
         graph.commit_transaction = AsyncMock(side_effect=RuntimeError("Transaction failed"))
 
@@ -3304,6 +3306,10 @@ class TestCreateAgentTransactionOutcome:
             await self._create(graph)
 
         assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        # ArangoDB leaves the transaction open after a failed commit.
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
 
 
 # ===========================================================================

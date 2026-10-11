@@ -1379,6 +1379,53 @@ class TestGraphDataStoreTransaction:
         mock_graph_provider.commit_transaction.assert_not_awaited()
         mock_graph_provider.rollback_transaction.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_a_failed_commit_aborts_and_raises_the_commit_error(self, mock_graph_provider) -> None:
+        """ArangoDB's commit only raises, leaving the stream transaction open
+        with its locks until the idle timeout, so the helper aborts it."""
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit refused"))
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(RuntimeError, match="commit refused"):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.commit_transaction.assert_awaited_once_with("txn-123")
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("abort_error", [
+        ValueError("Transaction txn-123 not found"),
+        RuntimeError("Failed to abort transaction: connection reset"),
+    ])
+    async def test_a_failing_abort_after_a_failed_commit_does_not_mask_it(
+        self, mock_graph_provider, abort_error: Exception
+    ) -> None:
+        """Neo4j forgets the transaction in commit's finally, so its abort
+        answers ValueError; either way the caller sees the commit failure."""
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit refused"))
+        mock_graph_provider.rollback_transaction = AsyncMock(side_effect=abort_error)
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(RuntimeError, match="commit refused"):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
+    @pytest.mark.asyncio
+    async def test_a_cancellation_during_commit_aborts_and_stays_a_cancellation(
+        self, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=asyncio.CancelledError())
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
 
 # ============================================================================
 # Slack diff: GraphTransactionStore.find_slack_burst_record_by_ts
