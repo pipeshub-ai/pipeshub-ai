@@ -357,3 +357,49 @@ class TestInheritedAccessRemovedInPlace:
             await proc.on_record_content_update(_record())
 
         _dropped_after_commit(events)
+
+
+class TestTrashingDropsTheConnector:
+    async def test_group_kept_for_the_trash(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="rg-key", name="Shared"))
+        tx.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        tx.batch_update_nodes = AsyncMock(return_value=True)
+        proc = _processor(tx, events)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            new=AsyncMock(return_value=True),
+        ), patch.object(proc, "_trash_live_records_of_group", new=AsyncMock()) as trash:
+            assert await proc.on_record_group_deleted("rg-ext", CONNECTOR, trash_live_records=True) is True
+
+        trash.assert_awaited_once()
+        tx.delete_nodes_and_edges.assert_not_called()
+        _dropped_after_commit(events)
+
+    async def test_trashed_records(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.soft_delete_records = AsyncMock(return_value={
+            "soft_deleted_records": [{"record_id": "rec-1", "virtual_record_id": "vrid-1"}],
+            "virtual_record_ids": ["vrid-1"],
+            "org_id": ORG,
+        })
+        proc = _processor(tx, events)
+
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.notify_kb_records_changed",
+            new=AsyncMock(),
+        ), patch.object(proc, "_publish_soft_delete_events", new=AsyncMock(return_value=[])):
+            await proc.on_records_soft_deleted(["rec-1"], CONNECTOR, delete_source="CONNECTOR")
+
+        _dropped_after_commit(events)
+
+    async def test_nothing_trashed_drops_nothing(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.soft_delete_records = AsyncMock(return_value={"soft_deleted_records": [], "virtual_record_ids": []})
+        proc = _processor(tx, events)
+
+        with patch.object(proc, "_publish_soft_delete_events", new=AsyncMock(return_value=[])):
+            await proc.on_records_soft_deleted(["rec-1"], CONNECTOR, delete_source="CONNECTOR")
+
+        notify.assert_not_called()

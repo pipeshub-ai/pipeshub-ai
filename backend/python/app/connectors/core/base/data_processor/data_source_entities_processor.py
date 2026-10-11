@@ -2787,11 +2787,12 @@ class DataSourceEntitiesProcessor:
         batch_id: str,
         delete_source: DeleteSource,
     ) -> list[str]:
-        """After the trash transaction commits: count it, refresh KB caches, publish the vector cleanup."""
+        """After the trash transaction commits: count it, refresh the search caches, publish the vector cleanup."""
         source = DeleteSource(delete_source).value
         record_soft_deleted(source, marked)
         if marked:
             await notify_kb_records_changed(connector_id)
+            await self._access_changed([connector_id], org_id)
         return await self._publish_soft_delete_events(
             org_id=org_id or self.org_id,
             connector_id=connector_id,
@@ -4437,14 +4438,15 @@ class DataSourceEntitiesProcessor:
                 record_group_internal_id = record_group.id
                 record_group_name = record_group.name
 
-                if soft_delete and await tx_store.get_records_by_status(
+                kept_for_trash = bool(soft_delete and await tx_store.get_records_by_status(
                     org_id=self.org_id,
                     connector_id=connector_id,
                     status_filters=None,
                     record_group_id=record_group_internal_id,
                     limit=1,
                     visibility=RecordVisibility.DELETED,
-                ):
+                ))
+                if kept_for_trash:
                     self.logger.info(
                         f"Keeping record group '{record_group_name}' (external_id: {external_group_id}): "
                         "records in the trash still belong to it"
@@ -4461,22 +4463,23 @@ class DataSourceEntitiesProcessor:
                     )
                     if marked is False:
                         raise RuntimeError(f"Could not mark record group {record_group_internal_id} for the purge")
-                    return True
+                else:
+                    self.logger.debug(
+                        f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
+                    )
 
-                self.logger.debug(
-                    f"Deleting record group: '{record_group_name}' (internal_id: {record_group_internal_id})"
-                )
+                    # 2. Atomically delete the group node and all its connected edges
+                    await tx_store.delete_nodes_and_edges(
+                        [record_group_internal_id], CollectionNames.RECORD_GROUPS.value
+                    )
 
-                # 2. Atomically delete the group node and all its connected edges
-                await tx_store.delete_nodes_and_edges(
-                    [record_group_internal_id], CollectionNames.RECORD_GROUPS.value
-                )
-
+            # Kept for the trash too: its live records were just trashed above.
             await self._access_changed([connector_id])
-            self.logger.debug(
-                f"Successfully deleted record group '{record_group_name}' "
-                f"(external_id: {external_group_id}) and its edges."
-            )
+            if not kept_for_trash:
+                self.logger.debug(
+                    f"Successfully deleted record group '{record_group_name}' "
+                    f"(external_id: {external_group_id}) and its edges."
+                )
             return True
 
         except Exception as e:
