@@ -321,3 +321,90 @@ class TestCreatePaths:
 
         assert server.transactions == []
         assert len(server.landed) == statements - 1
+
+
+# Agent create attaches its MCP servers after the agent's own transaction commits,
+# one transaction each, so a failing server leaves the agent ("partial_success").
+_AGENT_STATEMENTS = 2
+_MCP_STATEMENTS = 4
+
+
+async def _create_agent_with_mcp_servers(provider: Neo4jProvider) -> dict:
+    provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1", "email": "a@b.co"})
+    request = MagicMock()
+    request.state.user = {"userId": "user-1", "orgId": "org-1"}
+    container = request.app.container
+    container.retrieval_service = AsyncMock()
+    container.graph_provider = AsyncMock(return_value=provider)
+    container.logger.return_value = MagicMock()
+    request.body = AsyncMock(return_value=json.dumps({"name": "Helper", "mcpServers": [
+        {"instanceId": "i1", "name": "github", "displayName": "GitHub", "tools": [{"name": "issues"}]},
+        {"instanceId": "i2", "name": "linear", "tools": [{"name": "search"}]},
+    ]}).encode())
+    response = await create_agent(request)
+    return json.loads(response.body)
+
+
+class TestAgentMcpServers:
+    @pytest.mark.asyncio
+    async def test_the_agent_and_each_mcp_server_commit_in_their_own_transaction(self) -> None:
+        server = _Server()
+
+        body = await _create_agent_with_mcp_servers(_provider(server))
+
+        assert body["status"] == "success"
+        assert body["warnings"] is None
+        assert [m["name"] for m in body["agent"]["mcpServers"]] == ["github", "linear"]
+        assert [len(tx.ran) for tx in server.transactions] == [_AGENT_STATEMENTS, _MCP_STATEMENTS, _MCP_STATEMENTS]
+        assert all(tx.committed for tx in server.transactions)
+        assert server.autocommitted == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("step", range(1, _MCP_STATEMENTS + 1))
+    async def test_a_failed_mcp_server_is_reported_and_leaves_the_agent_and_the_others(self, step: int) -> None:
+        server = _Server(fail_at=_AGENT_STATEMENTS + step)
+
+        body = await _create_agent_with_mcp_servers(_provider(server))
+
+        assert body["status"] == "partial_success"
+        assert [w["name"] for w in body["warnings"]] == ["github"]
+        assert [m["name"] for m in body["agent"]["mcpServers"]] == ["linear"]
+        agent_tx, github_tx, linear_tx = server.transactions
+        assert agent_tx.committed and linear_tx.committed
+        assert github_tx.rolled_back and not github_tx.committed
+        assert len(server.landed) == _AGENT_STATEMENTS + _MCP_STATEMENTS
+
+    @pytest.mark.asyncio
+    async def test_a_deadlock_attaching_an_mcp_server_retries_only_that_server(self) -> None:
+        server = _Server(fail_at=_AGENT_STATEMENTS + 2, error=_deadlock())
+
+        with patch("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock()):
+            body = await _create_agent_with_mcp_servers(_provider(server))
+
+        assert body["status"] == "success"
+        agent_tx, failed_try, github_tx, linear_tx = server.transactions
+        assert failed_try.rolled_back and not failed_try.committed
+        assert agent_tx.committed and github_tx.committed and linear_tx.committed
+        assert len(server.landed) == _AGENT_STATEMENTS + 2 * _MCP_STATEMENTS
+
+    @pytest.mark.asyncio
+    async def test_a_failed_agent_write_saves_nothing_and_attaches_no_mcp_server(self) -> None:
+        server = _Server(fail_at=_AGENT_STATEMENTS)
+
+        with pytest.raises(HTTPException):
+            await _create_agent_with_mcp_servers(_provider(server))
+
+        (tx,) = server.transactions
+        assert tx.rolled_back and not tx.committed
+        assert server.landed == []
+
+    @pytest.mark.asyncio
+    async def test_with_the_kill_switch_off_a_failed_mcp_server_still_leaves_the_agent(self) -> None:
+        server = _Server(fail_at=_AGENT_STATEMENTS + 1)
+
+        body = await _create_agent_with_mcp_servers(_provider(server, honour=False))
+
+        assert body["status"] == "partial_success"
+        assert [w["name"] for w in body["warnings"]] == ["github"]
+        assert server.transactions == []
+        assert len(server.landed) == _AGENT_STATEMENTS + _MCP_STATEMENTS

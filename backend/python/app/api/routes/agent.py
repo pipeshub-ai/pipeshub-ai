@@ -1150,6 +1150,8 @@ async def _create_mcp_server_edges(
     graph_provider: IGraphDBProvider,
     logger: Logger,
     transaction: str | None = None,
+    *,
+    raise_on_failure: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Create MCP server nodes and edges for an agent using batch operations.
 
@@ -1157,9 +1159,10 @@ async def _create_mcp_server_edges(
     MCP server nodes never carry credentials — auth is resolved at chat time
     from `/services/mcp/credentials/{instanceId}/{ownerId}` (etcd), same as
     the attach-time Node/Python validation that already rejects secrets here.
-    Accepts an optional `transaction` so callers can fold this into an
-    existing agent-creation transaction (unlike the toolset equivalent,
-    which create_agent re-implements inline for that reason).
+    A failed node write is returned as a failure unless `raise_on_failure`,
+    which a caller running this in its own transaction needs: on Neo4j a failed
+    statement has already doomed that transaction, and a deadlock must reach
+    the retry helper as itself.
     """
     created_mcp_servers: list[dict[str, Any]] = []
     failed_mcp_servers: list[dict[str, Any]] = []
@@ -1206,9 +1209,13 @@ async def _create_mcp_server_edges(
             mcp_server_nodes, CollectionNames.AGENT_MCP_SERVERS.value, transaction=transaction
         )
         if not result:
+            if raise_on_failure:
+                ensure_written(result, "the agent's MCP servers")
             return created_mcp_servers, [{"name": "all", "error": "Failed to create MCP server nodes"}]
     except Exception as e:
         logger.error(f"Failed to batch create MCP server nodes: {e}")
+        if raise_on_failure:
+            raise
         return created_mcp_servers, [{"name": "all", "error": action_failed("add these MCP servers to the agent")}]
 
     # Prepare agent -> mcpServer edges
@@ -1320,6 +1327,43 @@ async def _create_mcp_server_edges(
         })
 
     return created_mcp_servers, failed_mcp_servers
+
+
+async def _attach_mcp_servers_to_new_agent(
+    agent_key: str,
+    mcp_servers_with_tools: dict[str, dict[str, Any]],
+    user_info: dict[str, Any],
+    user_key: str,
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Attach each MCP server to an agent whose create has committed, one
+    transaction per server, so one that fails is reported and leaves the agent
+    and the other servers in place (the create's "partial_success")."""
+    store = GraphDataStore(logger, graph_provider)
+    created: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    async def attach(tx_store: "TransactionStore", one: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        attached, _ = await _create_mcp_server_edges(
+            agent_key, one, user_info, user_key, graph_provider, logger,
+            transaction=tx_store.txn, raise_on_failure=True,
+        )
+        return attached
+
+    for instance_id, mcp_data in mcp_servers_with_tools.items():
+        try:
+            created.extend(await store.execute_in_transaction(attach, {instance_id: mcp_data}, explicit=True))
+        except Exception as e:
+            logger.error(f"Agent {agent_key} was created without MCP server '{mcp_data['name']}': {e}", exc_info=True)
+            failed.append({
+                "name": mcp_data["name"],
+                "error": (
+                    f"We couldn't add {mcp_data['displayName']} to the agent. "
+                    "Edit the agent to add it again; if it keeps failing, contact your admin."
+                ),
+            })
+    return created, failed
 
 
 async def _create_knowledge_edges(
@@ -2029,7 +2073,8 @@ async def create_agent(request: Request) -> JSONResponse:
             "isDeleted": False,
         }
 
-        # Wrap ALL creation operations in a single transaction
+        # Everything but the MCP servers is written in one transaction; those are
+        # attached after it commits (see _attach_mcp_servers_to_new_agent).
         created_toolsets = []
         failed_toolsets = []
         created_mcp_servers: list[dict[str, Any]] = []
@@ -2041,7 +2086,7 @@ async def create_agent(request: Request) -> JSONResponse:
             graph_provider = services["graph_provider"]
 
             async def write_agent(tx_store: "TransactionStore") -> None:
-                nonlocal created_mcp_servers, failed_mcp_servers, linked_skills
+                nonlocal linked_skills
                 # A re-run follows a rollback, so it starts from nothing written.
                 created_toolsets.clear()
                 created_knowledge.clear()
@@ -2205,14 +2250,6 @@ async def create_agent(request: Request) -> JSONResponse:
 
                     logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
 
-                # Step 3.5: Create attached MCP servers and their tools (within same transaction)
-                if mcp_servers_with_tools:
-                    created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
-                        agent_key, mcp_servers_with_tools, user_context, user_key,
-                        graph_provider, logger, transaction=transaction_id,
-                    )
-                    logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
-
                 # Step 4: Create knowledge sources (within same transaction)
                 if knowledge_sources:
                     knowledge_mapping = {}
@@ -2285,7 +2322,7 @@ async def create_agent(request: Request) -> JSONResponse:
             # The helper rolls back on any BaseException, so a cancelled request
             # does not leave the transaction holding its locks until it times out.
             await GraphDataStore(logger, graph_provider).execute_in_transaction(write_agent, explicit=True)
-            logger.info(f"✅ Successfully created agent {agent_key} with all components")
+            logger.info(f"✅ Successfully created agent {agent_key}")
 
         except Exception as e:
             logger.error(f"Failed to create agent {agent_key}: {e}", exc_info=True)
@@ -2293,6 +2330,14 @@ async def create_agent(request: Request) -> JSONResponse:
                 status_code=500,
                 detail=action_failed("create this agent")
             ) from e
+
+        # Outside the agent's transaction: on Neo4j one failed statement fails the
+        # whole transaction, which would turn one bad MCP server into no agent.
+        if mcp_servers_with_tools:
+            created_mcp_servers, failed_mcp_servers = await _attach_mcp_servers_to_new_agent(
+                agent_key, mcp_servers_with_tools, user_context, user_key, graph_provider, logger,
+            )
+            logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
 
         # Build response
         response_agent = {
