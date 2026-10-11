@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import time
+from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
@@ -649,40 +650,12 @@ class EntityEventService(BaseEventService):
             # A stale enable, or turned off again since: it would only be parked again.
             return 0
 
-        producer = self.app_container.messaging_producer
-        filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
-        requeued = 0
-        # "" rather than None, so the first page has the key predicate too:
-        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
-        # when every property in it has one.
-        after_key = ""
-        while True:
-            page = await self.graph_provider.get_documents_paginated(
-                CollectionNames.RECORDS.value,
-                limit=_REQUEUE_PAGE_SIZE,
-                filters=filters,
-                sort_field="_key",
-                raise_on_error=True,
-                after_key=after_key,
-            )
-            if not page:
-                break
-            # Advanced before any work, so nothing on this page is read again.
-            after_key = page[-1].get("_key") or page[-1].get("id")
-            if not after_key:
-                self.logger.error(
-                    f"Last parked record of connector {connector_id} has no key; "
-                    "stopping the re-queue rather than reading the page again"
-                )
-                break
+        await self._restart_parked_queue_clock(connector_id)
 
-            candidates = [
-                (key, record)
-                for record in page
-                if (key := record.get("_key") or record.get("id"))
-                and record.get("origin") == OriginTypes.CONNECTOR.value
-                and is_live_record(record)
-            ]
+        producer = self.app_container.messaging_producer
+        requeued = 0
+        async for page in self._pages_parked_while_off(connector_id):
+            candidates = self._live_connector_records(page)
             now = get_epoch_timestamp_in_ms()
             messages = []
             for key, record in candidates:
@@ -708,14 +681,74 @@ class EntityEventService(BaseEventService):
                 )
             requeued += len(sent)
 
-            if len(page) < _REQUEUE_PAGE_SIZE:
-                break
-
         if requeued:
             self.logger.info(
                 f"✅ Re-queued {requeued} record(s) parked while connector {connector_id} was off"
             )
         return requeued
+
+    async def _restart_parked_queue_clock(self, connector_id: str) -> None:
+        """Stamp queuedAtTimestamp now on every record about to be re-queued.
+
+        The stranded-record sweep ages parked records on that clock and runs
+        beside this walk. A connector off for longer than its minimum age has
+        parked records it would send too, and each would reach the consumer
+        twice. Stamped first, they are too young for it until this walk has
+        sent them and moved them to QUEUED; one whose send is refused keeps
+        the stamp, so the sweep waits out its minimum age from the turn-on.
+        """
+        expected = dict(_PARKED_WHILE_OFF)
+        async for page in self._pages_parked_while_off(connector_id):
+            now = get_epoch_timestamp_in_ms()
+            rows = [
+                (key, {"queuedAtTimestamp": now}, expected)
+                for key, _record in self._live_connector_records(page)
+            ]
+            if rows:
+                await self.graph_provider.update_nodes_fields_if_match(
+                    CollectionNames.RECORDS.value, rows
+                )
+
+    async def _pages_parked_while_off(self, connector_id: str) -> AsyncIterator[list[dict]]:
+        """The connector's AUTO_INDEX_OFF / CONNECTOR_OFF records, a page at a
+        time, through the (connectorId, indexingStatus, reason, key) index."""
+        filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
+        # "" rather than None, so the first page has the key predicate too:
+        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
+        # when every property in it has one.
+        after_key = ""
+        while True:
+            page = await self.graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                limit=_REQUEUE_PAGE_SIZE,
+                filters=filters,
+                sort_field="_key",
+                raise_on_error=True,
+                after_key=after_key,
+            )
+            if not page:
+                return
+            # Advanced before any work, so nothing on this page is read again.
+            after_key = page[-1].get("_key") or page[-1].get("id")
+            if not after_key:
+                self.logger.error(
+                    f"Last parked record of connector {connector_id} has no key; "
+                    "stopping rather than reading the page again"
+                )
+                return
+            yield page
+            if len(page) < _REQUEUE_PAGE_SIZE:
+                return
+
+    @staticmethod
+    def _live_connector_records(page: list[dict]) -> list[tuple[str, dict]]:
+        return [
+            (key, record)
+            for record in page
+            if (key := record.get("_key") or record.get("id"))
+            and record.get("origin") == OriginTypes.CONNECTOR.value
+            and is_live_record(record)
+        ]
 
     @staticmethod
     def _requeued_fields(record: dict, now: int) -> dict:

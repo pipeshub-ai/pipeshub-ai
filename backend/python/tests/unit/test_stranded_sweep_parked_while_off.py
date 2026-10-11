@@ -12,6 +12,7 @@ It must never send a record a connector's filters keep out of auto-indexing
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -31,7 +32,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
 ON, OFF = "github-on", "github-off"
 
@@ -164,6 +165,34 @@ async def _sweep(graph: FakeGraph, producer: Producer) -> int:
         )
 
 
+HOUR_MS = 3600 * 1000
+
+
+def _past_the_minimum_age() -> int:
+    return get_epoch_timestamp_in_ms() + HOUR_MS + 60_000
+
+
+@contextlib.contextmanager
+def _clock_at(ms: int) -> Iterator[None]:
+    """The resume's clock and the sweep's, both at ``ms``."""
+    with (
+        patch.object(entity_module, "get_epoch_timestamp_in_ms", return_value=ms),
+        patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=ms),
+    ):
+        yield
+
+
+def _indexed(graph: FakeGraph, *keys: str) -> None:
+    """What the consumer does with the events the resume did send."""
+    for key in keys:
+        graph.records[key]["indexingStatus"] = ProgressStatus.COMPLETED.value
+
+
+async def _sweep_after_the_minimum_age(graph: FakeGraph, producer: Producer) -> int:
+    with _clock_at(_past_the_minimum_age()):
+        return await _sweep(graph, producer)
+
+
 def _resume(graph: FakeGraph, producer: Producer) -> EntityEventService:
     container = MagicMock()
     container.messaging_producer = producer
@@ -181,9 +210,12 @@ async def test_a_record_the_resume_could_not_send_is_sent_by_the_next_sweep() ->
     assert graph.records["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
 
     producer.refuse = set()
-    assert await _sweep(graph, producer) == 1
+    # Its clock was restarted at turn-on, so the sweep waits out its minimum age.
+    assert await _sweep(graph, producer) == 0
+    _indexed(graph, "r0", "r2")
+    assert await _sweep_after_the_minimum_age(graph, producer) == 1
     assert producer.sent.count("r1") == 1
-    # The two the resume did re-queue are fresh QUEUED rows, not the sweep's yet.
+    # The two the resume did re-queue are QUEUED rows the sweep leaves alone.
     assert producer.sent.count("r0") == producer.sent.count("r2") == 1
 
 
@@ -192,14 +224,18 @@ async def test_records_after_a_resume_that_died_part_way_are_sent_by_the_next_sw
     graph, producer = FakeGraph(), Producer()
     for key in ("r0", "r1", "r2", "r3"):
         graph.records[key] = _parked(key)
-    graph.fail_reads_after = 1
+    # Pages of two: the stamping pass reads three pages, then the send walk
+    # reads one and dies on the next.
+    graph.fail_reads_after = 4
 
     with patch.object(entity_module, "_REQUEUE_PAGE_SIZE", 2), pytest.raises(RuntimeError):
         await _resume(graph, producer)._requeue_records_parked_while_off(ON)
     assert producer.sent == ["r0", "r1"]
 
     graph.fail_reads_after = None
-    assert await _sweep(graph, producer) == 2
+    assert await _sweep(graph, producer) == 0
+    _indexed(graph, "r0", "r1")
+    assert await _sweep_after_the_minimum_age(graph, producer) == 2
     assert sorted(producer.sent[2:]) == ["r2", "r3"]
 
 
@@ -262,11 +298,10 @@ async def test_a_parked_record_with_a_checksum_is_still_sent() -> None:
     assert producer.sent == ["r0"]
 
 
-# A record queued more than an hour before the pause is already past the
-# sweep's minimum age. Every path that parks it must restart its queue clock,
-# or a sweep tick running beside the turn-on re-queue sends it a second time.
-
-HOUR_MS = 3600 * 1000
+# A record queued more than an hour before the pause, or parked more than an
+# hour before the turn-on, is past the sweep's minimum age. The turn-on must
+# restart its queue clock before sending, or a sweep tick running beside the
+# re-queue sends it a second time.
 
 
 def _waiting_since_long_ago(key: str) -> dict[str, Any]:
@@ -313,36 +348,54 @@ async def test_a_long_waiting_record_is_sent_only_by_the_resume(
     assert graph.records["r0"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
     assert graph.records["r0"]["reason"] == CONNECTOR_OFF
 
-    graph.apps[ON]["isActive"] = True
     send_batch = producer.send_messages
     ticks: list[int] = []
 
-    async def send_then_a_sweep_tick(topic, messages) -> list[bool]:
-        acked = await send_batch(topic, messages)
-        # A tick landing between the resume's send and its status write.
+    async def a_sweep_tick_inside_the_first_send(topic, messages) -> list[bool]:
+        # Blocks the resume here, between its send and its status write.
         ticks.append(await _sweep(graph, producer))
-        return acked
+        return await send_batch(topic, messages)
 
-    producer.send_messages = send_then_a_sweep_tick
-    assert await svc._requeue_records_parked_while_off(ON) == 1
+    producer.send_messages = a_sweep_tick_inside_the_first_send
+
+    # Turned on again only after the park has outlived the sweep's minimum age.
+    with _clock_at(_past_the_minimum_age()):
+        graph.apps[ON]["isActive"] = True
+        assert await svc._requeue_records_parked_while_off(ON) == 1
 
     assert ticks == [0]
     assert producer.sent == ["r0"]
 
 
 @pytest.mark.asyncio
-async def test_a_refused_send_is_sent_once_the_minimum_age_has_passed() -> None:
+async def test_a_refused_send_waits_out_the_minimum_age_from_the_turn_on() -> None:
     graph, producer = FakeGraph(), Producer()
     graph.records["r0"] = _waiting_since_long_ago("r0")
     svc = _resume(graph, producer)
     await _park_by_turning_off(graph, svc)
-    graph.apps[ON]["isActive"] = True
     producer.refuse = {"r0"}
 
-    assert await svc._requeue_records_parked_while_off(ON) == 0
-    assert await _sweep(graph, producer) == 0
+    turned_on_at = _past_the_minimum_age()
+    with _clock_at(turned_on_at):
+        graph.apps[ON]["isActive"] = True
+        assert await svc._requeue_records_parked_while_off(ON) == 0
+        assert await _sweep(graph, producer) == 0
 
-    later = get_epoch_timestamp_in_ms() + HOUR_MS + 60_000
-    with patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=later):
+    with _clock_at(turned_on_at + HOUR_MS + 60_000):
         assert await _sweep(graph, producer) == 1
     assert producer.sent == ["r0"]
+
+
+@pytest.mark.asyncio
+async def test_the_turn_on_stamps_only_what_it_will_send() -> None:
+    graph, producer = FakeGraph(), Producer()
+    graph.records["parked"] = _parked("parked")
+    graph.records["manual-only"] = _parked("manual-only", reason=None)
+    graph.records["trashed"] = _parked("trashed", isDeleted=True)
+    graph.records["other-connector"] = _parked("other-connector", connector_id=OFF)
+
+    assert await _resume(graph, producer)._requeue_records_parked_while_off(ON) == 1
+
+    for key in ("manual-only", "trashed", "other-connector"):
+        assert graph.records[key]["queuedAtTimestamp"] == 1, key
+    assert producer.sent == ["parked"]

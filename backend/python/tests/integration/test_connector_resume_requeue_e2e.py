@@ -238,6 +238,16 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             ids["in-flight"], CollectionNames.RECORDS.value, connector_off_updates(in_flight)
         )
 
+        # Parked by another path and then trashed; and the filtered record, both
+        # with an old queue clock the turn-on must leave alone.
+        await graph.update_node(ids["trashed"], CollectionNames.RECORDS.value, {
+            "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+            "reason": CONNECTOR_OFF,
+            "queuedAtTimestamp": 1,
+        })
+        await graph.update_node(ids["manual-only"], CollectionNames.RECORDS.value, {"queuedAtTimestamp": 1})
+
+        turned_on_at = get_epoch_timestamp_in_ms()
         await _set_active(graph, connector_id, True)
         # The broker refuses one; it stays parked for the sweep below.
         producer.refuse = {ids["refused"]}
@@ -259,9 +269,16 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         failed = await stored("failed")
         assert (failed["indexingStatus"], failed["reason"]) == (ProgressStatus.FAILED.value, "parse error")
 
-        assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.QUEUED.value
+        # The trash is not re-queued, even when parked.
+        assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         refused = await stored("refused")
         assert (refused["indexingStatus"], refused["reason"]) == (ProgressStatus.AUTO_INDEX_OFF.value, CONNECTOR_OFF)
+        # Restamped at turn-on, before anything was sent, so the sweep waits
+        # out its minimum age from the turn-on, not from the park.
+        assert refused["queuedAtTimestamp"] >= turned_on_at
+        # Neither the filtered record nor the trashed one was stamped.
+        assert (await stored("manual-only"))["queuedAtTimestamp"] == 1
+        assert (await stored("trashed"))["queuedAtTimestamp"] == 1
 
         # Only the refused one is still parked.
         assert await service._requeue_records_parked_while_off(connector_id) == 0
