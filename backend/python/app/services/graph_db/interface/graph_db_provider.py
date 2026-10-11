@@ -6898,6 +6898,27 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_key_prefix(
+        self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
+    ) -> list[dict]:
+        """Nodes whose key is a ``(kind, key)`` pair's key followed by more words,
+        at most ``limit`` per pair, each row tagged with that ``key``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str]
+    ) -> list[dict]:
+        """Mention edges between ``record_ids`` (records the caller already resolved)
+        and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
     async def add_named_entity_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
     ) -> None:

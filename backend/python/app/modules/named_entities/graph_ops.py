@@ -149,6 +149,70 @@ SKIP $skip LIMIT $limit
 """
 
 # Each predicate of an entity filter yields record ids; the caller intersects them.
+# Node ids are a function of org, kind and key (``keys.named_entity_key``), so an
+# exact lookup of a name under several kinds is a primary-key read.
+ENTITIES_BY_IDS_AQL = f"""
+FOR n IN {_COLLECTION}
+  FILTER n._key IN @ids AND n.orgId == @orgId
+  RETURN {{ id: n._key, kind: n.kind, name: n.name, normKey: n.normKey }}
+"""
+
+ENTITIES_BY_IDS_CYPHER = f"""
+MATCH (n:{_LABEL})
+WHERE n.id IN $ids AND n.orgId = $orgId
+RETURN n.id AS id, n.kind AS kind, n.name AS name, n.normKey AS normKey
+"""
+
+# A name followed by more words ("sam" -> "sam lee", never "samsung"): keys after
+# ``key + " "`` on the (orgId, kind, normKey) index, bounded per prefix. The
+# STARTS_WITH keeps the result exact whatever order the index collates in.
+KEY_PREFIX_AQL = f"""
+FOR p IN @prefixes
+  LET found = (
+    FOR n IN {_COLLECTION}
+      FILTER n.orgId == @orgId AND n.kind == p.kind
+      FILTER n.normKey >= p.low AND n.normKey < p.high
+      FILTER STARTS_WITH(n.normKey, p.low)
+      LIMIT @limit
+      RETURN n
+  )
+  FOR n IN found
+    RETURN {{ key: p.key, id: n._key, kind: n.kind, name: n.name, normKey: n.normKey }}
+"""
+
+KEY_PREFIX_CYPHER = f"""
+UNWIND $prefixes AS p
+CALL {{
+  WITH p
+  MATCH (n:{_LABEL})
+  WHERE n.orgId = $orgId AND n.kind = p.kind AND n.normKey STARTS WITH p.low
+  RETURN n
+  LIMIT $limit
+}}
+RETURN p.key AS key, n.id AS id, n.kind AS kind, n.name AS name, n.normKey AS normKey
+"""
+
+# Mention edges between records a caller already resolved and the given entities,
+# from the records' side so the edge index on ``_from`` serves it.
+MENTIONS_IN_RECORDS_AQL = f"""
+FOR recordId IN @recordIds
+  FOR e IN {_EDGE}
+    FILTER e._from == CONCAT("{_RECORDS}/", recordId) AND e.orgId == @orgId
+    LET entityId = PARSE_IDENTIFIER(e._to).key
+    FILTER entityId IN @entityIds
+    RETURN {{
+      recordId: recordId, entityId: entityId, blockIndexes: e.blockIndexes,
+      extractedNames: e.extractedNames, mentionCount: e.mentionCount
+    }}
+"""
+
+MENTIONS_IN_RECORDS_CYPHER = f"""
+MATCH (r:{_RECORD_LABEL})-[e:{_REL}]->(n:{_LABEL})
+WHERE r.id IN $recordIds AND n.id IN $entityIds AND e.orgId = $orgId
+RETURN r.id AS recordId, n.id AS entityId, e.blockIndexes AS blockIndexes,
+       e.extractedNames AS extractedNames, e.mentionCount AS mentionCount
+"""
+
 # ``e._to IN`` is served by the edge index; a key computed from ``_to`` would scan
 # every mention edge of every org.
 NODE_RECORDS_AQL = f"""
@@ -703,6 +767,39 @@ class NamedEntityGraph:
         )
         return _unwrap(rows)
 
+    async def by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        if not ids:
+            return []
+        statement = ENTITIES_BY_IDS_AQL if self._dialect == "arango" else ENTITIES_BY_IDS_CYPHER
+        return _unwrap(await self._execute(statement, {"orgId": org_id, "ids": list(dict.fromkeys(ids))}))
+
+    async def by_key_prefix(self, org_id: str, prefixes: list[tuple[str, str]], limit: int) -> list[dict]:
+        """Nodes whose key is ``key`` followed by more words, for each ``(kind, key)``;
+        at most ``limit`` per pair, each row tagged with the ``key`` it extends."""
+        if not prefixes:
+            return []
+        binds = {
+            "orgId": org_id,
+            "limit": max(1, limit),
+            "prefixes": [
+                {"kind": kind, "key": key, "low": f"{key} ", "high": f"{key} \uffff"}
+                for kind, key in dict.fromkeys(prefixes)
+            ],
+        }
+        statement = KEY_PREFIX_AQL if self._dialect == "arango" else KEY_PREFIX_CYPHER
+        return _unwrap(await self._execute(statement, binds))
+
+    async def mentions_in_records(self, org_id: str, entity_ids: list[str], record_ids: list[str]) -> list[dict]:
+        if not entity_ids or not record_ids:
+            return []
+        binds = {
+            "orgId": org_id,
+            "entityIds": list(dict.fromkeys(entity_ids)),
+            "recordIds": list(dict.fromkeys(record_ids)),
+        }
+        statement = MENTIONS_IN_RECORDS_AQL if self._dialect == "arango" else MENTIONS_IN_RECORDS_CYPHER
+        return _unwrap(await self._execute(statement, binds))
+
     async def add_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str], now: int
     ) -> None:
@@ -1028,6 +1125,19 @@ class NamedEntityGraphMixin:
 
     async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
         return await self._named_entity_graph().find(org_id, kind, norm_keys)
+
+    async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        return await self._named_entity_graph().by_ids(org_id, ids)
+
+    async def find_named_entities_by_key_prefix(
+        self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
+    ) -> list[dict]:
+        return await self._named_entity_graph().by_key_prefix(org_id, prefixes, limit)
+
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str]
+    ) -> list[dict]:
+        return await self._named_entity_graph().mentions_in_records(org_id, entity_ids, record_ids)
 
     async def add_named_entity_aliases(
         self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
