@@ -20,6 +20,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
@@ -58,6 +59,14 @@ def _retry_delay(failed_attempt: int) -> float:
     """Seconds to wait after the failed attempt with this 0-based number."""
     nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
     return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
+
+
+def ensure_written(result: bool | None, what: str) -> None:
+    """Raise GraphWriteError when a write answered False instead of raising
+    (ArangoDB's batch_upsert_nodes does, on a document it refused), so the
+    transaction around it rolls back rather than committing the rest."""
+    if not result:
+        raise GraphWriteError(f"The graph database did not save {what}")
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -1053,7 +1062,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:

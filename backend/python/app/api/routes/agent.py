@@ -42,7 +42,10 @@ from app.config.constants.ai_models import (
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
@@ -1596,7 +1599,10 @@ async def _create_skill_edges(
         linked_names.append(name)
 
     if edges:
-        await graph_provider.batch_create_edges(edges, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction)
+        ensure_written(
+            await graph_provider.batch_create_edges(edges, CollectionNames.AGENT_HAS_SKILL.value, transaction=transaction),
+            "the agent's skill links",
+        )
     return linked_names
 
 
@@ -2043,7 +2049,7 @@ async def create_agent(request: Request) -> JSONResponse:
                 logger.debug(f"Started transaction for agent creation: {agent_key}")
 
                 # Step 1: Create agent node
-                await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
+                ensure_written(await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id), "the agent")
                 logger.debug(f"Created agent node: {agent_key}")
 
                 # Step 2: Create permission edge(s)
@@ -2070,7 +2076,7 @@ async def create_agent(request: Request) -> JSONResponse:
                     }
                     permission_edges.append(org_permission_edge)
 
-                await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
+                ensure_written(await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id), "the agent's permissions")
                 logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
 
                 # Step 3: Create toolsets and tools (within same transaction)
@@ -2117,7 +2123,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
                     # Batch create toolset nodes
                     if toolset_nodes:
-                        await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id), "the agent's toolsets")
 
                     # Create agent -> toolset edges
                     agent_toolset_edges = [
@@ -2130,7 +2136,7 @@ async def create_agent(request: Request) -> JSONResponse:
                         for toolset_info in toolset_mapping.values()
                     ]
                     if agent_toolset_edges:
-                        await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id), "the agent's toolset links")
 
                     # Create tool nodes and edges
                     tool_mapping = {}
@@ -2172,11 +2178,11 @@ async def create_agent(request: Request) -> JSONResponse:
 
                     # Batch create tool nodes
                     if tool_nodes:
-                        await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id), "the agent's tools")
 
                     # Batch create toolset -> tool edges
                     if toolset_tool_edges:
-                        await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id), "the agent's tool links")
 
                     # Build response for created toolsets
                     for toolset_name, toolset_info in toolset_mapping.items():
@@ -2237,7 +2243,7 @@ async def create_agent(request: Request) -> JSONResponse:
 
                     # Batch create knowledge nodes
                     if knowledge_nodes:
-                        await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id), "the agent's knowledge sources")
 
                     # Create agent -> knowledge edges
                     agent_knowledge_edges = [
@@ -2250,7 +2256,7 @@ async def create_agent(request: Request) -> JSONResponse:
                         for knowledge_info in knowledge_mapping.values()
                     ]
                     if agent_knowledge_edges:
-                        await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
+                        ensure_written(await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id), "the agent's knowledge links")
 
                     # Build response for created knowledge
                     created_knowledge.extend(

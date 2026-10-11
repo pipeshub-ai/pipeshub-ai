@@ -13,7 +13,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
 from app.connectors.services.entity_cleanup_intents import (
     EntityCleanupIntentError,
     record_pending_entity_cleanup,
@@ -538,10 +541,21 @@ class KnowledgeBaseService:
             }
 
             async def write_kb(tx_store: "TransactionStore") -> None:
-                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
-                await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value)
-                await tx_store.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value)
-                await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value)
+                ensure_written(
+                    await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the knowledge base",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value),
+                    "the knowledge base owner's permission",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value),
+                    "the knowledge base's link to the organization",
+                )
+                ensure_written(
+                    await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value),
+                    "the knowledge base's link to its owner",
+                )
 
             # Creates by one user collide on that user's node (a Neo4j deadlock,
             # an ArangoDB write conflict). explicit: a failure leaves no half-made

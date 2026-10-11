@@ -14,7 +14,10 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -890,7 +893,9 @@ class EntityEventService(BaseEventService):
         }
 
         async def write_kb(tx_store: "TransactionStore") -> None:
-            await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+            ensure_written(
+                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the default knowledge base",
+            )
             await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
 
         # explicit: a failure leaves no App without its edges on Neo4j either.

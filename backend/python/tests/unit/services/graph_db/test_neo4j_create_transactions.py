@@ -21,6 +21,7 @@ from app.api.routes.agent import create_agent
 from app.api.routes.entity import create_team
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.services.graph_db.neo4j import neo4j_provider as provider_module
 from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -247,6 +248,40 @@ _PATHS: dict[str, tuple[Callable[[Neo4jProvider], Awaitable[None]], int]] = {
     "default_knowledge_base": (_create_default_kb, 4),
     "default_knowledge_base_repair": (_repair_default_kb, 3),
 }
+
+
+# A write a provider can report as failed by returning False (ArangoDB's
+# batch_upsert_nodes does), and the statement it would have been.
+_REPORTED_FAILURES: dict[str, tuple[str, str, int]] = {
+    "agent": ("batch_create_edges", "agentHasKnowledge", 9),
+    "team": ("batch_create_edges", "permission", 2),
+    "knowledge_base": ("batch_create_edges", "userAppRelation", 4),
+    "default_knowledge_base": ("batch_upsert_nodes", "apps", 1),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", sorted(_REPORTED_FAILURES))
+async def test_a_write_reported_as_failed_rolls_the_create_back(path: str) -> None:
+    create, _ = _PATHS[path]
+    method, refused, statement = _REPORTED_FAILURES[path]
+    server = _Server()
+    provider = _provider(server)
+    real = getattr(provider, method)
+
+    async def reports_failure(items: list[dict], collection: str, transaction: str | None = None) -> bool:
+        if collection == refused:
+            return False
+        return await real(items, collection, transaction=transaction)
+    setattr(provider, method, reports_failure)
+
+    with pytest.raises((RuntimeError, HTTPException, GraphWriteError)):
+        await create(provider)
+
+    (tx,) = server.transactions
+    assert tx.rolled_back and not tx.committed
+    assert len(tx.ran) == statement - 1
+    assert server.landed == []
 
 
 @pytest.mark.parametrize("path", sorted(_PATHS))
