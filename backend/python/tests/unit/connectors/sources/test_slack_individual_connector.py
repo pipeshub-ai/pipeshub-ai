@@ -3532,15 +3532,28 @@ class TestListableChannelTypes:
         ):
             await c._listable_channel_types_param({"im", "mpim"})
 
+    @pytest.mark.parametrize("operator", [MultiselectOperator.IN, MultiselectOperator.NOT_IN])
     @pytest.mark.asyncio
-    async def test_an_unrecognised_type_is_rejected_not_dropped(self) -> None:
+    async def test_an_unrecognised_type_fails_the_sync(self, operator: MultiselectOperator) -> None:
         c = _make_connector()
+        c.sync_filters = FilterCollection(
+            filters=[
+                Filter(
+                    key=SyncFilterKey.CHANNEL_TYPES,
+                    value=["public channel", "private_channe"],
+                    type=FilterType.MULTISELECT,
+                    operator=operator,
+                ),
+            ]
+        )
         ds = _scopes_ds(["channels:read", "groups:read"])
+        ds.conversations_list = AsyncMock()
         with (
             patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
             pytest.raises(RuntimeError, match="unrecognised values: private_channe"),
         ):
-            await c._listable_channel_types_param({"public_channel", "private_channe"})
+            await c._sync_channels()
+        ds.conversations_list.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_sync_channels_lists_only_what_the_token_can_read(self) -> None:
