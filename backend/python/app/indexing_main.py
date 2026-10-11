@@ -718,7 +718,7 @@ async def _upkeep_lanes(
 
 
 # How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
-# because orphans are rare and every row costs a graph lookup; the cursor below
+# because orphans are rare and every page costs a graph read; the cursor below
 # carries the position forward so successive ticks cover the rest.
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
 _orphan_sweep_cursor = 0
@@ -743,8 +743,8 @@ async def _sweep_orphaned_virtual_record_mappings(
     records is exactly an orphan. Reusing rewrite_or_delete_virtual_record keeps
     the confirming re-read, so a lagging graph read cannot delete live vectors.
 
-    Orphans are rare but the mapping collection is large, and each row costs a
-    graph lookup, so a full scan per tick would be a standing N+1 for almost no
+    Orphans are rare but the mapping collection is large, and each page costs a
+    graph read, so a full scan per tick would be standing work for almost no
     yield. Instead each tick walks a bounded slice and leaves the cursor where it
     stopped, wrapping at the end: the collection is covered over many ticks
     rather than all at once. The cursor is per-process and resets on restart —
@@ -769,37 +769,37 @@ async def _sweep_orphaned_virtual_record_mappings(
             break
 
         swept_this_page = 0
-        for mapping in page:
-            vrid = mapping.get("_key") or mapping.get("id")
-            if not isinstance(vrid, str) or not vrid:
-                continue
-            try:
-                # The handler below was written for this and could not fire:
-                # the read swallowed its own failure and answered [], which
-                # this loop reads as "no records reference it" and cleans up.
-                records = await graph_provider.get_records_by_virtual_record_id(
-                    vrid, raise_on_error=True
+        vrids = [
+            vrid
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        ]
+        try:
+            # One read per page, not one per mapping: the answer is the same,
+            # and on Neo4j each read is a millisecond of the indexing loop.
+            # Raising, not answering empty: an empty answer would read as "no
+            # records reference these" and clean them all up.
+            in_use = await graph_provider.get_virtual_record_ids_in_use(vrids)
+            unreferenced = [vrid for vrid in vrids if vrid not in in_use]
+            # Content still held by a record in the trash is the purge's to
+            # remove; releasing it here would delete a restorable record's
+            # stored content ahead of time.
+            trashed = (
+                await graph_provider.get_virtual_record_ids_in_use(
+                    unreferenced, visibility=RecordVisibility.DELETED
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Could not check virtual record %s for orphaned vectors: %s",
-                    vrid,
-                    exc,
-                )
-                continue
-            if records:
-                continue
-            try:
-                # Content still held by a record in the trash is the purge's to
-                # remove; releasing it here would delete a restorable record's
-                # stored content ahead of time.
-                trashed = await graph_provider.get_records_by_virtual_record_id(
-                    vrid, raise_on_error=True, visibility=RecordVisibility.DELETED
-                )
-            except Exception as exc:
-                logger.warning("Could not check virtual record %s for trashed records: %s", vrid, exc)
-                continue
-            if trashed:
+                if unreferenced
+                else set()
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not check %d virtual record(s) for orphaned vectors: %s",
+                len(vrids),
+                exc,
+            )
+            unreferenced, trashed = [], set()
+        for vrid in unreferenced:
+            if vrid in trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
