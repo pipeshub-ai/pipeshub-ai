@@ -519,6 +519,60 @@ check "air-gapped guidance present" "$inner" "air-gapped host, preload the image
 # Must not have reverted to a blanket pull of every service image on the hot path.
 if [[ "$inner" == *"up -d --pull always"* ]]; then fail "must refresh only the app image, not force-pull all services"; else pass "does not force-pull all service images"; fi
 
+echo "== In-tree installer: custom CA certificates (real functions + guards) =="
+eval "$(extract_fn collect_ca_certs "$INNER_INSTALLER")"
+eval "$(extract_fn write_ca_compose_file "$INNER_INSTALLER")"
+eval "$(extract_fn build_ca_bundle "$INNER_INSTALLER")"
+(
+  error() { :; }
+  d="$TMP_ROOT/ca"; mkdir -p "$d"
+  printf -- '-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\r\n-----BEGIN CERTIFICATE-----\r\nROOT\r\n-----END CERTIFICATE-----\r\n' >"$d/root.pem"
+  printf -- '-----BEGIN CERTIFICATE-----\nINTER\n-----END CERTIFICATE-----\n' >"$d/inter.pem"
+  printf 'not a certificate' >"$d/junk.txt"
+
+  if collect_ca_certs "$d/out.pem" "$d/root.pem" "$d/inter.pem"; then pass "collects PEM certificates"; else fail "collects PEM certificates"; fi
+  out="$(cat "$d/out.pem")"
+  check "keeps every certificate" "$out" $'-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----\n-----BEGIN CERTIFICATE-----\nINTER'
+  if [[ "$out" == *PRIVATE* || "$out" == *secret* ]]; then fail "drops a private key sharing the file"; else pass "drops a private key sharing the file"; fi
+  if [[ "$out" == *$'\r'* ]]; then fail "strips Windows line endings"; else pass "strips Windows line endings"; fi
+  if collect_ca_certs "$d/out2.pem" "$d/root.pem" "$d/missing.pem"; then fail "rejects a missing file"; else pass "rejects a missing file"; fi
+  if collect_ca_certs "$d/out3.pem" "$d/junk.txt"; then fail "rejects a file that is not a certificate"; else pass "rejects a file that is not a certificate"; fi
+
+  if command -v openssl >/dev/null 2>&1 && openssl req -x509 -newkey rsa:2048 -nodes -subj /CN=test-ca -days 1 \
+      -keyout "$d/k.pem" -outform der -out "$d/ca.der" >/dev/null 2>&1; then
+    if collect_ca_certs "$d/out4.pem" "$d/ca.der"; then pass "converts a DER certificate"; else fail "converts a DER certificate"; fi
+    check "DER certificate is written as PEM" "$(cat "$d/out4.pem")" "-----BEGIN CERTIFICATE-----"
+  fi
+
+  write_ca_compose_file "$d/compose.ca.yml"
+  compose="$(cat "$d/compose.ca.yml")"
+  check "compose sets SSL_CERT_FILE to the bundle" "$compose" "SSL_CERT_FILE=/etc/pipeshub/certs/ca-bundle.pem"
+  check "compose sets REQUESTS_CA_BUNDLE to the bundle" "$compose" "REQUESTS_CA_BUNDLE=/etc/pipeshub/certs/ca-bundle.pem"
+  check "compose gives Node only the extra CAs" "$compose" "NODE_EXTRA_CA_CERTS=/etc/pipeshub/certs/custom-ca.pem"
+  check "compose mounts the certs read-only" "$compose" "./certs:/etc/pipeshub/certs:ro"
+
+  cp "$d/out.pem" "$d/custom-ca.pem"
+  docker() { printf -- '-----BEGIN CERTIFICATE-----\nPUBLIC\n-----END CERTIFICATE-----\n'; }
+  if build_ca_bundle img "$d"; then pass "builds the bundle from the image"; else fail "builds the bundle from the image"; fi
+  bundle="$(cat "$d/ca-bundle.pem")"
+  check "bundle keeps the public CAs" "$bundle" "PUBLIC"
+  check "bundle adds the custom CAs" "$bundle" "INTER"
+  docker() { return 1; }
+  if build_ca_bundle img "$d"; then fail "reports an image it cannot read"; else pass "reports an image it cannot read"; fi
+  check "a failed rebuild keeps the previous bundle" "$(cat "$d/ca-bundle.pem")" "PUBLIC"
+  [[ -e "$d/ca-bundle.pem.tmp" ]] && fail "a failed rebuild leaves no temp file" || pass "a failed rebuild leaves no temp file"
+)
+check "--ca-cert flag is parsed" "$inner" 'CLI_CA_CERTS+=("$2")'
+check "--remove-ca-certs flag is parsed" "$inner" "FLAG_REMOVE_CA_CERTS=true"
+check "CA compose file is included while it exists" "$inner" 'COMPOSE_FILES+=(-f "$CA_COMPOSE_FILE")'
+check "bundle is built before the prebuilt start" "$inner" $'ensure_ca_bundle "$_APP_IMAGE"\n  info "Starting containers..."'
+# Every compose call must carry the CA override, or the app starts without the CA.
+if grep -nE 'docker compose .*-f "\$COMPOSE_FILE"|^\s+-f "\$COMPOSE_FILE" \\' "$INNER_INSTALLER" >/dev/null; then
+  fail "every compose call uses COMPOSE_FILES"
+else
+  pass "every compose call uses COMPOSE_FILES"
+fi
+
 echo "== In-tree installer: compose progress mode (real function) =="
 # Mapping must be tied to the TTY flag. Grepping for both "tty" and "plain"
 # in the script stays green if the branches are swapped.

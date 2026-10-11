@@ -17,6 +17,7 @@ For the standard interactive install, see the [Deployment Guide in the main READ
 - [OAuth dynamic registration and device grant](#oauth-dynamic-registration-and-device-grant)
 - [Runtime tuning (workers and query-service flags)](#runtime-tuning-workers-and-query-service-flags)
 - [Container outbound connectivity](#container-outbound-connectivity)
+- [Trusting an internal CA](#trusting-an-internal-ca)
 - [Developer / local build](#developer--local-build)
 - [Soak-testing adaptive concurrency](#soak-testing-adaptive-concurrency)
 
@@ -470,6 +471,26 @@ After changing Docker daemon settings, **restart Docker and bring the stack back
 ```bash
 sudo systemctl restart docker
 cd deployment/docker-compose && ./install.sh --stop && ./install.sh
+```
+
+---
+
+## Trusting an internal CA
+
+Connectors check the TLS certificate of every server they call. When a server (for example a self-hosted wiki) uses a certificate signed by your own CA, the sync fails with `CERTIFICATE_VERIFY_FAILED`. Pass the CA to the installer:
+
+```bash
+./install.sh --ca-cert ./internal-root-ca.pem
+# Root and intermediate CAs: repeat the flag
+./install.sh --ca-cert ./internal-root-ca.pem --ca-cert ./internal-intermediate-ca.pem
+```
+
+PEM and DER files are accepted (DER needs `openssl` on the host). The installer copies the certificates to `certs/custom-ca.pem`, builds `certs/ca-bundle.pem` (the image's public CAs plus yours), and writes `docker-compose.ca.yml`, which points `SSL_CERT_FILE`, `REQUESTS_CA_BUNDLE` and `NODE_EXTRA_CA_CERTS` at them. Later runs, including `--upgrade`, keep using it and rebuild the bundle from the new image. Running `--ca-cert` again replaces the CAs; `./install.sh --remove-ca-certs` removes them.
+
+If you run `docker compose` yourself, include the file: `docker compose -f docker-compose.yml -f docker-compose.ca.yml ...`. Check that the app container sees it:
+
+```bash
+docker compose -p pipeshub-ai exec pipeshub-ai printenv SSL_CERT_FILE
 ```
 
 ---
