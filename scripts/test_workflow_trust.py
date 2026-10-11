@@ -28,8 +28,11 @@ def _trigger(events: str) -> re.Pattern[str]:
 
 
 _PRIVILEGED_TRIGGER = _trigger("pull_request_target|workflow_run")
+# Expression property names are case-insensitive, and `x.y` may be written `x['y']`.
 _PR_HEAD_REF = re.compile(
-    r"github\.event\.pull_request\.head\.(sha|ref)|github\.head_ref|refs/pull/"
+    r"github\.event\.pull_request\.head(?:\.|\[\s*['\"])(?:sha|ref)\b"
+    r"|github(?:\.|\[\s*['\"])head_ref\b|refs/pull/",
+    re.IGNORECASE,
 )
 # Any use of the secrets context except GITHUB_TOKEN: dot or index access, any case
 # (secret names are case-insensitive), and whole-context uses such as toJSON(secrets).
@@ -147,6 +150,17 @@ def _triggers(workflow: dict[Any, Any]) -> set[str]:
     return names
 
 
+def _privileged(text: str) -> bool:
+    """A privileged trigger by the regex or by the parsed `on`; unreadable files count."""
+    if _PRIVILEGED_TRIGGER.search(text):
+        return True
+    try:
+        workflow = yaml.load(text, Loader=_StrictLoader)
+    except yaml.YAMLError:
+        return True
+    return isinstance(workflow, dict) and bool(_triggers(workflow) & {"pull_request_target", "workflow_run"})
+
+
 def _reads_secrets(value: Any) -> bool:
     """Any key or string anywhere below `value` reads a secret other than GITHUB_TOKEN."""
     if isinstance(value, str):
@@ -233,7 +247,7 @@ class TestWorkflowTrust(unittest.TestCase):
         offenders = [
             p.name
             for p in WORKFLOWS
-            if _PRIVILEGED_TRIGGER.search(_text(p)) and p.name not in PRIVILEGED_TRIGGER_ALLOWLIST
+            if _privileged(_text(p)) and p.name not in PRIVILEGED_TRIGGER_ALLOWLIST
         ]
         self.assertEqual(offenders, [], "pull_request_target/workflow_run need a security sign-off")
 
@@ -241,7 +255,7 @@ class TestWorkflowTrust(unittest.TestCase):
         offenders = [
             p.name
             for p in WORKFLOWS
-            if _PRIVILEGED_TRIGGER.search(_text(p)) and _PR_HEAD_REF.search(_text(p))
+            if _privileged(_text(p)) and _PR_HEAD_REF.search(_text(p))
         ]
         self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
 
@@ -426,6 +440,27 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 )
                 self.assertEqual(_ungated_secret_jobs(workflow), [])
                 self.assertEqual(_ungated_secret_jobs(workflow.replace("\n", "\r\n")), [])
+
+    def test_every_spelling_of_a_privileged_trigger_and_head_ref_is_seen(self) -> None:
+        for on in (
+            'on: "pull_request_target"\n',
+            "on: {pull_request_target: {types: [opened]}}\n",
+            'on:\n  "pull_request_target":\n',
+            "on: [push, 'workflow_run']\n",
+        ):
+            with self.subTest(on=on):
+                self.assertTrue(_privileged(on + "jobs:\n  a:\n    steps: []\n"))
+        self.assertFalse(_privileged("on: pull_request\njobs:\n  a:\n    steps: []\n"))
+        for ref in (
+            "github.event.pull_request.head.sha",
+            "github.event.pull_request.head['sha']",
+            'github.event.pull_request.head["ref"]',
+            "GITHUB.EVENT.PULL_REQUEST.HEAD.SHA",
+            "github['head_ref']",
+        ):
+            with self.subTest(ref=ref):
+                self.assertTrue(_PR_HEAD_REF.search(f"ref: ${{{{ {ref} }}}}"))
+        self.assertFalse(_PR_HEAD_REF.search("ref: ${{ github.event.pull_request.base.sha }}"))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
