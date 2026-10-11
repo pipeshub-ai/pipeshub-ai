@@ -1018,6 +1018,10 @@ function KnowledgeBasePageContent() {
       // auto-navigating into the first one.
       void fetchAllCollectionsData();
     } else {
+      // A list fetch started while collections still existed. Abort it so its
+      // response cannot put deleted rows back after the table is cleared.
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -1027,6 +1031,7 @@ function KnowledgeBasePageContent() {
     fetchTableData,
     fetchAllCollectionsData,
     clearTableData,
+    setIsLoadingTableData,
     hasCollections,
   ]);
 
@@ -1291,6 +1296,8 @@ function KnowledgeBasePageContent() {
     } else if (hasCollections) {
       await fetchAllCollectionsData();
     } else {
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -1301,6 +1308,7 @@ function KnowledgeBasePageContent() {
     fetchAllCollectionsData,
     hasCollections,
     clearTableData,
+    setIsLoadingTableData,
   ]);
 
   // Handle refresh

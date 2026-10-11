@@ -374,7 +374,11 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           size="1"
           variant="solid"
           onClick={applyFilters}
-          style={{ height: '26px', cursor: 'pointer' }}
+          style={{
+            height: '26px',
+            minHeight: isMobile ? '44px' : undefined,
+            cursor: 'pointer',
+          }}
         >
           {t('filter.applyFilters')}
         </Button>

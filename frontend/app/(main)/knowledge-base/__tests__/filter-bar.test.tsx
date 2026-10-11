@@ -68,6 +68,31 @@ describe('FilterBar', () => {
     expect(screen.queryByRole('button', { name: 'Apply filters' })).toBeNull();
   });
 
+  it('gives Apply filters a 44px touch target on a phone', async () => {
+    const originalMatchMedia = window.matchMedia;
+    window.matchMedia = (query: string) =>
+      ({
+        matches: query.includes('max-width'),
+        media: query,
+        onchange: null,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        addListener: () => {},
+        removeListener: () => {},
+        dispatchEvent: () => false,
+      }) as MediaQueryList;
+
+    try {
+      renderInTheme(<FilterBar pageViewMode="all-records" />);
+      fireEvent.click(screen.getByRole('button', { name: /Status/ }));
+      fireEvent.click(screen.getByText('Queued'));
+
+      expect(screen.getByRole('button', { name: 'Apply filters' }).style.minHeight).toBe('44px');
+    } finally {
+      window.matchMedia = originalMatchMedia;
+    }
+  });
+
   it('clears applied filters immediately', () => {
     useKnowledgeBaseStore.setState({ allRecordsFilter: { indexingStatus: ['QUEUED'] } });
     renderInTheme(<FilterBar pageViewMode="all-records" />);

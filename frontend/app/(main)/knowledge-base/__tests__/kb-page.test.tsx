@@ -681,6 +681,36 @@ describe('Knowledge base page — failures the user must be able to recover from
     );
   });
 
+  it('does not restore collections when a list request finishes after the last one is gone', async () => {
+    const pending: { resolve: (value: unknown) => void; signal?: AbortSignal }[] = [];
+    api.hub.getNavigationNodes.mockImplementation((params?: { nodeTypes?: string }, options?: { signal?: AbortSignal }) => {
+      if (params?.nodeTypes === 'app') {
+        return new Promise((resolve) => {
+          pending.push({ resolve, signal: options?.signal });
+        });
+      }
+      return Promise.resolve(hubResponse([ENGINEERING]));
+    });
+    openAt('/knowledge-base');
+
+    await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    const listRequest = pending[pending.length - 1];
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setCategorizedNodes({ shared: [], private: [] });
+    });
+
+    expect(listRequest.signal?.aborted).toBe(true);
+    expect(useKnowledgeBaseStore.getState().isLoadingTableData).toBe(false);
+
+    await act(async () => {
+      listRequest.resolve(hubResponse([ENGINEERING]));
+    });
+
+    expect(useKnowledgeBaseStore.getState().tableData).toBeNull();
+    expect(screen.queryByRole('row', { name: 'Engineering' })).toBeNull();
+  });
+
   it('after the last collection is deleted, says there are no collections left', async () => {
     api.hub.getNavigationNodes.mockResolvedValue(hubResponse([ENGINEERING]));
     api.kb.deleteNode.mockImplementation(async () => {

@@ -6452,7 +6452,7 @@ wheels = [
 
 [[package]]
 name = "redshift-connector"
-version = "2.1.14"
+version = "2.1.8"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "beautifulsoup4" },
