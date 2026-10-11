@@ -48,6 +48,12 @@
 
 Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems. Search across them and get answers with citations, filtered by what each person is allowed to see — or give that same context to your own agents, workflows and MCP clients.
 
+<p align="center">
+  <a href="https://youtu.be/VgyND38QZ7w"><img src="https://img.youtube.com/vi/VgyND38QZ7w/maxresdefault.jpg" alt="Watch the PipesHub demo on YouTube" width="720"/></a>
+  <br/>
+  <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
+</p>
+
 > [!TIP]
 > Deploy with a single command:
 > ```bash
