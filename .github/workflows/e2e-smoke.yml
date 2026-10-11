@@ -33,8 +33,6 @@ jobs:
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
     timeout-minutes: 60
 
-    env:
-      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -64,15 +62,6 @@ jobs:
         run: |
           npm ci
           npx playwright install chromium --with-deps
-
-      # Spot runners share addresses, so anonymous pulls run into Docker Hub's
-      # hourly cap. The token is read-only: PR code on the runner can read it.
-      - name: Log in to Docker Hub (read-only)
-        if: env.DOCKERHUB_PULL_LOGIN == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
 
       - name: Pull pre-built base images
         run: |
