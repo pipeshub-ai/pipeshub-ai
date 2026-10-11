@@ -47,6 +47,23 @@ def _error(message: str) -> str:
     return json.dumps({"status": "error", "message": message})
 
 
+def _calendar_date(value: str, *, is_upper_bound: bool) -> datetime | None:
+    """``YYYY-MM-DD`` at midnight UTC. A day past its month's end (models write
+    "before 2026-02-29" for "before the end of February") is clamped to the
+    month's last day for an upper bound and rolls over to the next month for a
+    lower one; anything else that is not a real date is None."""
+    year, month, day = (int(part) for part in value.split("-"))
+    if not 1 <= month <= 12 or not 1 <= day <= 31:
+        return None
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    last_day = ((first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)).day
+    if day <= last_day:
+        return first.replace(day=day)
+    if is_upper_bound:
+        return first.replace(day=last_day)
+    return first.replace(day=last_day) + timedelta(days=1)
+
+
 def _parse_iso_to_epoch_ms(
     value: str, *, is_upper_bound: bool, field_label: str
 ) -> tuple[int | None, str | None]:
@@ -63,9 +80,8 @@ def _parse_iso_to_epoch_ms(
     Returns (epoch_ms, None) on success, (None, error_json) on failure.
     """
     if _DATE_ONLY_RE.match(value):
-        try:
-            dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
+        dt = _calendar_date(value, is_upper_bound=is_upper_bound)
+        if dt is None:
             return None, _error(f"{field_label}: invalid calendar date {value!r}.")
         if is_upper_bound:
             dt = dt + timedelta(days=1) - timedelta(milliseconds=1)
