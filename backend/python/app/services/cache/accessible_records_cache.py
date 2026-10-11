@@ -474,6 +474,11 @@ class AccessibleRecordsInvalidator:
     indexing pipeline. A failed Redis delete is retried by the cache itself.
     """
 
+    # How long after a permission change its second drop runs. Bounds both how
+    # long the rest of a burst of changes can be served stale and how often a
+    # sync that keeps changing permissions can empty the connector's entries.
+    PERMISSION_CHANGE_SETTLE_SECONDS = 5.0
+
     def __init__(
         self,
         logger: "Logger",
@@ -483,6 +488,71 @@ class AccessibleRecordsInvalidator:
         self.logger = logger
         self.cache = cache
         self.graph_provider = graph_provider
+        # connector id -> the drop that ends its settle window. Thread lock: the
+        # indexing service calls in from its consumer's worker loop too.
+        self._settle_drops: dict[str, asyncio.Task[None]] = {}
+        self._settle_lock = threading.Lock()
+
+    async def on_connector_permissions_changed(
+        self, connector_id: str, org_id: str | None = None
+    ) -> None:
+        """Drop a connector's entries now, and once more when the settle window ends.
+
+        Waiting for the sync to finish left a user who lost access searching the
+        old map until the sync ended or the entry expired. A sync can narrow
+        access thousands of times in a row, so only the first change in a window
+        drops at once; the rest are covered by the second drop. That drop also
+        clears a map that a search read from the graph before the change and
+        wrote after the first drop.
+        """
+        try:
+            if not connector_id or self._settle_drop_pending(connector_id):
+                return
+            org_id = org_id or await self._org_for_app(connector_id)
+            if not org_id:
+                self.logger.warning(
+                    "Skipping accessible-records cache invalidation for connector %s after a "
+                    "permission change: could not resolve its org, so searches keep the old "
+                    "list until the sync finishes or the entry expires",
+                    connector_id,
+                )
+                return
+            with self._settle_lock:
+                pending = self._settle_drops.get(connector_id)
+                if pending is not None and not pending.done():
+                    return
+                self._settle_drops[connector_id] = asyncio.get_running_loop().create_task(
+                    self._drop_when_settled(org_id, connector_id)
+                )
+            await self.cache.invalidate_connector(org_id, connector_id)
+        except Exception as e:
+            self.logger.warning(
+                "Could not invalidate accessible-records cache for connector %s after a "
+                "permission change: %s",
+                connector_id, str(e),
+            )
+
+    def _settle_drop_pending(self, connector_id: str) -> bool:
+        with self._settle_lock:
+            pending = self._settle_drops.get(connector_id)
+            return pending is not None and not pending.done()
+
+    async def _drop_when_settled(self, org_id: str, connector_id: str) -> None:
+        try:
+            await asyncio.sleep(self.PERMISSION_CHANGE_SETTLE_SECONDS)
+        finally:
+            # Freed before the drop, so a change landing during it opens a new window.
+            with self._settle_lock:
+                if self._settle_drops.get(connector_id) is asyncio.current_task():
+                    del self._settle_drops[connector_id]
+        try:
+            await self.cache.invalidate_connector(org_id, connector_id)
+        except Exception as e:
+            self.logger.warning(
+                "Could not invalidate accessible-records cache for connector %s after a "
+                "permission change: %s",
+                connector_id, str(e),
+            )
 
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
