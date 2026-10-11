@@ -41,6 +41,8 @@ def _dotted(text: str) -> str:
 
     The expression lexer skips any Unicode whitespace between tokens, newlines included.
     """
+    # Grouping parentheses don't change what is read: `(x.head).sha`, `x.head[('sha')]`.
+    text = re.sub(r"[()]", "", text)
     text = re.sub(r"\[\s*(['\"])([A-Za-z0-9_-]+)\1\s*\]", r".\2", text)
     return re.sub(r"\s*\.\s*", ".", text)
 
@@ -502,10 +504,14 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: |\n            ${{ github.event.pull_request.head\n            .sha }}\n",
             "ref: ${{ github.event.pull_request.head\u00a0.sha }}\n",
             "ref: '${{ github.event.pull_request.head[''sha''] }}'\n",
+            "ref: ${{ (github.event.pull_request.head).sha }}\n",
+            "ref: ${{ github.event.pull_request.head[('sha')] }}\n",
+            "ref: ${{ ((github.event.pull_request.head)).sha }}\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: main\n"))
+        self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ (github.event.pull_request.base).sha }}\n"))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
