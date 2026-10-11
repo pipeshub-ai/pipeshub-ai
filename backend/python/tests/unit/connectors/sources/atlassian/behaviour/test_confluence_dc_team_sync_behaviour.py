@@ -1626,6 +1626,23 @@ class TestRemovalFromSource:
         assert "p1" not in db.records, "modified two months before the cutoff"
         assert {"p2", "p3"} <= set(db.records), "a day inside the margin: the filter's own search decides"
 
+    async def test_a_modified_date_filter_removes_what_it_leaves_out_by_more_than_a_day(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        cutoff = int(datetime(2024, 5, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}}
+        }
+        store.sync_points.clear()
+        older = {**content("p1"), "version": {"number": 1, "when": "2024-04-30T18:00:00.000Z"}}
+        search.existing["page"] = [older, content("p2", attachments=[attachment("a2")]), child_of("p3", "p2")]
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records, "30 hours before the cutoff, which the search applies as set"
+        assert {"p2", "p3"} <= set(db.records), "14 hours before it: inside the time-zone margin"
+
     async def test_a_narrowed_space_filter_removes_the_space_and_a_re_added_space_is_read_in_full(
         self, atlassian_api, db, store, search
     ) -> None:
