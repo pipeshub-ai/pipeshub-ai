@@ -57,9 +57,27 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
-_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
-# An index that is only a quoted name or a number; anything else is computed.
-_LITERAL_INDEX = re.compile(r"""\[\s*(?:'[A-Za-z0-9_-]*'|"[A-Za-z0-9_-]*"|\d+|\*)\s*\]""")
+def _expressions(text: str) -> list[str]:
+    """The body of every `${{ }}`, closed the way the runner closes it.
+
+    A `}}` inside a single-quoted string doesn't end the expression (`''` is an
+    escaped quote, so each `'` just toggles). An unclosed one runs to the end.
+    """
+    bodies, start = [], text.find("${{")
+    while start != -1:
+        i, quoted = start + 3, False
+        while i < len(text) and (quoted or not text.startswith("}}", i)):
+            quoted ^= text[i] == "'"
+            i += 1
+        bodies.append(text[start + 3 : i])
+        start = text.find("${{", i + 2)
+    return bodies
+
+
+# An index that is only a quoted name or a number. Anything else is computed,
+# including the `*` wildcard, which returns every property (sha, ref and repo on head).
+_LITERAL_INDEX = re.compile(r"""\[\s*(?:'[A-Za-z0-9_-]*'|"[A-Za-z0-9_-]*"|\d+)\s*\]""")
+_WILDCARD_PROPERTY = re.compile(r"\.\s*\*")
 
 
 def _computes_an_index(text: str) -> bool:
@@ -67,7 +85,19 @@ def _computes_an_index(text: str) -> bool:
 
     Patterns can't evaluate expressions, so a privileged workflow fails closed on these.
     """
-    return any("[" in _LITERAL_INDEX.sub("", e) for e in _EXPRESSION.findall(text))
+    return any(
+        "[" in _LITERAL_INDEX.sub("", e) or _WILDCARD_PROPERTY.search(e) for e in _expressions(text)
+    )
+
+
+def _conditions(value: Any) -> list[str]:
+    """Every `if:` value as an expression; a job or step condition needs no `${{ }}`."""
+    if isinstance(value, dict):
+        found = [f"${{{{ {v} }}}}" for k, v in value.items() if k == "if" and isinstance(v, str)]
+        return found + [c for v in value.values() for c in _conditions(v)]
+    if isinstance(value, list):
+        return [c for v in value for c in _conditions(v)]
+    return []
 
 
 def _references_pr_head(text: str) -> bool:
@@ -78,7 +108,8 @@ def _references_pr_head(text: str) -> bool:
         workflow = yaml.load(text, Loader=_StrictLoader)
     except yaml.YAMLError:
         return True
-    return any(_PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) for s in _strings(workflow))
+    strings = _strings(workflow) + _conditions(workflow)
+    return any(_PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) for s in strings)
 
 
 # Any use of the secrets context except GITHUB_TOKEN: dot or index access, any case
@@ -525,9 +556,22 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ github.event.pull_request.head[(true || 'nope') && 'sha'] }}\n",
             "ref: ${{ github[true && 'head_ref'] }}\n",
             "ref: ${{ github.event[format('pull_{0}', 'request')].head.sha }}\n",
+            "ref: ${{ '}}' && github.event.pull_request.head[true && 'sha'] }}\n",
+            "ref: ${{ 'it''}}' && github.event.pull_request.head[true && 'sha'] }}\n",
+            "ref: ${{ format('}}') && github.event.pull_request.head[true && 'sha'] }}\n",
+            "ref: ${{ github.event.pull_request.head[*] }}\n",
+            "ref: ${{ github.event.pull_request.head.* }}\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
+        for condition in (
+            "if: \"github.event.pull_request.head[true && 'sha'] != ''\"\n",
+            "if: github.event.pull_request.head.* != ''\n",
+        ):
+            with self.subTest(condition=condition):
+                self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - {condition}"))
+                self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    {condition}"))
+        self.assertFalse(_references_pr_head("jobs:\n  a:\n    if: github.event_name == 'push'\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: main\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ (github.event.pull_request.base).sha }}\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ github.event.inputs['tag'] }}\n"))
