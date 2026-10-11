@@ -972,6 +972,46 @@ class TestFiltersAndIndexingSwitches:
         blog_cql = [c for c in search.cql if c.startswith("type=blogpost")]
         assert len(blog_cql) == 1 and "id in (b1, b2)" in blog_cql[0] and "created <" in blog_cql[0]
 
+    async def test_date_filters_reach_the_search_as_set(self, atlassian_api, db, store, search) -> None:
+        def ms(*parts: int) -> int:
+            return int(datetime(*parts, tzinfo=timezone.utc).timestamp() * 1000)
+
+        filters = _filters(sync={
+            "modified": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2024, 3, 1, 9, 30), "end": ms(2024, 6, 1, 18)}},
+            "created": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2023, 1, 1), "end": ms(2024, 2, 1, 12)}},
+        })
+        connector = await make_connector(atlassian_api, db, store, filters=filters)
+        search.add("page", 0, listing([content("p1")]))
+
+        await connector.run_sync()
+
+        for ctype in ("page", "blogpost"):
+            cql = next(c for c in search.cql if c.startswith(f"type={ctype}"))
+            assert 'lastModified > "2024-03-01 09:30"' in cql
+            assert 'lastModified < "2024-06-01 18:00"' in cql, "not a day early"
+            assert 'created > "2023-01-01 00:00"' in cql
+            assert 'created < "2024-02-01 12:00"' in cql, "not a day early"
+
+    async def test_the_later_of_the_modified_filter_and_the_looked_back_checkpoint_bounds_the_search(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        checkpoint = store.values_for("confluence_pages/ENG")["last_sync_time"]
+        checkpoint_at = datetime.strptime(checkpoint, "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=timezone.utc)
+
+        inside_look_back = checkpoint_at - timedelta(hours=12)
+        connector.config_service.config["filters"] = _filters(sync={
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": int(inside_look_back.timestamp() * 1000)}},
+        })
+        search.cql.clear()
+        await connector.run_sync()
+
+        cql = next(c for c in search.cql if c.startswith("type=page"))
+        assert f'lastModified > "{inside_look_back.strftime("%Y-%m-%d %H:%M")}"' in cql, "nothing from before the filter date"
+        assert cql.count("lastModified >") == 1
+
     async def test_switched_off_pages_and_files_are_kept_but_not_indexed(self, atlassian_api, db, store, search) -> None:
         filters = _filters(indexing={"pages": False, "page_attachments": False})
         connector = await make_connector(atlassian_api, db, store, filters=filters)

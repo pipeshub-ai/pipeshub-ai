@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import parse_qs, urlparse
 
@@ -55,6 +56,26 @@ def v1_next_start(
         return int(values[0])
     size = response_data.get("size", page_len)
     return start + page_len if size >= batch_size and page_len else None
+
+
+def _parse_iso(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def listing_modified_after(filter_after: str | None, checkpoint: str | None, look_back_hours: int) -> str | None:
+    """The "modified after" bound of a content listing: the later of the admin's filter and the checkpoint.
+
+    Only the checkpoint is moved back ``look_back_hours``: CQL reads dates in the
+    site's time zone, not UTC, so an incremental sync re-reads that far back to
+    miss nothing. The admin's own date is used as set.
+    """
+    if not checkpoint:
+        return filter_after
+    since = _parse_iso(checkpoint) - timedelta(hours=look_back_hours)
+    if filter_after and _parse_iso(filter_after) > since:
+        return filter_after
+    return since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def unresolved_principal_permission(principal_id: str, permission_type: PermissionType) -> Permission:
