@@ -1,0 +1,46 @@
+name: dco
+
+# Developer Certificate of Origin (https://developercertificate.org): every commit in a
+# PR needs a "Signed-off-by: Name <email>" trailer matching its author email.
+# Add it with `git commit -s`; fix a branch with `git rebase --signoff origin/main`.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    # Only the PR opener's account type is trusted; branch names and commit emails are author-controlled.
+    if: ${{ github.event.pull_request.user.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Check Signed-off-by on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # Commits already on pipeshub-ai main were checked there (or predate this check).
+          git fetch -q --no-tags https://github.com/pipeshub-ai/pipeshub-ai.git +refs/heads/main:refs/upstream/main
+          missing=0
+          for sha in $(git rev-list --no-merges "$HEAD" --not "$BASE" refs/upstream/main); do
+            email=$(git log -1 --format=%ae "$sha")
+            signers=$(git log -1 --format='%(trailers:key=Signed-off-by,valueonly,separator=%x0A)' "$sha" \
+              | sed -n 's/^.*<\([^<>]*\)>[[:space:]]*$/\1/p')
+            if ! printf '%s\n' "$signers" | grep -qixF -- "$email"; then
+              echo "::error::$(git log -1 --format='%h %s' "$sha") has no Signed-off-by trailer for <$email>"
+              missing=1
+            fi
+          done
+          if [ "$missing" = 1 ]; then
+            echo "Sign off your own commits with: git rebase --signoff $BASE && git push --force-with-lease"
+            echo "A commit by someone else needs its author to sign it off (see CONTRIBUTING.md)."
+            exit 1
+          fi
