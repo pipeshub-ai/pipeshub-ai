@@ -674,8 +674,20 @@ class GraphTransactionStore(TransactionStore):
             node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
-        return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
+    async def get_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[dict]:
+        return await self.graph_provider.get_edge(
+            from_id, from_collection, to_id, to_collection, collection,
+            transaction=self.txn, raise_on_error=raise_on_error,
+        )
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_conversation_index(connector_id, conversation_index, thread_id, org_id, user_id, transaction=self.txn)

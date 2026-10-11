@@ -403,3 +403,22 @@ class TestTrashingDropsTheConnector:
             await proc.on_records_soft_deleted(["rec-1"], CONNECTOR, delete_source="CONNECTOR")
 
         notify.assert_not_called()
+
+
+class TestInheritProbeFailsLoudly:
+    async def test_unreadable_inherit_edge_stops_the_write(self, events) -> None:
+        """Answered as "no edge", the write removed it and the drop was skipped."""
+        tx = AsyncMock()
+        tx.get_edge = AsyncMock(side_effect=RuntimeError("graph down"))
+        proc = _processor(tx, events)
+        record = _record()
+        record.inherit_permissions = False
+        narrowed: set[str] = set()
+
+        with pytest.raises(RuntimeError):
+            await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
+
+        tx.get_edge.assert_awaited_once()
+        assert tx.get_edge.await_args.kwargs == {"raise_on_error": True}
+        tx.link_record_to_group.assert_not_called()
+        assert narrowed == set()

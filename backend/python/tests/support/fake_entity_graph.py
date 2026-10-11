@@ -221,7 +221,8 @@ class FakeGraph:
     def is_write_conflict(self, error: BaseException) -> bool:
         return "write conflict" in str(error)
 
-    async def get_edge(self, from_key, from_collection, to_key, to_collection, edge_collection) -> dict[str, Any] | None:
+    async def get_edge(self, from_key, from_collection, to_key, to_collection, edge_collection,
+                       transaction=None, *, raise_on_error=False) -> dict[str, Any] | None:
         return self.edges.get(
             (edge_collection, f"{from_collection}/{from_key}", f"{to_collection}/{to_key}")
         )

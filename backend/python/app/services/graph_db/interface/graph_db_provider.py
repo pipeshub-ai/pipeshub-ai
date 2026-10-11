@@ -789,7 +789,9 @@ class IGraphDBProvider(ABC):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge/relationship between two nodes.
@@ -801,6 +803,8 @@ class IGraphDBProvider(ABC):
             to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: raise when the read fails, instead of answering None,
+                which a caller deciding whether the edge exists would read as "absent"
 
         Returns:
             Optional[Dict]: Edge data in generic format if found, None otherwise

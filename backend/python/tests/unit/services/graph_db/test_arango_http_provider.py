@@ -586,6 +586,14 @@ class TestEdgeOperations:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_edge_raises_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("error")
+        with pytest.raises(Exception, match="error"):
+            await connected_provider.get_edge(
+                "u1", "users", "r1", "records", "permissions", raise_on_error=True
+            )
+
+    @pytest.mark.asyncio
     async def test_delete_edge_success(self, connected_provider):
         connected_provider.http_client.delete_edge.return_value = True
         result = await connected_provider.delete_edge(

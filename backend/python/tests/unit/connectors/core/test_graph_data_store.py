@@ -777,8 +777,15 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_edge = AsyncMock(return_value=None)
         await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll")
         mock_graph_provider.get_edge.assert_awaited_once_with(
-            "from1", "from_coll", "to1", "to_coll", "edge_coll", transaction="txn-123"
+            "from1", "from_coll", "to1", "to_coll", "edge_coll",
+            transaction="txn-123", raise_on_error=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_get_edge_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        mock_graph_provider.get_edge = AsyncMock(return_value=None)
+        await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll", raise_on_error=True)
+        assert mock_graph_provider.get_edge.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_get_record_by_conversation_index(self, tx_store, mock_graph_provider) -> None:

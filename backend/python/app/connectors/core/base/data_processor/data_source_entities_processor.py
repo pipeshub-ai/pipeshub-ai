@@ -818,12 +818,14 @@ class DataSourceEntitiesProcessor:
             return False
         # Read only on this branch: an existing record that does not inherit is
         # rewritten on every sync, and the edge is almost always already gone.
+        # Raising: answered as "no edge", the write below removed it unreported.
         return await tx_store.get_edge(
             record.id,
             CollectionNames.RECORDS.value,
             joining_group_id,
             CollectionNames.RECORD_GROUPS.value,
             CollectionNames.INHERIT_PERMISSIONS.value,
+            raise_on_error=True,
         ) is not None
 
     async def _prepare_ticket_user_edge(

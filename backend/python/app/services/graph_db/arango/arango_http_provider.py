@@ -2969,7 +2969,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge between two nodes - FULLY ASYNC.
@@ -3008,6 +3010,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get edge failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_edge(

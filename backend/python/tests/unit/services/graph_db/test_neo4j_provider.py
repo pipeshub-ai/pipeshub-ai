@@ -1147,6 +1147,15 @@ class TestEdgeOperations:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_edge_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db fail"))
+
+        with pytest.raises(RuntimeError, match="db fail"):
+            await neo4j_provider.get_edge(
+                "u1", "users", "a1", "agentInstances", "permission", raise_on_error=True
+            )
+
+    @pytest.mark.asyncio
     async def test_delete_edge_returns_true_when_deleted(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"deleted": 1}])
 
