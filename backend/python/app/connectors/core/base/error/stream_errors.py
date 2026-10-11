@@ -361,20 +361,25 @@ def _unwrap_retry_error(exc: BaseException) -> BaseException | None:
     return inner if isinstance(inner, BaseException) else None
 
 
-def _extract_retry_after(exc: BaseException) -> str | None:
-    """Read a Retry-After header off an SDK exception's response, if present."""
+def _response_header(exc: BaseException, name: str) -> str | None:
+    """Read a header off an SDK exception's response, if present."""
     # ``response`` for httpx/requests-style errors; ``response_info`` for the Box SDK's BoxAPIError.
     for attr in ("response", "response_info"):
         headers = getattr(getattr(exc, attr, None), "headers", None)
         if headers is None:
             continue
         try:
-            value = headers.get("Retry-After") or headers.get("retry-after")
+            value = headers.get(name) or headers.get(name.lower())
         except Exception:
             continue
         if value is not None:
-            return sanitize_retry_after(value)
+            return str(value).strip()
     return None
+
+
+def _extract_retry_after(exc: BaseException) -> str | None:
+    """Read a Retry-After header off an SDK exception's response, if present."""
+    return sanitize_retry_after(_response_header(exc, "Retry-After"))
 
 
 # Transport-level failures, matched without importing every HTTP client.
@@ -409,6 +414,9 @@ _RATE_LIMIT_403_REASONS = frozenset({
 
 
 def _is_rate_limit_403(exc: BaseException) -> bool:
+    # GitHub marks a rate-limited 403 with headers rather than a reason code.
+    if _response_header(exc, "X-RateLimit-Remaining") == "0" or _response_header(exc, "Retry-After"):
+        return True
     details = getattr(exc, "error_details", None)
     if not isinstance(details, (list, tuple)):
         return False

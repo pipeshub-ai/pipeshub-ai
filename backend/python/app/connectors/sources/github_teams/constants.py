@@ -16,9 +16,12 @@ from app.config.constants.arangodb import ExtensionTypes
 # never passes a base_url, and the connector's auth config has no
 # instance-URL field to source one from.
 
-# REST "core" budget (authenticated) is 5,000 req/hr. There is no proactive
-# pause: like every other connector, a rate-limited call fails fast, the sync
-# aborts with its checkpoint withheld, and the scheduler retries later.
+# REST "core" budget (authenticated) is 5,000 req/hr, shared with every other
+# tool on the token owner's account. The data source stops sending once a
+# reserve of it is left (github_async._check_reserve). A rate limit that
+# resets within _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS is waited out in ds_call;
+# a longer one fails fast: the sync aborts with its checkpoint withheld and
+# the scheduler retries later, and a stream answers 429 so indexing retries.
 # (The timestamp backfill runs on GraphQL's separate point budget.)
 
 # Search API budget is a *separate*, much smaller pool: 30 req/min. Used by
@@ -142,13 +145,20 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 
 HTTP_UNAUTHORIZED = 401
 
-# Transient statuses worth retrying. 403 is excluded: GitHub uses it for both
-# rate limiting and genuine permission denials, and retrying the latter just
-# burns budget — check_rate_limit_and_pause handles the former.
+# Transient statuses worth retrying. 403 is excluded: it is a genuine
+# permission denial by the time it gets here, because the data source reports
+# GitHub's rate-limited 403s as 429, and ds_call waits those out separately.
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
 _GITHUB_MAX_RETRIES = 3
 _GITHUB_RETRY_BASE_DELAY_SECONDS = 1.0
 _GITHUB_RETRY_MAX_DELAY_SECONDS = 30.0
+
+# Longest rate-limit wait taken inside one call. A stream request runs under
+# the indexing service's HTTP timeout (aiohttp's 300s default), so a primary
+# reset up to an hour away is left to the caller's retry instead.
+_GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS = 90
+# GitHub's documented wait for a secondary limit that sends no Retry-After.
+_GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS = 60
 
 # GitHub collaborator "affiliation" values, used to enumerate collaborators
 # without paying for a per-user permission lookup (NamedUser.permissions

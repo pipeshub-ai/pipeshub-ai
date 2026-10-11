@@ -134,6 +134,31 @@ class TestToStreamError:
         original = HTTPException(status_code=418, detail="teapot")
         assert to_stream_error(original) is original
 
+    @pytest.mark.parametrize(
+        ("headers", "retry_after"),
+        [({"X-RateLimit-Remaining": "0"}, None), ({"Retry-After": "60"}, "60")],
+    )
+    def test_github_style_rate_limited_403_is_429(self, headers: dict, retry_after: str | None) -> None:
+        """GitHub rate-limits with 403; read as 403 it fails the record as "access denied"."""
+        import httpx
+
+        request = httpx.Request("GET", "https://github.com/user-attachments/files/1/a.pdf")
+        response = httpx.Response(403, headers=headers, request=request)
+        exc = httpx.HTTPStatusError("403", request=request, response=response)
+
+        err = to_stream_error(exc, connector="GitHub")
+        assert err.status_code == 429
+        assert (err.headers or {}).get("Retry-After") == retry_after
+
+    def test_plain_403_stays_forbidden(self) -> None:
+        import httpx
+
+        request = httpx.Request("GET", "https://github.com/user-attachments/files/1/a.pdf")
+        response = httpx.Response(403, headers={"X-RateLimit-Remaining": "4999"}, request=request)
+        exc = httpx.HTTPStatusError("403", request=request, response=response)
+
+        assert to_stream_error(exc, connector="GitHub").status_code == 403
+
     def test_unknown_error_does_not_leak_the_message(self) -> None:
         """Exception text can carry tokens, signed URLs and internal hostnames."""
         err = to_stream_error(RuntimeError("token=sk-secret host=internal.local"))
