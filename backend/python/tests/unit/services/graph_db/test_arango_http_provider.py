@@ -1752,6 +1752,59 @@ class TestVectorStoreRebuildGraphQueries:
         assert bind["connector_id"] == "app-1"
         assert bind["status"] == "NOT_STARTED"
         assert bind["exclude_statuses"] == ["IN_PROGRESS"]
+        # Unused bind vars are an AQL error.
+        assert "only_statuses" not in bind and "reason" not in bind
+
+    @pytest.mark.asyncio
+    async def test_reset_limited_to_statuses_and_stamping_a_reason(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+        )
+        query = connected_provider.execute_query.await_args.args[0]
+        bind = connected_provider.execute_query.await_args.kwargs["bind_vars"]
+        assert "doc.indexingStatus IN @only_statuses" in query
+        assert "reason: @reason" in query
+        assert bind["only_statuses"] == ["QUEUED"]
+        assert bind["reason"] == "off"
+        assert "exclude_statuses" not in bind
+        assert "isDeleted" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_live_only_leaves_the_trash(self, connected_provider) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], visibility=RecordVisibility.LIVE
+        )
+        query = connected_provider.execute_query.await_args.args[0]
+        assert "FILTER doc.isDeleted != true" in query
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        await connected_provider.get_documents_paginated(
+            "records", limit=2, filters={"reason": "off"}, sort_field="_key", after_key="k1"
+        )
+        query = connected_provider.http_client.execute_aql.await_args.args[0]
+        bind = connected_provider.http_client.execute_aql.await_args.kwargs["bind_vars"]
+        assert "doc._key > @after_key" in query
+        assert "SORT doc._key ASC" in query
+        assert bind["after_key"] == "k1"
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key_needs_key_order(self, connected_provider) -> None:
+        with pytest.raises(ValueError):
+            await connected_provider.get_documents_paginated("records", after_key="k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_with_an_empty_status_list_writes_nothing(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=[]
+        )
+        connected_provider.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_reset_failure_propagates(self, connected_provider):
@@ -5096,7 +5149,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -7454,7 +7507,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 50
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 51
 
 
 # ---------------------------------------------------------------------------
