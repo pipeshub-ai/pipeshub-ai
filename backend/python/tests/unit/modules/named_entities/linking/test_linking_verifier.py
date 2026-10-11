@@ -17,11 +17,11 @@ from app.modules.named_entities.linking.verifier import (
 
 # Look-alikes a vector search returns as close matches.
 LOOK_ALIKES = [
-    VerifyItem("Sienna Lattice", "organization", [OfferedCandidate("Lattice Financial", "organization", "4 records")]),
-    VerifyItem("SableGate", "organization", [OfferedCandidate("SatoriPay", "organization", "2 records")]),
-    VerifyItem("Northgrove Platforms", "organization", [
+    VerifyItem("Acme Robotics", "organization", [OfferedCandidate("Acme Financial", "organization", "4 records")]),
+    VerifyItem("Initech", "organization", [OfferedCandidate("Initrode", "organization", "2 records")]),
+    VerifyItem("Globex Systems", "organization", [
         OfferedCandidate("Platform", "product", "3+ records"),
-        OfferedCandidate("Northgrove Platforms Inc", "organization", "1 record"),
+        OfferedCandidate("Globex Systems Inc", "organization", "1 record"),
     ]),
 ]
 
@@ -48,11 +48,11 @@ def _verifier(llm: _Llm | None, **kwargs: object) -> LlmMentionVerifier:
 
 
 def test_the_prompt_names_the_question_and_numbers_candidates_per_name() -> None:
-    prompt = build_prompt("Who supplies Sienna Lattice?", LOOK_ALIKES)
-    assert "Who supplies Sienna Lattice?" in prompt
-    assert 'Name 1: "Sienna Lattice" (organization)' in prompt
-    assert "  1. Lattice Financial (organization, 4 records)" in prompt
-    assert "  2. Northgrove Platforms Inc (organization, 1 record)" in prompt
+    prompt = build_prompt("Who supplies Acme Robotics?", LOOK_ALIKES)
+    assert "Who supplies Acme Robotics?" in prompt
+    assert 'Name 1: "Acme Robotics" (organization)' in prompt
+    assert "  1. Acme Financial (organization, 4 records)" in prompt
+    assert "  2. Globex Systems Inc (organization, 1 record)" in prompt
     assert '"3": [...]' in prompt and "Choose none" in prompt
 
 

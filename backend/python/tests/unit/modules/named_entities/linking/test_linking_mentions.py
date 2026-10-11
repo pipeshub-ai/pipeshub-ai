@@ -22,9 +22,9 @@ def test_an_organization_is_keyed_as_indexing_keyed_it() -> None:
 
 
 def test_a_name_without_a_kind_is_tried_under_every_name_kind() -> None:
-    keys = _keys("Redwood")
+    keys = _keys("Northwind")
     assert set(keys) == set(NAME_KINDS) - {EntityKind.EMAIL, EntityKind.URL}
-    assert keys[EntityKind.PRODUCT] == "name:product:redwood"
+    assert keys[EntityKind.PRODUCT] == "name:product:northwind"
 
 
 def test_a_location_hint_covers_the_whole_location_family() -> None:
@@ -34,11 +34,11 @@ def test_a_location_hint_covers_the_whole_location_family() -> None:
 
 def test_contacts_get_their_own_keys() -> None:
     assert _keys("Jane@Example.com", "email") == {EntityKind.EMAIL: "email:jane@example.com"}
-    assert EntityKind.URL in _keys("https://status.redwood.ai/incidents")
+    assert EntityKind.URL in _keys("https://status.northwind.example/incidents")
 
 
 def test_a_contact_kind_needs_text_its_recognizer_would_have_stored() -> None:
-    assert parse_mentions([{"name": "Redwood", "kind": "url"}]).mentions == []
+    assert parse_mentions([{"name": "Northwind", "kind": "url"}]).mentions == []
     assert parse_mentions([{"name": "jane at example", "kind": "email"}]).mentions == []
 
 
