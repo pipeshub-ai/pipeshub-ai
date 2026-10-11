@@ -1,0 +1,107 @@
+name: integration-suite-guards
+
+# Offline guards over integration-tests: the graph-entity and edge schemas the
+# connector checks validate against, the connector types the suites ask for,
+# and the admin-route inventory. They need no stack, so they run on every pull
+# request instead of waiting for the nightly.
+#
+# A workflow of its own, and a job of its own, so its result is a check that can
+# be required. Inside unit-test.yml it shared a job with the whole unit suite: a
+# guard failure read as one more red unit run, and #3718 merged past one that
+# named the exact missing schema field. Every nightly shard then failed on it.
+#
+# No `paths` filter: a required check must report on every pull request, and a
+# workflow that does not run leaves it pending for ever. The job decides from
+# the changed files whether the guards have anything to check, and passes in
+# seconds when they do not.
+
+on:
+  pull_request:
+    branches:
+      - 'main'
+  push:
+    branches:
+      - 'main'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: integration-suite-guards-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  integration-suite-guards:
+    name: integration-suite-guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Decide whether the guards have anything to check
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          # Every file the guards read: the models and connector registry (Python),
+          # the admin routes (Node and Python), the pytest config they run under,
+          # and the suite side of each guard with the helpers it imports.
+          # integration-tests/unit/test_guard_scope.py fails when a guard reads a
+          # file this does not match.
+          WATCHED_PATHS: '^(backend/python/app/|backend/python/pyproject\.toml$|backend/python/pytest\.ini$|backend/nodejs/apps/src/|integration-tests/(unit|validation|connectors|helper|retrieval)/|integration-tests/response-validation/helper/|\.github/workflows/integration-suite-guards\.yml$)'
+        run: |
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A renamed file counts under its old path too: moving a guard or a model
+          # out of a watched path is a change to it.
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[] | .filename, (.previous_filename // empty)')
+          if printf '%s\n' "$files" | grep -qE "$WATCHED_PATHS"; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No file the guards read changed; nothing to check."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout code
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Python
+        if: steps.scope.outputs.run == 'true'
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        if: steps.scope.outputs.run == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+          pip install uv
+          cd backend/python
+          # The guards import the backend's models and connector registry; the
+          # same install as the unit-test job they used to run in.
+          uv pip install --system pytest pyyaml -e ".[dev]"
+
+      - name: Run the integration-suite guards
+        if: steps.scope.outputs.run == 'true'
+        env:
+          GUARDS: >-
+            integration-tests/unit/test_graph_entity_schemas.py
+            integration-tests/unit/test_graph_edge_schemas.py
+            integration-tests/unit/test_connector_types_are_registered.py
+            integration-tests/unit/test_admin_route_inventory.py
+            integration-tests/unit/test_admin_route_conditional_world.py
+            integration-tests/unit/test_guard_scope.py
+        run: |
+          # `-c` and `--noconftest` because the files sit inside integration-tests,
+          # whose pytest.ini asks for pytest-order and whose conftest expects a
+          # running stack. Neither is here, and without these the step dies on
+          # `unrecognized arguments: --order-scope=module` before a guard runs.
+          # shellcheck disable=SC2086 # GUARDS is a list of paths
+          PYTHONPATH=backend/python:integration-tests \
+            pytest $GUARDS --noconftest -c backend/python/pytest.ini -v
