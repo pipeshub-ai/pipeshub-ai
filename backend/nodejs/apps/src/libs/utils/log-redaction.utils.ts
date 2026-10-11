@@ -87,6 +87,8 @@ const PLACEHOLDER_ORIGIN = 'http://placeholder.invalid';
 // How many layers of URL-inside-a-parameter (or percent-encoding) are opened.
 const MAX_NESTING = 3;
 const MAX_METADATA_DEPTH = 8;
+const CIRCULAR = '[Circular]';
+const TRUNCATED = '[Truncated]';
 
 const ENCODED_URL_SYNTAX = /%(3d|3f|23|26)/i;
 
@@ -160,7 +162,28 @@ function redactEmbedded(value: string, depth: number): string {
   return value;
 }
 
-function redactUrl(url: string, depth: number): string {
+// scheme://user:password@host — the authority runs to the first `/`, `?` or
+// `#`, and its last `@` ends the userinfo, so a password holding a raw `@`
+// is still caught.
+const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)@/i;
+
+/**
+ * Replace the password of a `scheme://user:password@host` URL, for any
+ * scheme. Done on the text rather than through `URL`, which rejects
+ * multi-host connection strings such as `mongodb://u:p@h1:27017,h2:27017/db`.
+ */
+function redactUserinfo(url: string): string {
+  const match = USERINFO.exec(url);
+  if (!match) return url;
+  const userinfo = match[2] ?? '';
+  const colon = userinfo.indexOf(':');
+  if (colon === -1) return url;
+  const scheme = match[1] ?? '';
+  return `${scheme}${userinfo.slice(0, colon)}:REDACTED@${url.slice(match[0].length)}`;
+}
+
+function redactUrl(rawUrl: string, depth: number): string {
+  const url = redactUserinfo(rawUrl);
   if (!/[?#]/.test(url)) {
     // A whole URL logged percent-encoded hides its `?` as `%3F`.
     return redactEmbedded(url, depth);
@@ -192,10 +215,6 @@ function redactUrl(url: string, depth: number): string {
       parsed.hash = redacted;
       changed = true;
     }
-  }
-  if (isAbsolute && parsed.password !== '') {
-    parsed.password = 'REDACTED';
-    changed = true;
   }
   if (!changed) {
     return url;
@@ -297,18 +316,34 @@ const isPlainContainer = (value: unknown): value is object => {
  * redacted and secret-bearing header fields are replaced, at any depth of
  * plain objects and arrays. Copy-on-write: metadata with nothing to redact is
  * returned as the same object, and class instances such as Errors are left
- * untouched.
+ * untouched. A cycle becomes "[Circular]" and a plain container nested past
+ * the depth limit becomes "[Truncated]", since neither can be checked.
  */
 export function redactLogMetadata(
   meta: unknown,
   depth = 0,
   seen: WeakSet<object> = new WeakSet(),
 ): unknown {
-  if (depth > MAX_METADATA_DEPTH || !isPlainContainer(meta) || seen.has(meta)) {
-    return meta;
-  }
+  if (!isPlainContainer(meta)) return meta;
+  // Past the limit the fields can no longer be checked, and returning the
+  // container would hand it to the serializer whole.
+  if (depth > MAX_METADATA_DEPTH) return TRUNCATED;
+  if (seen.has(meta)) return CIRCULAR;
+  // `seen` holds only the current path, so an object shared by two branches
+  // (not a cycle) is redacted in both.
   seen.add(meta);
+  try {
+    return redactContainer(meta, depth, seen);
+  } finally {
+    seen.delete(meta);
+  }
+}
 
+function redactContainer(
+  meta: object,
+  depth: number,
+  seen: WeakSet<object>,
+): unknown {
   if (Array.isArray(meta)) {
     const out = meta.map((item) => redactLogMetadata(item, depth + 1, seen));
     return out.some((item, i) => item !== meta[i]) ? out : meta;

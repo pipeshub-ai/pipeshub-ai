@@ -180,6 +180,34 @@ describe('log-redaction.utils', () => {
     it('redacts the password in a URL with userinfo', () => {
       const out = redactSensitiveQueryParams('https://user:hunter2@db.example.com/x?a=1#b')
       expect(out).to.not.contain('hunter2')
+      expect(out).to.contain('db.example.com/x?a=1#b')
+    })
+
+    for (const url of [
+      'https://user:hunter2@db.example.com/x',
+      'mongodb://root:hunter2@mongo:27017/db',
+      'mongodb://root:hunter2@mongo1:27017,mongo2:27017/db?replicaSet=rs0',
+      'redis://:hunter2@redis:6379/0',
+      'amqp://guest:hunter2@rabbit:5672/vhost',
+      'postgres://app:p@ss:hunter2@pg/db',
+    ]) {
+      it(`redacts the password of a userinfo URL with no query: ${url.split(':')[0]}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(out).to.not.contain('hunter2')
+        expect(out).to.contain('REDACTED')
+      })
+    }
+
+    it('keeps the user name and host of a userinfo URL', () => {
+      expect(redactSensitiveQueryParams('mongodb://root:hunter2@mongo:27017/db')).to.equal(
+        'mongodb://root:REDACTED@mongo:27017/db',
+      )
+    })
+
+    it('leaves a userinfo URL without a password alone', () => {
+      expect(redactSensitiveQueryParams('ssh://git@github.com/org/repo')).to.equal(
+        'ssh://git@github.com/org/repo',
+      )
     })
 
     it('drops the query entirely when the url cannot be parsed', () => {
@@ -302,6 +330,56 @@ describe('log-redaction.utils', () => {
       const out = redactLogMetadata(meta) as Record<string, unknown>
       expect(out.err).to.equal(err)
       expect(String(out.url)).to.not.contain('FAKE-auth-code')
+    })
+
+    it('redacts URL fields reached through a cycle and marks the cycle', () => {
+      const request: Record<string, unknown> = {
+        originalUrl: `/cb?code=${FAKE_CODE}`,
+      }
+      const meta: Record<string, unknown> = { request }
+      request.self = meta
+      request.again = request
+      const out = redactLogMetadata(meta) as Record<string, any>
+      expect(String(out.request.originalUrl)).to.not.contain('FAKE-auth-code')
+      expect(out.request.self).to.equal('[Circular]')
+      expect(out.request.again).to.equal('[Circular]')
+      expect(request.originalUrl).to.contain(FAKE_CODE)
+    })
+
+    it('redacts a shared, non-cyclic object each time it appears', () => {
+      const shared = { url: `/cb?code=${FAKE_CODE}` }
+      const out = redactLogMetadata({ first: shared, second: shared, list: [shared] })
+      const logged = JSON.stringify(out)
+      expect(logged).to.not.contain('FAKE-auth-code')
+      expect(logged).to.not.contain('Circular')
+    })
+
+    it('keeps an untouched cycle-free shared object as the same reference', () => {
+      const shared = { a: 1 }
+      const meta = { first: shared, second: shared }
+      expect(redactLogMetadata(meta)).to.equal(meta)
+    })
+
+    it('replaces plain containers past the depth limit instead of passing them through', () => {
+      let deep: Record<string, unknown> = {
+        url: `/cb?code=${FAKE_CODE}`,
+        authorization: 'Bearer fake-bearer',
+      }
+      for (let i = 0; i < 20; i++) deep = { child: deep }
+      const logged = JSON.stringify(redactLogMetadata({ deep, count: 3, name: 'x' }))
+      expect(logged).to.not.contain('FAKE-auth-code')
+      expect(logged).to.not.contain('fake-bearer')
+      expect(logged).to.contain('[Truncated]')
+      expect(logged).to.contain('"count":3')
+    })
+
+    it('leaves non-container values past the depth limit as they are', () => {
+      let deep: unknown = 'leaf-value'
+      for (let i = 0; i < 20; i++) deep = [deep]
+      const logged = JSON.stringify(redactLogMetadata({ deep }))
+      expect(logged).to.contain('[Truncated]')
+      expect(redactLogMetadata('leaf', 99)).to.equal('leaf')
+      expect(redactLogMetadata(42, 99)).to.equal(42)
     })
 
     it('does not touch a field merely named key', () => {

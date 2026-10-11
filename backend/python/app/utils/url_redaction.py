@@ -1,7 +1,7 @@
 """Keep credentials in URLs out of logs and error messages."""
 
 import re
-from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 # Kept in step with backend/nodejs/apps/src/libs/utils/log-redaction.utils.ts.
 # `state` is listed because the connector callback accepts exactly the
@@ -71,17 +71,56 @@ def redact_url(url: str) -> str:
     return urlunparse((parsed.scheme, netloc, parsed.path or "", "", "", ""))
 
 
-def _redact_pairs(segment: str) -> str:
+# How many layers of URL-inside-a-parameter (or percent-encoding) are opened.
+_MAX_NESTING = 3
+_ENCODED_URL_SYNTAX = re.compile(r"%(3d|3f|23|26)", re.IGNORECASE)
+
+
+def _redact_pairs(segment: str, depth: int = 0) -> str:
     pairs = parse_qsl(segment, keep_blank_values=True)
-    if not any(is_sensitive_query_key(key) for key, _ in pairs):
-        return segment
-    return urlencode(
-        [
-            (k.split("=", 1)[0], REDACTED) if is_sensitive_query_key(k) else (k, v)
-            for k, v in pairs
-        ],
-        safe="[]",
-    )
+    changed = False
+    out = []
+    for key, value in pairs:
+        if is_sensitive_query_key(key):
+            out.append((key.split("=", 1)[0], REDACTED))
+            changed = True
+            continue
+        inner = _redact_embedded(value, depth + 1)
+        changed = changed or inner != value
+        out.append((key, inner))
+    return urlencode(out, safe="[]") if changed else segment
+
+
+def _redact_embedded(value: str, depth: int) -> str:
+    """A parameter value can itself be a URL or query string (``returnTo``,
+    ``redirect_uri``), possibly encoded once more than the outer URL."""
+    if depth > _MAX_NESTING or not value:
+        return value
+    if "?" in value or "#" in value:
+        return _redact_segments(value, depth)
+    if "=" in value:
+        return _redact_pairs(value, depth)
+    if _ENCODED_URL_SYNTAX.search(value):
+        decoded = unquote(value)
+        if decoded != value:
+            inner = _redact_embedded(decoded, depth + 1)
+            if inner != decoded:
+                return inner
+    return value
+
+
+def _redact_segments(url: str, depth: int) -> str:
+    parts = re.split(r"([?#])", url)
+    if len(parts) == 1:
+        return url
+    try:
+        redacted = [parts[0]] + [
+            part if i % 2 == 0 else _redact_pairs(part, depth)
+            for i, part in enumerate(parts[1:])
+        ]
+    except ValueError:
+        return parts[0]
+    return "".join(redacted)
 
 
 def redact_sensitive_query_params(url: str) -> str:
@@ -90,18 +129,10 @@ def redact_sensitive_query_params(url: str) -> str:
 
     Every segment after a raw ``?`` or ``#`` is treated as query pairs: uvicorn's
     h11 protocol splits the request target only at ``?``, so a literal
-    ``#token=...`` sent by a client reaches the access log unparsed.
+    ``#token=...`` sent by a client reaches the access log unparsed. URLs
+    nested in parameter values are redacted the same way, a bounded number of
+    layers deep.
     """
     if not url:
         return url
-    parts = re.split(r"([?#])", url)
-    if len(parts) == 1:
-        return url
-    try:
-        redacted = [parts[0]] + [
-            part if i % 2 == 0 else _redact_pairs(part)
-            for i, part in enumerate(parts[1:])
-        ]
-    except ValueError:
-        return parts[0]
-    return "".join(redacted)
+    return _redact_segments(url, 0)

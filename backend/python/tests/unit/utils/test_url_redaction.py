@@ -78,3 +78,28 @@ class TestRedactSensitiveQueryParams:
 
     def test_percent_encoded_equals_in_the_name_is_redacted(self) -> None:
         assert "encoded-secret" not in redact_sensitive_query_params("/cb?page=1&code%3Dencoded-secret")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/login?returnTo=%2Fcb%3Fcode%3DSECRET",
+            "/login?returnTo=%2Fcb%3Fpage%3D1%26code%3DSECRET&x=1",
+            "/login?next=https%253A%252F%252Fapp.example.com%252Fcb%253Fcode%253DSECRET",
+            "/login?returnTo=https%3A%2F%2Fapp.example.com%2F%23access_token%3DSECRET",
+        ],
+    )
+    def test_codes_in_nested_url_parameters_are_redacted(self, url: str) -> None:
+        out = redact_sensitive_query_params(url)
+        assert "SECRET" not in out
+        assert "returnTo=" in out or "next=" in out
+
+    def test_nested_url_without_secrets_is_unchanged(self) -> None:
+        url = "/login?returnTo=%2Fdocs%3Fpage%3D2"
+        assert redact_sensitive_query_params(url) == url
+
+    def test_nesting_depth_is_bounded(self) -> None:
+        value = "code=SECRET"
+        for _ in range(10):
+            value = f"/x?next={value.replace('%', '%25').replace('=', '%3D').replace('?', '%3F').replace('&', '%26')}"
+        # Must terminate; the innermost layers are past the bound and stay opaque.
+        assert isinstance(redact_sensitive_query_params(value), str)
