@@ -6,6 +6,8 @@ from app.utils.stage_timer import timing_enabled, StageTimer
 
 
 class TestTimingEnabled:
+    """Use different values for PIPESHUB_CHAT_TIMING to check that timing_enabled returns the expected result """
+
     def test_env_is_unset(self, monkeypatch):
         monkeypatch.delenv("PIPESHUB_CHAT_TIMING", raising=False)
         assert timing_enabled() is True
@@ -32,6 +34,12 @@ class TestTimingEnabled:
 
 
 class TestStageTimerMark:
+    """
+        With the timer disabled, check that _marks remains empty.
+        With the timer enabled and the clock starting at 100.0, check that
+        each mark records a 250 ms interval and the correct stage name.
+    """
+
     def test_enabled_is_false_and_marks_is_empty(self):
         timer = StageTimer(enabled=False)
         timer.mark("parse")
@@ -51,6 +59,13 @@ class TestStageTimerMark:
             
 
 class TestStageTimerEmit:
+    """ 
+        With StageTimer disabled, check that emit does not call the logger.
+        With StageTimer enabled, check that logger.info is called once and
+        contains the stage name and total duration. Check that calling emit
+        again does not call the logger a second time.
+    """
+
     def test_logger_not_called(self):
         timer = StageTimer(enabled=False)
         mock_logger = MagicMock()
