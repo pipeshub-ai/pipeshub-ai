@@ -525,6 +525,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // Set while the record waits out its source's rate limit (epoch ms).
+    retryNotBefore?: number | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;

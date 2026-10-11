@@ -191,6 +191,8 @@ def _utc_time(at_ms: int, now_ms: int) -> str:
 
 
 def rate_limited_will_retry(source: str | None, retry_at_ms: int, now_ms: int) -> str:
+    # The UI shows a QUEUED record's reason only when it reads "is limiting how
+    # often PipesHub can read from it" (frontend/lib/utils/rate-limit-pause.ts).
     return (
         f"{source or 'The source'} is limiting how often PipesHub can read from it, so "
         f"indexing this file is paused. It will retry automatically after "
