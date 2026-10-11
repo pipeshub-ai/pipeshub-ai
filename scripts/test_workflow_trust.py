@@ -164,8 +164,30 @@ def _unguarded_secret_jobs(text: str) -> list[str]:
     return offenders
 
 
+# Environment values that resolve, on a pull_request event, to an environment
+# with required reviewers in the repository settings (integration-test-dev).
+# integration-test-daily has no reviewers, so it may only be picked for schedule.
+# Add to this only after checking the environment's protection rules.
+APPROVAL_GATED_ENVIRONMENTS = {
+    "integration-test-dev",
+    "${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}",
+}
+
+
+def _job_environment(block: str, key_indent: int) -> str | None:
+    """The job's environment name, from `environment: x` or its `name:` child."""
+    match = re.search(rf"^ {{{key_indent}}}environment:[ \t]*(.*)$", block, re.M)
+    if match is None:
+        return None
+    value = match.group(1).split(" #")[0].strip()
+    if value:
+        return value.strip("'\"")
+    child = re.search(rf"\A\n {{{key_indent + 1},}}name:[ \t]*(.*)$", block[match.end():], re.M)
+    return child.group(1).split(" #")[0].strip().strip("'\"") if child else None
+
+
 def _ungated_secret_jobs(text: str) -> list[str]:
-    """Jobs of a pull_request workflow that read secrets with no deployment environment to approve."""
+    """Jobs of a pull_request workflow that read secrets without waiting for an approval."""
     if not _PULL_REQUEST_TRIGGER.search(text):
         return []
     jobs_key = _JOBS_KEY.search(text)
@@ -174,7 +196,7 @@ def _ungated_secret_jobs(text: str) -> list[str]:
         name
         for name, (block, key_indent) in _jobs(text).items()
         if (workflow_level_secret or _SECRET.search(block) or _SECRETS_INHERIT.search(block))
-        and not re.search(rf"^ {{{key_indent}}}environment:", block, re.M)
+        and _job_environment(block, key_indent) not in APPROVAL_GATED_ENVIRONMENTS
     ]
 
 
@@ -245,6 +267,27 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "        environment: nope\n"
         )
         self.assertEqual(_ungated_secret_jobs(workflow), ["build"])
+
+    def test_an_environment_without_reviewers_is_not_a_gate(self) -> None:
+        workflow = (
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  daily:\n"
+            "    environment: integration-test-daily\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  named:\n"
+            "    environment:\n"
+            "      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  made_up:\n"
+            "    environment: unprotected\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+        )
+        self.assertEqual(_ungated_secret_jobs(workflow), ["daily", "made_up"])
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):
