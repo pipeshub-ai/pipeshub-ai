@@ -108,6 +108,14 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
+# One positive answer to "does the record still exist" covers the batches of
+# that record starting within this many seconds. Each check is a graph read on
+# the indexing loop (about 1 ms of driver CPU on Neo4j), and a large record
+# runs one per batch: 160 for 8,000 blocks remotely, 400 on local CPU. A record
+# deleted inside the window costs at most that much extra embedding; its
+# points are still removed by _cleanup_orphaned_embeddings_if_needed.
+_RECORD_PRESENCE_MAX_AGE_S = 2.0
+
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
 _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
@@ -523,6 +531,39 @@ def _storage_reconcile_enabled() -> bool:
         "true",
         "yes",
     )
+
+
+class _RecordPresence:
+    """Whether one record still exists, shared by the batches that index it.
+
+    A positive answer is reused for ``max_age_s`` from when its read began, and
+    batches that start while a read is in flight wait for it instead of issuing
+    their own. A negative answer is never reused, so each later batch asks again
+    exactly as it did before this was shared.
+    """
+
+    def __init__(
+        self, graph_provider: IGraphDBProvider, record_id: str, *, max_age_s: float
+    ) -> None:
+        self._graph_provider = graph_provider
+        self._record_id = record_id
+        self._max_age_s = max_age_s
+        self._lock = asyncio.Lock()
+        self._present_since: float | None = None
+
+    async def check(self) -> bool:
+        async with self._lock:
+            started = time.monotonic()
+            if (
+                self._present_since is not None
+                and started - self._present_since < self._max_age_s
+            ):
+                return True
+            record_doc = await self._graph_provider.get_document(
+                self._record_id, CollectionNames.RECORDS.value
+            )
+            self._present_since = started if record_doc is not None else None
+            return record_doc is not None
 
 
 class VectorStore(Transformer):
@@ -1385,18 +1426,21 @@ class VectorStore(Transformer):
         ) from last_error
 
     async def _embed_and_upsert_documents(
-        self, documents: List[Document], record_id: str, collection_name: str
+        self,
+        documents: List[Document],
+        record_id: str,
+        collection_name: str,
+        presence: Optional["_RecordPresence"] = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
         Guard: aborts if the record was deleted mid-flight (race condition fix
-        restored from commit 839a29499).
+        restored from commit 839a29499). ``presence`` shares that check across
+        one record's batches.
         """
-        # Record-existence guard before upsert
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
-        if record_doc is None:
+        if presence is None:
+            presence = _RecordPresence(self.graph_provider, record_id, max_age_s=0.0)
+        if not await presence.check():
             self.logger.warning(
                 f"Record {record_id} not found before upsert — skipping batch"
             )
@@ -1438,9 +1482,15 @@ class VectorStore(Transformer):
             else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
         )
 
+        presence = _RecordPresence(
+            self.graph_provider, record_id, max_age_s=_RECORD_PRESENCE_MAX_AGE_S
+        )
+
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
-                await self._embed_and_upsert_documents(batch, record_id, collection_name)
+                await self._embed_and_upsert_documents(
+                    batch, record_id, collection_name, presence
+                )
                 return len(batch)
             except Exception as e:
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")

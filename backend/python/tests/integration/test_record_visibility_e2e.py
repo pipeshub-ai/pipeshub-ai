@@ -422,6 +422,13 @@ async def _by_virtual_record_id(w: _World, visibility: RecordVisibility) -> set[
     ))
 
 
+async def _vrids_in_use(w: _World, visibility: RecordVisibility) -> set[str]:
+    names = ("live", "trashed", "live_failed", "trashed_failed")
+    by_vrid = {w.vrids[n]: w.ids[n] for n in names}
+    got = await w.graph.get_virtual_record_ids_in_use([*by_vrid, "no-such-vrid"], visibility=visibility)
+    return {by_vrid[vrid] for vrid in got}
+
+
 # method -> (probe, live names, trashed names) for the same seed
 async def _by_revision(w: _World, visibility: RecordVisibility) -> set[str]:
     found = set()
@@ -445,6 +452,9 @@ PARAM_PROBES = {
     ),
     "get_records_by_record_ids": (_by_record_ids, {"live"}, {"trashed"}),
     "get_records_by_virtual_record_id": (_by_virtual_record_id, {"live_shared"}, {"trashed_shared"}),
+    "get_virtual_record_ids_in_use": (
+        _vrids_in_use, {"live", "live_failed"}, {"trashed", "trashed_failed"},
+    ),
     "get_record_by_external_revision_id": (_by_revision, {"live"}, {"trashed"}),
 }
 

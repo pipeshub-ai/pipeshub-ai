@@ -24527,6 +24527,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 holders.setdefault(vid, []).append(row)
         return holders
 
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.get_virtual_record_ids_in_use`."""
+        wanted = [v for v in dict.fromkeys(virtual_record_ids) if isinstance(v, str) and v]
+        if not wanted:
+            return set()
+        query = f"""
+        FOR vrid IN @virtual_record_ids
+            LET held = FIRST(
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.virtualRecordId == vrid
+                    AND {aql_record_visibility("record", visibility)}
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER held != null
+            RETURN vrid
+        """
+        results = await self.http_client.execute_aql(
+            query, {"virtual_record_ids": wanted}, transaction
+        )
+        return {vrid for vrid in results or [] if vrid}
+
     async def get_records_by_virtual_record_id(
         self,
         virtual_record_id: str,
