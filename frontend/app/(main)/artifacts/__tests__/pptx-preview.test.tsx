@@ -37,6 +37,7 @@ const api = vi.hoisted(() => ({
   list: vi.fn(),
   listVersions: vi.fn(),
   streamRecord: vi.fn(),
+  streamDownloadRecord: vi.fn(),
 }));
 
 vi.mock('../api', () => ({
@@ -50,14 +51,23 @@ vi.mock('../api', () => ({
 vi.mock('@/app/(main)/knowledge-base/api', () => ({
   KnowledgeBaseApi: {
     streamRecord: api.streamRecord,
-    streamDownloadRecord: vi.fn(),
+    streamDownloadRecord: api.streamDownloadRecord,
   },
 }));
 
 vi.mock('@/app/components/file-preview', () => ({
-  FilePreviewSidebar: ({ file, isLoading }: { file: { type: string }; isLoading?: boolean }) => (
+  FilePreviewSidebar: ({
+    file,
+    isLoading,
+    onDownload,
+  }: {
+    file: { type: string };
+    isLoading?: boolean;
+    onDownload?: () => void;
+  }) => (
     <section aria-label="File preview">
       {isLoading ? <p>Loading preview</p> : <p>preview-type:{file.type}</p>}
+      <button type="button" onClick={onDownload}>Download preview</button>
     </section>
   ),
 }));
@@ -129,6 +139,10 @@ describe('artifact pptx preview', () => {
       });
     });
     await screen.findByText('preview-type:application/pdf');
+    fireEvent.click(screen.getByRole('button', { name: 'Download preview' }));
+    await waitFor(() => {
+      expect(api.streamDownloadRecord).toHaveBeenCalledWith('art-1', 'deck.pptx', { version: 2 });
+    });
   });
 
   it('converts a presentation named without an extension when the MIME is PowerPoint', async () => {

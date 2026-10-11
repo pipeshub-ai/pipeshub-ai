@@ -205,10 +205,10 @@ function ArtifactsPageContent() {
     await loadPreview(previewItem, version);
   }, [loadPreview, previewItem]);
 
-  const handleDownload = useCallback(async (item: ArtifactListItem) => {
+  const handleDownload = useCallback(async (item: ArtifactListItem, version?: number) => {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.artifactId, item.name, {
-        version: item.version,
+        version: version ?? item.version,
       });
     } catch {
       toast.error(t('artifacts.downloadFailed', { defaultValue: "Couldn't download this file" }));
@@ -265,6 +265,9 @@ function ArtifactsPageContent() {
           source="artifacts"
           hideFileDetails
           showDownload
+          onDownload={() => {
+            void handleDownload(previewItem, previewVersion);
+          }}
           file={{
             id: previewItem.artifactId,
             name: previewItem.name,
