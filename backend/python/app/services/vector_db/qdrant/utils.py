@@ -1,6 +1,7 @@
 from typing import Any, Dict, List
 
 from qdrant_client.http.models import (  # type: ignore
+    Batch,
     FieldCondition,
     Filter,
     Fusion,
@@ -8,7 +9,6 @@ from qdrant_client.http.models import (  # type: ignore
     MatchAny,
     MatchValue,
     MinShould,
-    PointStruct,
     Prefetch,
     QueryRequest,
     SparseVector as QdrantSparseVector,
@@ -142,16 +142,52 @@ class QdrantUtils:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def vector_point_to_qdrant(point: VectorPoint) -> PointStruct:
-        vector: Dict[str, Any] = {}
-        if point.dense_vector is not None:
-            vector["dense"] = point.dense_vector
-        if point.sparse_vector is not None:
-            vector["sparse"] = QdrantSparseVector(
-                indices=point.sparse_vector.indices,
-                values=point.sparse_vector.values,
+    def vector_points_to_batches(points: list[VectorPoint]) -> list[Batch]:
+        """Column-oriented ``Batch`` es for one upsert call, in input order.
+
+        ``AsyncQdrantClient.upsert`` walks every value of every
+        ``PointStruct`` looking for objects that need server-side inference
+        (pure Python, ~2 ms per 1536-dim point, on the caller's event loop);
+        a ``Batch`` is checked in well under a millisecond, and the request
+        sent is the same. A ``Batch`` names the same vectors for every point,
+        so points with different vector names (an image point has no sparse
+        vector) go in separate batches.
+        """
+        batches: list[Batch] = []
+        group: list[VectorPoint] = []
+        group_key: tuple[bool, bool] | None = None
+
+        def flush() -> None:
+            if not group:
+                return
+            vectors: dict[str, Any] = {}
+            if group[0].dense_vector is not None:
+                vectors["dense"] = [p.dense_vector for p in group]
+            if group[0].sparse_vector is not None:
+                vectors["sparse"] = [
+                    QdrantSparseVector(
+                        indices=p.sparse_vector.indices,
+                        values=p.sparse_vector.values,
+                    )
+                    for p in group
+                ]
+            batches.append(
+                Batch(
+                    ids=[p.id for p in group],
+                    vectors=vectors,
+                    payloads=[p.payload for p in group],
+                )
             )
-        return PointStruct(id=point.id, vector=vector, payload=point.payload)
+            group.clear()
+
+        for point in points:
+            key = (point.dense_vector is not None, point.sparse_vector is not None)
+            if key != group_key:
+                flush()
+                group_key = key
+            group.append(point)
+        flush()
+        return batches
 
     # ------------------------------------------------------------------
     # Search request conversion

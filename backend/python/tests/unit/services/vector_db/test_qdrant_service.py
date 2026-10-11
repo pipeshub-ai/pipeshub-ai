@@ -27,6 +27,7 @@ import pytest
 pytest.importorskip("qdrant_client", reason="qdrant_client not installed")
 
 from qdrant_client.http.models import (
+    Batch,
     KeywordIndexParams,
 )
 
@@ -562,6 +563,75 @@ class TestUpsertPoints:
         points = [VectorPoint(id="1", dense_vector=[0.1], payload={})]
         with pytest.raises(RuntimeError, match="not connected"):
             await service.upsert_points("col", points)
+
+    @pytest.mark.asyncio
+    async def test_sends_one_column_batch_per_upsert(self, connected_service) -> None:
+        points = [
+            VectorPoint(
+                id=f"id-{i}",
+                dense_vector=[float(i)] * 4,
+                sparse_vector=SparseVector(indices=[i, 100 + i], values=[1.0, 0.5]),
+                payload={"n": i},
+            )
+            for i in range(3)
+        ]
+        await connected_service.upsert_points("col", points)
+
+        batch = connected_service.client.upsert.await_args.kwargs["points"]
+        assert isinstance(batch, Batch)
+        assert batch.ids == ["id-0", "id-1", "id-2"]
+        assert batch.vectors["dense"] == [[0.0] * 4, [1.0] * 4, [2.0] * 4]
+        assert [v.indices for v in batch.vectors["sparse"]] == [[0, 100], [1, 101], [2, 102]]
+        assert batch.payloads == [{"n": 0}, {"n": 1}, {"n": 2}]
+
+    @pytest.mark.asyncio
+    async def test_points_with_different_vectors_go_in_separate_batches(self, connected_service) -> None:
+        sparse = SparseVector(indices=[1], values=[1.0])
+        points = [
+            VectorPoint(id="a", dense_vector=[0.1], sparse_vector=sparse, payload={}),
+            VectorPoint(id="img", dense_vector=[0.2], payload={}),
+            VectorPoint(id="b", dense_vector=[0.3], sparse_vector=sparse, payload={}),
+        ]
+        await connected_service.upsert_points("col", points)
+
+        batches = [call.kwargs["points"] for call in connected_service.client.upsert.await_args_list]
+        assert [b.ids for b in batches] == [["a"], ["img"], ["b"]]
+        assert [sorted(b.vectors) for b in batches] == [["dense", "sparse"], ["dense"], ["dense", "sparse"]]
+
+
+@pytest.mark.asyncio
+async def test_batches_store_the_same_points_as_point_structs() -> None:
+    """The Batch form is a transport change only: a real (in-memory) Qdrant
+    ends up with the same ids, dense and sparse vectors and payloads."""
+    from qdrant_client import AsyncQdrantClient
+    from qdrant_client.http import models as qm
+
+    from app.services.vector_db.qdrant.utils import QdrantUtils
+
+    client = AsyncQdrantClient(location=":memory:")
+    await client.create_collection(
+        "col",
+        vectors_config={"dense": qm.VectorParams(size=3, distance=qm.Distance.COSINE)},
+        sparse_vectors_config={"sparse": qm.SparseVectorParams()},
+    )
+    ids = ["5c6f2f6e-3f0c-4a51-9a39-6d0f6e1b8a01", "5c6f2f6e-3f0c-4a51-9a39-6d0f6e1b8a02"]
+    points = [
+        VectorPoint(
+            id=ids[0], dense_vector=[1.0, 0.0, 0.0],
+            sparse_vector=SparseVector(indices=[3, 9], values=[0.5, 1.5]), payload={"k": "a"},
+        ),
+        VectorPoint(id=ids[1], dense_vector=[0.0, 1.0, 0.0], payload={"k": "image"}),
+    ]
+    for batch in QdrantUtils.vector_points_to_batches(points):
+        await client.upsert("col", points=batch)
+
+    stored = {p.id: p for p in await client.retrieve("col", ids=ids, with_vectors=True)}
+    assert stored[ids[0]].payload == {"k": "a"}
+    assert stored[ids[0]].vector["dense"] == pytest.approx([1.0, 0.0, 0.0])
+    assert stored[ids[0]].vector["sparse"].indices == [3, 9]
+    assert stored[ids[0]].vector["sparse"].values == pytest.approx([0.5, 1.5])
+    assert stored[ids[1]].payload == {"k": "image"}
+    assert "sparse" not in stored[ids[1]].vector
 
 
 # ---------------------------------------------------------------------------
