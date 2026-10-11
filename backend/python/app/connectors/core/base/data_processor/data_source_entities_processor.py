@@ -1593,6 +1593,12 @@ class DataSourceEntitiesProcessor:
                         # re-sync re-embed the entire already-indexed set, and
                         # clobbered AUTO_INDEX_OFF on manually-indexed records.
                         record.indexing_status = ProgressStatus.COMPLETED.value
+                        # Indexing owns these fields and, with nothing to re-index,
+                        # may never write them again: left at the model defaults the
+                        # upsert would erase them. They come from this row, the one
+                        # whose status decides the skip. A reindexed restore starts clean.
+                        if not reindex_restored:
+                            self._preserve_indexing_state(record, existing_record)
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).

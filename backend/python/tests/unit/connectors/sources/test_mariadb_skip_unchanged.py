@@ -150,14 +150,30 @@ class Harness:
         return False
 
     def index_everything(self) -> None:
-        """Leave each stored record as a finished indexing run does."""
         for r in self.stored.values():
-            r.indexing_status = ProgressStatus.COMPLETED.value
-            r.parsing_status = ProgressStatus.COMPLETED.value
-            r.extraction_status = ProgressStatus.COMPLETED.value
-            r.md5_hash = f"md5-{r.external_record_id}"
-            r.size_in_bytes = 2048
-            r.storage_document_id = f"doc-{r.external_record_id}"
+            self.finish_indexing(r)
+
+    @staticmethod
+    def finish_indexing(r: Record) -> None:
+        """Leave a stored record as a finished indexing run does."""
+        r.indexing_status = ProgressStatus.COMPLETED.value
+        r.parsing_status = ProgressStatus.COMPLETED.value
+        r.extraction_status = ProgressStatus.COMPLETED.value
+        r.md5_hash = f"md5-{r.external_record_id}"
+        r.size_in_bytes = 2048
+        r.storage_document_id = f"doc-{r.external_record_id}"
+
+    def while_fingerprinting(self, table: str, change) -> None:
+        """Apply ``change`` to the stored record after the connector has read it, before the save."""
+        fingerprint = self.connector._table_fingerprint
+
+        async def _fingerprint(database, name):
+            result = await fingerprint(database, name)
+            if name == table:
+                change(self.record(table))
+            return result
+
+        self.connector._table_fingerprint = _fingerprint
 
     def record(self, table: str) -> Record:
         return self.stored[f"{DB}.{table}"]
@@ -199,6 +215,34 @@ class TestFullSyncSkipsUnchangedTables:
         assert after.md5_hash == before.md5_hash
         assert after.size_in_bytes == before.size_in_bytes
         assert after.storage_document_id == before.storage_document_id
+
+    @pytest.mark.asyncio
+    async def test_indexing_that_finishes_during_the_sync_is_kept(self):
+        h = Harness()
+        h.source.add("orders", [{"id": 1, "name": "a"}])
+        await h.full_sync()
+        h.record("orders").indexing_status = ProgressStatus.QUEUED.value
+        h.while_fingerprinting("orders", h.finish_indexing)
+
+        assert await h.full_sync() == []
+        after = h.record("orders")
+        assert after.indexing_status == ProgressStatus.COMPLETED.value
+        assert after.parsing_status == ProgressStatus.COMPLETED.value
+        assert after.extraction_status == ProgressStatus.COMPLETED.value
+        assert after.md5_hash == "md5-shop.orders"
+        assert after.storage_document_id == "doc-shop.orders"
+
+    @pytest.mark.asyncio
+    async def test_reindex_that_starts_during_the_sync_is_not_marked_completed(self):
+        h = await _indexed_harness()
+
+        def _reindex_started(r: Record) -> None:
+            r.indexing_status = ProgressStatus.IN_PROGRESS.value
+
+        h.while_fingerprinting("orders", _reindex_started)
+        published = await h.full_sync()
+        assert h.record("orders").indexing_status != ProgressStatus.COMPLETED.value
+        assert published == [("newRecord", h.record("orders").id)]
 
     @pytest.mark.asyncio
     async def test_changed_rows_are_queued_again(self):
