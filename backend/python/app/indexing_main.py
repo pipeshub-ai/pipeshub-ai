@@ -64,6 +64,7 @@ from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -721,6 +722,8 @@ async def _upkeep_lanes(
 # because orphans are rare and every page costs a graph read; the cursor below
 # carries the position forward so successive ticks cover the rest.
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
+# Between pages, while the indexing loop is busy (see LoopShare).
+ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor = 0
 
 
@@ -755,6 +758,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     swept = 0
     offset = _orphan_sweep_cursor
     pages_scanned = 0
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
         page = await graph_provider.get_documents_paginated(
@@ -813,6 +817,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+        await pacer.pause()
 
         if len(page) < page_size:
             offset = 0
