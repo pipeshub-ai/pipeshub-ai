@@ -143,7 +143,7 @@ class QdrantUtils:
 
     @staticmethod
     def vector_points_to_batches(points: list[VectorPoint]) -> list[Batch]:
-        """Column-oriented ``Batch`` es for one upsert call, in input order.
+        """Column-oriented ``Batch`` es for one upsert call: one per vector set.
 
         ``AsyncQdrantClient.upsert`` walks every value of every
         ``PointStruct`` looking for objects that need server-side inference
@@ -151,13 +151,14 @@ class QdrantUtils:
         a ``Batch`` is checked in well under a millisecond, and the request
         sent is the same. A ``Batch`` names the same vectors for every point,
         so points with different vector names (an image point has no sparse
-        vector) go in separate batches.
+        vector) go in separate batches. Points are grouped by vector set, not
+        by run, so text and image points that alternate still make at most
+        one batch per set; order within a set is kept. If an id appears more
+        than once, runs are kept instead, so the later write still wins.
         """
         batches: list[Batch] = []
-        group: list[VectorPoint] = []
-        group_key: tuple[bool, bool] | None = None
 
-        def flush() -> None:
+        def flush(group: list[VectorPoint]) -> None:
             if not group:
                 return
             vectors: dict[str, Any] = {}
@@ -178,15 +179,25 @@ class QdrantUtils:
                     payloads=[p.payload for p in group],
                 )
             )
-            group.clear()
 
+        def vector_set(point: VectorPoint) -> tuple[bool, bool]:
+            return (point.dense_vector is not None, point.sparse_vector is not None)
+
+        if len({p.id for p in points}) == len(points):
+            groups: dict[tuple[bool, bool], list[VectorPoint]] = {}
+            for point in points:
+                groups.setdefault(vector_set(point), []).append(point)
+            for group in groups.values():
+                flush(group)
+            return batches
+
+        run: list[VectorPoint] = []
         for point in points:
-            key = (point.dense_vector is not None, point.sparse_vector is not None)
-            if key != group_key:
-                flush()
-                group_key = key
-            group.append(point)
-        flush()
+            if run and vector_set(point) != vector_set(run[0]):
+                flush(run)
+                run = []
+            run.append(point)
+        flush(run)
         return batches
 
     # ------------------------------------------------------------------

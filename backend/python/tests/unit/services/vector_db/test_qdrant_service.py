@@ -595,8 +595,34 @@ class TestUpsertPoints:
         await connected_service.upsert_points("col", points)
 
         batches = [call.kwargs["points"] for call in connected_service.client.upsert.await_args_list]
-        assert [b.ids for b in batches] == [["a"], ["img"], ["b"]]
-        assert [sorted(b.vectors) for b in batches] == [["dense", "sparse"], ["dense"], ["dense", "sparse"]]
+        assert [b.ids for b in batches] == [["a", "b"], ["img"]]
+        assert [sorted(b.vectors) for b in batches] == [["dense", "sparse"], ["dense"]]
+
+    @pytest.mark.asyncio
+    async def test_alternating_vector_sets_make_one_batch_per_set(self, connected_service) -> None:
+        sparse = SparseVector(indices=[1], values=[1.0])
+        points = []
+        for i in range(250):
+            points.append(VectorPoint(id=f"t{i}", dense_vector=[0.1], sparse_vector=sparse, payload={}))
+            points.append(VectorPoint(id=f"i{i}", dense_vector=[0.2], payload={}))
+        await connected_service.upsert_points("col", points)
+
+        batches = [call.kwargs["points"] for call in connected_service.client.upsert.await_args_list]
+        assert [len(b.ids) for b in batches] == [250, 250]
+        assert batches[0].ids == [f"t{i}" for i in range(250)]
+
+    def test_a_repeated_id_keeps_the_later_write_last(self) -> None:
+        from app.services.vector_db.qdrant.utils import QdrantUtils
+
+        sparse = SparseVector(indices=[1], values=[1.0])
+        points = [
+            VectorPoint(id="x", dense_vector=[0.1], sparse_vector=sparse, payload={"v": 1}),
+            VectorPoint(id="y", dense_vector=[0.2], payload={}),
+            VectorPoint(id="x", dense_vector=[0.3], sparse_vector=sparse, payload={"v": 2}),
+        ]
+        batches = QdrantUtils.vector_points_to_batches(points)
+        assert [b.ids for b in batches] == [["x"], ["y"], ["x"]]
+        assert batches[-1].payloads == [{"v": 2}]
 
 
 @pytest.mark.asyncio
