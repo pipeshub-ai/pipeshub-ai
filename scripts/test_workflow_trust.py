@@ -42,7 +42,7 @@ _SECRET = re.compile(
 PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
 
 _PULL_REQUEST_TRIGGER = _trigger("pull_request")
-_SECRETS_INHERIT = re.compile(r"^\s+secrets:\s*inherit\s*$", re.M)
+_SECRETS_INHERIT = re.compile(r"^\s+secrets:[ \t]*inherit[ \t]*(?:#.*)?$", re.M)
 _FORK_GUARDS = {
     "github.event.pull_request.head.repo.full_name == github.repository",
     "github.repository == github.event.pull_request.head.repo.full_name",
@@ -55,7 +55,12 @@ _JOBS_KEY = re.compile(r"^jobs:\s*$", re.M)
 
 
 def _text(path: Path) -> str:
-    return path.read_text(encoding="utf-8")
+    return _lf(path.read_text(encoding="utf-8"))
+
+
+def _lf(text: str) -> str:
+    """GitHub accepts CRLF workflows; the line patterns here expect LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _jobs(text: str) -> dict[str, tuple[str, int]]:
@@ -71,13 +76,15 @@ def _jobs(text: str) -> dict[str, tuple[str, int]]:
     if first_key is None:
         return {}
     indent = len(first_key.group(1))
-    header = re.compile(rf"^ {{{indent}}}([A-Za-z0-9_-]+):(?:[ \t]+#[^\r\n]*)?[ \t]*$", re.M)
+    # Every key at job indent starts a job. One that is not a plain `id:` (quoted,
+    # escaped, `? id`) keeps its raw text as the name, so it is still checked.
+    header = re.compile(rf"^ {{{indent}}}(?:([A-Za-z0-9_-]+):(?:[ \t]+#[^\n]*)?[ \t]*|([^\s#][^\n]*))$", re.M)
     headers = list(header.finditer(body))
     jobs = {}
     for i, h in enumerate(headers):
         block = body[h.end(): headers[i + 1].start() if i + 1 < len(headers) else len(body)]
         first_job_key = re.search(r"^( +)[^\s#]", block, re.M)
-        jobs[h.group(1)] = (block, len(first_job_key.group(1)) if first_job_key else indent + 2)
+        jobs[h.group(1) or h.group(2)] = (block, len(first_job_key.group(1)) if first_job_key else indent + 2)
     return jobs
 
 
@@ -148,6 +155,7 @@ def _admits_fork_pull_requests(expr: str) -> bool:
 
 def _unguarded_secret_jobs(text: str) -> list[str]:
     """Jobs of a pull_request workflow that can read secrets without their own fork guard."""
+    text = _lf(text)
     if not _PULL_REQUEST_TRIGGER.search(text):
         return []
     jobs_key = _JOBS_KEY.search(text)
@@ -213,6 +221,7 @@ def _job_environment(block: str, key_indent: int) -> str | None:
 
 def _ungated_secret_jobs(text: str) -> list[str]:
     """Jobs of a pull_request workflow that read secrets without waiting for an approval."""
+    text = _lf(text)
     if not _PULL_REQUEST_TRIGGER.search(text):
         return []
     jobs_key = _JOBS_KEY.search(text)
@@ -351,6 +360,31 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 "trailing_nbsp", "leading_nbsp", "folded", "folded_name",
             ],
         )
+
+    def test_jobs_the_header_pattern_misses_are_still_checked(self) -> None:
+        workflow = (
+            "on:\n"
+            "  pull_request:\n"
+            "jobs:\n"
+            "  \"build\":\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  ? lint\n"
+            "  :\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  leak:\n"
+            "    uses: ./.github/workflows/called.yml\n"
+            "    secrets: inherit # pass them\n"
+            "  gated:\n"
+            "    environment: integration-test-dev\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+        )
+        # `? lint` puts its value on the `:` line, so that line carries the secret read.
+        expected = ['"build":', ":", "leak"]
+        self.assertEqual(_ungated_secret_jobs(workflow), expected)
+        self.assertEqual(_ungated_secret_jobs(workflow.replace("\n", "\r\n")), expected)
 
 
 class TestUnguardedSecretJobs(unittest.TestCase):
