@@ -422,3 +422,62 @@ class TestInheritProbeFailsLoudly:
         assert tx.get_edge.await_args.kwargs == {"raise_on_error": True}
         tx.link_record_to_group.assert_not_called()
         assert narrowed == set()
+
+
+def _deadlock() -> Exception:
+    class TransientError(Exception):
+        pass
+
+    return TransientError("{neo4j_code: Neo.TransientError.Transaction.DeadlockDetected}")
+
+
+class TestDropSurvivesARetriedWrite:
+    """Without explicit transactions the inherit-edge delete commits on its own.
+    A later step that deadlocks reruns the method, the retry finds no edge, and
+    only the failed attempt knew the access had gone."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock()
+        )
+
+    def _attempts(self, proc, tx) -> AsyncMock:
+        edge = {"_from": "records/rec-1"}
+        tx.get_edge = AsyncMock(side_effect=[edge, None])
+        calls = {"n": 0}
+
+        async def process(record, permissions, tx_store, moved=None, **kwargs) -> tuple[None, list]:
+            calls["n"] += 1
+            record.inherit_permissions = False
+            await proc._link_record_to_group(
+                record, "rg-key", tx_store, _existing(), kwargs["narrowed_connectors"]
+            )
+            if calls["n"] == 1:
+                raise _deadlock()
+            return None, []
+
+        return AsyncMock(side_effect=process)
+
+    async def test_content_update(self, notify, events) -> None:
+        tx = AsyncMock()
+        proc = _processor(tx, events)
+
+        with patch.object(proc, "_process_record", new=self._attempts(proc, tx)):
+            await proc.on_record_content_update(_record())
+
+        assert tx.link_record_to_group.await_count == 2
+        notify.assert_awaited_once_with(CONNECTOR, ORG)
+        assert events.index("commit") < events.index(("drop", CONNECTOR, ORG))
+
+    async def test_new_records(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        proc = _processor(tx, events)
+
+        with patch.object(proc, "_process_record", new=self._attempts(proc, tx)), patch.object(
+            proc, "_snapshot_old_paths", new=AsyncMock(return_value={})
+        ):
+            await proc.on_new_records([(_record(), [])])
+
+        notify.assert_awaited_once_with(CONNECTOR, ORG)

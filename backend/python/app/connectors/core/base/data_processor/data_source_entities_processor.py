@@ -1,4 +1,6 @@
+import contextlib
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -671,6 +673,17 @@ class DataSourceEntitiesProcessor:
         processor's own org is only the fallback."""
         for connector_id in {c for c in connector_ids if c}:
             await notify_connector_permissions_changed(connector_id, org_id or self.org_id or None)
+
+    @contextlib.asynccontextmanager
+    async def _drop_access_after(self, connector_ids: set[str]) -> AsyncIterator[None]:
+        """Drop ``connector_ids`` once the transaction inside this has ended,
+        even when it raised. On Neo4j without explicit transactions an edge
+        delete commits on its own, so a write that failed after it has already
+        taken the access away, and the retry finds no edge left to report."""
+        try:
+            yield
+        finally:
+            await self._access_changed(connector_ids)
 
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]
@@ -1859,7 +1872,7 @@ class DataSourceEntitiesProcessor:
             narrowed_connectors: set[str] = set()
             all_pending_moves: list[PendingMove] = []
 
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
                 old_path_map = await self._snapshot_old_paths(
                     records_with_permissions, tx_store,
                 )
@@ -1941,7 +1954,6 @@ class DataSourceEntitiesProcessor:
                     [r.id for r, ok in zip(publishable, acked) if ok]
                 )
 
-            await self._access_changed(narrowed_connectors)
             await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
@@ -1955,7 +1967,7 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
-        async with self.data_store_provider.transaction() as tx_store:
+        async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
                 record, [], tx_store, moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
@@ -1968,7 +1980,6 @@ class DataSourceEntitiesProcessor:
             elif processed_record is not None:
                 should_publish = True
 
-        await self._access_changed(narrowed_connectors)
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
 
@@ -2032,7 +2043,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
-        async with self.data_store_provider.transaction() as tx_store:
+        async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record, process_moves = await self._process_record(
@@ -2044,7 +2055,6 @@ class DataSourceEntitiesProcessor:
                 self._preserve_indexing_state(processed_record, existing_record)
                 await tx_store.batch_upsert_records([processed_record])
 
-        await self._access_changed(narrowed_connectors)
         await self._flush_pending_blob_moves(pending_moves)
 
         # This path deliberately publishes no indexing event and preserves the
@@ -2092,7 +2102,7 @@ class DataSourceEntitiesProcessor:
             )
 
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
                 # Snapshot old paths BEFORE any mutations in the loop.
                 # Sequential: an ArangoDB stream transaction does not support
                 # overlapping requests on the same transaction id.
@@ -2413,7 +2423,6 @@ class DataSourceEntitiesProcessor:
                     ],
                 )
 
-            await self._access_changed(narrowed_connectors)
             await self._publish_membership_sync(membership_vrids)
 
             if duplicate_delete_payloads:
