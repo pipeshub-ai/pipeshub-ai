@@ -2582,7 +2582,7 @@ class TestRecordPresenceAcrossBatches:
     loop on Neo4j, and a large record runs one batch per 50 documents."""
 
     @staticmethod
-    def _store(get_document):
+    def _store(get_document: AsyncMock) -> object:
         vs = _make_vectorstore()
         vs.embedding_provider = "openai"  # concurrent remote batches
         vs.graph_provider.get_document = get_document
@@ -2593,7 +2593,7 @@ class TestRecordPresenceAcrossBatches:
         return vs
 
     @staticmethod
-    def _docs(count):
+    def _docs(count: int) -> list:
         from langchain_core.documents import Document
 
         return [Document(page_content=f"block {i}", metadata={}) for i in range(count)]
