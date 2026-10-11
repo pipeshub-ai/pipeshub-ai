@@ -14,11 +14,16 @@ Usage::
 from __future__ import annotations
 
 import logging
+import math
 import os
 from typing import TYPE_CHECKING, Any
 
-from app.config.constants.service import TokenScopes
+from app.config.constants.service import TokenScopes, config_node_constants
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.transformers.document_extraction import (
+    DEFAULT_CONTEXT_LENGTH,
+    classify_request_blocks,
+)
 from app.services.base_client import BaseServiceClient, ServiceCallError
 from app.services.messaging.backpressure import get_default_backpressure_coordinator
 
@@ -75,8 +80,13 @@ class ExtractionClient(BaseServiceClient):
         document).  Raises :class:`ExtractionClientError` on explicit failures.
         Raises :class:`ServiceCallError` on connection problems.
         """
+        context_length_ceiling = await self._context_length_ceiling()
         payload = {
-            "block_container": block_container.model_dump(mode="json"),
+            "block_container": {
+                "blocks": classify_request_blocks(
+                    block_container.blocks, context_length_ceiling
+                ),
+            },
             "org_id": org_id,
             "departments": departments or [],
             "record_name": record_name,
@@ -101,3 +111,40 @@ class ExtractionClient(BaseServiceClient):
             return None
 
         return SemanticMetadata(**classification_dict)
+
+    async def _context_length_ceiling(self) -> int | float | None:
+        """The largest context length the service could classify with.
+
+        The service picks its model per call (``get_llm_for_role(...,
+        "indexing")``) and reads ``contextLength`` off that model's entry,
+        defaulting to DEFAULT_CONTEXT_LENGTH. Every entry it could pick is in
+        the AI-models config, so their maximum bounds its budget whichever it
+        picks. ``None`` (send every block) when that cannot be read.
+        """
+        if self._config_service is None:
+            return None
+        try:
+            ai_models = await self._config_service.get_config(
+                config_node_constants.AI_MODELS.value, use_cache=True
+            )
+        except Exception:  # trimming is an optimisation; send every block
+            return None
+        if not isinstance(ai_models, dict):
+            return None
+        ceiling: int | float | None = None
+        for entries in ai_models.values():
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                value = entry.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+                # The service would fail on a non-number; send it everything.
+                if (
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(value)
+                ):
+                    return None
+                ceiling = value if ceiling is None else max(ceiling, value)
+        return ceiling
