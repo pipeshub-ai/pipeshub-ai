@@ -1213,6 +1213,7 @@ class TestGetGeneratorModel:
         Completions."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("gpt-5")
+        config["configuration"].pop("endpoint", None)
         config["isReasoning"] = True
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort="high")
         call_kwargs = mock_cls.call_args.kwargs
@@ -1238,6 +1239,7 @@ class TestGetGeneratorModel:
         deferring to the provider's own default."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("gpt-5")
+        config["configuration"].pop("endpoint", None)
         config["isReasoning"] = True
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort=None)
         call_kwargs = mock_cls.call_args.kwargs

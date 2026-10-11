@@ -10,7 +10,7 @@ import re
 import socket
 from enum import Enum
 from operator import attrgetter
-from typing import TYPE_CHECKING, Any, Dict, TypeVar
+from typing import TYPE_CHECKING, Any, Dict, Mapping, TypeVar
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -341,6 +341,7 @@ class LLMProvider(Enum):
 class ImageGenerationProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
@@ -348,6 +349,7 @@ class ImageGenerationProvider(Enum):
 class TTSProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
@@ -355,6 +357,7 @@ class TTSProvider(Enum):
 class STTProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     WHISPER = "whisper"
     WISPR = "wispr"
     GEMINI = "gemini"
@@ -571,20 +574,72 @@ def _accepts_token_array_embedding_input(base_url: str | None) -> bool:
     return bool(host) and host.lower() in _TOKEN_ARRAY_EMBEDDING_HOSTS
 
 
+def iter_model_names(configuration: Mapping[str, Any] | None) -> list[str]:
+    """Split a stored ``configuration.model`` into individual names.
+
+    Older entries kept several models in one comma-separated string. New
+    entries store one name. Both shapes go through this helper.
+    """
+    if not isinstance(configuration, Mapping):
+        return []
+    raw = configuration.get("model")
+    if raw is None:
+        return []
+    return [name.strip() for name in str(raw).split(",") if name.strip()]
+
+
+def select_model_name(
+    configuration: Mapping[str, Any],
+    model_name: str | None,
+    *,
+    is_default: bool | None = None,
+    empty_error: str = "No model configured",
+) -> str:
+    """Pick the model a factory should build.
+
+    A default entry may be asked for a name that is not in its stored list
+    (callers substitute the active model). A non-default entry must name a
+    model it actually stores.
+    """
+    names = iter_model_names(configuration)
+    if model_name is None:
+        if not names:
+            raise ValueError(empty_error)
+        return names[0]
+    if not is_default and model_name not in names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+    return model_name
+
+
+def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    """``AsyncOpenAI`` kwargs, including a guarded client when a base URL is set."""
+    kwargs: dict[str, Any] = {}
+    api_key = configuration.get("apiKey")
+    if api_key:
+        kwargs["api_key"] = api_key
+    organization = configuration.get("organizationId")
+    if organization:
+        kwargs["organization"] = organization
+    endpoint = configuration.get("endpoint") or None
+    if isinstance(endpoint, str):
+        endpoint = endpoint.strip() or None
+    if endpoint:
+        kwargs.update(_endpoint_client_kwargs(endpoint))
+    return kwargs
+
+
 def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    if is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        model_name = model_names[0]
-    elif not is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        model_name = model_names[0]
-    elif not is_default and model_name is not None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        if model_name not in model_names:
-            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No embedding model configured",
+    )
 
     logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
@@ -621,6 +676,9 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
         )
+        deployment_name = configuration.get("deploymentName")
+        if deployment_name:
+            kwargs["azure_deployment"] = deployment_name
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
         _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
         return _guard_clients(AzureOpenAIEmbeddings(**kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
@@ -686,21 +744,36 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OLLAMA.value:
         from langchain_ollama import OllamaEmbeddings
 
+        ollama_embedding_url = configuration.get("endpoint") or os.getenv(
+            "OLLAMA_API_URL", "http://localhost:11434"
+        )
         return _guard_clients(OllamaEmbeddings(
             model=model_name,
-            base_url=configuration['endpoint']
-        ), _OWN_CLIENTS, configuration['endpoint'])
+            base_url=ollama_embedding_url,
+        ), _OWN_CLIENTS, ollama_embedding_url)
 
     elif provider == EmbeddingProvider.OPENAI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
+        openai_endpoint = (configuration.get("endpoint") or "").strip() or None
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
+        if openai_endpoint:
+            openai_kwargs["base_url"] = openai_endpoint
+            openai_kwargs["check_embedding_ctx_length"] = _accepts_token_array_embedding_input(
+                openai_endpoint
+            )
         _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
-        _set_openai_client_limits_kwargs(openai_kwargs, provider, configuration.get('endpoint'))
+        _set_openai_client_limits_kwargs(openai_kwargs, provider, openai_endpoint)
+        if openai_endpoint:
+            return _guard_clients(
+                OpenAIEmbeddings(**openai_kwargs),
+                _OPENAI_RESOURCE_CLIENTS,
+                openai_endpoint,
+            )
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -1346,7 +1419,14 @@ def _reasoning_effort_kwargs(
     elif provider == LLMProvider.ANTHROPIC.value:
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
-    needs_responses_api = effort != "none" and (
+    # A custom base URL on the native OpenAI provider is some other server.
+    # It does not implement /v1/responses just because the provider id is openAI.
+    openai_custom_endpoint = (
+        provider == LLMProvider.OPENAI.value
+        and bool(base_url)
+        and not _targets_openai_responses_api(base_url)
+    )
+    needs_responses_api = effort != "none" and not openai_custom_endpoint and (
         provider in _RESPONSES_API_PROVIDERS
         or (
             provider in _OPENAI_FAMILY
@@ -1727,7 +1807,7 @@ def get_generator_model(
     configured_model = configuration.get("model")
     if not configured_model:
         raise ValueError(f"Provider '{provider}' configuration is missing a 'model' name.")
-    model_names = [name.strip() for name in configured_model.split(",") if name.strip()]
+    model_names = iter_model_names(configuration)
     if not model_names:
         raise ValueError(f"Provider '{provider}' configuration has an empty 'model' field.")
 
@@ -2017,6 +2097,7 @@ def get_generator_model(
         from langchain_openai import ChatOpenAI
 
         temperature = _default_temperature(configuration, config, model_name, provider=provider)
+        openai_endpoint = (configuration.get("endpoint") or "").strip() or None
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -2025,11 +2106,18 @@ def get_generator_model(
             organization=configuration.get("organizationId"),
             stream_usage=True,  # Enable token usage tracking for Opik
         )
+        if openai_endpoint:
+            openai_kwargs["base_url"] = openai_endpoint
         openai_kwargs.update(
             _reasoning_effort_kwargs(
-                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+                reasoning_effort, config, provider=provider, base_url=openai_endpoint,
+                model_name=model_name, api_mode=api_mode,
             )
         )
+        if openai_endpoint:
+            return _guard_clients(
+                ChatOpenAI(**openai_kwargs), _OPENAI_ROOT_CLIENTS, openai_endpoint,
+            )
         return ChatOpenAI(**openai_kwargs)
 
     elif provider == LLMProvider.XAI.value:
@@ -2617,6 +2705,44 @@ class _OpenRouterImageAdapter(ImageGenerationAdapter):
         return images
 
 
+def _build_openai_image(configuration: Dict[str, Any], model_name: str) -> ImageGenerationAdapter:
+    return _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_image(configuration: Dict[str, Any], model_name: str) -> ImageGenerationAdapter:
+    return _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        base_url=configuration["endpoint"],
+        provider_override=ImageGenerationProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_IMAGE_BUILDERS = {
+    ImageGenerationProvider.OPENAI.value: _build_openai_image,
+    ImageGenerationProvider.OPENAI_COMPATIBLE.value: _build_compatible_image,
+    ImageGenerationProvider.GEMINI.value: lambda configuration, model_name: _GeminiImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    ImageGenerationProvider.OPENROUTER.value: lambda configuration, model_name: _OpenRouterImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    ImageGenerationProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        base_url=configuration["endpoint"],
+        provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_image_generation_model(
     provider: str,
     config: Dict[str, Any],
@@ -2634,46 +2760,21 @@ def get_image_generation_model(
     configuration = config["configuration"]
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No image-generation model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No image-generation model configured",
+    )
 
     logger.info(
         f"Getting image generation model: provider={provider}, model_name={model_name}"
     )
 
-    if provider == ImageGenerationProvider.OPENAI.value:
-        return _OpenAIImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-        )
-
-    if provider == ImageGenerationProvider.GEMINI.value:
-        return _GeminiImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == ImageGenerationProvider.OPENROUTER.value:
-        return _OpenRouterImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == ImageGenerationProvider.LITELLM_PROXY.value:
-        return _OpenAIImageAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            base_url=configuration["endpoint"],
-            provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported image generation provider: {provider}")
+    builder = _IMAGE_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported image generation provider: {provider}")
+    return builder(configuration, model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -2980,6 +3081,57 @@ class _GeminiTTSAdapter(TTSAdapter):
         return await _reencode_pcm_via_ffmpeg(pcm, target_format=fmt)
 
 
+def _build_openai_tts(configuration: Dict[str, Any], model_name: str) -> TTSAdapter:
+    return _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_tts(configuration: Dict[str, Any], model_name: str) -> TTSAdapter:
+    return _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration["endpoint"],
+        provider_override=TTSProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_TTS_BUILDERS = {
+    TTSProvider.OPENAI.value: _build_openai_tts,
+    TTSProvider.OPENAI_COMPATIBLE.value: _build_compatible_tts,
+    TTSProvider.GEMINI.value: lambda configuration, model_name: _GeminiTTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        endpoint=configuration.get("endpoint") or None,
+    ),
+    TTSProvider.OPENROUTER.value: lambda configuration, model_name: _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=OPENROUTER_BASE_URL,
+        provider_override=TTSProvider.OPENROUTER.value,
+    ),
+    TTSProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration["endpoint"],
+        provider_override=TTSProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_tts_model(
     provider: str,
     config: Dict[str, Any],
@@ -2992,61 +3144,19 @@ def get_tts_model(
     configuration = config["configuration"]
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [
-        name.strip()
-        for name in str(configuration.get("model", "")).split(",")
-        if name.strip()
-    ]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No TTS model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(
-            f"Model name {model_name} not found in {configuration.get('model')}"
-        )
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No TTS model configured",
+    )
 
     logger.info(f"Getting TTS model: provider={provider}, model_name={model_name}")
 
-    if provider == TTSProvider.OPENAI.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-        )
-
-    if provider == TTSProvider.GEMINI.value:
-        return _GeminiTTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            endpoint=configuration.get("endpoint") or None,
-        )
-
-    if provider == TTSProvider.OPENROUTER.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            base_url=OPENROUTER_BASE_URL,
-            provider_override=TTSProvider.OPENROUTER.value,
-        )
-
-    if provider == TTSProvider.LITELLM_PROXY.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            base_url=configuration["endpoint"],
-            provider_override=TTSProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported TTS provider: {provider}")
+    builder = _TTS_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported TTS provider: {provider}")
+    return builder(configuration, model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -3642,6 +3752,58 @@ class _OpenRouterSTTAdapter(STTAdapter):
         return text if isinstance(text, str) else ""
 
 
+def _build_openai_stt(configuration: Dict[str, Any], model_name: str) -> STTAdapter:
+    return _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_stt(configuration: Dict[str, Any], model_name: str) -> STTAdapter:
+    return _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        base_url=configuration["endpoint"],
+        provider_override=STTProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_STT_BUILDERS = {
+    STTProvider.OPENAI.value: _build_openai_stt,
+    STTProvider.OPENAI_COMPATIBLE.value: _build_compatible_stt,
+    STTProvider.WHISPER.value: lambda configuration, model_name: _WhisperLocalSTTAdapter(
+        model=model_name,
+        device=configuration.get("device", "auto"),
+        compute_type=configuration.get("computeType", "int8"),
+        download_root=configuration.get("modelDir") or None,
+    ),
+    STTProvider.WISPR.value: lambda configuration, model_name: _WisprFlowSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        endpoint=configuration.get("endpoint") or None,
+        default_language=configuration.get("language") or None,
+        default_app_type=configuration.get("appType") or "ai",
+    ),
+    STTProvider.GEMINI.value: lambda configuration, model_name: _GeminiSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        endpoint=configuration.get("endpoint") or None,
+    ),
+    STTProvider.OPENROUTER.value: lambda configuration, model_name: _OpenRouterSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    STTProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        base_url=configuration["endpoint"],
+        provider_override=STTProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_stt_model(
     provider: str,
     config: Dict[str, Any],
@@ -3651,65 +3813,16 @@ def get_stt_model(
     configuration = config["configuration"]
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [
-        name.strip()
-        for name in str(configuration.get("model", "")).split(",")
-        if name.strip()
-    ]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No STT model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(
-            f"Model name {model_name} not found in {configuration.get('model')}"
-        )
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No STT model configured",
+    )
 
     logger.info(f"Getting STT model: provider={provider}, model_name={model_name}")
 
-    if provider == STTProvider.OPENAI.value:
-        return _OpenAISTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-        )
-
-    if provider == STTProvider.WHISPER.value:
-        return _WhisperLocalSTTAdapter(
-            model=model_name,
-            device=configuration.get("device", "auto"),
-            compute_type=configuration.get("computeType", "int8"),
-            download_root=configuration.get("modelDir") or None,
-        )
-
-    if provider == STTProvider.WISPR.value:
-        return _WisprFlowSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            endpoint=configuration.get("endpoint") or None,
-            default_language=configuration.get("language") or None,
-            default_app_type=configuration.get("appType") or "ai",
-        )
-
-    if provider == STTProvider.GEMINI.value:
-        return _GeminiSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            endpoint=configuration.get("endpoint") or None,
-        )
-
-    if provider == STTProvider.OPENROUTER.value:
-        return _OpenRouterSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == STTProvider.LITELLM_PROXY.value:
-        return _OpenAISTTAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            base_url=configuration["endpoint"],
-            provider_override=STTProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported STT provider: {provider}")
+    builder = _STT_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported STT provider: {provider}")
+    return builder(configuration, model_name)

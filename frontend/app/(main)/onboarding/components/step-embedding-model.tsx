@@ -1,22 +1,16 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useOnboardingStore } from '../store';
-import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components';
 import { toast } from '@/lib/store/toast-store';
-import { isProcessedError } from '@/lib/api/api-error';
-import { AIModelsApi } from '@/app/(main)/workspace/ai-models/api';
-import type { AIModelProvider, ConfiguredModel, CapabilitySection } from '@/app/(main)/workspace/ai-models/types';
-import type { MainSection } from '@/app/(main)/workspace/ai-models/store';
-import {
-  ProviderGrid,
-  ModelConfigDialog,
-  type ModelConfigSaveResult,
-} from '@/app/(main)/workspace/ai-models/components';
+import { ProviderGrid } from '@/app/(main)/workspace/ai-models/components';
+import type { AIModelProvider } from '@/app/(main)/workspace/ai-models/types';
+import { useAiModelsManager } from '@/app/(main)/workspace/ai-models/hooks/use-ai-models-manager';
 
-/** If the registry includes `providerId: 'default'`, show it first; otherwise preserve API order. */
+const MODEL_ADDED_TOAST_DURATION_MS = 6000;
+
 function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIModelProvider[] {
   const list = [...providers];
   const idx = list.findIndex((p) => p.providerId === 'default');
@@ -26,16 +20,11 @@ function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIMod
   return list;
 }
 
-/** Longer than default success toasts so users can read the model name before continuing. */
-const MODEL_ADDED_TOAST_DURATION_MS = 6000;
-
 interface StepEmbeddingModelProps {
   systemStepIndex: number;
   totalSystemSteps: number;
-  /** Set `true` from the onboarding footer when the user clicks Skip (system default path). */
   embeddingDefaultDialog: boolean;
   setEmbeddingDefaultDialog: React.Dispatch<React.SetStateAction<boolean>>;
-  /** Fired after the embedding registry loads so the footer can show Skip only when `default` exists. */
   onRegistryHasSystemDefaultEmbedding?: (hasDefault: boolean) => void;
 }
 
@@ -48,187 +37,55 @@ export function StepEmbeddingModel({
 }: StepEmbeddingModelProps) {
   const { t } = useTranslation();
   const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
-  const [isDeleting, setIsDeleting] = useState(false);
+  const onProvidersLoaded = useCallback((providers: AIModelProvider[]) => {
+    onRegistryHasSystemDefaultEmbedding?.(providers.some((provider) => provider.providerId === 'default'));
+  }, [onRegistryHasSystemDefaultEmbedding]);
 
-  const [providers, setProviders] = useState<AIModelProvider[]>([]);
-  const [configuredModels, setConfiguredModels] = useState<Record<string, ConfiguredModel[]>>({});
-  const [searchQuery, setSearchQuery] = useState('');
-  const [mainSection, setMainSection] = useState<MainSection>('providers');
-  const [capabilitySection, setCapabilitySection] = useState<CapabilitySection>('embedding');
-  const [loadingProviders, setLoadingProviders] = useState(true);
-  const [loadingModels, setLoadingModels] = useState(true);
-  const [modelsLoaded, setModelsLoaded] = useState(false);
-
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [dialogMode, setDialogMode] = useState<'add' | 'edit'>('add');
-  const [dialogProvider, setDialogProvider] = useState<AIModelProvider | null>(null);
-  const [dialogCapability, setDialogCapability] = useState<string | null>(null);
-  const [dialogEditModel, setDialogEditModel] = useState<ConfiguredModel | null>(null);
-
-  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
-  const [deleteTarget, setDeleteTarget] = useState<{
-    modelType: string;
-    modelKey: string;
-    modelName: string;
-  } | null>(null);
-
-  const loadProviders = useCallback(async () => {
-    setLoadingProviders(true);
-    try {
-      const data = await AIModelsApi.getRegistry({ capability: 'embedding' });
-      const raw = data.providers ?? [];
-      setProviders(orderDefaultEmbeddingProviderFirst(raw));
-      onRegistryHasSystemDefaultEmbedding?.(raw.some((p) => p.providerId === 'default'));
-    } catch {
-      toast.error(t('onboarding.failedToLoadEmbeddingProviders'));
-      onRegistryHasSystemDefaultEmbedding?.(false);
-    } finally {
-      setLoadingProviders(false);
-    }
-  }, [onRegistryHasSystemDefaultEmbedding, t]);
-
-  const loadModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const data = await AIModelsApi.getAllModels();
-      setConfiguredModels(data.models as unknown as Record<string, ConfiguredModel[]>);
-      setModelsLoaded(true);
-    } catch {
-      toast.error(t('onboarding.failedToLoadConfiguredModels'));
-      setModelsLoaded(true);
-    } finally {
-      setLoadingModels(false);
-    }
-  }, [t]);
-
-  useEffect(() => {
-    loadProviders();
-    loadModels();
-  }, [loadProviders, loadModels]);
-
-  useEffect(() => {
-    if (!embeddingDefaultDialog) return;
-    if (loadingProviders) return;
-    const defaultFromRegistry = providers.find((p) => p.providerId === 'default');
-    if (!defaultFromRegistry) {
-      toast.error(t('onboarding.embeddingDefaultNotInRegistry'));
-      setEmbeddingDefaultDialog(false);
-      return;
-    }
-    setDialogMode('add');
-    setDialogProvider(defaultFromRegistry);
-    setDialogCapability('embedding');
-    setDialogEditModel(null);
-    setDialogOpen(true);
-  }, [
-    embeddingDefaultDialog,
-    loadingProviders,
-    providers,
-    setEmbeddingDefaultDialog,
-    t,
-  ]);
-
-  useEffect(() => {
-    if (!modelsLoaded) return;
-    const embeddings = configuredModels.embedding ?? [];
-    if (embeddings.length > 0) {
-      markStepCompleted('embedding-model');
-    } else {
-      unmarkStepCompleted('embedding-model');
-    }
-  }, [configuredModels, modelsLoaded, markStepCompleted, unmarkStepCompleted]);
-
-  const closeDialog = useCallback(() => {
-    setDialogOpen(false);
-    setDialogProvider(null);
-    setDialogCapability(null);
-    setDialogEditModel(null);
-    setEmbeddingDefaultDialog(false);
-  }, [setEmbeddingDefaultDialog]);
-
-  const handleModelConfigSaved = useCallback(
-    (result: ModelConfigSaveResult) => {
+  const manager = useAiModelsManager({
+    registryCapability: 'embedding',
+    initialCapabilitySection: 'embedding',
+    orderProviders: orderDefaultEmbeddingProviderFirst,
+    onProvidersLoaded,
+    providerErrorKey: 'onboarding.failedToLoadEmbeddingProviders',
+    modelsErrorKey: 'onboarding.failedToLoadConfiguredModels',
+    onModelSaved: (result) => {
       if (result.mode === 'add') {
         toast.success(t('onboarding.toastModelAddedEmbedding', { name: result.modelName }), {
           duration: MODEL_ADDED_TOAST_DURATION_MS,
         });
       }
-      void loadModels();
       setEmbeddingDefaultDialog(false);
     },
-    [loadModels, setEmbeddingDefaultDialog, t]
-  );
+  });
 
-  const handleAdd = useCallback((provider: AIModelProvider, capability: string) => {
-    setDialogMode('add');
-    setDialogProvider(provider);
-    setDialogCapability(capability);
-    setDialogEditModel(null);
-    setDialogOpen(true);
-  }, []);
-
-  const handleEdit = useCallback(
-    (provider: AIModelProvider, capability: string, model: ConfiguredModel) => {
-      setDialogMode('edit');
-      setDialogProvider(provider);
-      setDialogCapability(capability);
-      setDialogEditModel(model);
-      setDialogOpen(true);
-    },
-    []
-  );
-
-  const handleSetDefault = useCallback(
-    async (modelType: string, modelKey: string) => {
-      try {
-        await AIModelsApi.setDefault(modelType, modelKey);
-        toast.success('Default model updated');
-        loadModels();
-      } catch {
-        toast.error('Failed to set default model');
-      }
-    },
-    [loadModels]
-  );
-
-  const openDeleteDialog = useCallback((modelType: string, modelKey: string, modelName: string) => {
-    setDeleteTarget({ modelType, modelKey, modelName });
-    setDeleteDialogOpen(true);
-  }, []);
-
-  const closeDeleteDialog = useCallback(() => {
-    setDeleteDialogOpen(false);
-    setDeleteTarget(null);
-  }, []);
-
-  const handleDelete = useCallback(async () => {
-    if (!deleteTarget) return;
-    setIsDeleting(true);
-    try {
-      await AIModelsApi.deleteProvider(deleteTarget.modelType, deleteTarget.modelKey);
-      toast.success(t('workspace.aiModels.toastDeleted', { name: deleteTarget.modelName }));
-      closeDeleteDialog();
-      loadModels();
-    } catch (error: unknown) {
-      const detail =
-        isProcessedError(error) && error.message.trim() ? error.message.trim() : undefined;
-      toast.error(t('workspace.aiModels.toastDeleteError'), {
-        ...(detail ? { description: detail } : {}),
-      });
-    } finally {
-      setIsDeleting(false);
+  useEffect(() => {
+    if (!embeddingDefaultDialog || manager.loadingProviders) return;
+    const defaultFromRegistry = manager.providers.find((provider) => provider.providerId === 'default');
+    if (!defaultFromRegistry) {
+      toast.error(t('onboarding.embeddingDefaultNotInRegistry'));
+      setEmbeddingDefaultDialog(false);
+      return;
     }
-  }, [deleteTarget, closeDeleteDialog, loadModels, t]);
+    manager.openAdd(defaultFromRegistry, 'embedding');
+    setEmbeddingDefaultDialog(false);
+  }, [
+    embeddingDefaultDialog,
+    manager.loadingProviders,
+    manager.openAdd,
+    manager.providers,
+    setEmbeddingDefaultDialog,
+    t,
+  ]);
 
-  const handleRefresh = useCallback(() => {
-    void loadProviders();
-    void loadModels();
-  }, [loadProviders, loadModels]);
+  useEffect(() => {
+    if (!manager.modelsLoaded) return;
+    const embeddings = manager.configuredModels.embedding ?? [];
+    if (embeddings.length > 0) markStepCompleted('embedding-model');
+    else unmarkStepCompleted('embedding-model');
+  }, [manager.configuredModels, manager.modelsLoaded, markStepCompleted, unmarkStepCompleted]);
 
-  const isLoading = loadingProviders || loadingModels;
-  const embedCount = configuredModels.embedding?.length ?? 0;
-  const registryHasSystemDefaultEmbedding = providers.some((p) => p.providerId === 'default');
-  const deleteKeyword = deleteTarget?.modelName ?? '';
+  const embedCount = manager.configuredModels.embedding?.length ?? 0;
+  const registryHasSystemDefaultEmbedding = manager.providers.some((provider) => provider.providerId === 'default');
 
   return (
     <>
@@ -265,7 +122,7 @@ export function StepEmbeddingModel({
 
         <Box style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '12px' }}>
           <Flex direction="column" gap="5">
-            {!isLoading && embedCount === 0 && (
+            {!manager.isLoading && embedCount === 0 && (
               <Text size="2" style={{ color: 'var(--gray-11)', display: 'block' }}>
                 {registryHasSystemDefaultEmbedding
                   ? t('onboarding.embeddingStepHint')
@@ -276,58 +133,29 @@ export function StepEmbeddingModel({
               layout="embedded"
               hideCapabilityBadges
               showEmbeddingBuiltinPlaceholder={false}
-              providers={providers}
-              configuredModels={configuredModels}
-              searchQuery={searchQuery}
-              onSearchChange={setSearchQuery}
-              mainSection={mainSection}
-              onMainSectionChange={setMainSection}
-              capabilitySection={capabilitySection}
-              onCapabilitySectionChange={setCapabilitySection}
-              onAdd={handleAdd}
-              onEdit={handleEdit}
-              onSetDefault={handleSetDefault}
-              onDelete={openDeleteDialog}
-              isLoading={isLoading}
-              onRefresh={handleRefresh}
+              providers={manager.providers}
+              configuredModels={manager.configuredModels}
+              searchQuery={manager.searchQuery}
+              onSearchChange={manager.setSearchQuery}
+              mainSection={manager.mainSection}
+              onMainSectionChange={manager.setMainSection}
+              capabilitySection={manager.capabilitySection}
+              onCapabilitySectionChange={manager.setCapabilitySection}
+              onAdd={manager.openAdd}
+              onEdit={manager.openEdit}
+              onSetDefault={manager.handleSetDefault}
+              onDelete={manager.openDelete}
+              onRotate={manager.openRotate}
+              isLoading={manager.isLoading}
+              onRefresh={() => {
+                void manager.loadProviders();
+                void manager.loadModels();
+              }}
             />
           </Flex>
         </Box>
       </Box>
-
-      <ModelConfigDialog
-        open={dialogOpen}
-        mode={dialogMode}
-        provider={dialogProvider}
-        capability={dialogCapability}
-        editModel={dialogEditModel}
-        onClose={closeDialog}
-        onSaved={handleModelConfigSaved}
-      />
-
-      <DestructiveTypedConfirmationDialog
-        open={deleteDialogOpen}
-        onOpenChange={(open) => {
-          if (!open) closeDeleteDialog();
-        }}
-        heading={t('workspace.aiModels.deleteDialogTitle')}
-        body={
-          <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
-            {t('workspace.aiModels.deleteTypedConfirmBody', {
-              name: deleteTarget?.modelName ?? '',
-            })}
-          </Text>
-        }
-        confirmationKeyword={deleteKeyword}
-        confirmInputLabel={t('workspace.aiModels.typeModelNameToConfirm', {
-          keyword: deleteKeyword,
-        })}
-        primaryButtonText={t('workspace.aiModels.delete')}
-        cancelLabel={t('workspace.aiModels.cancel')}
-        isLoading={isDeleting}
-        confirmLoadingLabel={t('action.deleting')}
-        onConfirm={() => void handleDelete()}
-      />
+      {manager.dialogs}
     </>
   );
 }
