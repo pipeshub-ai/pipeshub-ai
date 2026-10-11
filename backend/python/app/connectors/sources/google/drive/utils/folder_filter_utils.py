@@ -27,10 +27,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleDriveError,
+)
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_FOLDER_EXPANSION_GET_FIELDS,
     DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
 )
+from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
 from app.models.entities import Record
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 
@@ -504,6 +508,12 @@ async def build_tracked_folder_ids(
 
             data_source = await get_data_source()
             response = await data_source.files_list(**list_params) or {}
+            # A subfolder a partial page leaves out is never listed, so its files would
+            # look deleted to a full sync that otherwise finished.
+            if not isinstance(response, dict) or response.get("incompleteSearch") is True:
+                raise GoogleDriveError(
+                    "Google Drive could not list every subfolder of the selected folders"
+                )
 
             for subfolder in response.get("files", []):
                 subfolder_id = subfolder.get("id")
@@ -542,10 +552,17 @@ async def fetch_folder_children(
     *,
     fields: str,
     drive_scoped: bool = True,
+    folder_drive_id: Optional[str] = None,
+    walk: Optional[DrivePageWalk] = None,
 ) -> AsyncGenerator[List[dict], None]:
     """
     Recursively fetch all descendants (files and folders) of a folder that
     just entered the tracked scope, yielding them in batches.
+
+    With `walk`, a page Drive answers with incompleteSearch, or with something
+    that is not an object, marks the walk incomplete; the second also ends it.
+    Without one, either raises GoogleDriveError: such callers have no other way
+    to keep their checkpoint from moving past children that were never listed.
 
     Unlike `build_tracked_folder_ids`, this fetches every child item, not
     just folders, but only recurses into children that are themselves
@@ -556,11 +573,12 @@ async def fetch_folder_children(
     `drive_scoped=False` skips resolving driveId, leaving the query on the default
     user corpus. Callers walking a shared drive they are not a member of need that:
     corpora=drive requires membership, while the user corpus still resolves children
-    of a folder the caller holds an individual grant on.
+    of a folder the caller holds an individual grant on. `folder_drive_id` names the
+    folder's shared drive when the caller already knows it, so no lookup is made.
     """
     # Resolve driveId once so shared-drive subtrees use corpora=drive.
-    root_drive_id: Optional[str] = None
-    if drive_scoped:
+    root_drive_id: Optional[str] = folder_drive_id
+    if drive_scoped and root_drive_id is None:
         try:
             data_source = await get_data_source()
             probe = await data_source.files_get(
@@ -569,8 +587,14 @@ async def fetch_folder_children(
                 supportsAllDrives=True,
             )
             root_drive_id = (probe or {}).get("driveId") or None
-        except Exception:
-            root_drive_id = None
+        except HttpError as e:
+            # Only a folder that is gone or refused for good may fall back to the user
+            # corpus; for a shared-drive folder that corpus can return part of its
+            # children with no incompleteSearch to say so.
+            if not (
+                e.resp.status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e)
+            ):
+                raise
 
     queue: List[str] = [folder_id]
     drive_ids: Dict[str, Optional[str]] = {folder_id: root_drive_id}
@@ -588,6 +612,14 @@ async def fetch_folder_children(
 
             data_source = await get_data_source()
             response = await data_source.files_list(**list_params) or {}
+            if not isinstance(response, dict) or response.get("incompleteSearch") is True:
+                if walk is None:
+                    raise GoogleDriveError(
+                        f"Google Drive could not list every child of folder {folder_id}"
+                    )
+                walk.incomplete = True
+                if not isinstance(response, dict):
+                    return
 
             children_batch = []
             for child in response.get("files", []):
