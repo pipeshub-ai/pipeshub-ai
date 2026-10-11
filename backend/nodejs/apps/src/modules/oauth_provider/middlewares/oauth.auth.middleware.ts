@@ -337,8 +337,20 @@ export function scopeCheck(
 
           next()
           return
-        } catch {
-          // Not an OAuth token, continue to next auth method
+        } catch (error) {
+          // verifyAccessToken throws this before returning a payload, so the
+          // empty-scope check above never runs for the real token service.
+          // Other verification failures still fall through.
+          if (
+            error instanceof InvalidTokenError &&
+            error.message === 'Token carries no scopes'
+          ) {
+            res.status(401).json({
+              error: 'invalid_token',
+              error_description: error.message,
+            });
+            return;
+          }
         }
       }
 

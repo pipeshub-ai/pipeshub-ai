@@ -269,6 +269,32 @@ describe('scopeCheck', () => {
     expect(mockRes.json.firstCall.args[0].error).to.equal('invalid_token')
   })
 
+  it('should return 401 when verification throws for an empty scope', async () => {
+    mockOAuthTokenService.verifyAccessToken.rejects(
+      new InvalidTokenError('Token carries no scopes'),
+    )
+    const mw = scopeCheck(['org:read'], mockOAuthTokenService, mockScopeValidatorService)
+    const req = { headers: { authorization: 'Bearer token' } } as any
+    await mw(req, mockRes, mockNext)
+    expect(mockNext.called).to.be.false
+    expect(mockRes.status.calledWith(401)).to.be.true
+    expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+      error: 'invalid_token',
+      error_description: 'Token carries no scopes',
+    })
+  })
+
+  it('should fall through when a different invalid-token error is thrown', async () => {
+    mockOAuthTokenService.verifyAccessToken.rejects(
+      new InvalidTokenError('Token has been revoked'),
+    )
+    const mw = scopeCheck(['org:read'], mockOAuthTokenService, mockScopeValidatorService)
+    const req = { headers: { authorization: 'Bearer token' } } as any
+    await mw(req, mockRes, mockNext)
+    expect(mockNext.calledOnce).to.be.true
+    expect(mockRes.status.called).to.be.false
+  })
+
   it('should fall through to next middleware on token verification error', async () => {
     mockOAuthTokenService.verifyAccessToken.rejects(new Error('invalid'))
     const mw = scopeCheck(['org:read'], mockOAuthTokenService, mockScopeValidatorService)

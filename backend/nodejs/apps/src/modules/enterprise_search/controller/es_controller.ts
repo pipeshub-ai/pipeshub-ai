@@ -359,14 +359,21 @@ export const compressImageIfNeeded = async (
     return passthrough;
   }
 
-  // Before the size shortcut and outside the passthrough catch below: a file
-  // labelled as an image whose bytes are not JPEG, PNG or WebP (for example
-  // SVG) must be rejected rather than decoded or stored unchanged.
+  // Magic bytes reject SVG, but they also accept a bare PNG signature.
+  // Decode before the size shortcut: that shortcut returns the original
+  // bytes, and the catch below keeps the original when compression fails.
+  const invalidImageMessage =
+    `${file.originalname} is not a valid JPEG, PNG or WebP image`;
   const format = assertRasterImage(
     file.buffer,
     ['jpeg', 'png', 'webp'],
-    `${file.originalname} is not a valid JPEG, PNG or WebP image`,
+    invalidImageMessage,
   );
+  try {
+    await sharp(file.buffer).raw().toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
+  }
 
   if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
     logger.info(

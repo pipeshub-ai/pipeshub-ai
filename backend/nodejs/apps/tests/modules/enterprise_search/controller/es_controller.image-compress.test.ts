@@ -55,6 +55,33 @@ describe('compressImageIfNeeded', () => {
     }
   });
 
+  it('rejects a PNG signature and a PNG whose pixels do not decode', async () => {
+    const signature = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
+    const corrupt = Buffer.from(await pngBuffer());
+    corrupt[Math.floor(corrupt.length * 0.7)] ^= 0xff;
+
+    for (const buffer of [signature, corrupt]) {
+      try {
+        await compressImageIfNeeded(
+          file({
+            buffer,
+            mimetype: 'image/png',
+            originalname: 'photo.png',
+            size: buffer.length,
+          }),
+        );
+        expect.fail('undecodable PNG should be rejected');
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as Error).message).to.equal(
+          'photo.png is not a valid JPEG, PNG or WebP image',
+        );
+      }
+    }
+  });
+
   it('passes a PDF through without decoding it', async () => {
     const pdf = Buffer.from('%PDF-1.4');
     const result = await compressImageIfNeeded(
