@@ -2,9 +2,10 @@
 
 Records are written by the production ``DataSourceEntitiesProcessor`` and moved
 by the production ``EntityEventService`` handlers, so the queries under test are
-the providers' own: the narrowed, reason-stamping disable sweep
-(``reset_indexing_status_for_connector``), and the resume's equality-filtered
-page read and conditional write (``get_documents_paginated`` and
+the providers' own: the narrowed, reason-stamping, trash-skipping disable
+sweep (``reset_indexing_status_for_connector``), and the resume's
+equality-filtered, key-cursor page read and conditional write
+(``get_documents_paginated`` with ``after_key``, and
 ``update_nodes_fields_if_match``) with a null ``reason``.
 
 Before the fix the pause turned every QUEUED (and FAILED, EMPTY, ...) record
@@ -161,7 +162,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
         processor.org_id = ORG_ID
         processor.messaging_producer = _RecordingProducer()
-        names = ["queued-1", "queued-2", "in-flight", "manual-only", "failed"]
+        names = ["queued-1", "queued-2", "in-flight", "manual-only", "failed", "trashed"]
         issues = {name: _issue(connector_id, name) for name in names}
         await processor.on_new_records([(issue, []) for issue in issues.values()])
         ids = {name: issue.id for name, issue in issues.items()}
@@ -185,6 +186,8 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             "indexingStatus": ProgressStatus.FAILED.value,
             "reason": "parse error",
         })
+        # Soft delete leaves a queued record's indexingStatus as it was.
+        await graph.update_node(ids["trashed"], CollectionNames.RECORDS.value, {"isDeleted": True})
 
         producer = _RecordingProducer()
         container = MagicMock()
@@ -205,6 +208,9 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         assert (await stored("manual-only")).get("reason") is None
         failed = await stored("failed")
         assert (failed["indexingStatus"], failed["reason"]) == (ProgressStatus.FAILED.value, "parse error")
+        trashed = await stored("trashed")
+        assert trashed["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert trashed.get("reason") is None
 
         # The indexing handler parks the in-flight record while the connector is off.
         in_flight = await stored("in-flight")
@@ -213,7 +219,9 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         )
 
         await _set_active(graph, connector_id, True)
-        assert await service._requeue_records_parked_while_off(connector_id) == 3
+        # Two pages, so the key cursor is what reaches the third record.
+        with patch.object(entity_module, "_REQUEUE_PAGE_SIZE", 2):
+            assert await service._requeue_records_parked_while_off(connector_id) == 3
 
         assert {key for key, _ in producer.sent} == {ids["queued-1"], ids["queued-2"], ids["in-flight"]}
         for name in ("queued-1", "queued-2", "in-flight"):
@@ -228,6 +236,8 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         assert manual.get("reason") is None
         failed = await stored("failed")
         assert (failed["indexingStatus"], failed["reason"]) == (ProgressStatus.FAILED.value, "parse error")
+
+        assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.QUEUED.value
 
         # Nothing is left parked, so a second enable sends nothing more.
         assert await service._requeue_records_parked_while_off(connector_id) == 0

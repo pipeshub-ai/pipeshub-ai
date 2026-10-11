@@ -2141,7 +2141,7 @@ class TestUserAndOrganizationLookups:
         assert "n.reason" not in query
 
     @pytest.mark.asyncio
-    async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider):
+    async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.reset_indexing_status_for_connector(
             "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
@@ -2152,9 +2152,38 @@ class TestUserAndOrganizationLookups:
         assert "n.reason = $reason" in query
         assert params["only_statuses"] == ["QUEUED"]
         assert params["reason"] == "off"
+        assert "isDeleted" not in query
 
     @pytest.mark.asyncio
-    async def test_reset_indexing_status_with_an_empty_status_list_writes_nothing(self, neo4j_provider: Neo4jProvider):
+    async def test_reset_indexing_status_live_only_leaves_the_trash(self, neo4j_provider: Neo4jProvider) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], visibility=RecordVisibility.LIVE
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "(n.isDeleted IS NULL OR n.isDeleted = false)" in query
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_documents_paginated(
+            "records", limit=2, filters={"reason": "off"}, sort_field="_key", after_key="k1"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.id > $after_key" in query
+        assert "ORDER BY n.id ASC" in query
+        assert params["after_key"] == "k1"
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key_needs_key_order(self, neo4j_provider: Neo4jProvider) -> None:
+        with pytest.raises(ValueError):
+            await neo4j_provider.get_documents_paginated("records", after_key="k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_with_an_empty_status_list_writes_nothing(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         await neo4j_provider.reset_indexing_status_for_connector(
             "app-1", "AUTO_INDEX_OFF", only_statuses=[]

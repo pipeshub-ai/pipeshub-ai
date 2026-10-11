@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.user_errors import CONNECTOR_OFF
 
@@ -713,6 +714,9 @@ class TestAppDisabledDrainsQueuedRecords:
         assert kwargs["only_statuses"] == [ProgressStatus.QUEUED.value]
         assert kwargs["reason"] == CONNECTOR_OFF
         assert "exclude_statuses" not in kwargs
+        # A trashed record is skipped by the resume, so parking it would leave
+        # it parked if it were restored later.
+        assert kwargs["visibility"] is RecordVisibility.LIVE
 
     @pytest.mark.asyncio
     async def test_sweep_failure_does_not_abort_the_disable(self):

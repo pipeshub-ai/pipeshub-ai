@@ -2004,6 +2004,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         *,
         only_statuses: list[str] | None = None,
         reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         if not connector_id:
             return
@@ -2021,6 +2022,11 @@ class ArangoHTTPProvider(IGraphDBProvider):
             include_clause = (
                 "FILTER doc.indexingStatus IN @only_statuses" if included else ""
             )
+            visibility_clause = (
+                ""
+                if visibility is RecordVisibility.ALL
+                else f"FILTER {aql_record_visibility('doc', visibility)}"
+            )
             # AQL rejects a declared-but-unused bind var, so only bind it here.
             reason_field = ", reason: @reason" if reason is not None else ""
             query = f"""
@@ -2028,6 +2034,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
                 {include_clause}
+                {visibility_clause}
                 UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
             """
             bind_vars: dict = {
@@ -6950,12 +6957,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents from a collection using AQL LIMIT so that
         only the requested slice is transferred from ArangoDB, keeping memory
         usage proportional to `limit` regardless of collection size.
         """
+        if after_key is not None and sort_field != "_key":
+            raise ValueError("after_key needs sort_field='_key'")
         try:
             bind_vars: dict = {"@collection": collection, "skip": skip, "limit": limit}
 
@@ -6965,6 +6975,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     param = f"fv{idx}"
                     filter_clauses.append(f"doc.{field} == @{param}")
                     bind_vars[param] = value
+            if after_key is not None:
+                filter_clauses.append("doc._key > @after_key")
+                bind_vars["after_key"] = after_key
 
             filter_aql = (
                 "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""

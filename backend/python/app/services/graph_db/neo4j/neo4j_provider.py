@@ -1265,12 +1265,15 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
         requested slice is returned from Neo4j, keeping memory usage
         proportional to `limit` regardless of collection size.
         """
+        if after_key is not None and sort_field != "_key":
+            raise ValueError("after_key needs sort_field='_key'")
         try:
             label = collection_to_label(collection)
             parameters: dict = {"skip": skip, "limit": limit}
@@ -1281,6 +1284,9 @@ class Neo4jProvider(IGraphDBProvider):
                     param = f"fv_{field}"
                     where_clauses.append(f"n.{field} = ${param}")
                     parameters[param] = value
+            if after_key is not None:
+                where_clauses.append("n.id > $after_key")
+                parameters["after_key"] = after_key
 
             where_cypher = (
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -13772,6 +13778,7 @@ class Neo4jProvider(IGraphDBProvider):
         *,
         only_statuses: list[str] | None = None,
         reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         if not connector_id:
             return
@@ -13787,12 +13794,18 @@ class Neo4jProvider(IGraphDBProvider):
             include_clause = (
                 "AND n.indexingStatus IN $only_statuses" if included else ""
             )
+            visibility_clause = (
+                ""
+                if visibility is RecordVisibility.ALL
+                else f"AND {cypher_record_visibility('n', visibility)}"
+            )
             reason_clause = ", n.reason = $reason" if reason is not None else ""
             query = f"""
             MATCH (n:{label})
             WHERE n.connectorId = $connector_id
             {exclude_clause}
             {include_clause}
+            {visibility_clause}
             SET n.indexingStatus = $status{reason_clause}
             """
             parameters: dict = {

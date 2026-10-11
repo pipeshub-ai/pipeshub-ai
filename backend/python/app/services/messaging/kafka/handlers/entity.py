@@ -25,7 +25,10 @@ from app.containers.connector import (
 )
 from app.edition_services import get_data_entities_processor_cls
 from app.modules.indexing.record_republish import record_event
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
@@ -543,12 +546,15 @@ class EntityEventService(BaseEventService):
             # path: that reason is what lets turning the connector on queue
             # them again, so it must not land on records the connector's
             # filters keep out of auto-indexing, or on FAILED/EMPTY outcomes.
+            # Not on trashed ones either: the resume skips the trash, so one
+            # restored afterwards would stay parked with the connector on.
             try:
                 await self.graph_provider.reset_indexing_status_for_connector(
                     connector_id,
                     ProgressStatus.AUTO_INDEX_OFF.value,
                     only_statuses=[ProgressStatus.QUEUED.value],
                     reason=CONNECTOR_OFF,
+                    visibility=RecordVisibility.LIVE,
                 )
                 self.logger.info(
                     f"✅ Moved queued records for connector {connector_id} to manual indexing"
@@ -628,6 +634,11 @@ class EntityEventService(BaseEventService):
         Published first, then moved to QUEUED only while still parked, as
         ``_mark_queued_after_publish`` does: the indexing service may already
         have taken the record on, and that must not be overwritten.
+
+        Pages with a key cursor, not an offset: the result set changes under
+        the walk (the sync started beside this deletes records, trash purge
+        removes them, a write may not take), and an offset would then skip a
+        record or send one twice. The cursor visits each record at most once.
         """
         connector = await self.graph_provider.get_document(
             connector_id, CollectionNames.APPS.value, raise_on_error=True
@@ -639,17 +650,25 @@ class EntityEventService(BaseEventService):
         producer = self.app_container.messaging_producer
         filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
         requeued = 0
-        offset = 0
+        after_key: str | None = None
         while True:
             page = await self.graph_provider.get_documents_paginated(
                 CollectionNames.RECORDS.value,
-                skip=offset,
                 limit=_REQUEUE_PAGE_SIZE,
                 filters=filters,
                 sort_field="_key",
                 raise_on_error=True,
+                after_key=after_key,
             )
             if not page:
+                break
+            # Advanced before any work, so nothing on this page is read again.
+            after_key = page[-1].get("_key") or page[-1].get("id")
+            if not after_key:
+                self.logger.error(
+                    f"Last parked record of connector {connector_id} has no key; "
+                    "stopping the re-queue rather than reading the page again"
+                )
                 break
 
             candidates = [
@@ -686,9 +705,6 @@ class EntityEventService(BaseEventService):
 
             if len(page) < _REQUEUE_PAGE_SIZE:
                 break
-            # A sent record leaves the filtered result, by this write or by the
-            # indexing service taking it on; advance only over the rest.
-            offset += len(page) - len(sent)
 
         if requeued:
             self.logger.info(

@@ -32,6 +32,10 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.modules.indexing.connector_off_events import connector_off_updates
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.services.messaging.kafka.handlers import entity as entity_module
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 from app.utils.user_errors import CONNECTOR_OFF
@@ -70,10 +74,12 @@ class FakeGraph:
 
     async def reset_indexing_status_for_connector(
         self, connector_id, status, exclude_statuses=None, transaction=None,
-        *, only_statuses=None, reason=None,
+        *, only_statuses=None, reason=None, visibility=RecordVisibility.ALL,
     ) -> None:
         for doc in self.records().values():
             if doc.get("connectorId") != connector_id:
+                continue
+            if not matches_visibility(doc, visibility):
                 continue
             if exclude_statuses and doc.get("indexingStatus") in exclude_statuses:
                 continue
@@ -85,11 +91,13 @@ class FakeGraph:
 
     async def get_documents_paginated(
         self, collection, skip=0, limit=50, filters=None, sort_field=None,
-        transaction=None, *, raise_on_error=False,
+        transaction=None, *, raise_on_error=False, after_key=None,
     ) -> list[dict]:
+        assert after_key is None or sort_field == "_key"
         rows = [
             dict(doc) for doc in self.docs[collection].values()
             if all(doc.get(f) == v for f, v in (filters or {}).items())
+            and (after_key is None or doc["_key"] > after_key)
         ]
         if sort_field:
             rows.sort(key=lambda d: d.get(sort_field))
@@ -110,14 +118,18 @@ class FakeProducer:
         self.sent: list[tuple[str, dict]] = []
         self.refuse: set[str] = set()
         self.on_send = None
+        self.on_refuse = None
 
     async def send_messages(self, topic, messages) -> list[bool]:
         acked = []
         for key, message in messages:
             if key in self.refuse:
+                if self.on_refuse:
+                    self.on_refuse(key)
                 acked.append(False)
                 continue
             assert topic == "record-events"
+            assert key not in self.sent_keys(), f"{key} was published twice"
             self.sent.append((key, message))
             if self.on_send:
                 self.on_send(key)
@@ -214,9 +226,13 @@ async def test_pause_then_resume_requeues_what_the_pause_parked_and_nothing_else
     await _toggle_off(svc, graph)
 
     records = graph.records()
-    for key in ("queued-1", "queued-2", "trashed"):
+    for key in ("queued-1", "queued-2"):
         assert records[key]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value, key
         assert records[key]["reason"] == CONNECTOR_OFF, key
+    # The trash is left alone: the resume skips it, so a record restored after
+    # the resume would otherwise stay parked with the connector on.
+    assert records["trashed"]["indexingStatus"] == ProgressStatus.QUEUED.value
+    assert records["trashed"]["reason"] is None
     # The pause no longer rewrites outcomes or filter decisions.
     assert records["manual-only"]["reason"] is None
     assert records["failed"]["indexingStatus"] == ProgressStatus.FAILED.value
@@ -248,8 +264,7 @@ async def test_pause_then_resume_requeues_what_the_pause_parked_and_nothing_else
     assert records["manual-only"]["reason"] is None
     assert records["failed"]["indexingStatus"] == ProgressStatus.FAILED.value
     assert records["indexed"]["indexingStatus"] == ProgressStatus.COMPLETED.value
-    # A trashed record is not indexed; it keeps its parked state.
-    assert records["trashed"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+    assert records["trashed"]["indexingStatus"] == ProgressStatus.QUEUED.value
 
 
 @pytest.mark.asyncio
@@ -302,6 +317,50 @@ async def test_an_unsent_record_stays_parked_and_the_pages_after_it_are_still_re
     assert len(producer.sent) == 6, "a record was sent twice"
     assert graph.records()["r1"]["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
     assert graph.records()["r1"]["reason"] == CONNECTOR_OFF
+
+
+@pytest.mark.asyncio
+async def test_a_record_deleted_mid_walk_does_not_make_the_walk_skip_a_live_one() -> None:
+    """An unsent record that the sync (or trash purge) deletes while the walk
+    is running must not shift the next page past a record still parked."""
+    graph, producer = FakeGraph(), FakeProducer()
+    svc = _service(graph, producer)
+    _set_active(graph, True)
+    keys = [f"r{i}" for i in range(6)]
+    for key in keys:
+        graph.records()[key] = _record(key, ProgressStatus.AUTO_INDEX_OFF.value, reason=CONNECTOR_OFF)
+    producer.refuse = {"r1"}
+    producer.on_refuse = lambda key: graph.records().pop(key)
+
+    with patch.object(entity_module, "_REQUEUE_PAGE_SIZE", 2):
+        assert await svc._requeue_records_parked_while_off(CONNECTOR_ID) == 5
+
+    assert producer.sent_keys() == set(keys) - {"r1"}
+    for key in set(keys) - {"r1"}:
+        assert graph.records()[key]["indexingStatus"] == ProgressStatus.QUEUED.value, key
+
+
+@pytest.mark.asyncio
+async def test_records_that_stay_parked_after_sending_are_not_published_again() -> None:
+    """The status write may not take (or the connector-off filter parks the
+    record again); a full page of such records must not be re-read and re-sent."""
+    graph, producer = FakeGraph(), FakeProducer()
+    svc = _service(graph, producer)
+    _set_active(graph, True)
+    keys = [f"r{i}" for i in range(5)]
+    for key in keys:
+        graph.records()[key] = _record(key, ProgressStatus.AUTO_INDEX_OFF.value, reason=CONNECTOR_OFF)
+
+    async def write_does_not_take(collection, rows, transaction=None) -> list[str]:
+        return []
+
+    graph.update_nodes_fields_if_match = write_does_not_take
+
+    with patch.object(entity_module, "_REQUEUE_PAGE_SIZE", 2):
+        assert await svc._requeue_records_parked_while_off(CONNECTOR_ID) == 5
+
+    # FakeProducer fails on a second publish of the same record.
+    assert [key for key, _ in producer.sent] == keys
 
 
 @pytest.mark.asyncio

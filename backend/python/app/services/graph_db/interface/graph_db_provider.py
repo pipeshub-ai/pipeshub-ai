@@ -588,11 +588,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
         total collection size.
+
+        ``after_key`` is a keyset cursor: only documents whose key sorts
+        strictly after it are returned. It needs ``sort_field="_key"``. Prefer
+        it over ``skip`` for a result set that changes while it is walked.
 
         Args:
             collection:   Collection / label name.
@@ -1917,12 +1922,16 @@ class IGraphDBProvider(ABC):
         *,
         only_statuses: list[str] | None = None,
         reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         """Set indexingStatus for every record on a connector in one query.
 
         ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
         ``only_statuses``, when given, limits the write to records holding one
         of them. ``reason``, when given, is written alongside the status.
+        ``visibility`` defaults to ``ALL`` (trashed records included, which is
+        what the vector-store rebuild has always done); ``LIVE`` leaves the
+        trash alone.
         """
         pass
 
