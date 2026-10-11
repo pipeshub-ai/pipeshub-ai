@@ -661,11 +661,16 @@ class DataSourceEntitiesProcessor:
 
         return None
 
-    async def _access_changed(self, connector_ids: Iterable[str | None]) -> None:
+    async def _access_changed(
+        self, connector_ids: Iterable[str | None], org_id: str | None = None
+    ) -> None:
         """Drop the search cache's access lists for these connectors. After the
-        commit only: a search in between would cache the old permissions again."""
+        commit only: a search in between would cache the old permissions again.
+
+        ``org_id``: the org the change belongs to, when the caller has it; the
+        processor's own org is only the fallback."""
         for connector_id in {c for c in connector_ids if c}:
-            await notify_connector_permissions_changed(connector_id, self.org_id or None)
+            await notify_connector_permissions_changed(connector_id, org_id or self.org_id or None)
 
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]
@@ -1431,7 +1436,7 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
-            await self._access_changed([record.connector_id])
+            await self._access_changed([record.connector_id], record.org_id)
             await self._publish_membership_sync(moved_virtual_record_ids)
             await self._flush_pending_blob_moves(pending_moves)
 

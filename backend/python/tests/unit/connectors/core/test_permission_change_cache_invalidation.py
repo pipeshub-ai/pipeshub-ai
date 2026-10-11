@@ -224,3 +224,25 @@ class TestRemovalsDropTheConnector:
             await proc.on_user_group_member_removed("grp-ext", "ana@example.com", CONNECTOR)
 
         notify.assert_not_called()
+
+
+class TestTheAffectedOrgIsDropped:
+    async def test_record_permissions_use_the_records_org(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_edges_from_node = AsyncMock(return_value=[{"to_id": "rg-key"}])
+        tx.get_record_group_by_external_id = AsyncMock(return_value=None)
+        proc = _processor(tx, events)
+        record = _record()
+        record.org_id = "org-9"
+        record.shared_with_me_record_group_ids = []
+
+        await proc.on_updated_record_permissions(record, [])
+
+        notify.assert_awaited_once_with(CONNECTOR, "org-9")
+
+    async def test_processor_org_is_the_fallback(self, notify, events) -> None:
+        proc = _processor(AsyncMock(), events)
+
+        await proc._access_changed([CONNECTOR])
+
+        notify.assert_awaited_once_with(CONNECTOR, ORG)
