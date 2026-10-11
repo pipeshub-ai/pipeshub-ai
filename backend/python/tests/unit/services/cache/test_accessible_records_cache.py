@@ -40,11 +40,11 @@ class _FakePipeline:
         self._ops.append(("delete", key))
         return self
 
-    def incr(self, key):
+    def incr(self, key: str) -> "_FakePipeline":
         self._ops.append(("incr", key))
         return self
 
-    def expire(self, key, ttl):
+    def expire(self, key: str, ttl: int) -> "_FakePipeline":
         self._ops.append(("expire", key, ttl))
         return self
 
@@ -96,13 +96,13 @@ class FakeRedis:
         self.expires[key] = ttl
         return True
 
-    async def incr(self, key):
+    async def incr(self, key: str) -> int:
         self.calls.append(("incr", key))
         value = int(self.strings.get(key) or 0) + 1
         self.strings[key] = str(value)
         return value
 
-    async def hdel(self, key, *fields):
+    async def hdel(self, key: str, *fields: str) -> int:
         self.calls.append(("hdel", key, *fields))
         bucket = self.hashes.get(key, {})
         removed = sum(1 for f in fields if bucket.pop(f, None) is not None)
@@ -692,7 +692,7 @@ class TestFillFromBeforeAChangeIsNeverWritten:
         cache: AccessibleRecordsCache
 
         class _ChangeDuringWrite(FakeRedis):
-            async def hset(self, key, field, value):
+            async def hset(self, key: str, field: str, value: str) -> int:
                 await self.incr(cache._connector_epoch_key(ORG, CONNECTOR))
                 return await super().hset(key, field, value)
 
@@ -705,7 +705,7 @@ class TestFillFromBeforeAChangeIsNeverWritten:
 
     async def test_unreadable_epoch_skips_the_write_not_the_search(self) -> None:
         class _EpochDown(FakeRedis):
-            async def get(self, key):
+            async def get(self, key: str) -> str | None:
                 if ":cgen:" in key:
                     raise ConnectionError("redis down")
                 return await super().get(key)
