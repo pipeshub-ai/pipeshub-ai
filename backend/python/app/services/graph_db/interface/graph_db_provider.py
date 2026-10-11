@@ -1785,8 +1785,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Page records for a connector by stable key for membership backfill.
 
-        Returns ``{_key, virtualRecordId}`` only, ordered by key, with keys
-        strictly greater than ``after_key`` when it is set.
+        Returns ``PAGE_RECORD_FIELDS`` only, ordered by key, with keys
+        strictly greater than ``after_key`` when it is set. Soft-deleted
+        records are included.
         """
         pass
 

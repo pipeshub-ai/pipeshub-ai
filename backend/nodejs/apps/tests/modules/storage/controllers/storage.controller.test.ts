@@ -502,6 +502,92 @@ describe('StorageController', () => {
     })
   })
 
+  describe('findMissingDocuments', () => {
+    // A query stub that answers like Mongo: only rows matching _id $in, orgId and isDeleted.
+    const stubFind = (rows: any[]) =>
+      sinon.stub(DocumentModel, 'find').callsFake(((filter: any) => {
+        const ids = (filter._id.$in as string[]).map(String)
+        const hits = rows.filter(
+          (r) =>
+            ids.includes(String(r._id)) &&
+            String(r.orgId) === String(filter.orgId) &&
+            r.isDeleted === filter.isDeleted,
+        )
+        return { select: () => ({ lean: () => ({ exec: async () => hits }) }) }
+      }) as any)
+
+    const serviceReq = (orgId: string, documentIds: string[]): any => ({
+      tokenPayload: { orgId },
+      params: {},
+      query: {},
+      body: { documentIds },
+      headers: {},
+    })
+
+    it('answers the ids that do not exist for the org, in one query', async () => {
+      const orgId = makeOrgId()
+      const live = new mongoose.Types.ObjectId()
+      const gone = new mongoose.Types.ObjectId()
+      const findStub = stubFind([{ _id: live, orgId, isDeleted: false }])
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.findMissingDocuments(serviceReq(orgId, [String(live), String(gone)]), res, next)
+
+      expect(next.called).to.be.false
+      expect(findStub.calledOnce).to.be.true
+      expect(res.statusCode).to.equal(HTTP_STATUS.OK)
+      expect(res.body).to.deep.equal({ missing: [String(gone)] })
+    })
+
+    it('counts a deleted document as missing, as download does', async () => {
+      const orgId = makeOrgId()
+      const deleted = new mongoose.Types.ObjectId()
+      stubFind([{ _id: deleted, orgId, isDeleted: true }])
+      const res = makeRes()
+
+      await controller.findMissingDocuments(serviceReq(orgId, [String(deleted)]), res, sinon.stub())
+
+      expect(res.body).to.deep.equal({ missing: [String(deleted)] })
+    })
+
+    it("counts another org's document as missing", async () => {
+      const doc = new mongoose.Types.ObjectId()
+      const findStub = stubFind([{ _id: doc, orgId: makeOrgId(), isDeleted: false }])
+      const orgId = makeOrgId()
+      const res = makeRes()
+
+      await controller.findMissingDocuments(serviceReq(orgId, [String(doc)]), res, sinon.stub())
+
+      expect(String(findStub.firstCall.args[0].orgId)).to.equal(orgId)
+      expect(res.body).to.deep.equal({ missing: [String(doc)] })
+    })
+
+    it('answers a malformed id as missing without querying it', async () => {
+      const orgId = makeOrgId()
+      const findStub = stubFind([])
+      const res = makeRes()
+
+      await controller.findMissingDocuments(serviceReq(orgId, ['not-an-id', 'not-an-id']), res, sinon.stub())
+
+      expect(findStub.called).to.be.false
+      expect(res.body).to.deep.equal({ missing: ['not-an-id'] })
+    })
+
+    it('passes a failed query on rather than answering that nothing is missing', async () => {
+      sinon.stub(DocumentModel, 'find').throws(new Error('mongo down'))
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.findMissingDocuments(
+        serviceReq(makeOrgId(), [String(new mongoose.Types.ObjectId())]), res, next,
+      )
+
+      expect(next.calledOnce).to.be.true
+      expect(res.body).to.equal(null)
+    })
+  })
+
   describe('deleteDocumentById', () => {
     it('should soft-delete a document', async () => {
       const doc = makeDocument()

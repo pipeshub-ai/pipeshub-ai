@@ -164,6 +164,7 @@ from app.services.graph_db.taxonomy import (
     subcategory_level,
 )
 from app.services.graph_db.vector_membership_queries import (
+    PAGE_RECORD_FIELDS,
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
@@ -3291,12 +3292,10 @@ class Neo4jProvider(IGraphDBProvider):
             )
             if not results:
                 return []
-            rows = []
-            for record in results:
-                key = record["_key"] if "_key" in record else None
-                vrid = record["virtualRecordId"] if "virtualRecordId" in record else None
-                rows.append({"_key": key, "virtualRecordId": vrid})
-            return rows
+            return [
+                {field: record[field] if field in record else None for field in PAGE_RECORD_FIELDS}
+                for record in results
+            ]
         except Exception as e:
             self.logger.error(
                 "Failed to page records for vector membership backfill "

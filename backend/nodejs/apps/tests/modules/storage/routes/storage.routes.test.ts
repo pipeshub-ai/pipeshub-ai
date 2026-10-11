@@ -40,6 +40,7 @@ describe('Storage Routes', () => {
       moveTree: sinon.stub().resolves(),
       relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
       listConnectorVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      findMissingDocuments: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
 
@@ -267,6 +268,20 @@ describe('Storage Routes', () => {
     })
   })
 
+  describe('missing-documents route', () => {
+    it('registers POST /internal/missing behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route && layer.route.path === '/internal/missing' && layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+      expect(mockAuthMiddleware.scopedTokenValidator.calledWith('storage:token')).to.be.true
+      const handles = route.route.stack.map((h: any) => h.handle)
+      expect(handles[0]).to.equal(mockAuthMiddleware.scopedTokenValidator.returnValues[0])
+    })
+  })
+
   describe('config update route', () => {
     it('should register POST /updateAppConfig route', () => {
       const router = createStorageRouter(container)
@@ -287,9 +302,9 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 18 service-token /internal routes (incl. move-tree, connector delete, its
-// handover pair and the two purges) + updateAppConfig
-      expect(routes.length).to.equal(19)
+// 19 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair, missing and the two purges) + updateAppConfig
+      expect(routes.length).to.equal(20)
     })
   })
 

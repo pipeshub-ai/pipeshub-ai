@@ -1820,7 +1820,7 @@ class BlobStorage(Transformer):
     VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE = 500
 
     async def get_document_ids_by_virtual_record_ids(
-        self, virtual_record_ids: list[str]
+        self, virtual_record_ids: list[str], *, raise_on_error: bool = False
     ) -> dict[str, dict]:
         """Resolve many virtual-record → document mappings with one query per chunk.
 
@@ -1836,6 +1836,10 @@ class BlobStorage(Transformer):
         with no mapping at all are absent from the result rather than
         present-and-empty, so callers can tell the difference between "not
         found" and "not looked up".
+
+        A failed read is logged and its ids left out, so a chat turn still
+        answers. ``raise_on_error`` raises it instead, for callers that act on
+        an id being absent.
         """
         if not self.graph_provider:
             self.logger.error("❌ GraphProvider not initialized, cannot resolve virtual record IDs.")
@@ -1847,15 +1851,19 @@ class BlobStorage(Transformer):
 
         collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
         resolved: dict[str, dict] = {}
+        # Only when set: the chat path's provider calls stay exactly as they were.
+        strict = {"raise_on_error": True} if raise_on_error else {}
 
         chunk_size = self.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE
         for start in range(0, len(unique_ids), chunk_size):
             chunk = unique_ids[start:start + chunk_size]
             try:
                 nodes = await self.graph_provider.get_nodes_by_field_in(
-                    collection_name, "id", chunk
+                    collection_name, "id", chunk, **strict
                 )
             except Exception as e:
+                if raise_on_error:
+                    raise
                 # Degrade to the per-id path for this chunk rather than failing the turn.
                 self.logger.warning("Batch virtual-record lookup failed, falling back: %s", str(e))
                 nodes = []
@@ -1893,13 +1901,15 @@ class BlobStorage(Transformer):
         if missing:
             fallbacks = await asyncio.gather(
                 *[
-                    self.graph_provider.get_document(vrid, collection_name)
+                    self.graph_provider.get_document(vrid, collection_name, **strict)
                     for vrid in missing
                 ],
                 return_exceptions=True,
             )
             for vrid, doc in zip(missing, fallbacks):
                 if isinstance(doc, Exception):
+                    if raise_on_error:
+                        raise doc
                     self.logger.warning(
                         "Virtual-record mapping fallback failed for %s: %s", vrid, str(doc)
                     )

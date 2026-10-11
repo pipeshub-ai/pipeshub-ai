@@ -229,6 +229,7 @@ from app.services.graph_db.user_email_identity import (
     graph_user_key,
 )
 from app.services.graph_db.vector_membership_queries import (
+    PAGE_RECORD_FIELDS,
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
     can_use_membership_cleanup,
@@ -4580,10 +4581,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not results:
                 return []
             return [
-                {
-                    "_key": row.get("_key"),
-                    "virtualRecordId": row.get("virtualRecordId"),
-                }
+                {field: row.get(field) for field in PAGE_RECORD_FIELDS}
                 for row in results
             ]
         except Exception as e:

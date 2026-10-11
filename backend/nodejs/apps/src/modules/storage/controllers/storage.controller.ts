@@ -700,6 +700,39 @@ export class StorageController {
     }
   }
 
+  // Same condition as download (getDocumentInfoFromDb): absent, another org's, or deleted.
+  async findMissingDocuments(
+    req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = toObjectId(extractOrgId(req), 'organization');
+      const { documentIds } = req.body as { documentIds: string[] };
+      const requested = [...new Set(documentIds)];
+      const wellFormed = requested.filter((id) =>
+        mongoose.isObjectIdOrHexString(id),
+      );
+      const found = new Set<string>();
+      if (wellFormed.length > 0) {
+        const rows = await DocumentModel.find({
+          _id: { $in: wellFormed },
+          orgId,
+          isDeleted: false,
+        })
+          .select('_id')
+          .lean<{ _id: unknown }[]>()
+          .exec();
+        for (const row of rows) found.add(String(row._id));
+      }
+      res
+        .status(HTTP_STATUS.OK)
+        .json({ missing: requested.filter((id) => !found.has(id)) });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   async deleteByConnector(
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
