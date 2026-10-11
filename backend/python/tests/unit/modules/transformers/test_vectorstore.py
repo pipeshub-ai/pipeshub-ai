@@ -2569,3 +2569,74 @@ class TestRecordSummaryEmbeddingInit:
             await vs.index_record_summary("rec-1", "vr-1", "org-1", MagicMock())
 
         vs.delete_blocks_by_ids.assert_not_awaited()
+
+
+# ===================================================================
+# The record-existence guard shared by one record's batches
+# ===================================================================
+
+
+class TestRecordPresenceAcrossBatches:
+    """Each batch skips its embedding when the record was deleted mid-flight.
+    The read behind that is about a millisecond of driver CPU on the indexing
+    loop on Neo4j, and a large record runs one batch per 50 documents."""
+
+    @staticmethod
+    def _store(get_document):
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openai"  # concurrent remote batches
+        vs.graph_provider.get_document = get_document
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=lambda texts: [[0.1, 0.2] for _ in texts]
+        )
+        return vs
+
+    @staticmethod
+    def _docs(count):
+        from langchain_core.documents import Document
+
+        return [Document(page_content=f"block {i}", metadata={}) for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_one_read_covers_the_batches_of_one_record(self) -> None:
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(return_value={"_key": "rec-1"}))
+
+        await vs._process_document_chunks(
+            self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+        )
+
+        assert vs.vector_db_service.upsert_points.await_count == 10
+        vs.graph_provider.get_document.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_gone_record_is_asked_about_by_every_batch(self) -> None:
+        """A negative answer is not shared: each batch asks again, as before."""
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(return_value=None))
+
+        await vs._process_document_chunks(
+            self._docs(3 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+        )
+
+        vs.vector_db_service.upsert_points.assert_not_awaited()
+        assert vs.graph_provider.get_document.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_present_answer_expires(self) -> None:
+        from app.modules.transformers.vectorstore import _RecordPresence
+
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(side_effect=[{"_key": "rec-1"}, None])
+        clock = iter([100.0, 100.5, 103.0])
+        presence = _RecordPresence(graph, "rec-1", max_age_s=2.0)
+
+        with patch("app.modules.transformers.vectorstore.time.monotonic", lambda: next(clock)):
+            assert await presence.check() is True   # read at 100.0
+            assert await presence.check() is True   # 0.5 s later: reused
+            assert await presence.check() is False  # 3 s later: read again, gone
+
+        assert graph.get_document.await_count == 2
