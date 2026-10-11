@@ -174,31 +174,41 @@ APPROVAL_GATED_ENVIRONMENTS = {
 }
 
 
-def _yaml_scalar(raw: str) -> str:
-    """A one-line YAML scalar as GitHub reads it; anything unusual comes back unmatched."""
-    raw = raw.strip()
-    if raw[:1] in ("'", '"'):
-        quote = raw[0]
-        end = raw.find(quote, 1)
-        rest = raw[end + 1:].strip() if end != -1 else "x"
-        if end == -1 or (rest and not rest.startswith("#")) or "\\" in raw[1:end]:
-            return raw
-        return raw[1:end]
-    if raw.startswith("#"):
-        return ""
-    return raw.split(" #", 1)[0].rstrip()
+_YAML_BLANK = " \t"
+
+
+def _plain_value(raw: str, below: str, key_indent: int) -> str | None:
+    """A key's value if it is an unquoted one-line scalar; "" if a mapping follows; else None.
+
+    Fails closed: only space and tab are YAML whitespace, a quote or escape is
+    kept for the allowlist to miss, and a deeper line folds into a non-empty value.
+    """
+    if raw.lstrip(_YAML_BLANK).startswith("#"):
+        value = ""
+    else:
+        value = re.split(r"[ \t]#", raw, maxsplit=1)[0].strip(_YAML_BLANK)
+    for line in below.split("\n"):
+        if line.strip(_YAML_BLANK) == "":
+            continue
+        if len(line) - len(line.lstrip(" ")) > key_indent:
+            return None if value else ""
+        break
+    return value
 
 
 def _job_environment(block: str, key_indent: int) -> str | None:
     """The job's environment name, from `environment: x` or its `name:` child."""
-    match = re.search(rf"^ {{{key_indent}}}environment:[ \t]*(.*)$", block, re.M)
+    match = re.search(rf"^ {{{key_indent}}}environment:(.*)$", block, re.M)
     if match is None:
         return None
-    value = _yaml_scalar(match.group(1))
-    if value:
+    rest = block[match.end():]
+    value = _plain_value(match.group(1), rest, key_indent)
+    if value != "":
         return value
-    child = re.search(rf"\A\n {{{key_indent + 1},}}name:[ \t]*(.*)$", block[match.end():], re.M)
-    return _yaml_scalar(child.group(1)) if child else None
+    child = re.search(rf"\A\n( {{{key_indent + 1},}})name:(.*)$", rest, re.M)
+    if child is None:
+        return None
+    return _plain_value(child.group(2), rest[child.end():], len(child.group(1))) or None
 
 
 def _ungated_secret_jobs(text: str) -> list[str]:
@@ -310,13 +320,36 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "      name: \"integration-test-dev # x\"\n"
             "    steps:\n"
             "      - run: echo ${{ secrets.API_KEY }}\n"
-            "  quoted_with_comment:\n"
-            "    environment: 'integration-test-dev' # the gated one\n"
+            "  trailing_nbsp:\n"
+            "    environment: integration-test-dev\u00a0\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  leading_nbsp:\n"
+            "    environment: \u00a0integration-test-dev\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  folded:\n"
+            "    environment: integration-test-dev\n"
+            "      extra\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  folded_name:\n"
+            "    environment:\n"
+            "      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}\n"
+            "        x\n"
+            "    steps:\n"
+            "      - run: echo ${{ secrets.API_KEY }}\n"
+            "  plain_with_comment:\n"
+            "    environment: integration-test-dev # the gated one\n"
             "    steps:\n"
             "      - run: echo ${{ secrets.API_KEY }}\n"
         )
         self.assertEqual(
-            _ungated_secret_jobs(workflow), ["daily", "made_up", "stray_quote", "hash_in_quotes"]
+            _ungated_secret_jobs(workflow),
+            [
+                "daily", "made_up", "stray_quote", "hash_in_quotes",
+                "trailing_nbsp", "leading_nbsp", "folded", "folded_name",
+            ],
         )
 
 
