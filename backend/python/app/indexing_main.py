@@ -334,8 +334,6 @@ async def recover_in_progress_records(
                                     "extractionStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                                     "processingStartedAt": None,
                                     "reason": CONNECTOR_OFF,
-                                    # See connector_off_updates.
-                                    "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                                 },
                             )
                             results["skipped"] += 1
@@ -949,8 +947,6 @@ async def _sweep_queued_records_for_inactive_connectors(
                             "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
                             "processingStartedAt": None,
                             "reason": CONNECTOR_OFF,
-                            # See connector_off_updates.
-                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
                         },
                     )
                     swept += 1
@@ -1054,10 +1050,9 @@ async def _republish_stranded_records(
     these at once (EntityEventService._requeue_records_parked_while_off); this
     is the net for what that single pass missed -- a refused send, a pass that
     died -- and for a record parked just after it ran. Such a record keeps its
-    status here, as the others do, so the same age and back-off bound it. Every
-    path that parks one restarts its queuedAtTimestamp, so the minimum age
-    counts from the park: a record queued long before the pause is not sent
-    here alongside the turn-on re-queue.
+    status here, as the others do, so the same age and back-off bound it, and
+    its age also counts from the connector's enabledAtTimestamp, so nothing is
+    sent from here while that re-queue may still be sending it.
     """
     after_seconds = messaging_env.stranded_record_republish_after_seconds
     if after_seconds <= 0:
@@ -1132,12 +1127,14 @@ async def _republish_stranded_records(
             # not shrink under the cursor — advance over the whole page.
             offset += len(page)
 
+    # Per connector that is on: when it was last turned on.
+    enabled_at: dict[str, object] = {}
+
     async def _pages_parked_while_off() -> AsyncGenerator[list[dict], None]:
         """Per connector that is on, so neither a paused connector's parked
         backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
         (no reason) is read on every pass; each read is a seek in the
         (connectorId, indexingStatus, reason, key) index."""
-        active_ids: list[str] = []
         offset = 0
         while True:
             apps = await graph_provider.get_documents_paginated(
@@ -1148,11 +1145,13 @@ async def _republish_stranded_records(
                 sort_field="_key",
                 raise_on_error=False,
             )
-            active_ids.extend(k for app in apps if (k := app.get("_key") or app.get("id")))
+            for app in apps:
+                if key := app.get("_key") or app.get("id"):
+                    enabled_at[key] = app.get("enabledAtTimestamp")
             if len(apps) < page_size:
                 break
             offset += len(apps)
-        for connector_id in active_ids:
+        for connector_id in list(enabled_at):
             # "" rather than None, so the first page has the key predicate
             # too: Neo4j uses a composite index only when every property in
             # it has one.
@@ -1218,11 +1217,17 @@ async def _republish_stranded_records(
                 # sends another copy of the same event -- worst precisely when
                 # the consumer is backlogged, which is the case this sweep
                 # exists for.
+                # A record parked while its connector was off is also aged
+                # from when the connector was turned on again: until then the
+                # appEnabled re-queue is sending it, and a copy from here
+                # would reach the consumer twice. Its own clocks are of the
+                # park, often hours older.
                 clocks: list[float] = []
                 for value in (
                     record.get("queuedAtTimestamp"),
                     record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
+                    enabled_at.get(connector_id) if parked_while_off else None,
                 ):
                     try:
                         clocks.append(float(value))

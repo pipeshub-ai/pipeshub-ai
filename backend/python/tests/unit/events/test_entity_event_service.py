@@ -717,8 +717,6 @@ class TestAppDisabledDrainsQueuedRecords:
         # A trashed record is skipped by the resume, so parking it would leave
         # it parked if it were restored later.
         assert kwargs["visibility"] is RecordVisibility.LIVE
-        # Parking restarts the queue clock the stranded-record sweep ages on.
-        assert isinstance(kwargs["queued_at"], int) and kwargs["queued_at"] > 0
 
     @pytest.mark.asyncio
     async def test_sweep_failure_does_not_abort_the_disable(self):

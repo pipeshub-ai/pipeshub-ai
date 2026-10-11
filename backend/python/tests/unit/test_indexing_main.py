@@ -626,8 +626,6 @@ class TestRecoverInProgressRecords:
         assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
-        # Only a record parked as CONNECTOR_OFF restarts its queue clock.
-        assert "queuedAtTimestamp" not in updates
         producer = mock_container.kafka_consumers[0][2]
         producer.send_event.assert_not_awaited()
 
@@ -648,7 +646,6 @@ class TestRecoverInProgressRecords:
         gp.get_document = AsyncMock(
             side_effect=_document_lookup(gp, connector={"isActive": False})
         )
-        before = get_epoch_timestamp_in_ms()
 
         await recover_in_progress_records(mock_container, gp)
 
@@ -659,9 +656,6 @@ class TestRecoverInProgressRecords:
         assert updates["parsingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
         assert updates["extractionStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
-        # Parked now, so the stranded-record sweep ages it from now, not from
-        # when it was first queued.
-        assert updates["queuedAtTimestamp"] >= before
         producer = mock_container.kafka_consumers[0][2]
         producer.send_event.assert_not_awaited()
 

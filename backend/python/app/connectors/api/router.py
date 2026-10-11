@@ -7920,12 +7920,19 @@ async def toggle_connector_instance(
                 )
 
         # Update connector status
+        now = get_epoch_timestamp_in_ms()
         updates = {
             status_field: target_status,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": now,
             "updatedBy": user_id,
             **owner_updates,
         }
+        if toggle_type == "sync" and target_status:
+            # The stranded-record sweep waits this long past it before sending
+            # records parked while the connector was off, so it does not send
+            # them beside the appEnabled re-queue. updatedAtTimestamp would do
+            # too, but every app write moves it.
+            updates["enabledAtTimestamp"] = now
 
         success = await connector_registry.update_connector_instance(
             connector_id=connector_id,

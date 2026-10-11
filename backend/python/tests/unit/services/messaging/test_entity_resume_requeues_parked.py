@@ -74,7 +74,7 @@ class FakeGraph:
 
     async def reset_indexing_status_for_connector(
         self, connector_id, status, exclude_statuses=None, transaction=None,
-        *, only_statuses=None, reason=None, visibility=RecordVisibility.ALL, queued_at=None,
+        *, only_statuses=None, reason=None, visibility=RecordVisibility.ALL,
     ) -> None:
         for doc in self.records().values():
             if doc.get("connectorId") != connector_id:
@@ -88,8 +88,6 @@ class FakeGraph:
             doc["indexingStatus"] = status
             if reason is not None:
                 doc["reason"] = reason
-            if queued_at is not None:
-                doc["queuedAtTimestamp"] = queued_at
 
     async def get_documents_paginated(
         self, collection, skip=0, limit=50, filters=None, sort_field=None,

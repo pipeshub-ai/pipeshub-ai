@@ -26,7 +26,6 @@ from app.config.constants.arangodb import (
 )
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.messaging.connector_off import ConnectorOffResult
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import CONNECTOR_OFF
 
 if TYPE_CHECKING:
@@ -125,20 +124,12 @@ def gating_connector_id(record: Mapping[str, Any]) -> str | None:
 
 
 def connector_off_updates(record: Mapping[str, Any]) -> dict[str, Any]:
-    """The fields the handler writes on a record whose connector is off.
-
-    ``queuedAtTimestamp`` is restarted, as every path that parks a record
-    with CONNECTOR_OFF does: the stranded-record sweep ages parked records on
-    it, and a record queued long before the pause would otherwise be old
-    enough the moment it is parked, and sent by a sweep tick alongside the
-    turn-on re-queue.
-    """
+    """The fields the handler writes on a record whose connector is off."""
     updates: dict[str, Any] = {
         "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
         "extractionStatus": record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
         "processingStartedAt": None,
         "reason": CONNECTOR_OFF,
-        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
     }
     if record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value:
         updates["parsingStatus"] = ProgressStatus.AUTO_INDEX_OFF.value

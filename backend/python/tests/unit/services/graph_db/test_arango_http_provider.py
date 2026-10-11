@@ -1753,22 +1753,20 @@ class TestVectorStoreRebuildGraphQueries:
         assert bind["status"] == "NOT_STARTED"
         assert bind["exclude_statuses"] == ["IN_PROGRESS"]
         # Unused bind vars are an AQL error.
-        assert "only_statuses" not in bind and "reason" not in bind and "queued_at" not in bind
+        assert "only_statuses" not in bind and "reason" not in bind
 
     @pytest.mark.asyncio
     async def test_reset_limited_to_statuses_and_stamping_a_reason(self, connected_provider) -> None:
         connected_provider.execute_query = AsyncMock(return_value=[])
         await connected_provider.reset_indexing_status_for_connector(
-            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off", queued_at=42
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
         )
         query = connected_provider.execute_query.await_args.args[0]
         bind = connected_provider.execute_query.await_args.kwargs["bind_vars"]
         assert "doc.indexingStatus IN @only_statuses" in query
         assert "reason: @reason" in query
-        assert "queuedAtTimestamp: @queued_at" in query
         assert bind["only_statuses"] == ["QUEUED"]
         assert bind["reason"] == "off"
-        assert bind["queued_at"] == 42
         assert "exclude_statuses" not in bind
         assert "isDeleted" not in query
 

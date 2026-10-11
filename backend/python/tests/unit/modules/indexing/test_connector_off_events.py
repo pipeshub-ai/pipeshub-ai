@@ -13,7 +13,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import EventTypes, OriginTypes, ProgressStatus
-from app.modules.indexing import connector_off_events as connector_off_module
 from app.modules.indexing.connector_off_events import (
     ConnectorState,
     GraphConnectorOffFilter,
@@ -32,7 +31,6 @@ NEW = EventTypes.NEW_RECORD.value
 UPDATE = EventTypes.UPDATE_RECORD.value
 REINDEX = EventTypes.REINDEX_RECORD.value
 DELETE = EventTypes.DELETE_RECORD.value
-NOW = 1_800_000_000_000
 
 
 def _payload(record_id: str = "r1", connector_id: str = "conn-off", **extra: object) -> dict:
@@ -164,15 +162,13 @@ class TestReadTimeOutcome:
         assert read_time_outcome(NEW, _payload(), None, OFF) is ReadTimeOutcome.PASS
 
     def test_the_status_written_keeps_a_completed_extraction_and_mirrors_parsing(self) -> None:
-        with patch.object(connector_off_module, "get_epoch_timestamp_in_ms", return_value=NOW):
-            updates = connector_off_updates(
-                _record(
-                    extractionStatus=ProgressStatus.COMPLETED.value,
-                    parsingStatus=ProgressStatus.IN_PROGRESS.value,
-                    processingStartedAt=123,
-                    queuedAtTimestamp=1,
-                )
+        updates = connector_off_updates(
+            _record(
+                extractionStatus=ProgressStatus.COMPLETED.value,
+                parsingStatus=ProgressStatus.IN_PROGRESS.value,
+                processingStartedAt=123,
             )
+        )
 
         assert updates == {
             "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
@@ -180,8 +176,6 @@ class TestReadTimeOutcome:
             "parsingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
             "processingStartedAt": None,
             "reason": CONNECTOR_OFF,
-            # Parked now: the stranded-record sweep ages it from here.
-            "queuedAtTimestamp": NOW,
         }
 
 
@@ -227,19 +221,14 @@ class TestTheHandlerDoesExactlyWhatTheFilterSettles:
 
         message = _message(event_type, **payload_extra)
 
-        # One clock for both, so the queue time each writes compares equal.
-        with (
-            patch.object(connector_off_module, "get_epoch_timestamp_in_ms", return_value=NOW),
-            patch.object(record_module, "get_epoch_timestamp_in_ms", return_value=NOW),
-        ):
-            # The filter, on one copy of the graph.
-            filtered = build()
-            result = await GraphConnectorOffFilter(filtered, logging.getLogger("t"), 15.0).settle([message])
+        # The filter, on one copy of the graph.
+        filtered = build()
+        result = await GraphConnectorOffFilter(filtered, logging.getLogger("t"), 15.0).settle([message])
 
-            # The handler, on another.
-            handled = build()
-            handler, event_processor = _handler(handled)
-            events = [e.event async for e in handler.process_event(event_type, dict(message.payload))]
+        # The handler, on another.
+        handled = build()
+        handler, event_processor = _handler(handled)
+        events = [e.event async for e in handler.process_event(event_type, dict(message.payload))]
 
         assert result.settled == frozenset({0})
         assert events == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]

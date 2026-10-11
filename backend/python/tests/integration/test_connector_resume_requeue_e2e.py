@@ -153,7 +153,11 @@ def _issue(connector_id: str, name: str) -> TicketRecord:
 
 
 async def _set_active(graph: IGraphDBProvider, connector_id: str, active: bool) -> None:
-    await graph.update_node(connector_id, CollectionNames.APPS.value, {"isActive": active})
+    """What the toggle writes: turning sync on also stamps enabledAtTimestamp."""
+    updates: dict = {"isActive": active}
+    if active:
+        updates["enabledAtTimestamp"] = get_epoch_timestamp_in_ms()
+    await graph.update_node(connector_id, CollectionNames.APPS.value, updates)
 
 
 async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraphDBProvider) -> None:
@@ -210,10 +214,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         container.messaging_producer = producer
         service = EntityEventService(logger, graph, container)
 
-        # Queued long before the pause: parking must restart this clock.
-        await graph.update_node(ids["queued-1"], CollectionNames.RECORDS.value, {"queuedAtTimestamp": 1})
         await _set_active(graph, connector_id, False)
-        paused_at = get_epoch_timestamp_in_ms()
         with patch.object(entity_module, "get_coordinator", return_value=None):
             assert await service.process_event(
                 "appDisabled", {"orgId": ORG_ID, "apps": ["jira"], "connectorId": connector_id}
@@ -223,7 +224,6 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             doc = await stored(name)
             assert doc["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value, name
             assert doc["reason"] == CONNECTOR_OFF, name
-            assert doc["queuedAtTimestamp"] >= paused_at, name
         assert (await stored("in-flight"))["indexingStatus"] == ProgressStatus.IN_PROGRESS.value
         assert (await stored("manual-only")).get("reason") is None
         failed = await stored("failed")
@@ -238,16 +238,6 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             ids["in-flight"], CollectionNames.RECORDS.value, connector_off_updates(in_flight)
         )
 
-        # Parked by another path and then trashed; and the filtered record, both
-        # with an old queue clock the turn-on must leave alone.
-        await graph.update_node(ids["trashed"], CollectionNames.RECORDS.value, {
-            "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
-            "reason": CONNECTOR_OFF,
-            "queuedAtTimestamp": 1,
-        })
-        await graph.update_node(ids["manual-only"], CollectionNames.RECORDS.value, {"queuedAtTimestamp": 1})
-
-        turned_on_at = get_epoch_timestamp_in_ms()
         await _set_active(graph, connector_id, True)
         # The broker refuses one; it stays parked for the sweep below.
         producer.refuse = {ids["refused"]}
@@ -269,16 +259,9 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         failed = await stored("failed")
         assert (failed["indexingStatus"], failed["reason"]) == (ProgressStatus.FAILED.value, "parse error")
 
-        # The trash is not re-queued, even when parked.
-        assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.AUTO_INDEX_OFF.value
+        assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.QUEUED.value
         refused = await stored("refused")
         assert (refused["indexingStatus"], refused["reason"]) == (ProgressStatus.AUTO_INDEX_OFF.value, CONNECTOR_OFF)
-        # Restamped at turn-on, before anything was sent, so the sweep waits
-        # out its minimum age from the turn-on, not from the park.
-        assert refused["queuedAtTimestamp"] >= turned_on_at
-        # Neither the filtered record nor the trashed one was stamped.
-        assert (await stored("manual-only"))["queuedAtTimestamp"] == 1
-        assert (await stored("trashed"))["queuedAtTimestamp"] == 1
 
         # Only the refused one is still parked.
         assert await service._requeue_records_parked_while_off(connector_id) == 0
@@ -289,16 +272,26 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
             await graph.update_node(ids[name], CollectionNames.RECORDS.value, {
                 "queuedAtTimestamp": 1, "updatedAtTimestamp": 1,
             })
+
+        async def sweep() -> int:
+            with patch.dict(os.environ, {"STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": "3600"}):
+                return await _republish_stranded_records(
+                    graph_provider=graph,
+                    logger=logger,
+                    producer=producer,
+                    run_coordination=_run,
+                    concurrency_manager=None,
+                    page_size=100,
+                )
+
         sent_before = len(producer.sent)
-        with patch.dict(os.environ, {"STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": "3600"}):
-            assert await _republish_stranded_records(
-                graph_provider=graph,
-                logger=logger,
-                producer=producer,
-                run_coordination=_run,
-                concurrency_manager=None,
-                page_size=100,
-            ) == 1
+        # Its own clocks are old, but the connector was turned on just now:
+        # the turn-on re-queue may still be sending it.
+        assert await sweep() == 0
+        assert len(producer.sent) == sent_before
+        # An hour after the turn-on, it is the sweep's.
+        await graph.update_node(connector_id, CollectionNames.APPS.value, {"enabledAtTimestamp": 1})
+        assert await sweep() == 1
         assert [key for key, _ in producer.sent[sent_before:]] == [ids["refused"]]
         assert (await stored("refused"))["lastRepublishedAt"] >= now
         assert (await stored("manual-only")).get("lastRepublishedAt") is None

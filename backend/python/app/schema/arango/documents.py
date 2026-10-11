@@ -171,6 +171,8 @@ app_schema = {
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
+            # Set when sync is turned on; see toggle_connector_instance.
+            "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},

@@ -1277,8 +1277,6 @@ class RecordEventHandler(BaseEventService):
                             indexing_status=ProgressStatus.AUTO_INDEX_OFF.value,
                             extraction_status=record.get("extractionStatus", ProgressStatus.NOT_STARTED.value),
                             reason=CONNECTOR_OFF,
-                            # See connector_off_updates.
-                            queued_at=get_epoch_timestamp_in_ms(),
                         )
                         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
@@ -1800,7 +1798,6 @@ class RecordEventHandler(BaseEventService):
         indexing_status: str,
         extraction_status: str,
         reason: str | None = None,
-        queued_at: int | None = None,
     ) -> dict|None:
         """Update document status in database"""
         try:
@@ -1825,8 +1822,6 @@ class RecordEventHandler(BaseEventService):
 
             if reason:
                 updates["reason"] = reason
-            if queued_at is not None:
-                updates["queuedAtTimestamp"] = queued_at
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,

@@ -2018,7 +2018,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
         only_statuses: list[str] | None = None,
         reason: str | None = None,
         visibility: RecordVisibility = RecordVisibility.ALL,
-        queued_at: int | None = None,
     ) -> None:
         if not connector_id:
             return
@@ -2041,16 +2040,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 if visibility is RecordVisibility.ALL
                 else f"FILTER {aql_record_visibility('doc', visibility)}"
             )
-            # AQL rejects a declared-but-unused bind var, so only bind these here.
+            # AQL rejects a declared-but-unused bind var, so only bind it here.
             reason_field = ", reason: @reason" if reason is not None else ""
-            queued_at_field = ", queuedAtTimestamp: @queued_at" if queued_at is not None else ""
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
                 {include_clause}
                 {visibility_clause}
-                UPDATE doc WITH {{ indexingStatus: @status{reason_field}{queued_at_field} }} IN @@collection
+                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
@@ -2063,8 +2061,6 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars["only_statuses"] = included
             if reason is not None:
                 bind_vars["reason"] = reason
-            if queued_at is not None:
-                bind_vars["queued_at"] = queued_at
             await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
         except Exception as e:
             # Must not be swallowed: the rebuild drops the vector collection
