@@ -106,8 +106,16 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
     payload["user"] = token
     payload["token_type"] = AuthTokenType.REGULAR.value
     if payload.get("tokenType") == "oauth":
+        # "".split(" ") is [""]. A token with no scope names is not a grant.
+        scopes = str(payload.get("scope") or "").split()
+        if not scopes:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         payload["isOAuth"] = True
-        payload["oauthScopes"] = payload.get("scope", "").split(" ")
+        payload["oauthScopes"] = scopes
         payload["oauthClientId"] = payload.get("client_id")
         # A client_credentials token has no caller of its own: its userId is
         # the client id. The `createdBy` claim carries the identity it acts

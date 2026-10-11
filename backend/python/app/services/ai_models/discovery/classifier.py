@@ -104,5 +104,6 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         is_reasoning=is_reasoning,
         supports_tools=supports_tools,
         deprecated=bool(deprecated),
+        released_at=raw.released_at,
         source=source,  # type: ignore[arg-type]
     )

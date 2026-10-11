@@ -11,6 +11,8 @@ import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace
 import { SchemaFormField } from '@/app/(main)/workspace/connectors/components/schema-form-field';
 import type { SchemaField } from '@/app/(main)/workspace/connectors/types';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
+import { toast } from '@/lib/store/toast-store';
+import { Spinner } from '@/app/components/ui/spinner';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
@@ -21,12 +23,14 @@ import { canFetchModels, useModelDiscovery } from '../hooks/use-model-discovery'
 import { useBatchAddModels } from '../hooks/use-batch-add-models';
 import { EmbeddingDownloadProgress } from './embedding-download-progress';
 import {
-  ModelPicker,
-  seedTypedModels,
+  PickedModelsList,
+  customPicked,
+  pickedFromDiscovered,
   type PerModelFlag,
   type PerModelFlagField,
   type PickedDefaults,
 } from './model-picker';
+import { ModelCombobox } from './model-combobox';
 import { BatchProgressList } from './batch-progress-list';
 
 const COMPAT_FIELD_NAMES = ['isReasoning', 'isMultimodal', 'trustRemoteCode'] as const;
@@ -41,7 +45,19 @@ const PER_MODEL_FIELD_NAMES = new Set([
   ...PER_MODEL_FLAGS,
 ]);
 
+/** Hidden from the shared form once several models are picked; each row sets its own. */
+const PER_MODEL_FORM_FIELDS: ReadonlySet<string> = new Set(
+  [...PER_MODEL_FIELD_NAMES].filter((name) => name !== 'model'),
+);
+
+const PER_MODEL_FORM_FIELDS_LIST = [...PER_MODEL_FORM_FIELDS];
+
 const NO_HIDDEN_FIELDS: ReadonlySet<string> = new Set();
+
+/** Besides required fields, these change which models the provider lists. */
+const DISCOVERY_SCOPE_FIELDS = ['endpoint', 'region', 'awsAccessKeyId'];
+
+const DISCOVERY_DEBOUNCE_MS = 500;
 
 function boolValue(v: unknown): boolean {
   return typeof v === 'boolean' ? v : v === 'true' ? true : v === 'false' ? false : Boolean(v);
@@ -284,6 +300,8 @@ export function ModelConfigDialog({
   const [defaultModelId, setDefaultModelId] = useState<string | null>(null);
   const discovery = useModelDiscovery();
   const batch = useBatchAddModels();
+  const progressToastRef = useRef<string | null>(null);
+  const checkStatusRef = useRef<HTMLDivElement>(null);
   const resetBatch = batch.reset;
   const resetDiscoveryState = discovery.reset;
   const [downloadTarget, setDownloadTarget] = useState<{
@@ -292,6 +310,8 @@ export function ModelConfigDialog({
   } | null>(null);
   const downloadResolverRef = useRef<((ready: boolean) => void) | null>(null);
   const touchedFieldsRef = useRef<Set<string>>(new Set());
+  /** Ids typed before the provider described them; they take its metadata once it does. */
+  const provisionalIdsRef = useRef<Set<string>>(new Set());
   const [revealState, setRevealState] = useState<'hidden' | 'loading' | 'shown'>('hidden');
   const revealAvailable = useSecretRevealAvailable(open && mode === 'edit');
 
@@ -306,6 +326,7 @@ export function ModelConfigDialog({
       resetDiscoveryState();
       resetBatch();
       touchedFieldsRef.current = new Set();
+      provisionalIdsRef.current = new Set();
       return;
     }
 
@@ -316,6 +337,7 @@ export function ModelConfigDialog({
     resetDiscoveryState();
     resetBatch();
     touchedFieldsRef.current = new Set();
+    provisionalIdsRef.current = new Set();
 
     if (mode === 'edit' && editModel) {
       const initial: Record<string, unknown> = {};
@@ -366,6 +388,8 @@ export function ModelConfigDialog({
           ? sanitizeAzureOpenAiCommaFreeValue(value)
           : value;
       touchedFieldsRef.current.add(name);
+      // Editing the single model's own settings makes them the user's, not the provider's.
+      if (PER_MODEL_FIELD_NAMES.has(name) && name !== 'model') provisionalIdsRef.current.clear();
       setValues((prev) => ({ ...prev, [name]: next }));
     },
     [provider?.providerId]
@@ -535,7 +559,7 @@ export function ModelConfigDialog({
         }
       }
 
-      if (mode === 'add' && picked.length > 0) {
+      if (mode === 'add' && picked.length > 1) {
         await runBatch(
           modelType,
           picked,
@@ -561,6 +585,7 @@ export function ModelConfigDialog({
           return;
         }
 
+        beginCheck([resolveModelDisplayName(values, provider)]);
         await AIModelsApi.addProvider({
           modelType,
           provider: provider.providerId,
@@ -578,6 +603,7 @@ export function ModelConfigDialog({
           return;
         }
 
+        beginCheck([resolveModelDisplayName(values, provider)]);
         // Preserve the existing default flag on edit so that tweaking
         // dimensions / api key / etc. does not silently remove the model
         // from being the default.
@@ -591,6 +617,7 @@ export function ModelConfigDialog({
         });
       }
 
+      endCheck([]);
       onSaved({
         mode,
         modelName: resolveModelDisplayName(values, provider),
@@ -598,6 +625,7 @@ export function ModelConfigDialog({
       });
       onClose();
     } catch (err: unknown) {
+      endCheck([resolveModelDisplayName(values, provider)]);
       setError(resolveModelConfigSaveError(err, t));
     } finally {
       setSaving(false);
@@ -605,6 +633,55 @@ export function ModelConfigDialog({
   };
 
   const capLabel = capability ? aiModelsCapabilityLabel(t, capability) : '';
+
+  // Health checks make real model calls; slow tiers take most of a minute, so say so.
+  function beginCheck(models: string[]) {
+    if (progressToastRef.current) toast.dismiss(progressToastRef.current);
+    const providerName = provider?.name ?? '';
+    progressToastRef.current = toast.loading(
+      models.length === 1
+        ? t('workspace.aiModels.checkingOne', { model: models[0], provider: providerName })
+        : t('workspace.aiModels.checkingMany', { total: models.length, provider: providerName }),
+      { description: t('workspace.aiModels.checkingHint') },
+    );
+    window.requestAnimationFrame(() => checkStatusRef.current?.scrollIntoView({ block: 'nearest' }));
+  }
+
+  function endCheck(failed: string[], total = 1) {
+    const id = progressToastRef.current;
+    if (!id) return;
+    progressToastRef.current = null;
+    if (failed.length === 0) {
+      toast.dismiss(id);
+      return;
+    }
+    toast.update(id, {
+      variant: 'error',
+      title:
+        total === 1
+          ? t('workspace.aiModels.checkFailedOne', { model: failed[0] })
+          : t('workspace.aiModels.checkFailedMany', { failed: failed.length, total }),
+      description: t('workspace.aiModels.checkFailedHint'),
+      duration: 6000,
+    });
+  }
+
+  useEffect(() => {
+    const id = progressToastRef.current;
+    if (!id || !batch.running || batch.rows.length < 2) return;
+    const done = batch.rows.filter((row) => row.status === 'healthy' || row.status === 'failed').length;
+    if (done === 0) return;
+    toast.update(id, {
+      title: t('workspace.aiModels.checkingProgress', { done, total: batch.rows.length }),
+    });
+  }, [batch.rows, batch.running, t]);
+
+  useEffect(
+    () => () => {
+      if (progressToastRef.current) toast.dismiss(progressToastRef.current);
+    },
+    [],
+  );
 
   const headerTitle = useMemo(() => {
     const name = provider?.name ?? '';
@@ -628,7 +705,7 @@ export function ModelConfigDialog({
     );
   }, [provider?.iconPath]);
 
-  const perModelMode = mode === 'add' && picked.length > 0;
+  const perModelMode = mode === 'add' && picked.length > 1;
   const formValid = useMemo(
     () =>
       fields.length === 0
@@ -659,27 +736,121 @@ export function ModelConfigDialog({
     [flagFields, values.isReasoning, values.isMultimodal, values.contextLength]
   );
 
-  const handlePickedChange = (changed: PickedModel[]) => {
-    const normalized = normalizePickedIds(provider?.providerId, changed);
-    const next =
-      picked.length === 0 && normalized.length > 0
-        ? seedTypedModels(
-            normalized,
-            String(values.model ?? ''),
-            pickerDefaults,
-            String(values.modelFriendlyName ?? ''),
-          )
-        : normalized;
-    setPicked(next);
-    if (!defaultModelId || !next.some((item) => item.id === defaultModelId)) {
-      setDefaultModelId(next[0]?.id ?? null);
+  /** The single-model form, read back as a picked row. */
+  const pickedFromForm = (id: string): PickedModel => ({
+    id,
+    modelFriendlyName: String(values.modelFriendlyName ?? '').trim() || undefined,
+    ...pickerDefaults,
+  });
+
+  /**
+   * One selected model is edited in the regular form; several get a row each.
+   * Moving between the two carries the values across so nothing typed is lost.
+   */
+  const applyPicked = (changed: PickedModel[]) => {
+    const next = normalizePickedIds(provider?.providerId, changed);
+    const leavingSingle = picked.length === 1 && next.length > 1;
+    const settled = leavingSingle
+      ? next.map((item) => (item.id === picked[0].id ? pickedFromForm(item.id) : item))
+      : next;
+    setPicked(settled);
+    if (!defaultModelId || !settled.some((item) => item.id === defaultModelId)) {
+      setDefaultModelId(settled[0]?.id ?? null);
+    }
+    // Deployments are usually named after their model; follow it until the user types their own.
+    const deploymentFollowsModel =
+      fields.some((f) => f.name === 'deploymentName') &&
+      (!touchedFieldsRef.current.has('deploymentName') || String(values.deploymentName ?? '').trim() === '');
+    if (settled.length === 1 && (picked.length !== 1 || picked[0].id !== settled[0].id)) {
+      const only = settled[0];
+      const typedName = String(values.modelFriendlyName ?? '').trim();
+      if (deploymentFollowsModel) touchedFieldsRef.current.delete('deploymentName');
+      setValues((prev) => ({
+        ...prev,
+        ...singleModelFormValues(only),
+        ...(deploymentFollowsModel ? { deploymentName: only.id } : {}),
+        modelFriendlyName: picked.length === 0 && typedName ? typedName : (only.modelFriendlyName ?? ''),
+      }));
+    } else if (settled.length === 0) {
+      setValues((prev) => ({ ...prev, model: '', ...(deploymentFollowsModel ? { deploymentName: '' } : {}) }));
     }
   };
 
+  /** The single-model form fields for one picked row. */
+  const singleModelFormValues = (item: PickedModel): Record<string, unknown> => ({
+    model: item.id,
+    modelFriendlyName: item.modelFriendlyName ?? '',
+    ...(fields.some((f) => f.name === 'contextLength') ? { contextLength: item.contextLength ?? '' } : {}),
+    ...(flagFields.some((f) => f.name === 'isReasoning') ? { isReasoning: item.isReasoning } : {}),
+    ...(flagFields.some((f) => f.name === 'isMultimodal') ? { isMultimodal: item.isMultimodal } : {}),
+  });
+
+  const handleModelIdsChange = (ids: string[]) => {
+    const byId = new Map(discovery.models.map((model) => [model.id, model]));
+    applyPicked(
+      ids.map((id) => {
+        const existing = picked.find((item) => item.id === id);
+        const found = byId.get(id);
+        if (existing && !(found && provisionalIdsRef.current.has(id))) return existing;
+        if (found) {
+          provisionalIdsRef.current.delete(id);
+          return pickedFromDiscovered(found, pickerDefaults);
+        }
+        // Settings the user already set in the form are theirs; the list must not overwrite them.
+        if (!PER_MODEL_FORM_FIELDS_LIST.some((name) => touchedFieldsRef.current.has(name))) {
+          provisionalIdsRef.current.add(id);
+        }
+        return customPicked(id, pickerDefaults);
+      }),
+    );
+  };
+
+  const handlePickedRowsChange = (next: PickedModel[]) => {
+    for (const item of next) {
+      if (!picked.includes(item)) provisionalIdsRef.current.delete(item.id);
+    }
+    applyPicked(next);
+  };
+
+  // A list that arrives after an id was typed still describes it: apply what the
+  // provider reports to rows nobody has edited, so a text-only model is not
+  // vision-probed and the context window is filled in.
+  useEffect(() => {
+    if (discovery.models.length === 0 || provisionalIdsRef.current.size === 0) return;
+    const byId = new Map(discovery.models.map((model) => [model.id, model]));
+    let changed = false;
+    const next = picked.map((item) => {
+      const found = provisionalIdsRef.current.has(item.id) ? byId.get(item.id) : undefined;
+      if (!found) return item;
+      provisionalIdsRef.current.delete(item.id);
+      changed = true;
+      return pickedFromDiscovered(found, {
+        isReasoning: item.isReasoning,
+        isMultimodal: item.isMultimodal,
+        contextLength: item.contextLength ?? null,
+      });
+    });
+    if (!changed) return;
+    setPicked(next);
+    if (next.length === 1) {
+      const friendly = String(values.modelFriendlyName ?? '').trim();
+      setValues((prev) => ({
+        ...prev,
+        ...singleModelFormValues(next[0]),
+        ...(friendly ? { modelFriendlyName: friendly } : {}),
+      }));
+    }
+    // Runs when a list arrives; picked/values are read at that moment on purpose.
+  }, [discovery.models]);
+
   const primaryBlocked = saving || batch.running || !provider || !capability || !formValid;
 
+  const discoveryMode = provider?.discovery?.mode ?? 'manual';
+  const canListModels = mode === 'add' && discoveryMode !== 'manual';
   const requiredFields = provider?.discovery?.requiredFields ?? [];
-  const credentialKey = requiredFields.map((name) => String(values[name] ?? '')).join('\u0000');
+  const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS]
+    .map((name) => String(values[name] ?? ''))
+    .join('\u0000');
   const seenCredential = useRef<string | null>(null);
   useEffect(() => {
     if (seenCredential.current === null) {
@@ -690,27 +861,31 @@ export function ModelConfigDialog({
     seenCredential.current = credentialKey;
     resetDiscoveryState();
   }, [credentialKey, resetDiscoveryState]);
-  const canDiscover =
-    mode === 'add' &&
-    provider?.discovery != null &&
-    provider.discovery.mode !== 'manual' &&
-    canFetchModels(requiredFields, values, hiddenCredentials);
+  const canDiscover = canListModels && canFetchModels(requiredFields, values, hiddenCredentials);
+  const [searchQuery, setSearchQuery] = useState('');
 
-  const handleFetchModels = () => {
-    if (!provider || !canDiscover) return;
-    const configuration: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(values)) {
-      if (hiddenCredentials.has(key) && !touchedFieldsRef.current.has(key)) continue;
-      if (val === undefined || val === '') continue;
-      configuration[key] = val;
-    }
-    void discovery.fetchModels({
-      provider: provider.providerId,
-      capability: capability ?? undefined,
-      configuration,
-      modelKey: editModel?.modelKey,
-    });
-  };
+  const fetchModels = discovery.fetchModels;
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+  // Load the list as soon as the connection fields are filled; no button to press.
+  useEffect(() => {
+    if (!open || !provider || !canDiscover) return;
+    const timer = window.setTimeout(() => {
+      const configuration: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(valuesRef.current)) {
+        if (PER_MODEL_FIELD_NAMES.has(key) || TOP_LEVEL_FIELD_NAMES.has(key)) continue;
+        if (val === undefined || val === '') continue;
+        configuration[key] = val;
+      }
+      void fetchModels({
+        provider: provider.providerId,
+        capability: capability ?? undefined,
+        configuration,
+        query: discoveryMode === 'search' ? searchQuery.trim() || undefined : undefined,
+      });
+    }, DISCOVERY_DEBOUNCE_MS);
+    return () => window.clearTimeout(timer);
+  }, [open, provider, capability, canDiscover, credentialKey, discoveryMode, searchQuery, fetchModels]);
 
   /** Configuration every picked model shares: credentials and endpoint, never per-model fields. */
   const sharedBatchConfiguration = (): Record<string, unknown> => {
@@ -733,6 +908,7 @@ export function ModelConfigDialog({
       const ready = await ensureLocalEmbeddingModelReady(provider, { ...values, model: item.id });
       if (!ready) return;
     }
+    beginCheck(prepared.map((item) => item.id));
     const result = await batch.run(
       {
         modelType,
@@ -747,19 +923,21 @@ export function ModelConfigDialog({
       { merge: true },
     );
     const savedIds = new Set(result.rows.filter((row) => row.status === 'healthy').map((row) => row.model));
-    setPicked((current) => current.filter((item) => !savedIds.has(item.id)));
     const savedNow = prepared.filter((item) => savedIds.has(item.id));
+    endCheck(prepared.filter((item) => !savedIds.has(item.id)).map((item) => item.id), prepared.length);
     if (savedNow.length > 0) {
       onSaved({
         mode: 'add',
-        modelName: savedNow[0]?.modelFriendlyName || savedNow[0]?.id || provider.name,
+        modelName: savedNow.map((item) => item.modelFriendlyName || item.id).join(', '),
         modelCategory: modelCategoryFromCapability(capability),
       });
     }
     const failed = result.rows.some((row) => row.status === 'failed');
     if (!failed && savedNow.length > 0 && !result.aborted) {
       onClose();
+      return;
     }
+    applyPicked(picked.filter((item) => !savedIds.has(item.id)));
   };
 
   const retryPicked = (modelId: string) => {
@@ -767,76 +945,91 @@ export function ModelConfigDialog({
     const modelType = capability ? CAPABILITY_TO_MODEL_TYPE[capability] : undefined;
     if (!model || !modelType) return;
     const isChosenDefault = existingModelsCount === 0 && defaultModelId === model.id;
-    runBatch(modelType, [model], isChosenDefault ? model.id : undefined).catch((err: unknown) => {
+    const current = picked.length === 1 ? pickedFromForm(model.id) : model;
+    runBatch(modelType, [current], isChosenDefault ? model.id : undefined).catch((err: unknown) => {
       setError(resolveModelConfigSaveError(err, t));
     });
   };
 
-  const discoveryMode = provider?.discovery?.mode ?? 'manual';
-  const canListModels = discoveryMode !== 'manual';
+  const modelField = fields.find((f) => f.name === 'model');
+  const multipleModels = !fields.some((f) => f.name === 'deploymentName');
+  const discoveryHint = ((): { text: string | null; tone: 'gray' | 'red' } => {
+    if (!canListModels) return { text: t('workspace.aiModels.modelHintManual'), tone: 'gray' };
+    if (!canDiscover) return { text: t('workspace.aiModels.modelHintNeedsFields'), tone: 'gray' };
+    if (discovery.loading) return { text: null, tone: 'gray' };
+    if (discovery.error) {
+      return { text: t('workspace.aiModels.modelHintFailed', { message: discovery.error }), tone: 'red' };
+    }
+    if (!discovery.fetched) return { text: null, tone: 'gray' };
+    if (discovery.models.length === 0) return { text: t('workspace.aiModels.modelHintNoneFound'), tone: 'gray' };
+    const loaded = t('workspace.aiModels.modelHintLoaded', { count: discovery.models.length });
+    return { text: [loaded, ...discovery.warnings].join(' '), tone: 'gray' };
+  })();
+
+  const modelFieldSlot = modelField ? (
+    <ModelCombobox
+      label={modelField.displayName}
+      required={modelField.required}
+      placeholder={canListModels ? t('workspace.aiModels.modelComboboxPlaceholder') : modelField.placeholder}
+      models={discovery.models}
+      value={picked.map((item) => item.id)}
+      onChange={handleModelIdsChange}
+      multiple={multipleModels}
+      loading={discovery.loading}
+      hint={discoveryHint.text}
+      hintTone={discoveryHint.tone}
+      disabled={saving || batch.running}
+      onQueryChange={discoveryMode === 'search' ? setSearchQuery : undefined}
+      commitTypedOnBlur={
+        // A search provider's empty result only answers the previous query, so there
+        // typed text stays a search; Enter or "Use …" still adds it.
+        !canListModels ||
+        (discoveryMode !== 'search' &&
+          discovery.fetched &&
+          !discovery.loading &&
+          discovery.models.length === 0)
+      }
+    />
+  ) : null;
 
   const discoverySlot = (
     <Flex direction="column" gap="3">
-      {canListModels ? (
-        <Flex direction="column" gap="1">
-          <Button
-            type="button"
-            variant="soft"
-            data-testid="ai-fetch-models"
-            disabled={!canDiscover || discovery.loading || saving || batch.running}
-            onClick={handleFetchModels}
-          >
-            {discovery.loading
-              ? t('workspace.aiModels.fetchingModels')
-              : t('workspace.aiModels.fetchModels')}
-          </Button>
-          {!canDiscover && !discovery.fetched ? (
-            <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              {t('workspace.aiModels.fetchModelsNeedsFields')}
+      <div ref={checkStatusRef}>
+        {saving && !batch.running && batch.rows.length === 0 ? (
+          <Flex align="center" gap="2" data-testid="ai-model-checking">
+            <Spinner size={14} />
+            <Text size="2" style={{ color: 'var(--gray-11)' }}>
+              {t('workspace.aiModels.checkingOne', {
+                model: resolveModelDisplayName(values, provider),
+                provider: provider?.name ?? '',
+              })}{' '}
+              {t('workspace.aiModels.checkingHint')}
             </Text>
-          ) : null}
-        </Flex>
-      ) : picked.length === 0 ? (
-        <Text size="2" style={{ color: 'var(--gray-11)' }} data-testid="ai-manual-models-hint">
-          {t('workspace.aiModels.modelPickerManualHint')}
-        </Text>
+          </Flex>
+        ) : null}
+        <BatchProgressList
+          rows={batch.rows}
+          disabled={batch.running}
+          onRetry={retryPicked}
+          onRemove={(modelId) => {
+            applyPicked(picked.filter((item) => item.id !== modelId));
+            batch.setRows((current) => current.filter((row) => row.model !== modelId));
+          }}
+        />
+      </div>
+      {picked.length > 1 ? (
+        <PickedModelsList
+          picked={picked}
+          models={discovery.models}
+          onChange={handlePickedRowsChange}
+          showDefault={existingModelsCount === 0}
+          defaultModelId={defaultModelId}
+          onDefaultChange={setDefaultModelId}
+          flagFields={flagFields}
+          contextLengthLabel={contextLengthLabel}
+          disabled={saving || batch.running}
+        />
       ) : null}
-      {discovery.error ? (
-        <Text size="2" style={{ color: 'var(--red-11)' }}>
-          {discovery.error}
-        </Text>
-      ) : null}
-      {discovery.warnings.map((warning) => (
-        <Text key={warning} size="1" style={{ color: 'var(--gray-11)' }}>
-          {warning}
-        </Text>
-      ))}
-      {canListModels && discovery.fetched && !discovery.error && discovery.models.length === 0 ? (
-        <Text size="2" style={{ color: 'var(--gray-11)' }}>
-          {t('workspace.aiModels.modelPickerNoneFound')}
-        </Text>
-      ) : null}
-      <ModelPicker
-        models={discovery.models}
-        picked={picked}
-        onChange={handlePickedChange}
-        showDefault={existingModelsCount === 0}
-        defaultModelId={defaultModelId}
-        onDefaultChange={setDefaultModelId}
-        flagFields={flagFields}
-        contextLengthLabel={contextLengthLabel}
-        defaults={pickerDefaults}
-        disabled={saving || batch.running}
-      />
-      <BatchProgressList
-        rows={batch.rows}
-        disabled={batch.running}
-        onRetry={retryPicked}
-        onRemove={(modelId) => {
-          handlePickedChange(picked.filter((item) => item.id !== modelId));
-          batch.setRows((current) => current.filter((row) => row.model !== modelId));
-        }}
-      />
     </Flex>
   );
 
@@ -891,11 +1084,12 @@ export function ModelConfigDialog({
         saving={saving}
         error={error}
         hiddenCredentials={hiddenCredentials}
-        hiddenFieldNames={perModelMode ? PER_MODEL_FIELD_NAMES : NO_HIDDEN_FIELDS}
+        hiddenFieldNames={perModelMode ? PER_MODEL_FORM_FIELDS : NO_HIDDEN_FIELDS}
         onFieldChange={handleFieldChange}
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}
         discoverySlot={mode === 'add' ? discoverySlot : undefined}
+        modelFieldSlot={mode === 'add' ? modelFieldSlot : undefined}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -945,6 +1139,7 @@ function ModelConfigFormBody({
   onReveal,
   revealing,
   discoverySlot,
+  modelFieldSlot,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -960,6 +1155,8 @@ function ModelConfigFormBody({
   onReveal?: () => void;
   revealing: boolean;
   discoverySlot?: React.ReactNode;
+  /** Replaces the plain `model` text input in place. */
+  modelFieldSlot?: React.ReactNode;
 }) {
   const { t } = useTranslation();
   const leaveBlankPlaceholder = t('workspace.aiModels.savedLeaveBlank');
@@ -1063,7 +1260,7 @@ function ModelConfigFormBody({
           <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {section1Title}
           </Text>
-          <Callout.Root color="green" size="1" variant="surface">
+          <Callout.Root color="gray" size="1" variant="surface">
             <Callout.Text>
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
                 {infoMessage}
@@ -1106,16 +1303,20 @@ function ModelConfigFormBody({
               </Box>
             </Flex>
           ) : null}
-          {modelConfigFields.map((field) => (
-            <SchemaFormField
-              key={field.name}
-              field={toSchemaField(field, placeholderFor(field))}
-              value={values[field.name]}
-              onChange={onFieldChange}
-              disabled={saving}
-              startAdornment={fieldStartAdornment(field.name)}
-            />
-          ))}
+          {modelConfigFields.map((field) =>
+            field.name === 'model' && modelFieldSlot ? (
+              <React.Fragment key={field.name}>{modelFieldSlot}</React.Fragment>
+            ) : (
+              <SchemaFormField
+                key={field.name}
+                field={toSchemaField(field, placeholderFor(field))}
+                value={values[field.name]}
+                onChange={onFieldChange}
+                disabled={saving}
+                startAdornment={fieldStartAdornment(field.name)}
+              />
+            )
+          )}
           {discoverySlot}
         </Flex>
       </Box>
@@ -1149,6 +1350,7 @@ function ModelConfigFormBody({
                     </Flex>
                   </Flex>
                   <Switch
+                    aria-label={field.displayName}
                     checked={boolValue(values[field.name])}
                     onCheckedChange={(checked) => onFieldChange(field.name, checked)}
                     disabled={saving}

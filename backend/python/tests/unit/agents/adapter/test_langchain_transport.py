@@ -1374,13 +1374,20 @@ class TestToolImageRelocationRespectsTheCap:
     def _transport(self, cap):
         return LangChainTransport(_FakeModel(), model_name="m", max_images_per_request=cap)
 
+    @staticmethod
+    def _retry(transport, exc, messages) -> list | None:
+        """What the relocation retry sends, or None when there is no retry."""
+        if not transport._relocates_tool_images(exc, messages):
+            return None
+        return transport._request(messages, ("", ""), relocate=True)[0]
+
     @pytest.mark.parametrize("cap", [1, 2, 5, 10, None])
     def test_the_retry_carries_what_the_first_attempt_carried(self, cap) -> None:
         t = self._transport(cap)
         messages = self._messages()
 
         first = t._to_langchain(messages, None)
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), messages, None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), messages)
 
         assert retry is not None
         assert self._image_count(retry) == self._image_count(first)
@@ -1389,7 +1396,7 @@ class TestToolImageRelocationRespectsTheCap:
         """The concrete regression: five tool images, a model that takes two."""
         t = self._transport(2)
 
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), self._messages())
 
         assert self._image_count(retry) == 2
 
@@ -1400,9 +1407,7 @@ class TestToolImageRelocationRespectsTheCap:
 
         from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
 
-        retry = self._transport(2)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), self._messages(), None
-        )
+        retry = self._retry(self._transport(2), RuntimeError(self.CONFLICT), self._messages())
 
         assert isinstance(retry[-1], HumanMessage)
         assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
@@ -1419,23 +1424,19 @@ class TestToolImageRelocationRespectsTheCap:
             ]),
         ]
 
-        retry = self._transport(1)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), messages, None
-        )
+        retry = self._retry(self._transport(1), RuntimeError(self.CONFLICT), messages)
 
         assert retry is None
 
     def test_an_unrelated_error_is_not_a_relocation(self) -> None:
-        assert self._transport(2)._tool_image_fallback(
-            RuntimeError("429 rate limit exceeded"), self._messages(), None
-        ) is None
+        assert self._retry(self._transport(2), RuntimeError("429 rate limit exceeded"), self._messages()) is None
 
     def test_once_pinned_the_shape_is_not_rediscovered(self) -> None:
         """`_to_langchain` relocates on its own from then on — and caps."""
         t = self._transport(2)
         t._tool_images_relocated = True
 
-        assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
+        assert self._retry(t, RuntimeError(self.CONFLICT), self._messages()) is None
         assert self._image_count(t._to_langchain(self._messages(), None)) == 2
 
 

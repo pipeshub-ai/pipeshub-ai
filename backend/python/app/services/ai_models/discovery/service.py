@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from app.config.ai_models.types import CAPABILITY_TO_MODEL_TYPE
 from app.services.ai_models.discovery.cache import DiscoveryCache
 from app.services.ai_models.discovery.classifier import classify
 from app.services.ai_models.discovery.http import MAX_MODELS, DiscoveryHttp
@@ -77,6 +78,8 @@ class ModelDiscoveryService:
             if model is None:
                 continue
             discovered.append(model)
+        # Newest release first; undated rows keep the provider's order after them.
+        discovered.sort(key=lambda model: -(model.released_at or 0))
         result = DiscoveryResult(supported=True, models=discovered, warnings=warnings)
         self._cache.set(cache_key, result)
         return _for_capability(result, request.capability)
@@ -86,10 +89,15 @@ def _for_capability(result: DiscoveryResult, capability: str | None) -> Discover
     """Filter a cached full list. The cached object itself stays unfiltered."""
     models = list(result.models)
     if capability:
+        # The UI sends registry capabilities (text_generation);
+        # rows carry model types (llm).
+        wanted = CAPABILITY_TO_MODEL_TYPE.get(capability, capability)
+        if wanted == "reasoning":
+            wanted = "llm"
         models = [
             model
             for model in models
-            if capability in model.capabilities or "other" in model.capabilities
+            if wanted in model.capabilities or "other" in model.capabilities
         ]
     warnings = list(result.warnings)
     if len(models) > MAX_MODELS:

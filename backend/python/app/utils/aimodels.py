@@ -1100,6 +1100,12 @@ _GEMINI_FAMILY = frozenset({
     LLMProvider.VERTEX_AI.value,
 })
 
+# LangChain sends reasoning_effort to Gemini as thinking_level, which only Gemini 3+
+# accepts; 2.5 and older 400 with "Thinking level is not supported for this model".
+_GEMINI_PRE_THINKING_LEVEL = re.compile(
+    r"^(?:models/)?(?:gemini-[12](?:[.-]|$)|gemma)", re.IGNORECASE
+)
+
 # Direct OpenAI and Azure OpenAI reject `reasoning_effort` combined with
 # function tools on /v1/chat/completions for the entire gpt-5.x family
 # ("Function tools with reasoning_effort are not supported ... in
@@ -1402,6 +1408,11 @@ def _reasoning_effort_kwargs(
     # Skip the Responses API — these are not OpenAI gpt-5.
     if _is_qwen_38_or_later(model_name):
         return {"reasoning_effort": _QWEN_38_EFFORT_MAP.get(effort_input, effort_input)}
+
+    if provider in _GEMINI_FAMILY and _GEMINI_PRE_THINKING_LEVEL.match(
+        model_name or ""
+    ):
+        return {}
 
     effort = effort_input
     if provider in _OPENAI_FAMILY:

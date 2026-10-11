@@ -15,6 +15,15 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock('../api', () => ({ AIModelsApi: api }));
 
+const toastMock = vi.hoisted(() => ({
+  loading: vi.fn(() => 'toast-1'),
+  update: vi.fn(),
+  dismiss: vi.fn(),
+  success: vi.fn(),
+  error: vi.fn(),
+}));
+vi.mock('@/lib/store/toast-store', () => ({ toast: toastMock }));
+
 import { ModelConfigDialog } from '../components/model-config-dialog';
 
 const field = (name: string, extra: Record<string, unknown>) => ({
@@ -80,15 +89,22 @@ function renderDialog(
   return { onClose, onSaved };
 }
 
-function addCustomIds(ids: string[]) {
+function addModelIds(ids: string[]) {
+  const input = screen.getByRole('combobox', { name: 'model' });
   for (const id of ids) {
-    fireEvent.change(screen.getByLabelText('Custom model id'), { target: { value: id } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    fireEvent.change(input, { target: { value: id } });
+    fireEvent.keyDown(input, { key: 'Enter' });
   }
 }
 
+// jsdom has no layout, so it does not implement scrollIntoView.
+const scrollIntoView = vi.fn();
+
 beforeEach(() => {
   for (const mock of Object.values(api)) mock.mockReset();
+  for (const mock of Object.values(toastMock)) mock.mockClear();
+  scrollIntoView.mockClear();
+  Element.prototype.scrollIntoView = scrollIntoView;
 });
 
 afterEach(cleanup);
@@ -99,18 +115,21 @@ describe('ModelConfigDialog without a model list', () => {
     const { onClose } = renderDialog();
 
     expect(
-      screen.getByText(
-        "This provider can't list its models. Type a model ID above, or add several IDs below to save them together.",
-      ),
+      screen.getByText('Type a model name and press Enter. Add several to save them together.'),
     ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Fetch models' })).toBeNull();
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    fireEvent.change(screen.getByPlaceholderText('Model id'), { target: { value: 'gpt-4o-2024' } });
+    addModelIds(['gpt-4o-2024']);
     fireEvent.click(screen.getAllByRole('switch')[0]);
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
 
     await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
+    expect(toastMock.loading).toHaveBeenCalledWith('Checking gpt-4o-2024 with Azure AI Foundry…', {
+      description: 'Each model gets a short test call. This usually takes under a minute.',
+    });
+    await waitFor(() => expect(toastMock.dismiss).toHaveBeenCalledWith('toast-1'));
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
     expect(api.addProvider.mock.calls[0][0]).toMatchObject({
       provider: 'azureAI',
       configuration: { apiKey: 'sk-1', model: 'gpt-4o-2024' },
@@ -137,13 +156,11 @@ describe('ModelConfigDialog without a model list', () => {
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
     fireEvent.change(screen.getByPlaceholderText('Friendly name'), { target: { value: 'Model A' } });
-    fireEvent.change(screen.getByPlaceholderText('Model id'), { target: { value: 'model-a' } });
+    addModelIds(['model-a']);
     fireEvent.click(screen.getAllByRole('switch')[0]);
 
-    fireEvent.change(screen.getByLabelText('Custom model id'), { target: { value: 'model-b' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    addModelIds(['model-b']);
 
-    expect(screen.queryByPlaceholderText('Model id')).toBeNull();
     expect(screen.queryByPlaceholderText('Friendly name')).toBeNull();
     expect(screen.getByRole('switch', { name: 'Reasoning for model-a' }).getAttribute('aria-checked')).toBe('false');
     expect(screen.getByRole('switch', { name: 'Multimodal for model-a' }).getAttribute('aria-checked')).toBe('true');
@@ -179,16 +196,15 @@ describe('ModelConfigDialog without a model list', () => {
     const { onClose } = renderDialog();
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    for (const id of ['model-a', 'model-b']) {
-      fireEvent.change(screen.getByLabelText('Custom model id'), { target: { value: id } });
-      fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    }
+    addModelIds(['model-a', 'model-b']);
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
 
     await screen.findByText(/not deployed/);
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.queryByRole('switch', { name: 'Reasoning for model-a' })).toBeNull();
-    expect(screen.getByRole('switch', { name: 'Reasoning for model-b' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Remove model-a' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove model-b' })).toBeTruthy();
+    // One model left, so it is edited in the regular form again.
+    expect(screen.getByPlaceholderText('Friendly name')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(2));
@@ -213,11 +229,16 @@ describe('ModelConfigDialog without a model list', () => {
     renderDialog(vi.fn(), vi.fn(), { existingModelsCount: 2 });
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    addCustomIds(['model-a', 'model-b']);
+    addModelIds(['model-a', 'model-b']);
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
 
     await screen.findByText(/not deployed/);
     expect(api.batchAddModels.mock.calls[0][0].defaultModel).toBeUndefined();
+    expect(toastMock.loading).toHaveBeenCalledWith('Checking 2 models with Azure AI Foundry…', expect.anything());
+    expect(toastMock.update).toHaveBeenLastCalledWith('toast-1', expect.objectContaining({
+      variant: 'error',
+      title: "1 of 2 models didn't pass the check",
+    }));
 
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(2));
@@ -231,13 +252,14 @@ describe('ModelConfigDialog without a model list', () => {
     api.batchAddModels
       .mockImplementationOnce(async (_body: unknown, options: SSEStreamingOptions) => {
         options.onEvent({ event: 'progress', data: { model: 'model-a', status: 'failed', message: 'not deployed' } });
-        options.onEvent({ event: 'done', data: { connectionId, saved: 0, aborted: false } });
+        options.onEvent({ event: 'progress', data: { model: 'model-b', status: 'healthy' } });
+        options.onEvent({ event: 'done', data: { connectionId, saved: 1, aborted: false } });
       })
       .mockRejectedValueOnce(new Error('network down'));
     renderDialog();
 
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    addCustomIds(['model-a']);
+    addModelIds(['model-a', 'model-b']);
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
     await screen.findByText(/not deployed/);
 
@@ -256,7 +278,7 @@ describe('ModelConfigDialog without a model list', () => {
     });
     renderDialog(vi.fn(), vi.fn(), { provider: LOCAL_EMBEDDING_PROVIDER, capability: 'embedding' });
 
-    addCustomIds(['BAAI/bge-small-en-v1.5', 'BAAI/bge-base-en-v1.5']);
+    addModelIds(['BAAI/bge-small-en-v1.5', 'BAAI/bge-base-en-v1.5']);
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
 
     await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(1));
@@ -267,29 +289,204 @@ describe('ModelConfigDialog without a model list', () => {
     ]);
   });
 
-  it('saves an Azure OpenAI model id without a comma', async () => {
-    api.batchAddModels.mockResolvedValue(undefined);
-    render(
-      <Theme>
-        <ModelConfigDialog
-          open
-          mode="add"
-          provider={{ ...MANUAL_PROVIDER, providerId: 'azureOpenAI' }}
-          capability="text_generation"
-          editModel={null}
-          onClose={vi.fn()}
-          onSaved={vi.fn()}
-        />
-      </Theme>,
-    );
+  it('keeps Azure OpenAI to one model per deployment and drops a pasted comma list', async () => {
+    api.addProvider.mockResolvedValue({});
+    const azure = {
+      ...MANUAL_PROVIDER,
+      providerId: 'azureOpenAI',
+      fields: {
+        text_generation: [
+          ...MANUAL_PROVIDER.fields.text_generation,
+          field('deploymentName', { required: true, placeholder: 'Deployment' }),
+        ],
+      },
+    } as unknown as AIModelProvider;
+    renderDialog(vi.fn(), vi.fn(), { provider: azure });
+
     fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
-    fireEvent.change(screen.getByLabelText('Custom model id'), { target: { value: 'gpt-5.6-luna, extra' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
-    expect(screen.getByRole('switch', { name: 'Reasoning for gpt-5.6-luna' })).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('Deployment'), { target: { value: 'prod-gpt' } });
+    addModelIds(['gpt-5.6-luna, extra', 'gpt-5.6-nova']);
+    expect(screen.queryByRole('button', { name: 'Remove gpt-5.6-luna' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Remove gpt-5.6-nova' })).toBeTruthy();
+
     fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
-    await waitFor(() => expect(api.batchAddModels).toHaveBeenCalledTimes(1));
-    const body = api.batchAddModels.mock.calls[0][0];
-    expect(body.models.map((item: { model: string }) => item.model)).toEqual(['gpt-5.6-luna']);
-    expect(body.defaultModel).toBe('gpt-5.6-luna');
+    await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
+    expect(api.addProvider.mock.calls[0][0].configuration).toMatchObject({
+      model: 'gpt-5.6-nova',
+      deploymentName: 'prod-gpt',
+    });
+    expect(api.batchAddModels).not.toHaveBeenCalled();
+  });
+
+  it('fills the Azure deployment name from the model until the user types their own', async () => {
+    api.addProvider.mockResolvedValue({});
+    const azure = {
+      ...MANUAL_PROVIDER,
+      providerId: 'azureOpenAI',
+      fields: {
+        text_generation: [
+          ...MANUAL_PROVIDER.fields.text_generation,
+          field('deploymentName', { required: true, placeholder: 'Deployment' }),
+        ],
+      },
+    } as unknown as AIModelProvider;
+    renderDialog(vi.fn(), vi.fn(), { provider: azure });
+    const deployment = screen.getByPlaceholderText('Deployment') as HTMLInputElement;
+
+    addModelIds(['gpt-6-luna']);
+    expect(deployment.value).toBe('gpt-6-luna');
+    addModelIds(['gpt-5.4-mini']);
+    expect(deployment.value).toBe('gpt-5.4-mini');
+
+    fireEvent.change(deployment, { target: { value: 'prod-mini' } });
+    addModelIds(['gpt-6-luna']);
+    expect(deployment.value).toBe('prod-mini');
+
+    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
+    expect(api.addProvider.mock.calls[0][0].configuration).toMatchObject({
+      model: 'gpt-6-luna',
+      deploymentName: 'prod-mini',
+    });
+  });
+});
+
+const LISTING_PROVIDER = {
+  ...MANUAL_PROVIDER,
+  providerId: 'openAI',
+  name: 'OpenAI',
+  discovery: { mode: 'list', requiredFields: ['apiKey'] },
+} as unknown as AIModelProvider;
+
+describe('ModelConfigDialog with a model list', () => {
+  it('loads models once the API key is filled and fills the form from the picked model', async () => {
+    api.discoverModels.mockResolvedValue({
+      success: true,
+      supported: true,
+      models: [
+        {
+          id: 'gpt-5-mini',
+          displayName: 'gpt-5-mini',
+          capabilities: ['llm'],
+          contextLength: 272000,
+          isReasoning: true,
+          isMultimodal: false,
+        },
+      ],
+    });
+    api.addProvider.mockResolvedValue({});
+    renderDialog(vi.fn(), vi.fn(), { provider: LISTING_PROVIDER });
+
+    expect(
+      screen.getByText('Fill in the connection details above to load the model list, or type a model name.'),
+    ).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
+
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(api.discoverModels.mock.calls[0][0]).toMatchObject({
+      provider: 'openAI',
+      capability: 'text_generation',
+      configuration: { apiKey: 'sk-1' },
+    });
+    expect(await screen.findByText('1 model available. Search, or type any model name.')).toBeTruthy();
+
+    fireEvent.focus(screen.getByRole('combobox', { name: 'model' }));
+    fireEvent.click(screen.getByRole('option', { name: /gpt-5-mini/ }));
+    expect((screen.getByPlaceholderText('e.g. 128000') as HTMLInputElement).value).toBe('272000');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add Model' }));
+    await waitFor(() => expect(api.addProvider).toHaveBeenCalledTimes(1));
+    expect(api.addProvider.mock.calls[0][0]).toMatchObject({
+      configuration: { apiKey: 'sk-1', model: 'gpt-5-mini' },
+      isReasoning: true,
+      isMultimodal: false,
+      contextLength: 272000,
+    });
+  });
+});
+
+describe('ModelConfigDialog while the model list is loading', () => {
+  function deferredDiscovery() {
+    let resolve: (value: unknown) => void = () => undefined;
+    api.discoverModels.mockReturnValue(new Promise((done) => { resolve = done; }));
+    return (models: unknown[]) => resolve({ success: true, supported: true, models });
+  }
+
+  it('does not turn a half-typed search into a model when the field loses focus', async () => {
+    deferredDiscovery();
+    renderDialog(vi.fn(), vi.fn(), { provider: LISTING_PROVIDER });
+    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
+
+    const input = screen.getByRole('combobox', { name: 'model' });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'gpt' } });
+    fireEvent.blur(input);
+    expect(screen.queryByRole('button', { name: 'Remove gpt' })).toBeNull();
+
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    fireEvent.blur(input);
+    expect(screen.queryByRole('button', { name: 'Remove gpt' })).toBeNull();
+  });
+
+  it('fills a model typed before the list arrives from what the provider reports', async () => {
+    const resolve = deferredDiscovery();
+    renderDialog(vi.fn(), vi.fn(), { provider: LISTING_PROVIDER });
+    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
+    addModelIds(['gpt-5-mini']);
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('switch', { name: 'Multimodal' }).getAttribute('aria-checked')).toBe('true');
+
+    resolve([
+      {
+        id: 'gpt-5-mini',
+        displayName: 'gpt-5-mini',
+        capabilities: ['llm'],
+        contextLength: 272000,
+        isReasoning: true,
+        isMultimodal: false,
+      },
+    ]);
+
+    await waitFor(() =>
+      expect((screen.getByPlaceholderText('e.g. 128000') as HTMLInputElement).value).toBe('272000'),
+    );
+    expect(screen.getByRole('switch', { name: 'Multimodal' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('keeps settings changed in the form before the id was added', async () => {
+    const resolve = deferredDiscovery();
+    renderDialog(vi.fn(), vi.fn(), { provider: LISTING_PROVIDER });
+    fireEvent.change(screen.getByPlaceholderText('API key'), { target: { value: 'sk-1' } });
+    fireEvent.click(screen.getByRole('switch', { name: 'Multimodal' }));
+    fireEvent.change(screen.getByPlaceholderText('e.g. 128000'), { target: { value: '16000' } });
+    addModelIds(['gpt-5-mini']);
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    resolve([
+      { id: 'gpt-5-mini', displayName: 'gpt-5-mini', capabilities: ['llm'], contextLength: 272000, isMultimodal: true },
+    ]);
+    expect(await screen.findByText('1 model available. Search, or type any model name.')).toBeTruthy();
+
+    expect(screen.getByRole('switch', { name: 'Multimodal' }).getAttribute('aria-checked')).toBe('false');
+    expect((screen.getByPlaceholderText('e.g. 128000') as HTMLInputElement).value).toBe('16000');
+  });
+
+  it('does not keep a search as a model for a search provider between searches', async () => {
+    api.discoverModels.mockResolvedValue({ success: true, supported: true, models: [] });
+    const searching = {
+      ...MANUAL_PROVIDER,
+      providerId: 'huggingFace',
+      discovery: { mode: 'search', requiredFields: [] },
+    } as unknown as AIModelProvider;
+    renderDialog(vi.fn(), vi.fn(), { provider: searching });
+    await waitFor(() => expect(api.discoverModels).toHaveBeenCalledTimes(1));
+
+    const input = screen.getByRole('combobox', { name: 'model' });
+    fireEvent.focus(input);
+    fireEvent.change(input, { target: { value: 'bge' } });
+    fireEvent.blur(input);
+
+    expect(screen.queryByRole('button', { name: 'Remove bge' })).toBeNull();
   });
 });

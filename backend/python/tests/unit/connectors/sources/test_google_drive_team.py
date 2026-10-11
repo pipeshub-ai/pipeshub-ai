@@ -1629,10 +1629,8 @@ class TestStreamRecord:
         ) as mock_download, patch(
             "app.connectors.sources.google.drive.team.connector.create_stream_record_response"
         ) as mock_stream, patch("builtins.open", MagicMock()), patch(
-            "tempfile.TemporaryDirectory"
-        ) as mock_tmp:
-            mock_tmp.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            mock_tmp.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
             mock_download.return_value.next_chunk.return_value = (status, True)
             mock_stream.return_value = MagicMock()
 
@@ -3723,7 +3721,7 @@ class TestSharedFolderExpansion:
         )
         child = _make_file_metadata(file_id="child-1")
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             # The user corpus is tried first, since corpora=drive needs membership.
             assert drive_scoped is False
             yield [child]
@@ -3748,7 +3746,7 @@ class TestSharedFolderExpansion:
         )
         attempts = []
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             attempts.append(drive_scoped)
             return
             yield  # pragma: no cover - makes this an async generator
@@ -3772,7 +3770,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -3793,7 +3791,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
             http_err.error_details = [{"reason": "insufficientFilePermissions"}]
             raise http_err
@@ -3817,7 +3815,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped) -> AsyncIterator[list]:
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None) -> AsyncIterator[list]:
             raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -3840,7 +3838,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
             http_err.error_details = [{"reason": "rateLimitExceeded"}]
             raise http_err
@@ -3865,7 +3863,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise RuntimeError("no access")
             yield  # pragma: no cover - makes this an async generator
 
@@ -3884,7 +3882,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(500)
             yield  # pragma: no cover - makes this an async generator
 

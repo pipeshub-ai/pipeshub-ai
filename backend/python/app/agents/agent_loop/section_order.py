@@ -48,7 +48,6 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
     # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),
-    ("goal_brief",                 Volatility.STATIC),
     ("operating_rules",            Volatility.STATIC),
     ("response_format",            Volatility.STATIC),
     ("base_system_prompt",         Volatility.STATIC),
@@ -82,9 +81,14 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # Same relationship to `available_tools` (Band B) that `preloaded_skills`
     # has to `skills_overview` — written by the `tool_preloading` middleware.
     ("preloaded_tools",            Volatility.TURN),
+    # The router's requirements, success criteria and gaps for this question.
+    ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("attachments",                Volatility.TURN),
+    # Citation rules for an agent that cites only what a question brought
+    # (retrieved results, attachments); see `citation_rules` above otherwise.
+    ("turn_citation_rules",        Volatility.TURN),
     ("extra_sections",             Volatility.TURN),
 )
 
