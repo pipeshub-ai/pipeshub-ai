@@ -39,7 +39,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  BASE_IMAGE: pipeshubai/pipeshub-ai-base
   # Must not exist on Docker Hub; see the header.
   CI_TAG: ci-arm64
 
@@ -61,14 +60,29 @@ jobs:
           echo "runner architecture: ${actual}"
           [ "$actual" = "arm64" ] || { echo "expected arm64, got ${actual}"; exit 1; }
 
+      # From GHCR so CI neither spends nor inflates Docker Hub pulls. Docker Hub
+      # is the fallback per image.
+      - name: Pull pre-built base images
+        run: |
+          for pair in PYTHON_DEPS_IMAGE=python-deps-slim RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
+              image="$hub"
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
+
       # Plain `docker build` puts the image straight into the local image store
       # the installer reads from, with no builder to export out of.
       - name: Build the slim app image
         run: |
           set -euo pipefail
           docker build \
-            --build-arg PYTHON_DEPS_IMAGE="${BASE_IMAGE}:python-deps-slim" \
-            --build-arg RUNTIME_BASE_IMAGE="${BASE_IMAGE}:runtime" \
+            --build-arg PYTHON_DEPS_IMAGE="${PYTHON_DEPS_IMAGE}" \
+            --build-arg RUNTIME_BASE_IMAGE="${RUNTIME_BASE_IMAGE}" \
             -t "pipeshubai/pipeshub-ai:${CI_TAG}" .
 
       - name: Build the sandbox image
