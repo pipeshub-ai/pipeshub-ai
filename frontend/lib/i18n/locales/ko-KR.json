@@ -2328,6 +2328,12 @@
         "confirm": "동기화 중지",
         "confirmFull": "전체 동기화 중지"
       },
+      "disableSyncConfirm": {
+        "title": "{{name}}의 동기화를 비활성화할까요?",
+        "confirm": "동기화 비활성화",
+        "confirming": "비활성화 중..."
+      },
+      "disabledSearchNotice": "이 커넥터의 레코드는 비활성화한 시점의 접근 권한 그대로 계속 검색됩니다. {{source}}에서 변경한 공유 설정은 다시 활성화할 때까지 PipesHub에 반영되지 않습니다. 레코드를 제거하려면 커넥터를 삭제하세요.",
       "fullSync": {
         "disabledTooltip": "전체 동기화를 시작하기 전에 진행 중인 동기화를 중지하세요"
       },

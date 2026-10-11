@@ -379,7 +379,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_from(from_id, from_collection, collection, transaction=self.txn)
 
-    async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
+    async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
@@ -399,8 +399,8 @@ class GraphTransactionStore(TransactionStore):
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
-    ) -> None:
-        await self.graph_provider.link_record_to_group(
+    ) -> int:
+        return await self.graph_provider.link_record_to_group(
             record_id, record_group_id, inherit=inherit, leaving_group_id=leaving_group_id, transaction=self.txn
         )
 

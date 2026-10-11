@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import MimeTypes
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.stream_purpose import is_streaming_for_indexing
 from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
 from app.sources.external.github.github_async import rate_limit_reserve_exempt
@@ -45,11 +46,16 @@ class StreamingHelper:
     # ------------------------------------------------------------------
 
     async def stream_record(self, record: Record) -> StreamingResponse:
-        """Stream a record to indexing without holding back the quota reserve.
+        """Stream a record, keeping the quota reserve only when indexing asks.
 
-        See ``rate_limit_reserve_exempt``: the reserve is for sync and listing,
-        which can simply run again later.
+        Indexing stops at the reserve like sync does: the refusal reaches it as
+        a 429 with the reset as ``Retry-After``, and it puts the record back in
+        line until then. A person opening a file is exempt: that is one request
+        they asked for, and refusing it while GitHub would grant it only gets
+        in their way.
         """
+        if is_streaming_for_indexing():
+            return await self._stream_record(record)
         with rate_limit_reserve_exempt():
             return await self._stream_record(record)
 

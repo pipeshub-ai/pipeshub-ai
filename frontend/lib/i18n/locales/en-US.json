@@ -2337,6 +2337,12 @@
         "confirm": "Stop sync",
         "confirmFull": "Stop full sync"
       },
+      "disableSyncConfirm": {
+        "title": "Disable sync for {{name}}?",
+        "confirm": "Disable sync",
+        "confirming": "Disabling..."
+      },
+      "disabledSearchNotice": "Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in {{source}} won't reach PipesHub until you enable it again. To remove the records, delete the connector.",
       "fullSync": {
         "disabledTooltip": "Stop the running sync before starting a full sync"
       },

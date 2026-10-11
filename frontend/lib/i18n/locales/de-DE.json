@@ -2191,6 +2191,12 @@
         "confirm": "Synchronisierung stoppen",
         "confirmFull": "Vollständige Synchronisierung stoppen"
       },
+      "disableSyncConfirm": {
+        "title": "Synchronisierung für {{name}} deaktivieren?",
+        "confirm": "Synchronisierung deaktivieren",
+        "confirming": "Wird deaktiviert..."
+      },
+      "disabledSearchNotice": "Datensätze aus diesem Konnektor bleiben durchsuchbar, mit den Zugriffsrechten, die sie beim Deaktivieren hatten. Änderungen an der Freigabe in {{source}} erreichen PipesHub erst, wenn Sie ihn wieder aktivieren. Um die Datensätze zu entfernen, löschen Sie den Konnektor.",
       "fullSync": {
         "disabledTooltip": "Stoppen Sie die laufende Synchronisierung, bevor Sie eine vollständige Synchronisierung starten"
       },

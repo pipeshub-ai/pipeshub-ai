@@ -28,6 +28,7 @@ from app.modules.indexing.duplicate_reconcile import (
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
@@ -980,19 +981,25 @@ STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS = 24 * 3600.0
 STRANDED_QUEUE_CLOCK_ALLOWANCE_MS = 5 * 60 * 1000
 
 
-def _republishes_since_queued(record: dict[str, Any]) -> int:
-    """How many times the sweep has re-sent this record since it was last put in line."""
+def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None) -> int:
+    """How many times the sweep has re-sent this record since it was last put in line.
+
+    ``enabled_at`` is when the connector of a record parked while it was off
+    was turned on again, which puts the record in line again without moving
+    its queuedAtTimestamp.
+    """
     try:
         last_republished_at = float(record.get("lastRepublishedAt"))
     except (TypeError, ValueError):
         return 0
-    try:
-        if float(record.get("queuedAtTimestamp")) > last_republished_at:
-            # Put in line again since: an earlier wait's re-sends say nothing
-            # about this one.
-            return 0
-    except (TypeError, ValueError):
-        pass
+    for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
+        try:
+            if float(put_in_line_at) > last_republished_at:
+                # Put in line again since: an earlier wait's re-sends say
+                # nothing about this one.
+                return 0
+        except (TypeError, ValueError):
+            continue
     try:
         count = int(record.get("republishCount") or 0)
     except (TypeError, ValueError):
@@ -1044,6 +1051,20 @@ async def _republish_stranded_records(
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
     racing one already in flight.
+
+    Also walked: AUTO_INDEX_OFF with reason CONNECTOR_OFF, parked while its
+    connector was off, on a connector that is on again. Turning it on re-queues
+    these at once (EntityEventService._requeue_records_parked_while_off); this
+    is the net for what that single pass missed -- a refused send, a pass that
+    died -- and for a record parked just after it ran. Such a record keeps its
+    status here, as the others do, so the same age and back-off bound it, and
+    its age also counts from the connector's enabledAtTimestamp, so nothing is
+    sent from here while that re-queue may still be sending it.
+
+    It also ends the wait of a record the handler put back in line because its
+    source rate-limited it (``retryNotBefore``, see
+    ``modules/indexing/rate_limit_deferral.py``): that record is sent again as
+    soon as the time has passed, and not before.
     """
     after_seconds = messaging_env.stranded_record_republish_after_seconds
     if after_seconds <= 0:
@@ -1057,6 +1078,8 @@ async def _republish_stranded_records(
     considered = 0
     still_queued = 0
     backed_off = 0
+    rate_limited_waiting = 0
+    rate_limited_resent = 0
     backlog: LaneBacklog | None = None
     backlog_read = False
 
@@ -1098,10 +1121,103 @@ async def _republish_stranded_records(
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
 
-    for status_value in (
-        ProgressStatus.QUEUED.value,
-        ProgressStatus.NOT_STARTED.value,
-    ):
+    async def _resend(
+        record: dict[str, Any],
+        record_key: str,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        claim: dict[str, Any],
+        undo: dict[str, Any],
+    ) -> bool:
+        """Send the record's event again under its lease; True once it is sent."""
+        record_owner = f"stranded:{uuid4().hex}"
+        record_pool = f"record:{record_key}"
+        lock_held = False
+        try:
+            if concurrency_manager is not None:
+                lock_held = await concurrency_manager.try_acquire(
+                    record_pool,
+                    record_owner,
+                    1,
+                    messaging_env.concurrency_lease_seconds,
+                )
+                if not lock_held:
+                    # Someone is working on it after all.
+                    return False
+
+            # The marker is a durable claim written BEFORE the send, not
+            # a receipt written after it. Written after, a Neo4j failure
+            # following a successful Redis send left the record eligible
+            # again next tick -- one duplicate event per minute, per
+            # record, for as long as the consumer had not yet moved it
+            # out of QUEUED/NOT_STARTED. Under a backlog that is a
+            # feedback loop: every tick inflates the very backlog that
+            # is delaying the consumer. Claiming first bounds it: if the
+            # claim cannot be persisted, nothing is sent this tick.
+            # Deliberately not updatedAtTimestamp: that field means
+            # "when the record last changed" and connectors write it, so
+            # a recovery sweep must not move it.
+            claimed = await graph_provider.update_node(
+                record_key, CollectionNames.RECORDS.value, claim
+            )
+            if not claimed:
+                logger.error(
+                    "Could not record a republish claim for stranded "
+                    "record %s; skipping it this tick rather than risk "
+                    "re-sending it every tick",
+                    record_key,
+                )
+                return False
+
+            try:
+                await run_coordination(
+                    producer.send_event(
+                        topic=Topic.RECORD_EVENTS.value,
+                        event_type=event_type,
+                        payload=payload,
+                        key=str(record_key),
+                    )
+                )
+            except Exception:
+                # The claim is already persisted, so without this the
+                # record would wait out a back-off for a send that
+                # never happened. Putting back what was there (best
+                # effort) lets the next tick retry; if even that fails
+                # the record still only waits one back-off -- bounded
+                # either way.
+                try:
+                    await graph_provider.update_node(
+                        record_key, CollectionNames.RECORDS.value, undo
+                    )
+                except Exception as clear_exc:
+                    logger.warning(
+                        "Could not undo republish claim for %s after a "
+                        "failed send; it will retry after its back-off: %s",
+                        record_key,
+                        clear_exc,
+                    )
+                raise
+            return True
+        except Exception as exc:
+            logger.error(
+                "Failed to re-publish stranded record %s: %s",
+                record_key,
+                exc,
+            )
+            return False
+        finally:
+            if lock_held and concurrency_manager is not None:
+                try:
+                    await concurrency_manager.release(record_pool, record_owner)
+                except Exception as release_exc:
+                    logger.warning(
+                        "Failed to release stranded-record lease for %s: %s",
+                        record_key,
+                        release_exc,
+                    )
+
+    async def _pages_in_status(status_value: str) -> AsyncGenerator[list[dict], None]:
         offset = 0
         while True:
             page = await graph_provider.get_documents_paginated(
@@ -1113,11 +1229,77 @@ async def _republish_stranded_records(
                 raise_on_error=False,
             )
             if not page:
-                break
+                return
+            yield page
+            if len(page) < page_size:
+                return
+            # Republished rows keep their status, so the filtered result does
+            # not shrink under the cursor — advance over the whole page.
+            offset += len(page)
 
+    # Per connector that is on: when it was last turned on.
+    enabled_at: dict[str, object] = {}
+
+    async def _pages_parked_while_off() -> AsyncGenerator[list[dict], None]:
+        """Per connector that is on, so neither a paused connector's parked
+        backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
+        (no reason) is read on every pass; each read is a seek in the
+        (connectorId, indexingStatus, reason, key) index."""
+        offset = 0
+        while True:
+            apps = await graph_provider.get_documents_paginated(
+                CollectionNames.APPS.value,
+                skip=offset,
+                limit=page_size,
+                filters={"isActive": True},
+                sort_field="_key",
+                raise_on_error=False,
+            )
+            for app in apps:
+                if key := app.get("_key") or app.get("id"):
+                    enabled_at[key] = app.get("enabledAtTimestamp")
+            if len(apps) < page_size:
+                break
+            offset += len(apps)
+        for connector_id in list(enabled_at):
+            # "" rather than None, so the first page has the key predicate
+            # too: Neo4j uses a composite index only when every property in
+            # it has one.
+            after_key = ""
+            while True:
+                page = await graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    limit=page_size,
+                    # Only the turn-off's reason: AUTO_INDEX_OFF from a
+                    # connector's indexing filters has none.
+                    filters={
+                        "connectorId": connector_id,
+                        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                        "reason": CONNECTOR_OFF,
+                    },
+                    sort_field="_key",
+                    raise_on_error=False,
+                    after_key=after_key,
+                )
+                if not page:
+                    break
+                yield page
+                after_key = page[-1].get("_key") or page[-1].get("id")
+                if len(page) < page_size or not after_key:
+                    break
+
+    for status_value, pages in (
+        (ProgressStatus.QUEUED.value, _pages_in_status(ProgressStatus.QUEUED.value)),
+        (ProgressStatus.NOT_STARTED.value, _pages_in_status(ProgressStatus.NOT_STARTED.value)),
+        (ProgressStatus.AUTO_INDEX_OFF.value, _pages_parked_while_off()),
+    ):
+        parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
+        async for page in pages:
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
+                if parked_while_off and not is_live_record(record):
+                    continue
                 # Uploads are otherwise left alone: a new one waits on its file
                 # reaching storage. A restored file's content is already there,
                 # and its restore was the only thing that would have queued it.
@@ -1133,6 +1315,35 @@ async def _republish_stranded_records(
                 ):
                     continue
 
+                # Put back in line by the handler because its source
+                # rate-limited it. Its event was acknowledged then, so neither
+                # the age, the back-off nor the queue's backlog says anything
+                # about it: the not-before time is the whole rule. A record
+                # parked while its connector was off since then keeps the
+                # parked rules below (its turn-on clock), even if the wait's
+                # fields are still on it.
+                due = None if parked_while_off else deferral_due(record, pass_started_ms)
+                if due is not None:
+                    if not due:
+                        rate_limited_waiting += 1
+                    elif await _is_active(connector_id):
+                        event_type, payload = record_event(
+                            record,
+                            record_key=record_key,
+                            connector_id=connector_id,
+                            restored_upload=restored_upload,
+                        )
+                        if await _resend(
+                            record,
+                            record_key,
+                            event_type,
+                            payload,
+                            claim={"lastRepublishedAt": get_epoch_timestamp_in_ms()},
+                            undo={"lastRepublishedAt": record.get("lastRepublishedAt")},
+                        ):
+                            rate_limited_resent += 1
+                    continue
+
                 # Aged from the newest of three clocks, so any one being fresh
                 # keeps the row out. queuedAtTimestamp is the platform's own
                 # "put in line for indexing" time. updatedAt cannot carry this
@@ -1145,11 +1356,17 @@ async def _republish_stranded_records(
                 # sends another copy of the same event -- worst precisely when
                 # the consumer is backlogged, which is the case this sweep
                 # exists for.
+                # A record parked while its connector was off is also aged
+                # from when the connector was turned on again: until then the
+                # appEnabled re-queue is sending it, and a copy from here
+                # would reach the consumer twice. Its own clocks are of the
+                # park, often hours older.
                 clocks: list[float] = []
                 for value in (
                     record.get("queuedAtTimestamp"),
                     record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
+                    enabled_at.get(connector_id) if parked_while_off else None,
                 ):
                     try:
                         clocks.append(float(value))
@@ -1166,11 +1383,15 @@ async def _republish_stranded_records(
                     # The sweep above owns these; moving them here would race it.
                     continue
 
-                if is_parked_duplicate(record, restored_upload=restored_upload):
+                # A parked copy is released by its twin's completion only while
+                # QUEUED; one parked while its connector was off never is.
+                if not parked_while_off and is_parked_duplicate(record, restored_upload=restored_upload):
                     continue
 
                 considered += 1
-                republishes = _republishes_since_queued(record)
+                republishes = _republishes_since_queued(
+                    record, enabled_at.get(connector_id) if parked_while_off else None
+                )
                 if pass_started_ms - last_touched_at < _republish_wait_ms(after_seconds, republishes):
                     backed_off += 1
                     continue
@@ -1197,83 +1418,20 @@ async def _republish_stranded_records(
                         still_queued += 1
                         continue
 
-                record_owner = f"stranded:{uuid4().hex}"
-                record_pool = f"record:{record_key}"
-                lock_held = False
-                try:
-                    if concurrency_manager is not None:
-                        lock_held = await concurrency_manager.try_acquire(
-                            record_pool,
-                            record_owner,
-                            1,
-                            messaging_env.concurrency_lease_seconds,
-                        )
-                        if not lock_held:
-                            # Someone is working on it after all.
-                            continue
-
-                    # The marker is a durable claim written BEFORE the send, not
-                    # a receipt written after it. Written after, a Neo4j failure
-                    # following a successful Redis send left the record eligible
-                    # again next tick -- one duplicate event per minute, per
-                    # record, for as long as the consumer had not yet moved it
-                    # out of QUEUED/NOT_STARTED. Under a backlog that is a
-                    # feedback loop: every tick inflates the very backlog that
-                    # is delaying the consumer. Claiming first bounds it: if the
-                    # claim cannot be persisted, nothing is sent this tick.
-                    # Deliberately not updatedAtTimestamp: that field means
-                    # "when the record last changed" and connectors write it, so
-                    # a recovery sweep must not move it.
-                    claimed = await graph_provider.update_node(
-                        record_key,
-                        CollectionNames.RECORDS.value,
-                        {
-                            "lastRepublishedAt": get_epoch_timestamp_in_ms(),
-                            "republishCount": republishes + 1,
-                        },
-                    )
-                    if not claimed:
-                        logger.error(
-                            "Could not record a republish claim for stranded "
-                            "record %s; skipping it this tick rather than risk "
-                            "re-sending it every tick",
-                            record_key,
-                        )
-                        continue
-
-                    try:
-                        await run_coordination(
-                            producer.send_event(
-                                topic=Topic.RECORD_EVENTS.value,
-                                event_type=event_type,
-                                payload=payload,
-                                key=str(record_key),
-                            )
-                        )
-                    except Exception:
-                        # The claim is already persisted, so without this the
-                        # record would wait out a back-off for a send that
-                        # never happened. Putting back what was there (best
-                        # effort) lets the next tick retry; if even that fails
-                        # the record still only waits one back-off -- bounded
-                        # either way.
-                        try:
-                            await graph_provider.update_node(
-                                record_key,
-                                CollectionNames.RECORDS.value,
-                                {
-                                    "lastRepublishedAt": record.get("lastRepublishedAt"),
-                                    "republishCount": republishes,
-                                },
-                            )
-                        except Exception as clear_exc:
-                            logger.warning(
-                                "Could not undo republish claim for %s after a "
-                                "failed send; it will retry after its back-off: %s",
-                                record_key,
-                                clear_exc,
-                            )
-                        raise
+                if await _resend(
+                    record,
+                    record_key,
+                    event_type,
+                    payload,
+                    claim={
+                        "lastRepublishedAt": get_epoch_timestamp_in_ms(),
+                        "republishCount": republishes + 1,
+                    },
+                    undo={
+                        "lastRepublishedAt": record.get("lastRepublishedAt"),
+                        "republishCount": republishes,
+                    },
+                ):
                     republished += 1
                     logger.warning(
                         "Re-published stranded record %s (%s, status %s, "
@@ -1283,30 +1441,6 @@ async def _republish_stranded_records(
                         status_value,
                         (get_epoch_timestamp_in_ms() - last_touched_at) / 1000,
                     )
-                except Exception as exc:
-                    logger.error(
-                        "Failed to re-publish stranded record %s: %s",
-                        record_key,
-                        exc,
-                    )
-                finally:
-                    if lock_held and concurrency_manager is not None:
-                        try:
-                            await concurrency_manager.release(
-                                record_pool, record_owner
-                            )
-                        except Exception as release_exc:
-                            logger.warning(
-                                "Failed to release stranded-record lease for %s: %s",
-                                record_key,
-                                release_exc,
-                            )
-
-            if len(page) < page_size:
-                break
-            # Republished rows keep their status, so the filtered result does
-            # not shrink under the cursor — advance over the whole page.
-            offset += len(page)
 
     decided_without_the_queue = backlog_read and backlog is None
     logger.log(
@@ -1320,7 +1454,14 @@ async def _republish_stranded_records(
         backed_off,
         " (queue not readable; decided on age alone)" if decided_without_the_queue else "",
     )
-    return republished
+    if rate_limited_waiting or rate_limited_resent:
+        logger.info(
+            "Stranded-record sweep: %d record(s) waiting out their source's rate "
+            "limit, %d re-sent now that it has passed",
+            rate_limited_waiting,
+            rate_limited_resent,
+        )
+    return republished + rate_limited_resent
 
 
 async def run_stale_recovery_loop(

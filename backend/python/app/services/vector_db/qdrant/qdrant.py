@@ -767,29 +767,32 @@ class QdrantService(IVectorDBService):
         batch_size: int = 500,
     ) -> None:
         self._assert_connected()
-        qdrant_points = [QdrantUtils.vector_point_to_qdrant(p) for p in points]
 
         start = time.perf_counter()
         logger.debug(
-            f"Upserting {len(qdrant_points)} points into '{collection_name}' "
+            f"Upserting {len(points)} points into '{collection_name}' "
             f"(batch_size={batch_size})"
         )
 
-        for i in range(0, len(qdrant_points), batch_size):
-            batch = qdrant_points[i : i + batch_size]
-            try:
-                await self.client.upsert(  # type: ignore
-                    collection_name=collection_name,
-                    points=batch,
-                )
-            except Exception as e:
-                _report_upsert_failure(e)
-                raise
+        for i in range(0, len(points), batch_size):
+            # Batch, not a list of PointStruct: the client's per-point
+            # inference check is CPU on the indexing event loop, and at
+            # ~100 ms per 50-point upsert it was the largest single cost on
+            # that loop while large records were being embedded.
+            for batch in QdrantUtils.vector_points_to_batches(points[i : i + batch_size]):
+                try:
+                    await self.client.upsert(  # type: ignore
+                        collection_name=collection_name,
+                        points=batch,
+                    )
+                except Exception as e:
+                    _report_upsert_failure(e)
+                    raise
 
         elapsed = time.perf_counter() - start
         logger.debug(
-            f"Upsert complete: {len(qdrant_points)} points in {elapsed:.2f}s "
-            f"({len(qdrant_points)/elapsed:.0f} pts/s)"
+            f"Upsert complete: {len(points)} points in {elapsed:.2f}s "
+            f"({len(points)/elapsed:.0f} pts/s)"
         )
 
     async def delete_points(

@@ -62,6 +62,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_access import (
     apply_page_access_to_dependents,
+    listing_modified_after,
     unresolved_principal_permission,
     v1_next_start,
 )
@@ -100,8 +101,8 @@ from app.connectors.core.base.error.stream_errors import (
     to_stream_error,
 )
 
-# Time offset (in hours) applied to date filters to handle timezone differences
-# between the application and Confluence server, ensuring no data is missed during sync
+# How far back each incremental sync re-reads before its checkpoint. CQL reads dates
+# in the site's time zone, not UTC; the admin's date filters are used as set.
 TIME_OFFSET_HOURS = 24
 
 # Expand parameters for fetching pages and blogposts with required metadata
@@ -1071,14 +1072,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {modified_after}, checkpoint: {last_sync_time})")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching {content_type}s modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all {content_type}s (first time)")
@@ -1155,7 +1155,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
                     )
                 else:  # CONFLUENCE_BLOGPOST
                     response = await datasource.get_blogposts_v1(
@@ -1172,7 +1171,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
                     )
 
                 # Check response

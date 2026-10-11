@@ -355,6 +355,19 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def rate_limit_defer_max_seconds(self) -> float:
+        """How long a record may wait in total on its source's rate limit.
+
+        A content fetch the source answers with 429 and a Retry-After is put
+        back in line until then, and the stranded sweep re-sends it (see
+        ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
+        such wait; a limit that would carry the record past this ends it FAILED
+        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        which is what re-sends the record.
+        """
+        return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
+
+    @property
     def vector_membership_backfill_interval_seconds(self) -> float:
         return float(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_INTERVAL_SECONDS", "30"))
 

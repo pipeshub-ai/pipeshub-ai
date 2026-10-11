@@ -612,6 +612,64 @@ async def test_a_record_that_stops_inheriting_does_so_when_its_group_is_not_foun
     assert await _readers(w, record.id, alice, bob) == {bob}
 
 
+async def test_a_group_write_counts_the_inherit_edges_it_removed(world: _World) -> None:
+    """The processor drops the connector's cached access on this count instead of reading the edge first."""
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    drive, other_drive = _Target("record_group", w), _Target("record_group", w)
+    await drive.sync(alice_email)
+    await other_drive.sync(alice_email)
+    record = _file(w, "brief", drive)
+    await w.processor.on_new_records([(record, [])])
+    assert await _links(w, record.id, drive) == BELONGS_AND_INHERITS
+
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=True) == 0
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=False) == 1
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=False) == 0
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=None) == 0
+
+    # Leaving counts the old group's inherit edge, and not its membership.
+    assert await w.graph.link_record_to_group(record.id, drive.node.id, inherit=True) == 0
+    assert await w.graph.link_record_to_group(
+        record.id, other_drive.node.id, inherit=True, leaving_group_id=drive.node.id
+    ) == 1
+    assert await _links(w, record.id, drive) == set()
+    assert await _links(w, record.id, other_drive) == BELONGS_AND_INHERITS
+    assert await w.graph.link_record_to_group(
+        record.id, drive.node.id, inherit=False, leaving_group_id=other_drive.node.id
+    ) == 1
+    assert await w.graph.link_record_to_group(
+        record.id, other_drive.node.id, inherit=None, leaving_group_id=drive.node.id
+    ) == 0
+    assert await _links(w, record.id, drive) == set()
+    assert await _links(w, record.id, other_drive) == {CollectionNames.BELONGS_TO.value}
+
+
+async def test_a_record_that_stops_inheriting_in_place_drops_the_cached_access_once(
+    world: _World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = world
+    alice, alice_email = await _add_user(w, "alice")
+    await _add_app(w, alice)
+    drive = _Target("record_group", w)
+    await drive.sync(alice_email)
+    record = _file(w, "minutes", drive)
+    await w.processor.on_new_records([(record, [])])
+    drop = AsyncMock()
+    monkeypatch.setattr(processor_module, "notify_connector_permissions_changed", drop)
+
+    private = record.model_copy(update={"inherit_permissions": False})
+    await w.processor.on_new_records([(private, [])])
+
+    assert await _links(w, record.id, drive) == {CollectionNames.BELONGS_TO.value}
+    drop.assert_awaited_once_with(w.connector_id, w.org_id)
+    drop.reset_mock()
+    await w.processor.on_new_records([(private, [])])
+    drop.assert_not_awaited()
+
+
 async def test_a_failed_permission_removal_is_raised_and_the_access_stays_until_it_succeeds(world: _World) -> None:
     w = world
     alice, alice_email = await _add_user(w, "alice")
