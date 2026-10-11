@@ -59,14 +59,15 @@ class TestStageTimerEmit:
 
     def test_logger_called_once(self):
         timer = StageTimer(enabled=True)
-        timer.mark("parse")
         mock_logger = MagicMock()
+
+        timer.mark("parse")
         timer.emit(mock_logger, "top")
         mock_logger.info.assert_called_once()
 
-        args = mock_logger.info.call_args.args # gets logger info
+        args = mock_logger.info.call_args.args
         message = args[0] % args[1:]
         assert "parse" in message
         assert "total=" in message
         timer.emit(mock_logger, "top")
-        mock_logger.info.assert_called_once() # second emit should keep total logger calls at one
+        mock_logger.info.assert_called_once()
