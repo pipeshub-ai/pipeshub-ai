@@ -55,3 +55,26 @@ class TestRedactSensitiveQueryParams:
     )
     def test_urls_without_sensitive_params_are_unchanged(self, url: str) -> None:
         assert redact_sensitive_query_params(url) == url
+
+    def test_connector_callback_code_and_state_are_redacted(self) -> None:
+        out = redact_sensitive_query_params(
+            "/api/v1/connectors/oauth/callback?code=4/0FAKE-code&state=ZmFrZS1zdGF0ZQ&scope=drive"
+        )
+        assert "FAKE-code" not in out
+        assert "ZmFrZS1zdGF0ZQ" not in out
+        assert "scope=drive" in out
+
+    @pytest.mark.parametrize(
+        "key",
+        ["key", "apiKey", "X-Api-Key", "client-secret", "sessionToken", "user_password"],
+    )
+    def test_credential_like_names_are_redacted(self, key: str) -> None:
+        assert "hidden-value" not in redact_sensitive_query_params(f"/x?{key}=hidden-value&page=2")
+
+    @pytest.mark.parametrize("key", ["keyword", "monkey", "passage", "statement", "codec"])
+    def test_names_that_only_contain_those_letters_are_kept(self, key: str) -> None:
+        url = f"/x?{key}=visible-value"
+        assert redact_sensitive_query_params(url) == url
+
+    def test_percent_encoded_equals_in_the_name_is_redacted(self) -> None:
+        assert "encoded-secret" not in redact_sensitive_query_params("/cb?page=1&code%3Dencoded-secret")

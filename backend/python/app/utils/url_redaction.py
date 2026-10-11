@@ -3,9 +3,13 @@
 import re
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
-# Kept in step with SENSITIVE_QUERY_PARAMS in the Node log-redaction utils.
+# Kept in step with backend/nodejs/apps/src/libs/utils/log-redaction.utils.ts.
+# `state` is listed because the connector callback accepts exactly the
+# (code, state) pair; `key` only ever as a whole parameter name (`?key=`).
 SENSITIVE_QUERY_PARAMS = frozenset({
     "code",
+    "state",
+    "key",
     "token",
     "access_token",
     "refresh_token",
@@ -23,7 +27,35 @@ SENSITIVE_QUERY_PARAMS = frozenset({
     "sp",
 })
 
+# Matched against whole words of a name, never substrings, so `passage` or
+# `keyword` stay readable while `X-Amz-Signature` or `apiKey` do not.
+CREDENTIAL_WORDS = frozenset({
+    "password",
+    "passwd",
+    "pass",
+    "pwd",
+    "secret",
+    "token",
+    "signature",
+    "sig",
+    "credential",
+    "credentials",
+    "apikey",
+})
+
 REDACTED = "[REDACTED]"
+
+
+def is_sensitive_query_key(key: str) -> bool:
+    # A pair sent as `code%3Dvalue` decodes to the single name "code=value".
+    name = key.split("=", 1)[0]
+    if name.lower() in SENSITIVE_QUERY_PARAMS:
+        return True
+    words = [w for w in re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()) if w]
+    return any(
+        word in CREDENTIAL_WORDS or (word == "api" and words[i + 1 : i + 2] == ["key"])
+        for i, word in enumerate(words)
+    )
 
 
 def redact_url(url: str) -> str:
@@ -41,10 +73,13 @@ def redact_url(url: str) -> str:
 
 def _redact_pairs(segment: str) -> str:
     pairs = parse_qsl(segment, keep_blank_values=True)
-    if not any(key.lower() in SENSITIVE_QUERY_PARAMS for key, _ in pairs):
+    if not any(is_sensitive_query_key(key) for key, _ in pairs):
         return segment
     return urlencode(
-        [(k, REDACTED if k.lower() in SENSITIVE_QUERY_PARAMS else v) for k, v in pairs],
+        [
+            (k.split("=", 1)[0], REDACTED) if is_sensitive_query_key(k) else (k, v)
+            for k, v in pairs
+        ],
         safe="[]",
     )
 
