@@ -246,3 +246,87 @@ class TestTheAffectedOrgIsDropped:
         await proc._access_changed([CONNECTOR])
 
         notify.assert_awaited_once_with(CONNECTOR, ORG)
+
+
+def _existing(group_id: str = "rg-key") -> FileRecord:
+    existing = _record()
+    existing.record_group_id = group_id
+    return existing
+
+
+class TestInheritedAccessRemovedInPlace:
+    """A record that stays in its group but stops inheriting from it loses that
+    group's access without moving, so no membership refresh ever covered it."""
+
+    async def test_inherit_edge_removed_marks_the_connector(self, events) -> None:
+        tx = AsyncMock()
+        tx.get_edge = AsyncMock(return_value={"_from": "records/rec-1"})
+        proc = _processor(tx, events)
+        record = _record()
+        record.inherit_permissions = False
+        narrowed: set[str] = set()
+
+        moved = await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
+
+        assert moved is False
+        assert narrowed == {CONNECTOR}
+        tx.link_record_to_group.assert_awaited_once()
+
+    async def test_no_inherit_edge_to_remove_marks_nothing(self, events) -> None:
+        tx = AsyncMock()
+        tx.get_edge = AsyncMock(return_value=None)
+        proc = _processor(tx, events)
+        record = _record()
+        record.inherit_permissions = False
+        narrowed: set[str] = set()
+
+        await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
+
+        assert narrowed == set()
+
+    async def test_still_inheriting_reads_nothing(self, events) -> None:
+        tx = AsyncMock()
+        proc = _processor(tx, events)
+        record = _record()
+        record.inherit_permissions = True
+        narrowed: set[str] = set()
+
+        await proc._link_record_to_group(record, "rg-key", tx, _existing(), narrowed)
+
+        tx.get_edge.assert_not_called()
+        assert narrowed == set()
+
+    async def test_leaving_a_group_marks_the_connector(self, events) -> None:
+        tx = AsyncMock()
+        proc = _processor(tx, events)
+        narrowed: set[str] = set()
+
+        await proc._link_record_to_group(_record(), "rg-new", tx, _existing("rg-old"), narrowed)
+
+        assert narrowed == {CONNECTOR}
+
+    async def test_metadata_update_drops_after_commit(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_record_by_external_id = AsyncMock(return_value=None)
+        proc = _processor(tx, events)
+
+        async def narrowing(record, permissions, tx_store, moved, **kwargs) -> tuple[None, list]:
+            kwargs["narrowed_connectors"].add(CONNECTOR)
+            return None, []
+
+        with patch.object(proc, "_process_record", new=AsyncMock(side_effect=narrowing)):
+            await proc.on_record_metadata_update(_record())
+
+        _dropped_after_commit(events)
+
+    async def test_content_update_drops_after_commit(self, notify, events) -> None:
+        proc = _processor(AsyncMock(), events)
+
+        async def narrowing(record, permissions, tx_store, moved, **kwargs) -> tuple[None, list]:
+            kwargs["narrowed_connectors"].add(CONNECTOR)
+            return None, []
+
+        with patch.object(proc, "_process_record", new=AsyncMock(side_effect=narrowing)):
+            await proc.on_record_content_update(_record())
+
+        _dropped_after_commit(events)

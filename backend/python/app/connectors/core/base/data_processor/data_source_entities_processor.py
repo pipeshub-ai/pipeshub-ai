@@ -717,10 +717,21 @@ class DataSourceEntitiesProcessor:
             ],
         )
 
-    async def _link_record_to_group(self, record: Record, record_group_id: str, tx_store: TransactionStore, existing_record: Record | None = None) -> bool:
+    async def _link_record_to_group(
+        self,
+        record: Record,
+        record_group_id: str,
+        tx_store: TransactionStore,
+        existing_record: Record | None = None,
+        narrowed_connectors: set[str] | None = None,
+    ) -> bool:
         """
         Create edges between record and record group.
         This should be called AFTER saving the record (when record.id is available).
+
+        ``narrowed_connectors`` collects the record's connector when this write
+        takes inherited access away (it leaves a group, or stops inheriting from
+        the one it stays in), for the caller to drop after its commit.
 
         Returns whether the record's group membership actually moved. The
         caller republishes the vector membership on that signal, and it is
@@ -746,6 +757,10 @@ class DataSourceEntitiesProcessor:
                 # edge yet, so deleting one is a guaranteed no-op round trip —
                 # one per record, on the hot path of every full sync.
                 inherit = None
+            if narrowed_connectors is not None and await self._loses_inherited_access(
+                record, joining_group_id, leaving_group_id, inherit, tx_store
+            ):
+                narrowed_connectors.add(record.connector_id)
             # Leaving the old group and joining the new one are one write: on Neo4j
             # each statement commits on its own, so a failure in between left the
             # record out of its old group but still inheriting that group's permissions.
@@ -788,6 +803,28 @@ class DataSourceEntitiesProcessor:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
 
         return moved
+
+    @staticmethod
+    async def _loses_inherited_access(
+        record: Record,
+        joining_group_id: str | None,
+        leaving_group_id: str | None,
+        inherit: bool | None,
+        tx_store: TransactionStore,
+    ) -> bool:
+        if leaving_group_id:
+            return True
+        if inherit is not False or not joining_group_id:
+            return False
+        # Read only on this branch: an existing record that does not inherit is
+        # rewritten on every sync, and the edge is almost always already gone.
+        return await tx_store.get_edge(
+            record.id,
+            CollectionNames.RECORDS.value,
+            joining_group_id,
+            CollectionNames.RECORD_GROUPS.value,
+            CollectionNames.INHERIT_PERMISSIONS.value,
+        ) is not None
 
     async def _prepare_ticket_user_edge(
         self,
@@ -1453,8 +1490,11 @@ class DataSourceEntitiesProcessor:
         *,
         publishes_event: bool = True,
         pre_old_path: object = _NO_OLD_PATH,
+        narrowed_connectors: set[str] | None = None,
     ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
+
+        ``narrowed_connectors``: see :meth:`_link_record_to_group`.
 
         ``moved_virtual_record_ids`` collects the VRIDs whose record-group
         membership actually changed. It is an out-parameter rather than a return
@@ -1637,7 +1677,7 @@ class DataSourceEntitiesProcessor:
         # Link record to group AFTER saving (when record.id is available for edges)
         if record_group_id or record.shared_with_me_record_group_ids:
             moved = await self._link_record_to_group(
-                record, record_group_id, tx_store, existing_record
+                record, record_group_id, tx_store, existing_record, narrowed_connectors
             )
             # Only an *existing* record has points to refresh, and only its
             # stored VRID identifies them — a connector-supplied record carries
@@ -1814,6 +1854,7 @@ class DataSourceEntitiesProcessor:
             # exactly the case this exists for, and every one of those filters
             # would drop it.
             moved_virtual_record_ids: list[tuple[str, str | None]] = []
+            narrowed_connectors: set[str] = set()
             all_pending_moves: list[PendingMove] = []
 
             async with self.data_store_provider.transaction() as tx_store:
@@ -1828,6 +1869,7 @@ class DataSourceEntitiesProcessor:
                     processed_record, moves = await self._process_record(
                         record, permissions, tx_store, moved_virtual_record_ids,
                         pre_old_path=pre_old_path,
+                        narrowed_connectors=narrowed_connectors,
                     )
                     all_pending_moves.extend(moves)
 
@@ -1897,6 +1939,7 @@ class DataSourceEntitiesProcessor:
                     [r.id for r, ok in zip(publishable, acked) if ok]
                 )
 
+            await self._access_changed(narrowed_connectors)
             await self._publish_membership_sync(moved_virtual_record_ids)
         except Exception as e:
             self.logger.error(f"Transaction on_new_records failed: {str(e)}")
@@ -1906,12 +1949,14 @@ class DataSourceEntitiesProcessor:
     @retry_on_deadlock()
     async def on_record_content_update(self, record: Record) -> None:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
         async with self.data_store_provider.transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
-                record, [], tx_store, moved_virtual_record_ids
+                record, [], tx_store, moved_virtual_record_ids,
+                narrowed_connectors=narrowed_connectors,
             )
 
             if processed_record is not None and processed_record.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value:
@@ -1921,6 +1966,7 @@ class DataSourceEntitiesProcessor:
             elif processed_record is not None:
                 should_publish = True
 
+        await self._access_changed(narrowed_connectors)
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
 
@@ -1982,18 +2028,21 @@ class DataSourceEntitiesProcessor:
         Leaves the indexing lifecycle untouched — see ``_preserve_indexing_state``.
         """
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
         async with self.data_store_provider.transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record, process_moves = await self._process_record(
-                record, [], tx_store, moved_virtual_record_ids, publishes_event=False
+                record, [], tx_store, moved_virtual_record_ids, publishes_event=False,
+                narrowed_connectors=narrowed_connectors,
             )
             pending_moves.extend(process_moves)
             if processed_record and existing_record is not None:
                 self._preserve_indexing_state(processed_record, existing_record)
                 await tx_store.batch_upsert_records([processed_record])
 
+        await self._access_changed(narrowed_connectors)
         await self._flush_pending_blob_moves(pending_moves)
 
         # This path deliberately publishes no indexing event and preserves the
@@ -2032,6 +2081,7 @@ class DataSourceEntitiesProcessor:
         duplicate_delete_payloads: list[dict] = []
         fallback_pending_moves: list[PendingMove] = []
         moved_with_old_path: list[tuple[Record, Record, str | None]] = []
+        narrowed_connectors: set[str] = set()
 
         def _is_publishable(record: Record) -> bool:
             return (
@@ -2254,7 +2304,9 @@ class DataSourceEntitiesProcessor:
                         await tx_store.batch_upsert_records([new_record], release_trashed_external_ids=True)
 
                         if record_group_id:
-                            await self._link_record_to_group(new_record, record_group_id, tx_store, old_record)
+                            await self._link_record_to_group(
+                                new_record, record_group_id, tx_store, old_record, narrowed_connectors
+                            )
 
                         # existing_record=None forces _handle_parent_record to build a
                         # fresh parent edge (the stale one was deleted above).
@@ -2359,6 +2411,7 @@ class DataSourceEntitiesProcessor:
                     ],
                 )
 
+            await self._access_changed(narrowed_connectors)
             await self._publish_membership_sync(membership_vrids)
 
             if duplicate_delete_payloads:
