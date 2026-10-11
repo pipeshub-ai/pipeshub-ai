@@ -1575,8 +1575,11 @@ class TestSyncChannels:
             ]
         )
         ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="e"))
-        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await c._sync_channels() == []
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            pytest.raises(RuntimeError, match=r"conversations\.list failed \(e\)"),
+        ):
+            await c._sync_channels()
 
         ds.conversations_list = AsyncMock(
             return_value=MagicMock(success=True, data={"channels": [], "response_metadata": {}})
@@ -2710,8 +2713,11 @@ class TestSlackIndividualAdditionalCoverage:
         c = _make_connector()
         mock_ds = MagicMock()
         mock_ds.conversations_list = AsyncMock(return_value=MagicMock(success=False, error="fail"))
-        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            assert await c._sync_channels() == []
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=mock_ds)),
+            pytest.raises(RuntimeError, match=r"conversations\.list failed \(fail\)"),
+        ):
+            await c._sync_channels()
 
     @pytest.mark.asyncio
     async def test_fetch_channel_members_pagination_and_errors(self) -> None:
@@ -3480,3 +3486,90 @@ class TestReindexRootRecordGroup:
         assert await c._check_updated_file(rec) is not None
         assert c._root_rg_id(captured["ctx"]) == "rg-channel"
         assert c._root_rg_id(captured["ctx"]) != "rg-thread"
+
+
+ALL_TYPES = {"public_channel", "private_channel", "im", "mpim"}
+
+
+def _scopes_ds(scopes: list[str] | None) -> MagicMock:
+    ds = MagicMock()
+    data = {"ok": True} if scopes is None else {"ok": True, "scopes": scopes}
+    ds.check_token_scopes = AsyncMock(return_value=MagicMock(success=True, data=data))
+    return ds
+
+
+class TestListableChannelTypes:
+    @pytest.mark.asyncio
+    async def test_types_without_a_granted_read_scope_are_dropped(self) -> None:
+        c = _make_connector()
+        ds = _scopes_ds(["channels:read", "channels:history", "groups:read", "users:read"])
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            assert await c._listable_channel_types_param(ALL_TYPES) == "public_channel,private_channel"
+        assert "im:read, mpim:read" in str(c.logger.warning.call_args)
+
+    @pytest.mark.parametrize("scopes", [None, ["read", "client"]])
+    @pytest.mark.asyncio
+    async def test_unknown_scopes_request_everything(self, scopes: list[str] | None) -> None:
+        c = _make_connector()
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=_scopes_ds(scopes))):
+            assert await c._listable_channel_types_param(ALL_TYPES) == "public_channel,private_channel,im,mpim"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_scope_probe_requests_everything(self) -> None:
+        c = _make_connector()
+        ds = MagicMock()
+        ds.check_token_scopes = AsyncMock(side_effect=RuntimeError("boom"))
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            assert await c._listable_channel_types_param({"im"}) == "im"
+
+    @pytest.mark.asyncio
+    async def test_nothing_listable_raises_naming_the_scopes(self) -> None:
+        c = _make_connector()
+        ds = _scopes_ds(["channels:read", "groups:read"])
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            pytest.raises(RuntimeError, match="lacks im:read, mpim:read"),
+        ):
+            await c._listable_channel_types_param({"im", "mpim"})
+
+    @pytest.mark.asyncio
+    async def test_sync_channels_lists_only_what_the_token_can_read(self) -> None:
+        c = _make_connector()
+        ds = _scopes_ds(["channels:read", "groups:read"])
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={
+                "channels": [{"id": "C1", "name": "general", "is_member": True, "created": "1.0"}],
+                "response_metadata": {"next_cursor": ""},
+            },
+        ))
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(c.data_entities_processor, "on_new_record_groups", new=AsyncMock()),
+        ):
+            rgs = await c._sync_channels()
+        assert [rg.external_group_id for rg in rgs] == ["C1"]
+        assert ds.conversations_list.await_args.kwargs["types"] == "public_channel,private_channel"
+
+    @pytest.mark.asyncio
+    async def test_a_listing_error_is_not_a_successful_empty_sync(self) -> None:
+        c = _make_connector()
+        ds = _scopes_ds(None)
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=False, error="missing_scope",
+            message="Missing required Slack scope. Needed scope: im:read.",
+        ))
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_sync_users", new=AsyncMock()),
+            patch.object(type(c), "sync_channel_messages", new=AsyncMock()) as messages,
+            patch.object(type(c), "_sync_thread_growth", new=AsyncMock()),
+            patch(
+                "app.connectors.sources.slack.individual.connector.load_connector_filters",
+                new=AsyncMock(return_value=(c.sync_filters, c.indexing_filters)),
+            ),
+            pytest.raises(RuntimeError, match=r"missing_scope.*Needed scope: im:read"),
+        ):
+            await c.run_sync()
+        messages.assert_not_awaited()
+        assert not any("sync complete" in str(call) for call in c.logger.info.call_args_list)

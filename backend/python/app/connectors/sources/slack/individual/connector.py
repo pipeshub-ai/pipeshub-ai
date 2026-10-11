@@ -164,6 +164,13 @@ CHANNEL_TYPE_LABEL_TO_API = {
     "Group Direct Messages": "mpim",
 }
 ALL_CHANNEL_API_TYPES = set(CHANNEL_TYPE_LABEL_TO_API.values())
+# conversations.list fails the whole call with missing_scope if any requested type lacks its scope.
+CHANNEL_API_TYPE_READ_SCOPE = {
+    "public_channel": "channels:read",
+    "private_channel": "groups:read",
+    "im": "im:read",
+    "mpim": "mpim:read",
+}
 
 SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
     2: 20,
@@ -175,6 +182,18 @@ RATE_LIMIT_HEADROOM = 0.9
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
 MAX_CONCURRENT_USER_INFO = 10
 _USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
+
+
+def _slack_failure(method: str, resp: object) -> str:
+    """An admin-readable account of a failed Slack call: the raw code plus Slack's explanation."""
+    if not resp:
+        return f"Slack {method} failed: no response"
+    error = getattr(resp, "error", None)
+    message = getattr(resp, "message", None)
+    code = error if isinstance(error, str) and error else "unknown_error"
+    if isinstance(message, str) and message and message != code:
+        return f"Slack {method} failed ({code}): {message}"
+    return f"Slack {method} failed ({code})"
 
 
 def _numeric_epoch_to_ms(value: int | float | str | None) -> int | None:
@@ -969,6 +988,44 @@ class SlackIndividualConnector(BaseConnector):
         peer_id = ch.get("user", "")
         return not peer_id or peer_id not in self.deactivated_user_ids
 
+    async def _listable_channel_types_param(self, requested: set[str]) -> str:
+        """The ``types`` for conversations.list: ``requested`` minus kinds the token has no read scope for.
+
+        Raises when none of ``requested`` can be listed, naming the scopes to add.
+        """
+        granted: set[str] | None = None
+        try:
+            resp = await (await self._fresh_datasource()).check_token_scopes()
+            scopes = (resp.data or {}).get("scopes") if resp and resp.success else None
+            if isinstance(scopes, list):
+                granted = {s for s in scopes if isinstance(s, str)}
+        except Exception as exc:
+            self.logger.warning("Could not read the Slack token's scopes: %s", exc)
+
+        known = requested & CHANNEL_API_TYPE_READ_SCOPE.keys()
+        # No granular read scope at all means a token whose scopes we cannot map
+        # (or no header); ask for everything and let a real failure surface.
+        if granted is None or not granted & set(CHANNEL_API_TYPE_READ_SCOPE.values()):
+            listable = known
+        else:
+            listable = {t for t in known if CHANNEL_API_TYPE_READ_SCOPE[t] in granted}
+        missing = sorted(CHANNEL_API_TYPE_READ_SCOPE[t] for t in known - listable)
+        if not listable:
+            raise RuntimeError(
+                "The Slack token cannot list any of the selected conversation types"
+                + (f": it lacks {', '.join(missing)}. Add these user token scopes to the Slack app and reinstall it,"
+                   if missing else ";")
+                + " or change the Channel Types sync filter."
+            )
+        if missing:
+            self.logger.warning(
+                "⚠️  Skipping %s: the Slack token lacks %s. Add these user token scopes "
+                "to the Slack app and reinstall it to sync these conversations.",
+                ", ".join(label for label, api in CHANNEL_TYPE_LABEL_TO_API.items() if api in known - listable),
+                ", ".join(missing),
+            )
+        return ",".join(t for t in CHANNEL_API_TYPE_READ_SCOPE if t in listable)
+
     # =========================================================================
     # 3.  Channel sync → RecordGroups + HAS_PERMISSION edges
     # =========================================================================
@@ -1012,7 +1069,7 @@ class SlackIndividualConnector(BaseConnector):
                 if not allowed_types:
                     self.logger.info("channel_types filter excludes all types — nothing to sync")
                     return []
-        types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel,im,mpim"
+        types_param = await self._listable_channel_types_param(allowed_types or ALL_CHANNEL_API_TYPES)
 
         self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
@@ -1033,10 +1090,9 @@ class SlackIndividualConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
-                self.logger.error(
-                    f"❌ conversations.list failed: {getattr(resp, 'error', 'no response')}"
-                )
-                break
+                # Returning what we have would end the run as a successful sync
+                # of nothing (or of a truncated channel list).
+                raise RuntimeError(_slack_failure("conversations.list", resp))
 
             data = resp.data
             channels: list[dict[str, Any]] = data.get("channels", [])
@@ -4332,13 +4388,14 @@ class SlackIndividualConnector(BaseConnector):
 
             tmp: dict[str, dict[str, str]] = {}
             api_cursor: Optional[str] = None
+            types_param = await self._listable_channel_types_param(ALL_CHANNEL_API_TYPES)
 
             while True:
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
                     exclude_archived=True,
-                    types="public_channel,private_channel,im,mpim",
+                    types=types_param,
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=api_cursor,
                 )
