@@ -75,7 +75,7 @@ def listing_modified_after(filter_after: str | None, checkpoint: str | None, loo
     since = _parse_iso(checkpoint) - timedelta(hours=look_back_hours)
     if filter_after and _parse_iso(filter_after) > since:
         return filter_after
-    return since.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
 
 
 def unresolved_principal_permission(principal_id: str, permission_type: PermissionType) -> Permission:
