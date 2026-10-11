@@ -948,3 +948,50 @@ class TestNamesWalkPastRecordsWithoutASpelling:
         (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
 
         assert hit.name == "Launch plan"
+
+
+class TestProbePermittedEntities:
+    @pytest.mark.asyncio
+    async def test_only_entities_with_a_readable_record_are_kept(self) -> None:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "ne-open": [_row("r1", "kb-1")],
+                "ne-closed": [_row("r2", "conf-1")],
+                "ne-none": [],
+            },
+        )
+
+        probe = await ep.probe_permitted_entities(
+            graph, _context(), [("ne-open", "named_entity"), ("ne-closed", "named_entity"), ("ne-none", "named_entity")],
+        )
+
+        assert set(probe.permitted) == {"ne-open"}
+        assert [row["_key"] for row in probe.permitted["ne-open"].records] == ["r1"]
+        assert probe.permitted["ne-open"].more_records is False
+        assert probe.timed_out is False
+
+    @pytest.mark.asyncio
+    async def test_a_check_cut_short_keeps_nothing_it_did_not_confirm(self) -> None:
+        graph = _graph(candidates=lambda refs, org, **k: {"ne-1": [_row("r1", "kb-1")]})
+
+        probe = await ep.probe_permitted_entities(graph, _context(), [("ne-1", "named_entity")], deadline_seconds=0)
+
+        assert probe.permitted == {}
+        assert probe.timed_out is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_types_and_empty_input_query_nothing(self) -> None:
+        graph = _graph()
+
+        probe = await ep.probe_permitted_entities(graph, _context(), [("x", "not_a_type"), ("", "named_entity")])
+
+        assert probe.permitted == {} and probe.timed_out is False
+        graph.get_permitted_entity_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_failure_is_an_error_not_no_access(self) -> None:
+        graph = MagicMock()
+        graph.get_permitted_entity_records = AsyncMock(side_effect=RuntimeError("down"))
+
+        with pytest.raises(EntityAccessError):
+            await ep.probe_permitted_entities(graph, _context(), [("ne-1", "named_entity")])
