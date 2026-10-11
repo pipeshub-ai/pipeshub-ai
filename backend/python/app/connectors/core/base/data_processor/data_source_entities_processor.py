@@ -48,6 +48,7 @@ from app.models.entities import (
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import (
+    notify_connector_permissions_changed,
     notify_connector_sync_completed,
     notify_kb_records_changed,
 )
@@ -660,6 +661,12 @@ class DataSourceEntitiesProcessor:
 
         return None
 
+    async def _access_changed(self, connector_ids: Iterable[str | None]) -> None:
+        """Drop the search cache's access lists for these connectors. After the
+        commit only: a search in between would cache the old permissions again."""
+        for connector_id in {c for c in connector_ids if c}:
+            await notify_connector_permissions_changed(connector_id, self.org_id or None)
+
     async def _publish_membership_sync(
         self, membership_refreshes: Iterable[tuple[str, str | None]]
     ) -> None:
@@ -684,6 +691,8 @@ class DataSourceEntitiesProcessor:
                 unique[vrid] = connector_id
         if not unique:
             return
+        # A record that changed group changed what it inherits access from.
+        await self._access_changed(unique.values())
         await self.messaging_producer.send_messages(
             "record-events",
             [
@@ -1422,6 +1431,7 @@ class DataSourceEntitiesProcessor:
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
+            await self._access_changed([record.connector_id])
             await self._publish_membership_sync(moved_virtual_record_ids)
             await self._flush_pending_blob_moves(pending_moves)
 
@@ -2883,6 +2893,7 @@ class DataSourceEntitiesProcessor:
         # the group's records/<connector_id>/<group_name>/... prefix with no
         # relocation -- the graph moved on, storage didn't.
         pending_moves: list[PendingMove] = []
+        rewritten: set[str] = set()
         try:
             if not record_groups:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
@@ -2926,6 +2937,8 @@ class DataSourceEntitiesProcessor:
                         connector_id=record_group.connector_id,
                         external_id=record_group.external_group_id
                     )
+                    if existing_record_group is not None:
+                        rewritten.add(record_group.connector_id)
 
                     old_group_name: str | None = None
 
@@ -3124,6 +3137,7 @@ class DataSourceEntitiesProcessor:
                     if record_group.parent_record_group_id:
                         await tx_store.create_record_groups_relation(record_group.id, record_group.parent_record_group_id)
 
+            await self._access_changed(rewritten)
             await self._flush_pending_blob_moves(pending_moves)
 
         except Exception as e:
@@ -3350,6 +3364,7 @@ class DataSourceEntitiesProcessor:
         Processes new user groups, upserts them, and creates permission edges.
         This follows the logic of 'on_new_record_groups'.
         """
+        rewritten: set[str] = set()
         try:
             if not user_groups:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
@@ -3421,6 +3436,10 @@ class DataSourceEntitiesProcessor:
                         tx_store, to_id, to_collection, user_group_permissions,
                         replace=existing_user_group is not None,
                     )
+                    if existing_user_group is not None:
+                        rewritten.add(user_group.connector_id)
+
+            await self._access_changed(rewritten)
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_user_groups failed: {str(e)}")
@@ -3432,6 +3451,7 @@ class DataSourceEntitiesProcessor:
         Processes new app roles, upserts them, and creates permission edges
         from users to these roles.
         """
+        rewritten: set[str] = set()
         try:
             if not roles:
                 self.logger.warning("on_new_app_roles received an empty list; skipping processing.")
@@ -3502,6 +3522,10 @@ class DataSourceEntitiesProcessor:
                         tx_store, to_id, to_collection, role_permissions,
                         replace=existing_app_role is not None,
                     )
+                    if existing_app_role is not None:
+                        rewritten.add(role.connector_id)
+
+            await self._access_changed(rewritten)
 
         except Exception as e:
             self.logger.error(f"Transaction on_new_app_roles failed: {str(e)}")
@@ -3581,12 +3605,19 @@ class DataSourceEntitiesProcessor:
             await tx_store.batch_upsert_user_groups(user_groups)
 
     async def delete_edges_between_collections(
-        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str
+        self,
+        from_id: str,
+        from_collection: str,
+        edge_collection: str,
+        to_collection: str,
+        connector_id: str | None = None,
     ) -> None:
+        """``connector_id`` names the connector whose access the deleted edges granted."""
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.delete_edges_between_collections(
                 from_id, from_collection, edge_collection, to_collection
             )
+        await self._access_changed([connector_id])
 
     async def get_record_group_by_external_id(
         self, connector_id: str, external_id: str
@@ -3827,18 +3858,19 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
-            if deleted:
-                self.logger.debug(
-                    f"Successfully removed user {user_email} from group {user_group.name} "
-                    f"(external_id: {external_group_id})"
-                )
-                return True
-
-            self.logger.warning(
-                f"No permission edge found between user {user_email} "
-                f"and group {user_group.name} (external_id: {external_group_id})"
+        if deleted:
+            await self._access_changed([connector_id])
+            self.logger.debug(
+                f"Successfully removed user {user_email} from group {user_group.name} "
+                f"(external_id: {external_group_id})"
             )
-            return False
+            return True
+
+        self.logger.warning(
+            f"No permission edge found between user {user_email} "
+            f"and group {user_group.name} (external_id: {external_group_id})"
+        )
+        return False
 
     @retry_on_deadlock()
     async def on_user_group_member_added(
@@ -4015,12 +4047,13 @@ class DataSourceEntitiesProcessor:
 
             await tx_store.delete_nodes_and_edges([group_internal_id], CollectionNames.GROUPS.value)
 
-            self.logger.debug(
-                f"Successfully deleted user group {group_name} "
-                f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
-                f"and all associated edges"
-            )
-            return True
+        await self._access_changed([connector_id])
+        self.logger.debug(
+            f"Successfully deleted user group {group_name} "
+            f"(external_id: {external_group_id}, internal_id: {group_internal_id}) "
+            f"and all associated edges"
+        )
+        return True
 
     @retry_on_deadlock()
     async def delete_user_group_by_id(self, group_id: str) -> None:
@@ -4248,7 +4281,8 @@ class DataSourceEntitiesProcessor:
             # Delete the group (this will also delete all its edges)
             await tx_store.delete_user_group_by_id(group.id)
 
-            self.logger.debug(f"✅ Completed migration and deleted group '{group.name}'")
+        await self._access_changed([connector_id])
+        self.logger.debug(f"✅ Completed migration and deleted group '{group.name}'")
 
     @retry_on_deadlock()
     async def on_app_role_deleted(
@@ -4291,12 +4325,13 @@ class DataSourceEntitiesProcessor:
 
             await tx_store.delete_nodes_and_edges([role_internal_id], CollectionNames.ROLES.value)
 
-            self.logger.debug(
-                f"Successfully deleted app role {role_name} "
-                f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
-                f"and all associated edges"
-            )
-            return True
+        await self._access_changed([connector_id])
+        self.logger.debug(
+            f"Successfully deleted app role {role_name} "
+            f"(external_id: {external_role_id}, internal_id: {role_internal_id}) "
+            f"and all associated edges"
+        )
+        return True
 
     @retry_on_deadlock()
     async def on_record_group_deleted(
@@ -4379,11 +4414,12 @@ class DataSourceEntitiesProcessor:
                     [record_group_internal_id], CollectionNames.RECORD_GROUPS.value
                 )
 
-                self.logger.debug(
-                    f"Successfully deleted record group '{record_group_name}' "
-                    f"(external_id: {external_group_id}) and its edges."
-                )
-                return True
+            await self._access_changed([connector_id])
+            self.logger.debug(
+                f"Successfully deleted record group '{record_group_name}' "
+                f"(external_id: {external_group_id}) and its edges."
+            )
+            return True
 
         except Exception as e:
             self.logger.error(
@@ -4462,10 +4498,13 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
-            if deleted:
-                self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
-            else:
-                self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
+            record = await tx_store.get_record_by_key(record_id) if deleted else None
+
+        if deleted:
+            await self._access_changed([record.get("connectorId") if isinstance(record, dict) else None])
+            self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
+        else:
+            self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
 
     async def get_app_creator_user(self, connector_id: str) -> User | None:
         """
@@ -4532,6 +4571,7 @@ class DataSourceEntitiesProcessor:
             await tx_store.remove_user_access_to_record(
                 connector_id, external_id, user_id
             )
+        await self._access_changed([connector_id])
 
     async def get_record_by_issue_key(
         self, connector_id: str, issue_key: str
