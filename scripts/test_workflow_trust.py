@@ -57,6 +57,19 @@ def _strings(value: Any) -> list[str]:
     return []
 
 
+_EXPRESSION = re.compile(r"\$\{\{(.*?)\}\}", re.S)
+# An index that is only a quoted name or a number; anything else is computed.
+_LITERAL_INDEX = re.compile(r"""\[\s*(?:'[A-Za-z0-9_-]*'|"[A-Za-z0-9_-]*"|\d+|\*)\s*\]""")
+
+
+def _computes_an_index(text: str) -> bool:
+    """An expression indexes with something other than a literal, e.g. `head[true && 'sha']`.
+
+    Patterns can't evaluate expressions, so a privileged workflow fails closed on these.
+    """
+    return any("[" in _LITERAL_INDEX.sub("", e) for e in _EXPRESSION.findall(text))
+
+
 def _references_pr_head(text: str) -> bool:
     """The raw file or any parsed YAML string (quotes and folds resolved) reads the PR head."""
     if _PR_HEAD_REF.search(_dotted(text)):
@@ -65,7 +78,7 @@ def _references_pr_head(text: str) -> bool:
         workflow = yaml.load(text, Loader=_StrictLoader)
     except yaml.YAMLError:
         return True
-    return any(_PR_HEAD_REF.search(_dotted(s)) for s in _strings(workflow))
+    return any(_PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) for s in _strings(workflow))
 
 
 # Any use of the secrets context except GITHUB_TOKEN: dot or index access, any case
@@ -507,11 +520,18 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ (github.event.pull_request.head).sha }}\n",
             "ref: ${{ github.event.pull_request.head[('sha')] }}\n",
             "ref: ${{ ((github.event.pull_request.head)).sha }}\n",
+            "ref: ${{ github.event.pull_request.head[true && 'sha'] }}\n",
+            "ref: ${{ github.event.pull_request.head['sha' || 'x'] }}\n",
+            "ref: ${{ github.event.pull_request.head[(true || 'nope') && 'sha'] }}\n",
+            "ref: ${{ github[true && 'head_ref'] }}\n",
+            "ref: ${{ github.event[format('pull_{0}', 'request')].head.sha }}\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: main\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ (github.event.pull_request.base).sha }}\n"))
+        self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ github.event.inputs['tag'] }}\n"))
+        self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - run: echo ${{ steps.probe.outputs.summary }} [ok]\n"))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
