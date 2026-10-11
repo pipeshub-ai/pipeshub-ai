@@ -1,7 +1,7 @@
 """Wiring tests for knowledge graph tools.
 
 Verifies:
-1. knowledgegraph is in _KNOWLEDGE_TOOLSETS (skipped when no knowledge)
+1. knowledgegraph and storagepatternmatch are in _KNOWLEDGE_TOOLSETS (skipped when no knowledge)
 2. knowledgegraph__* tools are NOT claimed by internal_exploration_agent
 3. knowledgegraph__* tools remain in the top-level residual grant
 4. knowledgegraph__* appear in every child agent's tool grant via shared_tool_names
@@ -42,6 +42,16 @@ class TestKnowledgeToolsetsGate:
     def test_retrieval_still_in_knowledge_toolsets(self):
         assert "retrieval" in _KNOWLEDGE_TOOLSETS
 
+    def test_storage_pattern_match_in_knowledge_toolsets(self) -> None:
+        """Without the gate an agent with no knowledge is still offered grep over
+        record storage. Checked against the registry's own normalisation so a
+        rename of the toolset cannot silently drop it from the gate."""
+        from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+        from app.agents.registry.toolset_registry import ToolsetRegistry
+
+        name = StoragePatternMatch._toolset_metadata["name"]
+        assert ToolsetRegistry._normalize_toolset_name(None, name) in _KNOWLEDGE_TOOLSETS
+
 
 class TestKnowledgeToolsetsAreEssential:
     """The loader skips these entirely when no knowledge is attached, so when
@@ -67,7 +77,11 @@ class TestKnowledgeToolsetsAreEssential:
         )
         return classes[toolset_name]
 
-    @pytest.mark.parametrize("toolset", sorted(_KNOWLEDGE_TOOLSETS))
+    # Gated so it never loads without knowledge; it has never been pinned
+    # under lazy disclosure, and the gate does not change that.
+    _NOT_PINNED = frozenset({"storagepatternmatch"})
+
+    @pytest.mark.parametrize("toolset", sorted(_KNOWLEDGE_TOOLSETS - _NOT_PINNED))
     def test_every_gated_knowledge_toolset_is_essential(self, toolset: str):
         metadata = self._toolset_class(toolset)._toolset_metadata
         assert metadata["essential"] is True

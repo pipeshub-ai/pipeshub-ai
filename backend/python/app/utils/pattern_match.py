@@ -1022,6 +1022,8 @@ async def run_pattern_match(
         "org_id": org_id,
         "user_id": user_id,
         "graph_provider": graph_provider,
+        "has_knowledge": True,
+        "apps": list(connector_ids),
     }
     storage_tool = StoragePatternMatch(state)
 

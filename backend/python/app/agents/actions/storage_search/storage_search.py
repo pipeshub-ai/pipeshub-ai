@@ -40,6 +40,10 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.modules.agents.qna.chat_state import ChatState
+from app.services.graph_db.interface.graph_db_provider import (
+    STRICT_SCOPE_FILTER_KEY,
+    requested_scope_ids,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1350,21 +1354,34 @@ class StoragePatternMatch:
         return connector_dir, None
 
     def _scope_connector_ids(self) -> frozenset[str] | None:
-        """The agent's knowledge scope (apps ∪ KBs), or None when it has none.
+        """The connectors these tools may search: apps ∪ KBs.
 
-        Resolved exactly as retrieval does, so these tools can never reach a
-        connector the agent's semantic search could not.
+        An empty set grants nothing. None is unscoped, which only a turn with
+        knowledge on and no source filter gets; the user's permissions still
+        gate every record. Resolved with retrieval's own predicates, so these
+        tools can never reach a connector the agent's semantic search could not.
         """
         from app.agents.actions.knowledge_graph.ops.scope import derive_scope
 
+        if not self.state.get("has_knowledge"):
+            return frozenset()
         scope = derive_scope(self.state)
-        if scope.is_empty():
-            return None
-        return frozenset(scope.app_ids) | frozenset(scope.kb_ids)
+        if not scope.is_empty():
+            return frozenset(scope.app_ids) | frozenset(scope.kb_ids)
+        # derive_scope drops NO_KB_SELECTED and ignores strictScope; both mean
+        # "search nothing", not "search everything".
+        filters = self.state.get("filters") or {}
+        if filters.get(STRICT_SCOPE_FILTER_KEY) or requested_scope_ids(filters) is not None:
+            return frozenset()
+        return None
 
     def _out_of_scope_error(self, connector_id: str) -> str | None:
         scope = self._scope_connector_ids()
-        if scope is not None and connector_id not in scope:
+        if scope is None:
+            return None
+        if not scope:
+            return "Error: this agent has no knowledge sources, so it cannot search stored records."
+        if connector_id not in scope:
             return (
                 f"Error: connector '{connector_id}' is not part of this agent's knowledge. "
                 f"Searchable connectors: {', '.join(sorted(scope))}"
