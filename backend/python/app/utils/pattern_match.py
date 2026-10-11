@@ -1017,6 +1017,8 @@ async def run_pattern_match(
         containers and not containers.fallback_reason and containers.direct_records
     )
 
+    # Never the chat state: find_records remembers its hits as shown to the
+    # model, and these are not shown yet. Retrieval remembers what it renders.
     state: dict[str, Any] = {
         "config_service": config_service,
         "org_id": org_id,
