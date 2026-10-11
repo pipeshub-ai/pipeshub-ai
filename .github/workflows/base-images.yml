@@ -38,8 +38,6 @@ permissions:
 concurrency:
   group: base-images
   cancel-in-progress: false
-  # A daily mirror must not replace a deliberate build still waiting to start.
-  queue: max
 
 env:
   GHCR_IMAGE: ghcr.io/pipeshub-ai/pipeshub-ai-base
