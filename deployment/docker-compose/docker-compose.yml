@@ -143,7 +143,8 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
-      # false sends agent, team and knowledge-base creates back to one auto-commit per query
+      # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
+      # (one auto-commit per query while that is off)
       - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"

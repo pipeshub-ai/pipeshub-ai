@@ -454,8 +454,8 @@ class Neo4jProvider(IGraphDBProvider):
                 # retry where they used to interleave.
                 explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
                 # The short creates (agents, teams, knowledge bases) ask for a
-                # real transaction while the flag above is off; false sends
-                # them back to auto-commit if their locks ever get in the way.
+                # real transaction while the flag above is off; false makes
+                # them follow that flag again if their locks ever get in the way.
                 honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
             )
 
