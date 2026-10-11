@@ -351,7 +351,8 @@
     "statuses": "Estados",
     "sources": "Orígenes",
     "sizes": "Tamaños",
-    "clearFilter": "Limpiar filtros"
+    "clearFilter": "Limpiar filtros",
+    "applyFilters": "Aplicar filtros"
   },
   "form": {
     "leaveBlankToKeep": "Déjalo vacío para conservar el valor existente.",

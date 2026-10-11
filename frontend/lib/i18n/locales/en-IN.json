@@ -344,7 +344,8 @@
     "statuses": "Statuses",
     "sources": "Sources",
     "sizes": "Sizes",
-    "clearFilter": "Clear Filter"
+    "clearFilter": "Clear Filter",
+    "applyFilters": "Apply filters"
   },
   "form": {
     "leaveBlankToKeep": "Leave blank to keep the existing value.",

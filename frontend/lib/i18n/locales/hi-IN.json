@@ -344,7 +344,8 @@
     "statuses": "स्थितियां",
     "sources": "स्रोत",
     "sizes": "आकार",
-    "clearFilter": "फ़िल्टर हटाएं"
+    "clearFilter": "फ़िल्टर हटाएं",
+    "applyFilters": "फ़िल्टर लागू करें"
   },
   "form": {
     "leaveBlankToKeep": "मौजूदा मान बनाए रखने के लिए खाली छोड़ें।",
