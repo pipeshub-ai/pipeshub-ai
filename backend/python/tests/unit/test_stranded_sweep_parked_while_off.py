@@ -306,3 +306,24 @@ async def test_a_refused_send_is_sent_once_the_minimum_age_from_the_turn_on_has_
         graph.records[key]["indexingStatus"] = ProgressStatus.COMPLETED.value
     assert await _sweep_at(graph, producer, turned_on_at + HOUR_MS + 60_000) == 1
     assert sorted(producer.sent) == ["r0", "r1", "r2"]
+
+
+@pytest.mark.asyncio
+async def test_re_sends_from_before_the_pause_do_not_lengthen_the_wait_after_the_turn_on() -> None:
+    """The turn-on puts the record in line again; three earlier re-sends must
+    not make it wait 8 hours instead of the minimum age."""
+    graph, producer = FakeGraph(), Producer()
+    turned_on_at = _turned_on_with_three_long_parked(graph)
+    # Re-sent three times by the sweep while it was QUEUED, before the pause.
+    graph.records["r1"].update(republishCount=3, lastRepublishedAt=turned_on_at - 2 * HOUR_MS)
+    producer.refuse = {"r1"}
+
+    assert await _resume(graph, producer)._requeue_records_parked_while_off(ON) == 2
+    producer.refuse = set()
+    for key in ("r0", "r2"):
+        graph.records[key]["indexingStatus"] = ProgressStatus.COMPLETED.value
+
+    assert await _sweep_at(graph, producer, turned_on_at + HOUR_MS - 60_000) == 0
+    assert await _sweep_at(graph, producer, turned_on_at + HOUR_MS + 60_000) == 1
+    assert producer.sent.count("r1") == 1
+    assert graph.records["r1"]["republishCount"] == 1

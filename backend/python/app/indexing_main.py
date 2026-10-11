@@ -980,19 +980,25 @@ STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS = 24 * 3600.0
 STRANDED_QUEUE_CLOCK_ALLOWANCE_MS = 5 * 60 * 1000
 
 
-def _republishes_since_queued(record: dict[str, Any]) -> int:
-    """How many times the sweep has re-sent this record since it was last put in line."""
+def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None) -> int:
+    """How many times the sweep has re-sent this record since it was last put in line.
+
+    ``enabled_at`` is when the connector of a record parked while it was off
+    was turned on again, which puts the record in line again without moving
+    its queuedAtTimestamp.
+    """
     try:
         last_republished_at = float(record.get("lastRepublishedAt"))
     except (TypeError, ValueError):
         return 0
-    try:
-        if float(record.get("queuedAtTimestamp")) > last_republished_at:
-            # Put in line again since: an earlier wait's re-sends say nothing
-            # about this one.
-            return 0
-    except (TypeError, ValueError):
-        pass
+    for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
+        try:
+            if float(put_in_line_at) > last_republished_at:
+                # Put in line again since: an earlier wait's re-sends say
+                # nothing about this one.
+                return 0
+        except (TypeError, ValueError):
+            continue
     try:
         count = int(record.get("republishCount") or 0)
     except (TypeError, ValueError):
@@ -1250,7 +1256,9 @@ async def _republish_stranded_records(
                     continue
 
                 considered += 1
-                republishes = _republishes_since_queued(record)
+                republishes = _republishes_since_queued(
+                    record, enabled_at.get(connector_id) if parked_while_off else None
+                )
                 if pass_started_ms - last_touched_at < _republish_wait_ms(after_seconds, republishes):
                     backed_off += 1
                     continue
