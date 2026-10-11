@@ -34,9 +34,6 @@ concurrency:
   group: integration-tests-ollama-${{ github.run_id }}
   cancel-in-progress: true
 
-env:
-  DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
-
 jobs:
   ollama-models:
     name: AI model tests on Ollama (neo4j)
@@ -46,6 +43,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       PIPESHUB_BASE_URL: http://localhost:3000
       PIPESHUB_TEST_ENV: local
       TEST_GRAPH_DB_TYPE: neo4j

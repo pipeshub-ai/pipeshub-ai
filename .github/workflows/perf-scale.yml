@@ -47,7 +47,6 @@ env:
   PIPESHUB_BASE_URL: http://localhost:3000
   MESSAGE_BROKER: redis
   COMPOSE_FILE_NEO4J: docker-compose.integration.neo4j.yml
-  DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
 
 jobs:
   scale-run:
@@ -61,6 +60,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       # SECRET_KEY stays at job scope because every `docker compose` call
       # interpolates it out of the compose file — build, up, ps, logs and down.
       # The credentials and the provider key are given only to the steps that

@@ -121,7 +121,6 @@ concurrency:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
-  DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
 
 jobs:
   # Which parts the run tests on besides the graph databases (always both).
@@ -197,6 +196,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
       # One value for both sides: compose seeds the stack with it and the
