@@ -564,6 +564,59 @@ class TestIsJwtTokenValid:
     @pytest.mark.asyncio
     @patch("app.api.middlewares.auth.get_config_service")
     @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_token_with_no_scopes_raises_401(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """An OAuth token with an empty, blank, or missing scope claim is rejected."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        for scope in ("", "   ", None):
+            payload = {
+                "userId": "user-1",
+                "tokenType": "oauth",
+                "client_id": "client-abc",
+            }
+            if scope is not None:
+                payload["scope"] = scope
+            mock_jwt_decode.return_value = payload
+            with pytest.raises(HTTPException) as exc_info:
+                await isJwtTokenValid(request)
+            assert exc_info.value.status_code == 401
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
+    async def test_oauth_scope_collapses_repeated_whitespace(
+        self, mock_jwt_decode, mock_get_config
+    ):
+        """Repeated whitespace in a scope claim does not produce empty scope names."""
+        mock_config_service = AsyncMock()
+        mock_config_service.get_config.return_value = {
+            "jwtSecret": "regular-secret",
+            "scopedJwtSecret": "scoped-secret",
+        }
+        mock_get_config.return_value = mock_config_service
+
+        mock_jwt_decode.return_value = {
+            "userId": "user-1",
+            "tokenType": "oauth",
+            "scope": "read  write",
+            "client_id": "client-abc",
+        }
+
+        request = _make_fake_request(authorization="Bearer oauth.jwt.token")
+        result = await isJwtTokenValid(request)
+        assert result["oauthScopes"] == ["read", "write"]
+
+    @pytest.mark.asyncio
+    @patch("app.api.middlewares.auth.get_config_service")
+    @patch("app.api.middlewares.auth.jwt.decode")
     async def test_oauth_client_credentials_resolves_identity_from_created_by(
         self, mock_jwt_decode, mock_get_config
     ):

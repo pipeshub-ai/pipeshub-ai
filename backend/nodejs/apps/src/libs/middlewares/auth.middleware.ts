@@ -14,6 +14,7 @@ import {
 } from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
+import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
@@ -157,7 +158,10 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    const tokenScopes = payload.scope.split(' ');
+    const tokenScopes = parseScopeString(payload.scope);
+    if (tokenScopes.length === 0) {
+      throw new UnauthorizedError('Token carries no scopes');
+    }
 
     let userId = payload.userId;
     const orgId = payload.orgId;

@@ -20372,6 +20372,7 @@ paths:
 
             - No file uploaded
             - File type not allowed (must be PNG, JPEG, JPG, WebP, or GIF)
+            - File bytes are not a PNG, JPEG, WebP, or GIF image
             - File exceeds 1 MB limit
           content:
             application/json:
@@ -22937,6 +22938,7 @@ paths:
 
             - No file provided
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
+            - File bytes are not a PNG, JPEG, WebP, GIF, or SVG image
             - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
           content:

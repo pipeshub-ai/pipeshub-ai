@@ -16,7 +16,7 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import sharp from 'sharp';
+import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -359,6 +359,15 @@ export const compressImageIfNeeded = async (
     return passthrough;
   }
 
+  // Before the size shortcut and outside the passthrough catch below: a file
+  // labelled as an image whose bytes are not JPEG, PNG or WebP (for example
+  // SVG) must be rejected rather than decoded or stored unchanged.
+  const format = assertRasterImage(
+    file.buffer,
+    ['jpeg', 'png', 'webp'],
+    `${file.originalname} is not a valid JPEG, PNG or WebP image`,
+  );
+
   if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
     logger.info(
       `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
@@ -374,7 +383,7 @@ export const compressImageIfNeeded = async (
     const metadata = await sharp(file.buffer).metadata();
     const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
-    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+    const hasAlpha = format === 'png' && metadata.hasAlpha;
 
     const buildBase = () => {
       const base = sharp(file.buffer).rotate();
