@@ -86,14 +86,15 @@ class TestAsyncEndpoints:
 
     async def test_http_error_maps_status_code(self) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(403, json={"message": "API rate limit exceeded"})
+            return httpx.Response(403, json={"message": "Resource not accessible by personal access token"})
 
         ds = _data_source(handler)
         res = await ds.compare_commits("acme", "widgets", "base", "head")
 
         assert res.success is False
         assert res.status_code == 403
-        assert "rate limit" in (res.error or "")
+        assert res.api_message == "Resource not accessible by personal access token"
+        assert res.is_rate_limited is False
 
     async def test_commits_first_and_last_jumps_to_link_last_page(self) -> None:
         calls: list[str] = []

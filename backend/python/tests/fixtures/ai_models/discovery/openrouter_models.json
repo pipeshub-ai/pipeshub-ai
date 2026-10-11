@@ -1,0 +1,34 @@
+{
+  "data": [
+    {
+      "id": "org/embed",
+      "architecture": {
+        "output_modalities": [
+          "embeddings"
+        ],
+        "input_modalities": [
+          "text"
+        ]
+      },
+      "context_length": 8192,
+      "supported_parameters": []
+    },
+    {
+      "id": "org/chat",
+      "architecture": {
+        "output_modalities": [
+          "text"
+        ],
+        "input_modalities": [
+          "text",
+          "image"
+        ]
+      },
+      "context_length": 128000,
+      "supported_parameters": [
+        "tools",
+        "reasoning"
+      ]
+    }
+  ]
+}

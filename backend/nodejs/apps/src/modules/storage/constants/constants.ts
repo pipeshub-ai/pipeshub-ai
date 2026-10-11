@@ -15,3 +15,5 @@ export const STORAGE_WRITE_FAILED_MESSAGE =
 export const RELOCATE_MAX_MOVES = 100;
 export const CONNECTOR_VRID_PAGE_DEFAULT = 500;
 export const CONNECTOR_VRID_PAGE_MAX = 1000;
+// Upper bound on one missing-documents lookup, so one request is one bounded $in query.
+export const MAX_MISSING_DOCUMENT_IDS = 500;

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,6 +55,7 @@ from app.agent_loop_lib.transport.openai_responses import (
 )
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
+    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
 )
 from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
@@ -157,6 +158,8 @@ class OpenAITransport(LLMTransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None,
+        on_cache_rejected: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -180,6 +183,7 @@ class OpenAITransport(LLMTransport):
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
         self._client = _openai.AsyncOpenAI(**client_kwargs)
+        self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -192,6 +196,7 @@ class OpenAITransport(LLMTransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
 
@@ -239,7 +244,29 @@ class OpenAITransport(LLMTransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
+            cache_kwargs=cache_kwargs,
+            on_cache_rejected=on_cache_rejected,
         )
+
+    def _init_prompt_cache(
+        self, cache_kwargs: dict[str, str] | None, on_cache_rejected: Callable[[], None] | None,
+    ) -> None:
+        # prompt_cache_key / prompt_cache_retention, decided by the caller from
+        # the shared policy (`transport/prompt_cache.py`); dropped for good if
+        # the endpoint rejects them.
+        self._cache_kwargs: dict[str, str] = dict(cache_kwargs or {})
+        self._on_cache_rejected = on_cache_rejected
+
+    def _drop_cache_params(self, exc: Exception) -> bool:
+        """Whether `exc` is the endpoint refusing a cache parameter this
+        transport sends; if so, later requests (the retry included) go without."""
+        if not is_prompt_cache_param_conflict(exc, self._cache_kwargs):
+            return False
+        logger.warning("%s: prompt-cache parameters rejected; resending without them: %s", type(self).__name__, exc)
+        self._cache_kwargs = {}
+        if self._on_cache_rejected is not None:
+            self._on_cache_rejected()
+        return True
 
     @property
     def provider(self) -> str:
@@ -388,6 +415,7 @@ class OpenAITransport(LLMTransport):
             "model": self._responses_model_id(),
             "input": format_responses_input(messages, system),
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = format_responses_tools(tools)
         if formatted_tools:
@@ -638,8 +666,9 @@ class OpenAITransport(LLMTransport):
         output_tokens = _int_field(usage, "completion_tokens")
         details = getattr(usage, "prompt_tokens_details", None)
         cached = _int_field(details, "cached_tokens")
+        written = _int_field(details, "cache_write_tokens")
 
-        return self._record_usage(input_tokens, output_tokens, cached)
+        return self._record_usage(input_tokens, output_tokens, cached, written)
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
@@ -689,6 +718,7 @@ class OpenAITransport(LLMTransport):
             "model": resolved_model,
             "messages": self._format_messages(messages, system),
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
@@ -781,6 +811,7 @@ class OpenAITransport(LLMTransport):
             "stream": True,
             "stream_options": {"include_usage": True},
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
@@ -959,8 +990,9 @@ class OpenAITransport(LLMTransport):
                 system_blocks=system_blocks,
             )
         except Exception as exc:
-            mode = self._shape_fallback(exc)
-            if mode is None:
+            dropped = self._drop_cache_params(exc)
+            mode = None if dropped else self._shape_fallback(exc)
+            if not dropped and mode is None:
                 raise
         result = await self._complete_once(
             messages=messages, tools=tools, system=system, model=model,
@@ -969,7 +1001,8 @@ class OpenAITransport(LLMTransport):
         )
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
-        await self._record_api_mode(mode)
+        if mode is not None:
+            await self._record_api_mode(mode)
         return result
 
     async def stream(
@@ -1002,8 +1035,9 @@ class OpenAITransport(LLMTransport):
             # Retrying after deltas reached the client would replay them.
             if emitted:
                 raise
-            mode = self._shape_fallback(exc)
-            if mode is None:
+            dropped = self._drop_cache_params(exc)
+            mode = None if dropped else self._shape_fallback(exc)
+            if not dropped and mode is None:
                 raise
 
         async for event in self._stream_once(
@@ -1012,4 +1046,5 @@ class OpenAITransport(LLMTransport):
             system_blocks=system_blocks,
         ):
             yield event
-        await self._record_api_mode(mode)
+        if mode is not None:
+            await self._record_api_mode(mode)

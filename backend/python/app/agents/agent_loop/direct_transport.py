@@ -21,6 +21,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.transport.prompt_cache import (
+    REJECTED_CACHE_PARAMS,
+    PromptCacheSettings,
+    openai_cache_kwargs,
+)
+from app.agents.agent_loop.prompt_cache import cache_target
+
 if TYPE_CHECKING:
     from app.agent_loop_lib.transport.base import LLMTransport
 
@@ -28,14 +35,46 @@ logger = logging.getLogger(__name__)
 
 
 def build_direct_transport(
-    llm: Any, model_name: str = "", model_key: str | None = None,
+    llm: Any,
+    model_name: str = "",
+    model_key: str | None = None,
+    *,
+    cache_settings: PromptCacheSettings | None = None,
+    cache_routing_key: str = "",
 ) -> "LLMTransport | None":
     """The direct transport for `llm`, or None when there is no direct path.
 
     Returning None rather than raising is deliberate: the caller falls back to
     the LangChain transport, so an unsupported provider is slower, never broken.
+
+    Prompt caching follows the policy the LangChain arm applies
+    (`transport/prompt_cache.py`), passed to each transport as plain values.
+    Without `cache_settings` the transports keep their own defaults.
     """
     class_name = type(llm).__name__
+    target = cache_target(llm, model_name)
+    caching = cache_settings is not None and cache_settings.enabled and not REJECTED_CACHE_PARAMS.rejected(
+        target.model, target.base_url,
+    )
+
+    def _openai_cache() -> dict[str, Any]:
+        if cache_settings is None:
+            return {}
+        kwargs = openai_cache_kwargs(
+            model=target.model, base_url=target.base_url, settings=cache_settings, key=cache_routing_key,
+        ) if caching else {}
+        return {
+            "cache_kwargs": kwargs,
+            "on_cache_rejected": lambda: REJECTED_CACHE_PARAMS.record(target.model, target.base_url),
+        }
+
+    def _anthropic_cache() -> dict[str, Any]:
+        if cache_settings is None:
+            return {}
+        return {
+            "cache_ttl": cache_settings.anthropic_ttl if caching else None,
+            "on_cache_rejected": lambda: REJECTED_CACHE_PARAMS.record(target.model, target.base_url),
+        }
 
     # Imported lazily and individually: each transport imports its provider SDK
     # at construction, and a deployment that installs only some of them should
@@ -44,17 +83,17 @@ def build_direct_transport(
         if class_name == "AzureChatOpenAI":
             from app.agent_loop_lib.transport.azure_openai import AzureOpenAITransport
             return AzureOpenAITransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key,
+                llm, model_name=model_name, model_key=model_key, **_openai_cache(),
             )
         if class_name in ("ChatOpenAI", "BaseChatOpenAI"):
             from app.agent_loop_lib.transport.openai import OpenAITransport
             return OpenAITransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key,
+                llm, model_name=model_name, model_key=model_key, **_openai_cache(),
             )
         if class_name == "ChatAnthropic":
             from app.agent_loop_lib.transport.anthropic import AnthropicTransport
             return AnthropicTransport.from_langchain_model(
-                llm, model_name=model_name, model_key=model_key,
+                llm, model_name=model_name, model_key=model_key, **_anthropic_cache(),
             )
         if class_name == "ChatGoogleGenerativeAI":
             from app.agent_loop_lib.transport.gemini import GeminiTransport

@@ -203,7 +203,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection):
         return []
 
-    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection):
+    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection, *, raise_on_error=False):
         return None
 
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):

@@ -26,7 +26,7 @@ from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.models.entities import RecordType
 from app.modules.agents.context.source_catalog import SourceCatalog
-from app.modules.agents.qna.chat_state import ChatState
+from app.modules.agents.qna.chat_state import ChatState, remember_shown_results
 from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -807,6 +807,11 @@ class Retrieval:
                 # The semantic answer above is complete without the hint.
                 logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
                 pm_hint = ""
+            remember_shown_results(
+                self.state,
+                [*final_results, *(pm_record_entries if pm_hint else [])],
+                virtual_record_id_to_result,
+            )
             text_output = summary + "\n".join(formatted_records) + compose_result_tail(
                 virtual_record_id_to_result, candidate_suffix,
             ) + pm_hint

@@ -20,6 +20,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.models.entities import (
     Anyone,
     AnyoneSameOrg,
@@ -58,6 +59,14 @@ def _retry_delay(failed_attempt: int) -> float:
     """Seconds to wait after the failed attempt with this 0-based number."""
     nominal = min(_RETRY_MAX_DELAY, _RETRY_BASE_DELAY * (2 ** failed_attempt))
     return nominal * random.uniform(1 - _RETRY_JITTER, 1 + _RETRY_JITTER)
+
+
+def ensure_written(result: bool | None, what: str) -> None:
+    """Raise GraphWriteError when a write answered False instead of raising
+    (ArangoDB's batch_upsert_nodes does, on a document it refused), so the
+    transaction around it rolls back rather than committing the rest."""
+    if not result:
+        raise GraphWriteError(f"The graph database did not save {what}")
 
 
 def _is_deadlock_error(exception: Exception) -> bool:
@@ -379,7 +388,7 @@ class GraphTransactionStore(TransactionStore):
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edges_from(from_id, from_collection, collection, transaction=self.txn)
 
-    async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> None:
+    async def delete_edges_to(self, to_id: str, to_collection: str, collection: str) -> int:
         return await self.graph_provider.delete_edges_to(to_id, to_collection, collection, transaction=self.txn)
 
     async def replace_edges_to(self, to_id: str, to_collection: str, edges: list[dict], collection: str) -> None:
@@ -399,8 +408,8 @@ class GraphTransactionStore(TransactionStore):
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
-    ) -> None:
-        await self.graph_provider.link_record_to_group(
+    ) -> int:
+        return await self.graph_provider.link_record_to_group(
             record_id, record_group_id, inherit=inherit, leaving_group_id=leaving_group_id, transaction=self.txn
         )
 
@@ -674,8 +683,20 @@ class GraphTransactionStore(TransactionStore):
             node_id, node_collection, transaction=self.txn, raise_on_error=raise_on_error
         )
 
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
-        return await self.graph_provider.get_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
+    async def get_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[dict]:
+        return await self.graph_provider.get_edge(
+            from_id, from_collection, to_id, to_collection, collection,
+            transaction=self.txn, raise_on_error=raise_on_error,
+        )
 
     async def get_record_by_conversation_index(self, connector_id: str, conversation_index: str, thread_id: str, org_id: str, user_id: str) -> Optional[Record]:
         return await self.graph_provider.get_record_by_conversation_index(connector_id, conversation_index, thread_id, org_id, user_id, transaction=self.txn)
@@ -1041,7 +1062,7 @@ class GraphTransactionStore(TransactionStore):
                 transaction=self.txn
             )
 
-    async def batch_create_edges(self, edges: list[dict], collection: str) -> None:
+    async def batch_create_edges(self, edges: list[dict], collection: str) -> bool:
         return await self.graph_provider.batch_create_edges(edges, collection=collection, transaction=self.txn)
 
     async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
@@ -1177,7 +1198,7 @@ class GraphDataStore(DataStoreProvider):
         return await self.graph_provider.get_existing_record_keys(record_ids)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Create a graph database transaction store context manager.
 
@@ -1186,10 +1207,15 @@ class GraphDataStore(DataStoreProvider):
         - All operations pass txn_id in HTTP headers
         - commit/rollback are fully async HTTP calls
 
+        explicit=True makes the block all-or-nothing on Neo4j too, where each
+        statement otherwise commits on its own while NEO4J_EXPLICIT_TRANSACTIONS
+        is off. It holds its locks until commit, so keep such a block to a few
+        writes, with no slow calls inside.
         """
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
-            write=write_collections
+            write=write_collections,
+            explicit=explicit,
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
@@ -1221,24 +1247,38 @@ class GraphDataStore(DataStoreProvider):
                 self.logger.warning("Rollback after transaction failure raised: %s", rb_err)
             raise
         else:
-            await tx_store.commit()
+            try:
+                await tx_store.commit()
+            except BaseException as e:
+                # A failed ArangoDB commit leaves the stream transaction open, holding
+                # its locks until the server's idle timeout, so abort it. Neo4j has
+                # already closed the session and answers the abort with ValueError.
+                self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
+                try:
+                    await tx_store.rollback()
+                except ValueError:
+                    pass
+                except Exception as rb_err:
+                    self.logger.warning("Abort after a failed commit raised: %s", rb_err)
+                raise
 
-    async def execute_in_transaction(self, func, *args, **kwargs) -> None:
+    async def execute_in_transaction(self, func, *args, explicit: bool | None = None, **kwargs) -> None:
         """Execute function within graph database transaction.
 
         Re-run on a transient transaction failure (a deadlock between two
         writers on the same nodes, a lock timeout) -- but only when the
         provider says the failed attempt rolled back cleanly, which is what
         ``is_transient_error`` answers; the default is never to retry.
+        ``explicit`` is passed to :meth:`transaction`.
         """
         attempts = 0
         while True:
             attempts += 1
             try:
-                async with self.transaction() as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
-                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e):
+                if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_transient_error(e, explicit=explicit):
                     raise
                 delay = _retry_delay(attempts - 1)
                 self.logger.warning(
@@ -1251,6 +1291,7 @@ class GraphDataStore(DataStoreProvider):
         self,
         func: Callable[..., Awaitable[_T]],
         *args: object,
+        explicit: bool | None = None,
         **kwargs: object,
     ) -> _T:
         """Run ``func(tx_store, ...)`` in a transaction, re-running it when it
@@ -1259,13 +1300,14 @@ class GraphDataStore(DataStoreProvider):
         Unlike :meth:`execute_in_transaction` this retries even where the
         failed attempt may have partly landed (Neo4j auto-commit), so
         ``func`` must be safe to run again from the start: read what is
-        there, then write only the difference.
+        there, then write only the difference. ``explicit`` is passed to
+        :meth:`transaction`.
         """
         attempts = 0
         while True:
             attempts += 1
             try:
-                async with self.transaction() as tx_store:
+                async with self.transaction(explicit=explicit) as tx_store:
                     return await func(tx_store, *args, **kwargs)
             except Exception as e:
                 if attempts >= _RETRY_ATTEMPTS or not self.graph_provider.is_write_conflict(e):

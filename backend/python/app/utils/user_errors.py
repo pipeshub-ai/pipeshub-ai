@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
@@ -179,6 +180,36 @@ def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: b
 def duplicate_failed(primary_reason: str | None) -> str:
     base = "An identical file failed to index, so this copy was skipped."
     return f"{base} {primary_reason}" if primary_reason else base
+
+
+def _utc_time(at_ms: int, now_ms: int) -> str:
+    at = datetime.fromtimestamp(at_ms / 1000, tz=timezone.utc)
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    if at.date() == now.date():
+        return at.strftime("%H:%M UTC")
+    return f"{at.strftime('%H:%M UTC')} on {at.day} {at.strftime('%b')}"
+
+
+def rate_limited_will_retry(source: str | None, retry_at_ms: int, now_ms: int) -> str:
+    # The UI shows a QUEUED record's reason only when it reads "is limiting how
+    # often PipesHub can read from it" (frontend/lib/utils/rate-limit-pause.ts).
+    return (
+        f"{source or 'The source'} is limiting how often PipesHub can read from it, so "
+        f"indexing this file is paused. It will retry automatically after "
+        f"{_utc_time(retry_at_ms, now_ms)}."
+    )
+
+
+def rate_limited_gave_up(
+    source: str | None, retry_at_ms: int, now_ms: int, max_wait_hours: float
+) -> str:
+    when = _utc_time(retry_at_ms, now_ms)
+    return (
+        f"{source or 'The source'} kept limiting how often PipesHub can read from it and "
+        f"would not allow it again until {when}, more than {max_wait_hours:g} hours after "
+        f"indexing this file was first paused, so PipesHub stopped trying. Reindex it "
+        f"after {when}."
+    )
 
 
 def _ai_messages(model: str) -> dict[str, str]:

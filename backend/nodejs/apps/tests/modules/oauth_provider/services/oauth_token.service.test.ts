@@ -3,7 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import { Types } from 'mongoose'
-import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
+import { OAuthTokenService, isGrantCoveredBy } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
@@ -11,6 +11,7 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidGrantError,
+  InvalidScopeError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
 
@@ -22,6 +23,15 @@ function stubCurrentApp(doc: { allowedScopes: string[] } | null) {
     }),
   } as any)
 }
+
+describe('isGrantCoveredBy', () => {
+  it('is false for an empty grant, true for a subset, and false when a scope was removed', () => {
+    expect(isGrantCoveredBy([], ['org:read'])).to.equal(false)
+    expect(isGrantCoveredBy(['org:read'], ['org:read', 'kb:read'])).to.equal(true)
+    expect(isGrantCoveredBy(['org:read', 'kb:write'], ['org:read'])).to.equal(false)
+    expect(isGrantCoveredBy(['org:read'], undefined)).to.equal(false)
+  })
+})
 
 describe('OAuthTokenService', () => {
   let service: OAuthTokenService
@@ -196,6 +206,25 @@ describe('OAuthTokenService', () => {
 
       expect(result.refreshToken).to.be.undefined
     })
+
+    it('refuses to store a token when the grant has no scopes', async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create')
+
+      try {
+        await service.generateTokens(
+          mockApp,
+          null,
+          new Types.ObjectId().toString(),
+          [],
+          false,
+        )
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidScopeError)
+      }
+
+      expect(create.called).to.be.false
+    })
   })
 
   describe('verifyAccessToken', () => {
@@ -216,6 +245,29 @@ describe('OAuthTokenService', () => {
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+    })
+
+    it('rejects a signed token whose scope claim is empty or missing', async () => {
+      const base = {
+        userId: 'user-1',
+        orgId: 'org-1',
+        iss: testIssuer,
+        client_id: 'client-1',
+        tokenType: 'oauth',
+        jti: 'jti-1',
+      }
+      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+
+      for (const claims of [{ ...base, scope: '' }, base]) {
+        const token = jwt.sign(claims, testSecret, { algorithm: 'HS256' })
+        try {
+          await service.verifyAccessToken(token)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+          expect((error as Error).message).to.equal('Token carries no scopes')
+        }
+      }
     })
 
     it('should verify a personal access token carrying the phpat_ prefix', async () => {
@@ -452,6 +504,24 @@ describe('OAuthTokenService', () => {
 
       const result = await service.introspectToken(token, 'different-client')
       expect(result.active).to.be.false
+    })
+
+    it('returns inactive when the token carries no scopes', async () => {
+      const token = jwt.sign(
+        {
+          userId: 'user-1',
+          orgId: 'org-1',
+          iss: testIssuer,
+          scope: '',
+          client_id: 'client-1',
+          tokenType: 'oauth',
+        },
+        testSecret,
+        { algorithm: 'HS256' },
+      )
+
+      const result = await service.introspectToken(token, 'client-1')
+      expect(result).to.deep.equal({ active: false })
     })
 
     it('should return inactive for revoked token', async () => {
@@ -1004,7 +1074,10 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should throw InvalidTokenError when token is revoked (not found)', async () => {
-      const token = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
+      const token = jwt.sign(
+        { userId: 'u1', orgId: 'o1', scope: 'org:read' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
 
       sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
 
@@ -1041,7 +1114,10 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should return payload for valid non-revoked access token', async () => {
-      const token = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
+      const token = jwt.sign(
+        { userId: 'u1', orgId: 'o1', scope: 'org:read' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
 
       sinon.stub(OAuthAccessToken, 'findOne').resolves({ tokenHash: 'hash' } as any)
 
@@ -1249,6 +1325,49 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(result.scope).to.equal('offline_access')
       })
 
+      it('does not rotate when the app no longer allows any granted scope', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create')
+
+        try {
+          await service.refreshTokens(
+            app('client-a', ['kb:read']),
+            signRefreshToken('client-a'),
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidScopeError)
+        }
+
+        expect(stored.save.called).to.be.false
+        expect(stored.isRevoked).to.be.false
+        expect(accessCreate.called).to.be.false
+      })
+
+      it('does not rotate when the requested scopes do not overlap the grant', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+
+        try {
+          await service.refreshTokens(
+            app('client-a'),
+            signRefreshToken('client-a'),
+            ['kb:write'],
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidScopeError)
+        }
+
+        expect(stored.save.called).to.be.false
+        expect(stored.isRevoked).to.be.false
+      })
+
       it('rejects a refresh token issued to a different client with invalid_grant', async () => {
         const stored = storedRefreshToken('client-a')
         sinon.stub(OAuthRefreshToken, 'findOne')
@@ -1315,7 +1434,7 @@ describe('OAuthTokenService - branch coverage', () => {
   describe('introspectToken', () => {
     it('should return inactive for token with different client_id', async () => {
       const token = jwt.sign(
-        { client_id: 'client-1', userId: 'u1', orgId: 'o1' },
+        { client_id: 'client-1', userId: 'u1', orgId: 'o1', scope: 'user:read' },
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
@@ -1325,7 +1444,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
     it('should return inactive for revoked token', async () => {
       const token = jwt.sign(
-        { client_id: 'client-1', userId: 'u1', orgId: 'o1' },
+        { client_id: 'client-1', userId: 'u1', orgId: 'o1', scope: 'user:read' },
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 

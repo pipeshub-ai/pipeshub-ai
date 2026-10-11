@@ -876,6 +876,7 @@ class ReposSync:
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         repo = repo_res.data
@@ -889,6 +890,7 @@ class ReposSync:
                 has_payload=content_res.data is not None,
                 connector=c.display_name,
                 status=content_res.status_code,
+                retry_after=content_res.retry_after_seconds,
                 message=content_res.error,
             )
         content_file = content_res.data
@@ -946,6 +948,7 @@ class ReposSync:
                 has_payload=blob_res.data is not None,
                 connector=c.display_name,
                 status=blob_res.status_code,
+                retry_after=blob_res.retry_after_seconds,
                 message=blob_res.error,
             )
         blob_content = getattr(blob_res.data, "content", None)

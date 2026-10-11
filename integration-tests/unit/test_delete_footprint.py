@@ -423,6 +423,18 @@ async def test_shared_content_not_handed_over_whole_is_reported() -> None:
     assert f"embeddings {VRID}: 3 -> 0" in message
 
 
+@pytest.mark.asyncio
+async def test_shared_content_also_left_where_it_was_is_reported() -> None:
+    """A copy to the survivor would pass on the survivor's counts alone."""
+    before, stores = await _handed_over_stores({HANDED_OVER: 2, PREFIX: 2})
+
+    with pytest.raises(AssertionError) as caught:
+        await _assert_handed_over(before, stores)
+    message = str(caught.value)
+    assert f"blob files {PREFIX}: 2" in message
+    assert f"storage documents prefix:{PREFIX}: 1" in message
+
+
 @pytest.mark.parametrize("filed_at", [FLAT, f"{ORG}/PipesHub/records/kb-2-old/copy.md"])
 @pytest.mark.asyncio
 async def test_shared_content_filed_outside_the_survivors_folder_is_reported(filed_at: str) -> None:

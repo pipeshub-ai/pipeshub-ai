@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "id": "jina-ai/jina-embeddings-v3",
+      "output_modalities": [
+        "embeddings"
+      ]
+    },
+    {
+      "id": "jina-ai/jina-reranker-v2",
+      "output_modalities": [
+        "embeddings"
+      ]
+    }
+  ]
+}

@@ -1109,6 +1109,19 @@ def _merge_graph_into_blob_record(
     merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
     return merged
 
+def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` in the blob's snake_case shape. A graph record not yet read from
+    the blob (a grep hit in the citation map) is converted on a copy; the map
+    entry stays as it is, because fetch_record reads ``record_name`` on it to tell
+    a loaded record from one it still has to fetch."""
+    if "record_name" in record:
+        return record
+    converted = _build_record_dict_from_graph_base(record)
+    converted["virtual_record_id"] = record.get("virtualRecordId", "")
+    converted["org_id"] = record.get("orgId", "")
+    # What the record already holds in the blob's shape wins over the conversion.
+    return {**converted, **{key: value for key, value in record.items() if value is not None}}
+
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
     """Convert a graph base doc (camelCase) to a blob-like record_dict (snake_case)."""
     record_dict: dict[str, Any] = {
@@ -2866,6 +2879,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
 def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
         try:
+            record = as_blob_record(record)
             virtual_record_id = record.get("virtual_record_id", "")
             block_type = block.get("type") if block else BlockType.RECORD_SUMMARY.value
             citation_metadata = block.get("citation_metadata") if block else None

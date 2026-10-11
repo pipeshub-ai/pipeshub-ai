@@ -20,6 +20,7 @@ import {
   ConnectorIdParams,
   ConnectorVirtualRecordsSchema,
   RelocateVirtualRecordsSchema,
+  MissingDocumentsSchema,
 } from '../validators/validators';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { FileProcessorFactory } from '../../../libs/middlewares/file_processor/fp.factory';
@@ -254,6 +255,23 @@ export function createStorageRouter(container: Container): Router {
     ): Promise<void> => {
       try {
         return await storageController.deleteByConnector(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/internal/missing',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(MissingDocumentsSchema),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.findMissingDocuments(req, res, next);
       } catch (error) {
         next(error);
       }

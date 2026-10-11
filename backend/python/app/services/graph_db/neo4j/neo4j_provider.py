@@ -164,6 +164,7 @@ from app.services.graph_db.taxonomy import (
     subcategory_level,
 )
 from app.services.graph_db.vector_membership_queries import (
+    PAGE_RECORD_FIELDS,
     build_app_needing_vector_membership_backfill_cypher,
     build_page_records_for_vector_membership_backfill_cypher,
     can_use_membership_cleanup,
@@ -452,6 +453,10 @@ class Neo4jProvider(IGraphDBProvider):
                 # locks until commit, so shared-node writes can deadlock and
                 # retry where they used to interleave.
                 explicit_transactions=env_bool("NEO4J_EXPLICIT_TRANSACTIONS", False),
+                # The short creates (agents, teams, knowledge bases) ask for a
+                # real transaction while the flag above is off; false makes
+                # them follow that flag again if their locks ever get in the way.
+                honour_explicit_requests=env_bool("NEO4J_CREATE_TRANSACTIONS", True),
             )
 
             # Connect
@@ -555,13 +560,18 @@ class Neo4jProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a Neo4j transaction.
 
         Args:
             read: Collections to read from (for compatibility)
             write: Collections to write to (for compatibility)
+            explicit: True for a real transaction even with
+                NEO4J_EXPLICIT_TRANSACTIONS off (unless NEO4J_CREATE_TRANSACTIONS
+                is false); None follows NEO4J_EXPLICIT_TRANSACTIONS
 
         Returns:
             str: Transaction ID
@@ -569,7 +579,7 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
-        return await self.client.begin_transaction(read, write)
+        return await self.client.begin_transaction(read, write, explicit=explicit)
 
     async def commit_transaction(self, transaction: str) -> None:
         """
@@ -583,12 +593,13 @@ class Neo4jProvider(IGraphDBProvider):
 
         await self.client.commit_transaction(transaction)
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Only meaningful with explicit transactions: a deadlock or lock
         timeout then rolled back cleanly and the whole block can be re-run.
         With auto-commit sessions the earlier statements already landed, so
-        re-running the block would apply them twice."""
-        if self.client is None or not self.client.explicit_transactions:
+        re-running the block would apply them twice. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
+        if self.client is None or not self.client.opens_explicit_transaction(explicit):
             return False
         return isinstance(error, TransientError)
 
@@ -792,6 +803,18 @@ class Neo4jProvider(IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_indexing_status IF NOT EXISTS "
             "FOR (n:Record) ON (n.indexingStatus)"
+        )
+
+        # COMPOSITE: records parked while their connector was off, read per
+        # connector by the turn-on re-queue and every stranded-record sweep,
+        # in a keyset on id. Holds only records with a reason, so a
+        # manual-indexing connector's AUTO_INDEX_OFF records (no reason) are
+        # never walked to find them. id trails so the seek also serves the
+        # cursor and the order; without it the planner took (connectorId, id)
+        # and filtered every record of the connector.
+        indexes.append(
+            "CREATE INDEX record_parked_while_off IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
         )
 
         # SINGLE: origin (heavily used in permission WHERE clauses)
@@ -1264,12 +1287,15 @@ class Neo4jProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents using Cypher SKIP/LIMIT so that only the
         requested slice is returned from Neo4j, keeping memory usage
         proportional to `limit` regardless of collection size.
         """
+        if after_key is not None and sort_field != "_key":
+            raise ValueError("after_key needs sort_field='_key'")
         try:
             label = collection_to_label(collection)
             parameters: dict = {"skip": skip, "limit": limit}
@@ -1280,6 +1306,9 @@ class Neo4jProvider(IGraphDBProvider):
                     param = f"fv_{field}"
                     where_clauses.append(f"n.{field} = ${param}")
                     parameters[param] = value
+            if after_key is not None:
+                where_clauses.append("n.id > $after_key")
+                parameters["after_key"] = after_key
 
             where_cypher = (
                 "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
@@ -1290,6 +1319,15 @@ class Neo4jProvider(IGraphDBProvider):
                 if neo4j_sort_field
                 else ""
             )
+            if after_key is not None and filters:
+                # The same order, since every filter is an equality, but
+                # spelled with the filtered fields first: Neo4j reads order
+                # from a composite (filters..., id) index only when ORDER BY
+                # names its properties in sequence. Otherwise each page sorts
+                # every match.
+                order_cypher = "ORDER BY " + ", ".join(
+                    [f"n.{field}" for field in filters] + ["n.id ASC"]
+                )
 
             query = f"""
             MATCH (n:{label})
@@ -1703,7 +1741,10 @@ class Neo4jProvider(IGraphDBProvider):
 
     @staticmethod
     def _record_group_link_cypher(collection: str, *, create: bool) -> str:
-        """A subquery writing or removing one edge from $record_id to the record group $group_id."""
+        """A subquery writing or removing one edge from $record_id to the record group $group_id.
+
+        The removing one yields ``unlinked``, the number of edges it deleted.
+        """
         relationship_type = edge_collection_to_relationship(collection)
         record_label = collection_to_label(CollectionNames.RECORDS.value)
         group_label = collection_to_label(CollectionNames.RECORD_GROUPS.value)
@@ -1719,6 +1760,7 @@ class Neo4jProvider(IGraphDBProvider):
             CALL {{
                 MATCH (:{record_label} {{id: $record_id}})-[link:{relationship_type}]->(:{group_label} {{id: $group_id}})
                 DELETE link
+                RETURN count(*) AS unlinked
             }}"""
 
     async def replace_record_permissions(
@@ -1767,7 +1809,7 @@ class Neo4jProvider(IGraphDBProvider):
         inherit: bool | None,
         leaving_group_id: str | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         # One statement: written apart, a record could leave its old group and keep
         # the inherit edge to it, which the old group's members still read through.
         now = get_epoch_timestamp_in_ms()
@@ -1777,27 +1819,36 @@ class Neo4jProvider(IGraphDBProvider):
             "link_props": {"createdAtTimestamp": now, "updatedAtTimestamp": now},
         }
         parts = []
+        removed = []
         if leaving_group_id:
             parameters["leaving_group_id"] = leaving_group_id
             belongs_to = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
             inherits = edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value)
+            parameters["inherit_type"] = inherits
             parts.append(f"""
             OPTIONAL MATCH (:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
                 -[old:{belongs_to}|{inherits}]->
                 (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $leaving_group_id}})
+            WITH old, CASE WHEN type(old) = $inherit_type THEN 1 END AS old_inherit
             DELETE old
-            WITH count(*) AS _""")
+            WITH count(old_inherit) AS left_inherits""")
+            removed.append("left_inherits")
         if record_group_id:
             parts.append(self._record_group_link_cypher(CollectionNames.BELONGS_TO.value, create=True))
             if inherit is not None:
                 parts.append(
                     self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=inherit)
                 )
+                if not inherit:
+                    removed.append("unlinked")
         if not parts:
-            return
-        await self.client.execute_query(
-            f"{''.join(parts)}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            return 0
+        rows = await self.client.execute_query(
+            f"{''.join(parts)}\n            RETURN {' + '.join(removed) or '0'} AS removed",
+            parameters=parameters,
+            txn_id=transaction,
         )
+        return rows[0]["removed"] if rows else 0
 
     async def batch_create_edges(
         self,
@@ -1995,7 +2046,9 @@ class Neo4jProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge between two nodes.
@@ -2045,6 +2098,8 @@ class Neo4jProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edge failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_edge(
@@ -3291,12 +3346,10 @@ class Neo4jProvider(IGraphDBProvider):
             )
             if not results:
                 return []
-            rows = []
-            for record in results:
-                key = record["_key"] if "_key" in record else None
-                vrid = record["virtualRecordId"] if "virtualRecordId" in record else None
-                rows.append({"_key": key, "virtualRecordId": vrid})
-            return rows
+            return [
+                {field: record[field] if field in record else None for field in PAGE_RECORD_FIELDS}
+                for record in results
+            ]
         except Exception as e:
             self.logger.error(
                 "Failed to page records for vector membership backfill "
@@ -13770,20 +13823,38 @@ class Neo4jProvider(IGraphDBProvider):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         if not connector_id:
             return
         excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
+        if only_statuses is not None and not included:
+            return
         try:
             label = collection_to_label(CollectionNames.RECORDS.value)
             exclude_clause = (
                 "AND NOT n.indexingStatus IN $exclude_statuses" if excluded else ""
             )
+            include_clause = (
+                "AND n.indexingStatus IN $only_statuses" if included else ""
+            )
+            visibility_clause = (
+                ""
+                if visibility is RecordVisibility.ALL
+                else f"AND {cypher_record_visibility('n', visibility)}"
+            )
+            reason_clause = ", n.reason = $reason" if reason is not None else ""
             query = f"""
             MATCH (n:{label})
             WHERE n.connectorId = $connector_id
             {exclude_clause}
-            SET n.indexingStatus = $status
+            {include_clause}
+            {visibility_clause}
+            SET n.indexingStatus = $status{reason_clause}
             """
             parameters: dict = {
                 "connector_id": connector_id,
@@ -13791,6 +13862,10 @@ class Neo4jProvider(IGraphDBProvider):
             }
             if excluded:
                 parameters["exclude_statuses"] = excluded
+            if included:
+                parameters["only_statuses"] = included
+            if reason is not None:
+                parameters["reason"] = reason
             await self.client.execute_query(
                 query,
                 parameters=parameters,

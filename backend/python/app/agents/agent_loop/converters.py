@@ -43,6 +43,8 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.core.responses import TokenUsage
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.core.messages import Message, Part
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
@@ -459,22 +461,48 @@ def convert_assistant_message_from_langchain(ai_message: AIMessage) -> Assistant
     )
 
 
-def token_usage_from_ai_message(ai_message: AIMessage) -> TokenUsage:
+# Cache counters under the service-tier prefixes langchain-openai uses
+# ("priority_cache_read", "flex_cache_read", ...) as well as the plain names.
+_TIER_PREFIXES = ("", "priority_", "flex_")
+
+
+def token_usage_from_ai_message(ai_message: AIMessage, *, input_excludes_cached: bool = False) -> TokenUsage:
     """Best-effort `TokenUsage` extraction from `AIMessage.usage_metadata`.
     Not every provider integration populates every sub-field (or even
     `usage_metadata` itself), so every access defaults to 0 rather than
-    raising — a missing usage field should never crash the turn loop."""
+    raising — a missing usage field should never crash the turn loop.
+
+    ``input_tokens`` always includes cached tokens, the convention cost math
+    relies on. Integrations that report input without them (Bedrock Converse)
+    pass ``input_excludes_cached``. Cache writes come from the TTL counters when
+    the integration reports them (langchain-anthropic then zeroes
+    ``cache_creation`` so they are not counted twice), else from
+    ``cache_creation``."""
     usage = ai_message.usage_metadata
     if not usage:
         return TokenUsage()
 
-    input_details = usage.get("input_token_details") or {}
+    details = usage.get("input_token_details") or {}
+    cache_read = _detail(details, "cache_read")
+    by_ttl = _int(details.get("ephemeral_5m_input_tokens")) + _int(details.get("ephemeral_1h_input_tokens"))
+    cache_write = by_ttl or _detail(details, "cache_creation")
+    input_tokens = _int(usage.get("input_tokens"))
+    if input_excludes_cached:
+        input_tokens += cache_read + cache_write
     return TokenUsage(
-        input_tokens=usage.get("input_tokens", 0) or 0,
-        output_tokens=usage.get("output_tokens", 0) or 0,
-        cache_read_tokens=input_details.get("cache_read", 0) or 0,
-        cache_write_tokens=input_details.get("cache_creation", 0) or 0,
+        input_tokens=input_tokens,
+        output_tokens=_int(usage.get("output_tokens")),
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
     )
+
+
+def _detail(details: Mapping[str, Any], name: str) -> int:
+    return sum(_int(details.get(f"{prefix}{name}")) for prefix in _TIER_PREFIXES)
+
+
+def _int(value: Any) -> int:  # noqa: ANN401 - provider usage values
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 # ---------------------------------------------------------------------------

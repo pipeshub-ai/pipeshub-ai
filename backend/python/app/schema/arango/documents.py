@@ -171,6 +171,8 @@ app_schema = {
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
+            # Set when sync is turned on; see toggle_connector_instance.
+            "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -195,6 +197,16 @@ app_schema = {
             "recordLabelRepairFailures": {"type": ["integer", "null"]},
             "recordLabelRepairAttempts": {"type": ["integer", "null"]},
             "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
+            # app.connectors.services.stored_content_heal
+            "storedContentHealState": {"type": ["string", "null"]},
+            "storedContentHealAfterKey": {"type": ["string", "null"]},
+            "storedContentHealChecked": {"type": ["integer", "null"]},
+            "storedContentHealMissing": {"type": ["integer", "null"]},
+            "storedContentHealHealed": {"type": ["integer", "null"]},
+            "storedContentHealOrphaned": {"type": ["integer", "null"]},
+            "storedContentHealFailures": {"type": ["integer", "null"]},
+            "storedContentHealAttempts": {"type": ["integer", "null"]},
+            "storedContentHealExhausted": {"type": ["boolean", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
@@ -295,6 +307,11 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # A record whose source rate-limited its content fetch: when it may
+            # be sent again, and when this run of waits began (see
+            # app/modules/indexing/rate_limit_deferral.py).
+            "retryNotBefore": {"type": ["number", "null"]},
+            "rateLimitedSince": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [

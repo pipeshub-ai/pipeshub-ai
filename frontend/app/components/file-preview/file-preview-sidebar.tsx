@@ -38,6 +38,7 @@ export function FilePreviewSidebar({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -106,6 +107,7 @@ export function FilePreviewSidebar({
         initialCitationId={initialCitationId}
         hideFileDetails={hideFileDetails}
         showDownload={showDownload}
+        onDownload={onDownload}
         latestVersion={latestVersion}
         onVersionChange={onVersionChange}
         isSwitchingVersion={isSwitchingVersion}
@@ -161,6 +163,7 @@ export function FilePreviewSidebar({
           initialCitationId={initialCitationId}
           hideFileDetails={hideFileDetails}
           showDownload={showDownload}
+          onDownload={onDownload}
           latestVersion={latestVersion}
           onVersionChange={onVersionChange}
           isSwitchingVersion={isSwitchingVersion}

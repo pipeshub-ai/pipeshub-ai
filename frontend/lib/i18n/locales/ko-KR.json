@@ -1862,7 +1862,53 @@
           "label": "비디오",
           "badge": "멀티모달"
         }
-      }
+      },
+      "fetchingModels": "모델을 불러오는 중…",
+      "savedLeaveBlank": "저장됨 — 비워 두면 기존 값을 유지합니다",
+      "modelPickerEmpty": "검색과 일치하는 모델이 없습니다.",
+      "modelPickerDefault": "기본값",
+      "modelPickerFriendlyName": "{{model}}의 표시 이름",
+      "badgeContext": "{{value}} 토큰",
+      "badgeVision": "비전",
+      "badgeReasoning": "추론",
+      "badgeDeprecated": "사용 중단",
+      "batchRetry": "다시 시도",
+      "batchRemove": "제거",
+      "rotateCredentials": "자격 증명 교체",
+      "rotateCredentialsTitle": "자격 증명 교체",
+      "rotateCredentialsHint": "이 연결로 추가된 모든 모델의 키를 업데이트합니다.",
+      "rotateCredentialsPlaceholder": "새 API 키",
+      "rotateCredentialsSave": "키 업데이트",
+      "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "batchStatus": {
+        "pending": "대기",
+        "checking": "확인 중",
+        "healthy": "저장됨",
+        "failed": "실패"
+      },
+      "modelPickerSelected": "선택한 모델 ({{count}})",
+      "modelPickerSelectedHint": "각 모델은 따로 확인되고 저장됩니다. 여기서 이름, 컨텍스트 길이, 기능을 설정하세요.",
+      "modelPickerFieldFor": "{{model}}의 {{field}}",
+      "modelPickerDefaultFor": "{{model}}을(를) 기본값으로 설정",
+      "modelPickerRemoveFor": "{{model}} 제거",
+      "modelComboboxAddMore": "다른 모델 추가…",
+      "modelComboboxTypeHint": "모델 이름을 입력하고 Enter 키를 누르세요.",
+      "modelComboboxOtherGroup": "기타 모델",
+      "modelComboboxUseTyped": "\"{{model}}\" 사용",
+      "modelHintManual": "모델 이름을 입력하고 Enter 키를 누르세요. 여러 개를 추가하면 함께 저장됩니다.",
+      "modelHintNeedsFields": "모델 목록을 불러오려면 위의 연결 정보를 입력하거나 모델 이름을 직접 입력하세요.",
+      "modelHintFailed": "모델을 불러오지 못했습니다: {{message}} 모델 이름은 직접 입력할 수 있습니다.",
+      "modelHintNoneFound": "공급자가 이 유형의 모델을 제공하지 않았습니다. 모델 이름을 입력하세요.",
+      "modelHintLoaded_one": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelHintLoaded_other": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelComboboxPlaceholder": "모델 이름을 선택하거나 입력하세요",
+      "checkingOne": "{{provider}}에서 {{model}} 확인 중…",
+      "checkingMany": "{{provider}}에서 모델 {{total}}개 확인 중…",
+      "checkingProgress": "모델 {{total}}개 중 {{done}}개 확인 완료…",
+      "checkingHint": "각 모델에 짧은 테스트 호출을 보냅니다. 보통 1분 이내에 끝납니다.",
+      "checkFailedOne": "{{model}}이(가) 확인을 통과하지 못했습니다",
+      "checkFailedMany": "모델 {{total}}개 중 {{failed}}개가 확인을 통과하지 못했습니다",
+      "checkFailedHint": "패널을 열어 원인을 확인하고 다시 시도하세요."
     },
     "common": {
       "loadingUsers": "사용자 로드 중...",
@@ -2328,6 +2374,12 @@
         "confirm": "동기화 중지",
         "confirmFull": "전체 동기화 중지"
       },
+      "disableSyncConfirm": {
+        "title": "{{name}}의 동기화를 비활성화할까요?",
+        "confirm": "동기화 비활성화",
+        "confirming": "비활성화 중..."
+      },
+      "disabledSearchNotice": "이 커넥터의 레코드는 비활성화한 시점의 접근 권한 그대로 계속 검색됩니다. {{source}}에서 변경한 공유 설정은 다시 활성화할 때까지 PipesHub에 반영되지 않습니다. 레코드를 제거하려면 커넥터를 삭제하세요.",
       "fullSync": {
         "disabledTooltip": "전체 동기화를 시작하기 전에 진행 중인 동기화를 중지하세요"
       },

@@ -286,6 +286,15 @@ class TestRegisterLazyToolMetaTools:
         register_lazy_tool_meta_tools(registry)  # must not raise
         assert set(META_TOOL_NAMES) <= set(registry.names())
 
+    def test_find_records_by_entity_is_reported_as_waiting_for_search_entities(self) -> None:
+        registry = ToolRegistry()
+        register_lazy_tool_meta_tools(registry)
+        deferral = registry.deferral("knowledgegraph__find_records_by_entity")
+        assert deferral is not None
+        assert (deferral.unlocked_by, deferral.condition) == (
+            "knowledgegraph__search_entities", "returns at least one entity",
+        )
+
 
 class TestMakeLazyToolsDecider:
     def test_apply_false_always_passes_through_unchanged(self, monkeypatch) -> None:

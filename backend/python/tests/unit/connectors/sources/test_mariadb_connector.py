@@ -1050,7 +1050,8 @@ class TestSyncUpdatedTables:
         connector.data_entities_processor.on_record_content_update.assert_awaited_once()
         updated_rec = connector.data_entities_processor.on_record_content_update.call_args[0][0]
         assert updated_rec.id == "rec-1"
-        assert updated_rec.version == 3
+        # 0 lets the save bump the stored version only if the revision moved.
+        assert updated_rec.version == 0
 
     @pytest.mark.asyncio
     async def test_skips_when_no_existing_record(self):

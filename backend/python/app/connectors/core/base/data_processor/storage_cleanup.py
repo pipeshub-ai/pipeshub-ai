@@ -6,12 +6,19 @@ The helper calls the Node.js storage service using the same scoped-JWT auth
 pattern as BlobStorage.
 """
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import aiohttp
 
+from app.config.constants.arangodb import (
+    CollectionNames,
+    EventTypes,
+    ProgressStatus,
+    RecordTypes,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import (
     DefaultEndpoints,
@@ -19,13 +26,17 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.services.messaging.config import Topic
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_path import (
     build_hierarchical_storage_path,
-    build_record_group_path as _build_record_group_path,
     build_record_group_prefix_from_chain,
 )
+from app.utils.storage_path import (
+    build_record_group_path as _build_record_group_path,
+)
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Virtual records listed per page, and handovers per relocate call (Node's cap).
 VIRTUAL_RECORD_PAGE_SIZE = 500
@@ -51,6 +62,47 @@ def choose_storage_owner(holders: list[dict]) -> dict:
     """Live holders before trashed ones, then the smallest key, so every run
     picks the same owner."""
     return min(holders, key=lambda h: (bool(h.get("isDeleted")), str(h.get("id"))))
+
+
+# Node's cap on one missing-documents lookup (MAX_MISSING_DOCUMENT_IDS).
+MISSING_DOCUMENTS_BATCH = 500
+
+
+class MissingDocumentsRouteUnavailable(Exception):
+    """Node predates the missing-documents route (404/405), e.g. mid-upgrade."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(f"storage has no missing-documents route (HTTP {status})")
+        self.status = status
+
+
+# A record in one of these is already headed for indexing, and indexing a holder
+# rewrites the VRID's stored content.
+_INDEXING_UNDER_WAY = frozenset({
+    ProgressStatus.NOT_STARTED.value,
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+})
+
+
+def indexing_under_way(record: dict | None) -> bool:
+    return bool(record) and record.get("indexingStatus") in _INDEXING_UNDER_WAY
+
+
+@dataclass(frozen=True)
+class HolderReindex:
+    """What ``reindex_one_holder`` did: published a re-index of ``record_key``,
+    found ``record_key`` already being indexed, or found no live holder."""
+
+    published: bool = False
+    record_key: str | None = None
+    # Holders of a VRID are not looked up by org, and older content was
+    # deduplicated across orgs.
+    org_id: str | None = None
+
+    @property
+    def under_way(self) -> bool:
+        return not self.published and self.record_key is not None
 
 
 class StorageCleanupHelper:
@@ -356,6 +408,100 @@ class StorageCleanupHelper:
         asked = {m["virtualRecordId"] for m in moves}
         settled = asked & {*(body.get("moved") or []), *(body.get("missing") or [])}
         return len(settled)
+
+    async def reindex_one_holder(
+        self,
+        vrid: str,
+        publish: Callable[[str, dict], Awaitable[Any]],
+    ) -> HolderReindex:
+        """Force re-index one live record holding ``vrid``; its storage write
+        re-points the VRID's mapping at a new document, healing every holder.
+
+        Nothing is published while a holder is already being indexed: that run
+        rewrites the content too. A published holder is marked QUEUED, as a
+        manual re-index marks it, so the next caller (or the next process) sees
+        it under way. With no live holder nothing is published (the mapping row
+        is then the orphan sweeper's to drop). Raises when the event could not
+        be published, and when a holder could not be read: a holder read as
+        gone may be the one already being indexed.
+        """
+        holders = await self.graph_provider.get_records_by_virtual_record_id(
+            vrid, raise_on_error=True
+        )
+        record = None
+        for key in holders:
+            doc = await self.graph_provider.get_document(
+                key, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+            if indexing_under_way(doc):
+                return HolderReindex(record_key=key)
+            record = record or doc
+        if not record:
+            self.logger.warning(
+                "No live record found for shared VRID %s; nothing re-indexed", vrid
+            )
+            return HolderReindex()
+        record_key = record.get("_key") or record.get("id")
+        file_record = None
+        if record.get("recordType") == RecordTypes.FILE.value:
+            file_record = await self.graph_provider.get_document(
+                record_key, CollectionNames.FILES.value, raise_on_error=True
+            )
+        payload = await self.graph_provider._create_reindex_event_payload(record, file_record)
+        payload["forceReindex"] = True
+        sent = await publish(
+            Topic.RECORD_EVENTS.value,
+            {
+                "eventType": EventTypes.NEW_RECORD.value,
+                "timestamp": get_epoch_timestamp_in_ms(),
+                "payload": payload,
+            },
+        )
+        # Publishers report failure by returning False rather than raising.
+        if sent is False:
+            raise RuntimeError("re-index event was not published")
+        # After the publish, never before (a record marked QUEUED for an event
+        # that never left is stuck), and conditional: indexing may already have
+        # moved it on.
+        try:
+            await self.graph_provider.compare_and_set_indexing_status(
+                [record_key], record.get("indexingStatus"), ProgressStatus.QUEUED.value,
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Re-index of %s for VRID %s published but not marked QUEUED: %s",
+                record_key, vrid, e,
+            )
+        return HolderReindex(published=True, record_key=record_key, org_id=record.get("orgId"))
+
+    async def find_missing_documents(self, org_id: str, document_ids: list[str]) -> list[str]:
+        """The ids storage cannot serve for the org: absent or deleted, as download sees it.
+
+        Raises ``MissingDocumentsRouteUnavailable`` when Node has no such route,
+        and any other failure as an exception: never an empty answer that would
+        read as "nothing is missing".
+        """
+        ids = list(dict.fromkeys(d for d in document_ids if d))
+        missing: list[str] = []
+        for start in range(0, len(ids), MISSING_DOCUMENTS_BATCH):
+            batch = ids[start:start + MISSING_DOCUMENTS_BATCH]
+            headers, nodejs_endpoint = await self._get_auth_headers_and_endpoint(org_id)
+            url = f"{nodejs_endpoint}{Routes.STORAGE_MISSING_DOCUMENTS.value}"
+            session = await self._get_session()
+            async with session.post(url, json={"documentIds": batch}, headers=headers) as resp:
+                if resp.status in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.METHOD_NOT_ALLOWED.value):
+                    raise MissingDocumentsRouteUnavailable(resp.status)
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise Exception(
+                        f"missing-documents lookup failed: {resp.status} {error_text[:200]}"
+                    )
+                body = await resp.json()
+            answer = body.get("missing") if isinstance(body, dict) else None
+            if not isinstance(answer, list):
+                raise ValueError("storage answered a malformed missing-documents reply")
+            missing.extend(str(d) for d in answer)
+        return missing
 
     async def delete_connector_storage(
         self, org_id: str, connector_id: str

@@ -456,6 +456,7 @@ describe('ConnectorPanel: saving the sync configuration', () => {
         '"Jira (Engineering)" is currently enabled. To save configuration changes, it will be automatically disabled first. Do you want to proceed?'
       )
     ).toBeTruthy();
+    expect(screen.getByText(/Changes to sharing in Jira won't reach PipesHub until you enable it again/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
 

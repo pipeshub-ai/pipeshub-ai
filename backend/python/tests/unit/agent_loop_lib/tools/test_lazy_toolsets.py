@@ -155,6 +155,40 @@ class TestFetchToolsGrantCeiling:
         assert result.content["tools"] == []
         assert set(result.content["denied"]["tools"]) == {"jira_create_issue", "jira_search_issues"}
 
+    async def test_a_tool_withheld_until_a_granted_tool_runs_is_reported_as_deferred(self) -> None:
+        """A model that looks the tool up first must not conclude it is unavailable."""
+        registry = _registry_with_jira_and_slack()
+        registry.defer_tool("jira_search_issues", unlocked_by="jira_create_issue", condition="creates an issue")
+        agent = _FakeAgent(_spec(tool_names=["jira_create_issue"]))
+        ctx = _FakeRouteContext(agent=agent, spec=agent.spec)
+
+        result = await FetchToolsTool(registry).handle(
+            ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "jira"}), ctx,
+        )
+
+        assert "denied" not in result.content
+        assert result.content["deferred"] == [{
+            "tool": "jira_search_issues",
+            "available_after": "jira_create_issue",
+            "condition": "creates an issue",
+            "message": "jira_search_issues is not callable yet. It becomes callable once "
+                       "jira_create_issue creates an issue.",
+        }]
+        assert agent.visible_tools == {"jira_create_issue"}
+
+    async def test_a_deferred_tool_whose_unlocking_tool_is_not_granted_stays_denied(self) -> None:
+        registry = _registry_with_jira_and_slack()
+        registry.defer_tool("jira_search_issues", unlocked_by="jira_create_issue", condition="creates an issue")
+        agent = _FakeAgent(_spec(tool_names=["slack_send_message"]))
+        ctx = _FakeRouteContext(agent=agent, spec=agent.spec)
+
+        result = await FetchToolsTool(registry).handle(
+            ToolCall(id="c1", name="fetch_tools", arguments={"toolset": "jira"}), ctx,
+        )
+
+        assert set(result.content["denied"]["tools"]) == {"jira_create_issue", "jira_search_issues"}
+        assert "deferred" not in result.content
+
     async def test_provider_backed_toolset_is_materialized_before_fetch_returns(self) -> None:
         registry = ToolRegistry()
         mcp_tool = _SimpleTool("mcp_create_issue", "/mcp/jira/mcp_create_issue")
@@ -186,6 +220,20 @@ class TestSearchToolsGrantCeiling:
             "reason": "not_granted_to_this_agent", "tools": ["jira_search_issues"],
         }
         assert agent.visible_tools == {"jira_create_issue"}
+
+    async def test_a_deferred_match_says_what_unlocks_it(self) -> None:
+        registry = _registry_with_jira_and_slack()
+        registry.defer_tool("jira_search_issues", unlocked_by="jira_create_issue", condition="creates an issue")
+        agent = _FakeAgent(_spec(tool_names=["jira_create_issue"]))
+        ctx = _FakeRouteContext(agent=agent, spec=agent.spec)
+
+        result = await SearchToolsTool(registry).handle(
+            ToolCall(id="c1", name="search_tools", arguments={"query": "jira issue"}), ctx,
+        )
+
+        assert "denied" not in result.content
+        assert [d["tool"] for d in result.content["deferred"]] == ["jira_search_issues"]
+        assert result.content["deferred"][0]["message"].endswith("once jira_create_issue creates an issue.")
 
     async def test_eager_grant_none_makes_matches_visible(self) -> None:
         registry = _registry_with_jira_and_slack()

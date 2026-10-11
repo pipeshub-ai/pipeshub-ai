@@ -3,6 +3,7 @@ import {
   CONNECTOR_VRID_PAGE_MAX,
   MAX_SIGNED_URL_TTL_SECONDS,
   RELOCATE_MAX_MOVES,
+  MAX_MISSING_DOCUMENT_IDS,
 } from '../constants/constants';
 
 const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
@@ -104,6 +105,17 @@ export const ConnectorVirtualRecordsSchema = z.object({
       .optional(),
   }),
   headers: Headers,
+});
+
+// Ids are not checked for shape: one that is not an ObjectId cannot exist, and is answered missing.
+export const MissingDocumentsSchema = z.object({
+  headers: Headers,
+  body: z.object({
+    documentIds: z
+      .array(z.string().min(1).max(64))
+      .min(1)
+      .max(MAX_MISSING_DOCUMENT_IDS),
+  }),
 });
 
 export const DocumentIdParamsWithVersion = z.object({

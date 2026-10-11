@@ -68,9 +68,13 @@ class PrefetchResult:
     # `shape_image_injection` PRE_MODEL hook delivers them to the model,
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
-    collected_images: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+        collected_images: list[dict[str, Any]] = field(default_factory=list)
+    # `final_results` in the search's relevance order; `final_results` itself
+    # is sorted by virtual record id for display.
+    ranked_results: list[dict[str, Any]] = field(default_factory=list)
     query_embedding: list[float] | None = field(default=None)
     record_fingerprints: list[tuple[str, object, object, object, object]] | None = field(default=None)
+
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -247,6 +251,8 @@ async def prefetch_retrieval(
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
         collected_images=collected_images,
+        ranked_results=list(flattened_results),
         query_embedding=query_embedding,
         record_fingerprints=record_fingerprints,
     )
+

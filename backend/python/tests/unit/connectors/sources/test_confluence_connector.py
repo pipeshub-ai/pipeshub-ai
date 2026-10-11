@@ -297,7 +297,7 @@ class TestSyncFolders:
         call_args = mock_datasource.get_folders_v1.call_args[1]
         assert call_args["space_key"] == "TEST"
         assert call_args["expand"] == FOLDER_EXPAND_PARAMS
-        assert call_args["time_offset_hours"] == TIME_OFFSET_HOURS
+        assert "time_offset_hours" not in call_args, "the datasource gets the dates as they are meant"
 
         c.data_entities_processor.on_new_records.assert_called_once()
         saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
@@ -604,7 +604,7 @@ class TestSyncFolders:
                 await c._sync_folders("TEST")
 
         call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-01-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2023-12-31T00:00:00.000Z", "the checkpoint less 24 hours"
 
     async def test_sync_folders_with_modified_filter(self):
         """Test sync with modified date filter from sync_filters."""
@@ -695,7 +695,7 @@ class TestSyncFolders:
                 await c._sync_folders("TEST")
 
         call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-02-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-01-31T00:00:00.000Z", "the checkpoint less 24 hours is later than the filter"
 
     async def test_sync_folders_with_filter_only(self):
         """Test sync with filter but no checkpoint."""
@@ -5016,7 +5016,7 @@ class TestSyncContentPages:
 
         await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
         call_kwargs = ds.get_pages_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-06-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-05-31T00:00:00.000Z", "the checkpoint less 24 hours"
 
     @pytest.mark.asyncio
     async def test_cursor_extraction_fail_stops_pagination(self):
@@ -5902,7 +5902,7 @@ class TestSyncContentFilterPaths:
 
         await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
         call_kwargs = ds.get_pages_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-05-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-04-30T00:00:00.000Z", "the checkpoint less 24 hours"
 
     @pytest.mark.asyncio
     async def test_modified_before_and_created_dates_logged(self):

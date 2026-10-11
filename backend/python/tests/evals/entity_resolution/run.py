@@ -184,7 +184,7 @@ def _transformer(graph: FakeGraph) -> GraphDBTransformer:
 
     transformer.graph_data_store = MagicMock()
     transformer.graph_data_store.graph_provider = graph
-    transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+    transformer.graph_data_store.transaction = MagicMock(side_effect=lambda **_: _Txn())
     transformer.graph_data_store.execute_idempotent_in_transaction = partial(
         GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
     )

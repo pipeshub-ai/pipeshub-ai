@@ -9,6 +9,7 @@ in-memory fakes.
 import logging
 import re
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock
 
@@ -102,6 +103,15 @@ def v1_page(pid: str, *, version: int = 1, space_id: int = 77, attachments: Opti
         "children": {"attachment": {"results": attachments or [], "size": len(attachments or [])}},
         "_links": {"webui": f"/spaces/ENG/pages/{pid}", "self": f"{WIKI}/rest/api/content/{pid}"},
     }
+
+
+def epoch_ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
+
+
+def cql_minute(iso: str, less_hours: int = 0) -> str:
+    when = datetime.fromisoformat(iso.replace("Z", "+00:00")) - timedelta(hours=less_hours)
+    return when.strftime("%Y-%m-%d %H:%M")
 
 
 def search_page(results: list, cursor: Optional[str] = None) -> dict[str, Any]:
@@ -308,9 +318,60 @@ class TestPageSync:
         search.by_cursor = {None: search_page([v1_page("10", version=2)])}
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert "lastModified >" in search.queries[0]["cql"]
+        since = cql_minute(checkpoint["last_sync_time"], less_hours=24)
+        assert f'lastModified > "{since}"' in search.queries[0]["cql"], "the checkpoint, looked back a day"
         assert db.records["10"].id == first_id and db.records["10"].version == 1
         assert len([r for r in db.records.values() if isinstance(r, WebpageRecord)]) == 3, "no duplicates"
+
+    async def test_date_filters_reach_the_search_as_set(self, api, db, checkpoints, search) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_between", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2024, 3, 1, 9, 30, tzinfo=timezone.utc)),
+                "end": epoch_ms(datetime(2024, 6, 1, 18, 0, tzinfo=timezone.utc)),
+            }},
+            "created": {"operator": "is_between", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2023, 1, 1, tzinfo=timezone.utc)),
+                "end": epoch_ms(datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc)),
+            }},
+        })
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        cql = search.queries[0]["cql"]
+        assert 'lastModified > "2024-03-01 09:30"' in cql
+        assert 'lastModified < "2024-06-01 18:00"' in cql, "not a day early"
+        assert 'created > "2023-01-01 00:00"' in cql
+        assert 'created < "2024-02-01 12:00"' in cql, "not a day early"
+
+    async def test_the_later_of_the_modified_filter_and_the_looked_back_checkpoint_bounds_the_search(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        checkpoint_at = datetime.fromisoformat(checkpoint.replace("Z", "+00:00"))
+
+        inside_look_back = (checkpoint_at - timedelta(hours=12)).replace(second=0, microsecond=0)
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": epoch_ms(inside_look_back)}},
+        })
+        search.queries.clear()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        cql = search.queries[0]["cql"]
+        assert f'lastModified > "{inside_look_back.strftime("%Y-%m-%d %H:%M")}"' in cql, "nothing from before the filter date"
+        assert cql.count("lastModified >") == 1
+
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_after", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2020, 1, 1, tzinfo=timezone.utc)),
+            }},
+        })
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        search.queries.clear()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert f'lastModified > "{cql_minute(checkpoint, less_hours=24)}"' in search.queries[0]["cql"]
 
     async def test_view_restricted_page_is_limited_to_the_named_people(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")

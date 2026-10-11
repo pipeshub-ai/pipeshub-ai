@@ -35,18 +35,9 @@ logging.disable(logging.INFO)
 
 from app.agent_loop_lib.core.responses import RunUsage
 from app.agent_loop_lib.events.base import AgentEvent, EventEmitter, EventType
+from app.agent_loop_lib.modules.providers.budget.pricing import get_pricing
 
 # ── Token usage & cost display ─────────────────────────────────────────────
-
-# Approximate pricing per million tokens: (input $/MTok, output $/MTok)
-_MODEL_PRICES: dict[str, tuple[float, float]] = {
-    "claude-sonnet-4-6":         (3.0,  15.0),
-    "claude-opus-4-8":           (15.0, 75.0),
-    "claude-haiku-4-5":          (0.80,  4.0),
-    "claude-haiku-4-5-20251001": (0.80,  4.0),
-    "claude-sonnet-5":           (2.0,  10.0),
-}
-
 
 def _fmt_usage(usage: "RunUsage | None", model: str) -> str:
     """Return a one-line usage summary from `Agent.usage`'s cumulative
@@ -63,16 +54,7 @@ def _fmt_usage(usage: "RunUsage | None", model: str) -> str:
     if not (in_tok or out_tok):
         return ""
 
-    in_price, out_price = _MODEL_PRICES.get(model, (3.0, 15.0))
-    # Cache reads cost 10% of input price; cache writes cost 125%
-    cache_read_price  = in_price * 0.10
-    cache_write_price = in_price * 1.25
-    cost = (
-        in_tok      * in_price
-        + out_tok   * out_price
-        + cache_read  * cache_read_price
-        + cache_write * cache_write_price
-    ) / 1_000_000
+    cost = get_pricing(model).cost_usd(in_tok, out_tok, cache_read, cache_write)
 
     def _k(n: int) -> str:
         return f"{n/1000:.1f}k" if n >= 1000 else str(n)

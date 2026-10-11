@@ -39,7 +39,7 @@ from .navigator import GraphNavigator
 from .ops.scope import resolve_scope
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
-from .views import render_lookup_result, render_navigation_view
+from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -486,8 +486,13 @@ class KnowledgeGraph:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
 
-        remember_record_ids(state, _record_ids_in_view(view))
-        text = render_navigation_view(view, page, record_id_shortener)
+        text, emitted = render_navigation_view_with_ids(view, page, record_id_shortener)
+        fetchable = set(_record_ids_in_view(view))
+        remember_record_ids(
+            state,
+            [rid for rid in emitted if rid in fetchable],
+            names={n.id: n.name for n in (*view.rows, *view.related, *([view.current] if view.current else []))},
+        )
 
         # Sparse-result retry nudge: only fires when time filters were
         # actually applied, so a plain (unfiltered) empty/near-empty listing
@@ -610,7 +615,6 @@ class KnowledgeGraph:
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
-        remember_record_ids(state, [m.id for m in result.matches])
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -620,7 +624,12 @@ class KnowledgeGraph:
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        text = render_lookup_result(result, record_id_shortener)
+        text, emitted = render_lookup_result_with_ids(result, record_id_shortener)
+        remember_record_ids(
+            state,
+            emitted,
+            names={m.id: m.name for m in result.matches},
+        )
         # "Zero accessible results" is a legitimate lookup outcome, not a
         # tool failure — `success=False` renders as a red failed-tool-call
         # in the frontend and tells the model "the tool broke" rather than

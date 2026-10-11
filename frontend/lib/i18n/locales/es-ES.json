@@ -1746,7 +1746,54 @@
           "label": "Vídeo",
           "badge": "Multimodal"
         }
-      }
+      },
+      "fetchingModels": "Cargando modelos…",
+      "savedLeaveBlank": "Guardado — déjelo en blanco para conservar",
+      "modelPickerEmpty": "Ningún modelo coincide con la búsqueda.",
+      "modelPickerDefault": "Predeterminado",
+      "modelPickerFriendlyName": "Nombre para {{model}}",
+      "badgeContext": "{{value}} tokens",
+      "badgeVision": "Visión",
+      "badgeReasoning": "Razonamiento",
+      "badgeDeprecated": "Obsoleto",
+      "batchRetry": "Reintentar",
+      "batchRemove": "Quitar",
+      "rotateCredentials": "Rotar credenciales",
+      "rotateCredentialsTitle": "Rotar credenciales",
+      "rotateCredentialsHint": "Actualiza la clave de todos los modelos de esta conexión.",
+      "rotateCredentialsPlaceholder": "Nueva clave de API",
+      "rotateCredentialsSave": "Actualizar clave",
+      "rotateCredentialsFailed": "No se pudo actualizar la clave",
+      "batchStatus": {
+        "pending": "En espera",
+        "checking": "Comprobando",
+        "healthy": "Guardado",
+        "failed": "Error"
+      },
+      "modelPickerSelected": "Modelos seleccionados ({{count}})",
+      "modelPickerSelectedHint": "Cada modelo se comprueba y se guarda por separado. Defina aquí su nombre, longitud de contexto y capacidades.",
+      "modelPickerFieldFor": "{{field}} de {{model}}",
+      "modelPickerDefaultFor": "Usar {{model}} como predeterminado",
+      "modelPickerRemoveFor": "Quitar {{model}}",
+      "modelComboboxAddMore": "Añadir otro modelo…",
+      "modelComboboxTypeHint": "Escribe el nombre de un modelo y pulsa Intro.",
+      "modelComboboxOtherGroup": "Otros modelos",
+      "modelComboboxUseTyped": "Usar \"{{model}}\"",
+      "modelHintManual": "Escribe el nombre de un modelo y pulsa Intro. Añade varios para guardarlos juntos.",
+      "modelHintNeedsFields": "Completa los datos de conexión de arriba para cargar la lista de modelos, o escribe el nombre de un modelo.",
+      "modelHintFailed": "No se pudieron cargar los modelos: {{message}} Aun así puedes escribir el nombre de un modelo.",
+      "modelHintNoneFound": "El proveedor no devolvió modelos de este tipo. Escribe el nombre de un modelo.",
+      "modelHintLoaded_one": "{{count}} modelo disponible. Busca o escribe cualquier nombre de modelo.",
+      "modelHintLoaded_other": "{{count}} modelos disponibles. Busca o escribe cualquier nombre de modelo.",
+      "modelHintLoaded_many": "{{count}} de modelos disponibles. Busca o escribe cualquier nombre de modelo.",
+      "modelComboboxPlaceholder": "Selecciona o escribe el nombre de un modelo",
+      "checkingOne": "Comprobando {{model}} con {{provider}}…",
+      "checkingMany": "Comprobando {{total}} modelos con {{provider}}…",
+      "checkingProgress": "Comprobados {{done}} de {{total}} modelos…",
+      "checkingHint": "Cada modelo recibe una breve llamada de prueba. Suele tardar menos de un minuto.",
+      "checkFailedOne": "{{model}} no superó la comprobación",
+      "checkFailedMany": "{{failed}} de {{total}} modelos no superaron la comprobación",
+      "checkFailedHint": "Abre el panel para ver el motivo y reintentar."
     },
     "filters": {
       "role": "Rol",
@@ -2207,6 +2254,12 @@
         "confirm": "Detener sincronización",
         "confirmFull": "Detener sincronización completa"
       },
+      "disableSyncConfirm": {
+        "title": "¿Deshabilitar la sincronización de {{name}}?",
+        "confirm": "Deshabilitar sincronización",
+        "confirming": "Deshabilitando..."
+      },
+      "disabledSearchNotice": "Los registros de este conector siguen apareciendo en las búsquedas, con el acceso que tenían cuando lo deshabilitó. Los cambios de uso compartido en {{source}} no llegarán a PipesHub hasta que lo vuelva a habilitar. Para eliminar los registros, elimine el conector.",
       "fullSync": {
         "disabledTooltip": "Detenga la sincronización en curso antes de iniciar una sincronización completa"
       },

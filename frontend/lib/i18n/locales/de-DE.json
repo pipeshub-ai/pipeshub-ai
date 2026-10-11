@@ -1725,7 +1725,53 @@
           "label": "Video",
           "badge": "Multimodal"
         }
-      }
+      },
+      "fetchingModels": "Modelle werden geladen…",
+      "savedLeaveBlank": "Gespeichert — leer lassen, um den Wert zu behalten",
+      "modelPickerEmpty": "Keine Modelle entsprechen Ihrer Suche.",
+      "modelPickerDefault": "Standard",
+      "modelPickerFriendlyName": "Anzeigename für {{model}}",
+      "badgeContext": "{{value}} Tokens",
+      "badgeVision": "Bild",
+      "badgeReasoning": "Denken",
+      "badgeDeprecated": "Veraltet",
+      "batchRetry": "Erneut",
+      "batchRemove": "Entfernen",
+      "rotateCredentials": "Zugangsdaten erneuern",
+      "rotateCredentialsTitle": "Zugangsdaten erneuern",
+      "rotateCredentialsHint": "Aktualisiert den Schlüssel für alle Modelle dieser Verbindung.",
+      "rotateCredentialsPlaceholder": "Neuer API-Schlüssel",
+      "rotateCredentialsSave": "Schlüssel speichern",
+      "rotateCredentialsFailed": "Schlüssel konnte nicht aktualisiert werden",
+      "batchStatus": {
+        "pending": "Wartet",
+        "checking": "Prüfung",
+        "healthy": "Gespeichert",
+        "failed": "Fehlgeschlagen"
+      },
+      "modelPickerSelected": "Ausgewählte Modelle ({{count}})",
+      "modelPickerSelectedHint": "Jedes Modell wird einzeln geprüft und gespeichert. Legen Sie hier Name, Kontextlänge und Fähigkeiten fest.",
+      "modelPickerFieldFor": "{{field}} für {{model}}",
+      "modelPickerDefaultFor": "{{model}} als Standard festlegen",
+      "modelPickerRemoveFor": "{{model}} entfernen",
+      "modelComboboxAddMore": "Weiteres Modell hinzufügen…",
+      "modelComboboxTypeHint": "Geben Sie einen Modellnamen ein und drücken Sie die Eingabetaste.",
+      "modelComboboxOtherGroup": "Weitere Modelle",
+      "modelComboboxUseTyped": "„{{model}}“ verwenden",
+      "modelHintManual": "Geben Sie einen Modellnamen ein und drücken Sie die Eingabetaste. Fügen Sie mehrere hinzu, um sie gemeinsam zu speichern.",
+      "modelHintNeedsFields": "Füllen Sie oben die Verbindungsdaten aus, um die Modellliste zu laden, oder geben Sie einen Modellnamen ein.",
+      "modelHintFailed": "Modelle konnten nicht geladen werden: {{message}} Sie können trotzdem einen Modellnamen eingeben.",
+      "modelHintNoneFound": "Der Anbieter hat keine Modelle dieses Typs aufgeführt. Geben Sie einen Modellnamen ein.",
+      "modelHintLoaded_one": "{{count}} Modell verfügbar. Suchen Sie oder geben Sie einen beliebigen Modellnamen ein.",
+      "modelHintLoaded_other": "{{count}} Modelle verfügbar. Suchen Sie oder geben Sie einen beliebigen Modellnamen ein.",
+      "modelComboboxPlaceholder": "Modellnamen auswählen oder eingeben",
+      "checkingOne": "{{model}} wird mit {{provider}} geprüft…",
+      "checkingMany": "{{total}} Modelle werden mit {{provider}} geprüft…",
+      "checkingProgress": "{{done}} von {{total}} Modellen geprüft…",
+      "checkingHint": "Jedes Modell erhält einen kurzen Testaufruf. Das dauert meist weniger als eine Minute.",
+      "checkFailedOne": "{{model}} hat die Prüfung nicht bestanden",
+      "checkFailedMany": "{{failed}} von {{total}} Modellen haben die Prüfung nicht bestanden",
+      "checkFailedHint": "Öffnen Sie das Panel, um den Grund zu sehen und es erneut zu versuchen."
     },
     "common": {
       "loadingUsers": "Benutzer werden geladen...",
@@ -2191,6 +2237,12 @@
         "confirm": "Synchronisierung stoppen",
         "confirmFull": "Vollständige Synchronisierung stoppen"
       },
+      "disableSyncConfirm": {
+        "title": "Synchronisierung für {{name}} deaktivieren?",
+        "confirm": "Synchronisierung deaktivieren",
+        "confirming": "Wird deaktiviert..."
+      },
+      "disabledSearchNotice": "Datensätze aus diesem Konnektor bleiben durchsuchbar, mit den Zugriffsrechten, die sie beim Deaktivieren hatten. Änderungen an der Freigabe in {{source}} erreichen PipesHub erst, wenn Sie ihn wieder aktivieren. Um die Datensätze zu entfernen, löschen Sie den Konnektor.",
       "fullSync": {
         "disabledTooltip": "Stoppen Sie die laufende Synchronisierung, bevor Sie eine vollständige Synchronisierung starten"
       },

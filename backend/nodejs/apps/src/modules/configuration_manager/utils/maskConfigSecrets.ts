@@ -47,7 +47,19 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
     }
   }
 
-  return { ...entry, configuration: safeCfg as AIModelConfiguration['configuration'] };
+  return {
+    ...entry,
+    configuration: safeCfg as AIModelConfiguration['configuration'],
+    configuredFields: configuredFieldNames(src),
+  };
+}
+
+/** Names of stored configuration keys that have a value. Never the values. */
+export function configuredFieldNames(configuration: Record<string, unknown>): string[] {
+  return Object.entries(configuration)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key]) => key)
+    .sort();
 }
 
 /**
@@ -56,7 +68,7 @@ export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfigu
  * The stored shape is:
  *   { llm: [...entries], embedding: [...entries], ocr: [...], modelRoles: {…} }
  */
-export function stripAiModelsStoredConfig<T extends Record<string, unknown>>(
+export function stripAiModelsStoredConfig<T extends object>(
   config: T,
 ): T {
   if (!config || typeof config !== 'object') {
@@ -88,6 +100,28 @@ export function stripAiModelsStoredConfig<T extends Record<string, unknown>>(
  * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
  * alone.
  */
+/** Fields a credential rotation may replace. Endpoints and model settings are not credentials. */
+export const AI_MODEL_CREDENTIAL_KEYS = [
+  'apiKey',
+  'awsAccessKeyId',
+  'awsAccessSecretKey',
+  'serviceAccountJson',
+] as const;
+
+/** Keep only credential keys. A present empty string is an explicit clear. */
+export function pickAiModelCredentials(
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of AI_MODEL_CREDENTIAL_KEYS) {
+    if (!(key in incoming)) continue;
+    const value = incoming[key];
+    if (typeof value !== 'string') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
 export function mergeAiModelCredentials<T extends Record<string, unknown>>(
   incoming: T,
   existing: Record<string, unknown> | null | undefined,

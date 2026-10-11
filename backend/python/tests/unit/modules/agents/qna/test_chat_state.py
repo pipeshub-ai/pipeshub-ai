@@ -13,6 +13,7 @@ from app.modules.agents.qna.chat_state import (
     cleanup_old_tool_results,
     cleanup_state_after_retrieval,
     remember_record_ids,
+    remember_shown_results,
 )
 
 
@@ -445,6 +446,38 @@ class TestRememberRecordIds:
 
     def test_no_state_is_a_noop(self):
         remember_record_ids(None, ["r1"])
+
+    def test_keeps_names_in_the_order_shown_latest_last(self) -> None:
+        """`knowledgegraph__fetch_record` lists these, most recent first, when
+        the model asks for an id that does not resolve."""
+        state = {}
+
+        remember_record_ids(state, ["r1", "r2"], names={"r1": "Plan", "r2": "Notes"})
+        remember_record_ids(state, ["r3"])
+        remember_record_ids(state, ["r1"])
+
+        assert list(state["known_record_names"].items()) == [
+            ("r2", "Notes"), ("r3", ""), ("r1", "Plan"),
+        ]
+
+    def test_shown_results_are_remembered_but_trimmed_ones_are_not(self) -> None:
+        """Retrieval fills its map before trimming to the top blocks; a record
+        whose blocks were all trimmed never reached the model."""
+        state = {}
+        vr_map = {
+            "vr-1": {"id": "r1", "record_name": "Plan"},
+            "vr-2": {"id": "r2", "record_name": "Trimmed"},
+            "vr-3": {"_key": "r3", "recordName": "Keyword hit"},
+        }
+
+        remember_shown_results(
+            state,
+            [{"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-3"}],
+            vr_map,
+        )
+
+        assert state["known_record_names"] == {"r1": "Plan", "r3": "Keyword hit"}
+        assert state["known_record_ids"] == {"r1", "r3"}
 
 
 class TestCleanupOldToolResults:

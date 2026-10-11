@@ -37,6 +37,11 @@ class IAccessibleRecordsCache(ABC):
     async def invalidate_connector(self, org_id: str, connector_id: str) -> None: ...
 
     @abstractmethod
+    async def mark_connector_changed(self, org_id: str, connector_id: str) -> None:
+        """Reject fills of this connector already in flight; the caller still owes
+        an ``invalidate_connector`` after it."""
+
+    @abstractmethod
     async def invalidate_kb(self, org_id: str, kb_id: str) -> None: ...
 
     @property
@@ -72,6 +77,9 @@ class NoopAccessibleRecordsCache(IAccessibleRecordsCache):
         return await loader()
 
     async def invalidate_connector(self, org_id: str, connector_id: str) -> None:  # noqa: ARG002
+        return None
+
+    async def mark_connector_changed(self, org_id: str, connector_id: str) -> None:
         return None
 
     async def invalidate_kb(self, org_id: str, kb_id: str) -> None:  # noqa: ARG002

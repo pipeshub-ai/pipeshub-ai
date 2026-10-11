@@ -147,6 +147,35 @@ class TestSuccessfulPrefetch:
         graph_enrich.assert_awaited_once()
 
 
+    async def test_ranked_results_keep_the_search_order(self) -> None:
+        """`final_results` is re-sorted by virtual record id for display; what the
+        search ranked first is what a later id-recovery list must keep."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [{"metadata": {}}], "virtual_to_record_map": {},
+        }
+        flattened = [
+            {"virtual_record_id": "vr-b", "block_index": 0},
+            {"virtual_record_id": "vr-a", "block_index": 0},
+        ]
+        with patch(
+            "app.agents.chat_modes.prefetch.get_flattened_results",
+            new=AsyncMock(return_value=flattened),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.build_message_content_array",
+            side_effect=lambda fr, vr, **kw: ([[{"type": "text", "text": "x"}]], kw["ref_mapper"]),
+        ):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert [r["virtual_record_id"] for r in result.final_results] == ["vr-a", "vr-b"]
+        assert [r["virtual_record_id"] for r in result.ranked_results] == ["vr-b", "vr-a"]
+
+
 class TestPrefetchImageCollection:
     """`bridge.py` merges `PrefetchResult.collected_images` into
     `context.attachment_image_blocks` so `shape_image_injection` can

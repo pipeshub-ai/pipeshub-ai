@@ -229,6 +229,7 @@ from app.services.graph_db.user_email_identity import (
     graph_user_key,
 )
 from app.services.graph_db.vector_membership_queries import (
+    PAGE_RECORD_FIELDS,
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
     can_use_membership_cleanup,
@@ -922,6 +923,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["indexingStatus"],
         )
 
+        # COMPOUND: records parked while their connector was off, read per
+        # connector by the turn-on re-queue and every stranded-record sweep, in
+        # a keyset on _key. With reason in the index a manual-indexing
+        # connector's AUTO_INDEX_OFF records (no reason) are never walked to
+        # find them, and _key trailing serves the cursor and the SORT. Not
+        # sparse: 3.12 does not take a sparse index that ends in _key for this
+        # read, and fell back to (connectorId, _key), filtering every record of
+        # the connector.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "indexingStatus", "reason", "_key"],
+        )
+
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
         # the few records with it set; unindexed that is a full scan per tick.
         await self.http_client.ensure_persistent_index(
@@ -1126,13 +1140,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a database transaction - FULLY ASYNC.
 
         Args:
             read: Collections to read from
             write: Collections to write to
+            explicit: ignored; a stream transaction is always all-or-nothing
 
         Returns:
             str: Transaction ID (e.g., "123456789")
@@ -1156,7 +1173,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
             raise
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
@@ -2000,22 +2017,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         if not connector_id:
             return
         coll = CollectionNames.RECORDS.value
         excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
+        if only_statuses is not None and not included:
+            return
         try:
             exclude_clause = (
                 "FILTER doc.indexingStatus NOT IN @exclude_statuses"
                 if excluded
                 else ""
             )
+            include_clause = (
+                "FILTER doc.indexingStatus IN @only_statuses" if included else ""
+            )
+            visibility_clause = (
+                ""
+                if visibility is RecordVisibility.ALL
+                else f"FILTER {aql_record_visibility('doc', visibility)}"
+            )
+            # AQL rejects a declared-but-unused bind var, so only bind it here.
+            reason_field = ", reason: @reason" if reason is not None else ""
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
-                UPDATE doc WITH {{ indexingStatus: @status }} IN @@collection
+                {include_clause}
+                {visibility_clause}
+                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
@@ -2024,6 +2060,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
             if excluded:
                 bind_vars["exclude_statuses"] = excluded
+            if included:
+                bind_vars["only_statuses"] = included
+            if reason is not None:
+                bind_vars["reason"] = reason
             await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
         except Exception as e:
             # Must not be swallowed: the rebuild drops the vector collection
@@ -2968,7 +3008,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge between two nodes - FULLY ASYNC.
@@ -3007,6 +3049,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get edge failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_edge(
@@ -4580,10 +4624,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not results:
                 return []
             return [
-                {
-                    "_key": row.get("_key"),
-                    "virtualRecordId": row.get("virtualRecordId"),
-                }
+                {field: row.get(field) for field in PAGE_RECORD_FIELDS}
                 for row in results
             ]
         except Exception as e:
@@ -6936,12 +6977,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents from a collection using AQL LIMIT so that
         only the requested slice is transferred from ArangoDB, keeping memory
         usage proportional to `limit` regardless of collection size.
         """
+        if after_key is not None and sort_field != "_key":
+            raise ValueError("after_key needs sort_field='_key'")
         try:
             bind_vars: dict = {"@collection": collection, "skip": skip, "limit": limit}
 
@@ -6951,6 +6995,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     param = f"fv{idx}"
                     filter_clauses.append(f"doc.{field} == @{param}")
                     bind_vars[param] = value
+            if after_key is not None:
+                filter_clauses.append("doc._key > @after_key")
+                bind_vars["after_key"] = after_key
 
             filter_aql = (
                 "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""
