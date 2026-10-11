@@ -3533,6 +3533,16 @@ class TestListableChannelTypes:
             await c._listable_channel_types_param({"im", "mpim"})
 
     @pytest.mark.asyncio
+    async def test_an_unrecognised_type_is_rejected_not_dropped(self) -> None:
+        c = _make_connector()
+        ds = _scopes_ds(["channels:read", "groups:read"])
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            pytest.raises(RuntimeError, match="unrecognised values: private_channe"),
+        ):
+            await c._listable_channel_types_param({"public_channel", "private_channe"})
+
+    @pytest.mark.asyncio
     async def test_sync_channels_lists_only_what_the_token_can_read(self) -> None:
         c = _make_connector()
         ds = _scopes_ds(["channels:read", "groups:read"])

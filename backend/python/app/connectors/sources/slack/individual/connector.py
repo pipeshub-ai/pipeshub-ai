@@ -991,8 +991,16 @@ class SlackIndividualConnector(BaseConnector):
     async def _listable_channel_types_param(self, requested: set[str]) -> str:
         """The ``types`` for conversations.list: ``requested`` minus kinds the token has no read scope for.
 
-        Raises when none of ``requested`` can be listed, naming the scopes to add.
+        Raises when ``requested`` holds a kind Slack does not know, or when none
+        of it can be listed, naming the scopes to add.
         """
+        unknown = sorted(requested - CHANNEL_API_TYPE_READ_SCOPE.keys())
+        if unknown:
+            # Dropping it would sync only the rest and still report success.
+            raise RuntimeError(
+                f"The Channel Types sync filter holds unrecognised values: {', '.join(unknown)}. "
+                "Choose from: " + ", ".join(CHANNEL_TYPE_LABEL_TO_API) + "."
+            )
         granted: set[str] | None = None
         try:
             resp = await (await self._fresh_datasource()).check_token_scopes()
