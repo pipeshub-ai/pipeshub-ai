@@ -3,6 +3,7 @@ never lets a cache problem fail the caller's real work."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -182,3 +183,80 @@ class TestRecordIndexed:
         inv, cache, _ = _make(app_doc={"orgId": ORG})
         cache.invalidate_kb = AsyncMock(side_effect=RuntimeError("redis down"))
         await inv.on_record_indexed(connector_name="KB", connector_id="kb-1", org_id=ORG)
+
+
+SETTLE = 0.02
+
+
+def _settling(**kwargs) -> tuple[AccessibleRecordsInvalidator, MagicMock, MagicMock]:
+    inv, cache, graph = _make(**kwargs)
+    inv.PERMISSION_CHANGE_SETTLE_SECONDS = SETTLE
+    return inv, cache, graph
+
+
+async def _settle() -> None:
+    await asyncio.sleep(SETTLE * 5)
+
+
+class TestConnectorPermissionsChanged:
+    async def test_drops_at_once_and_again_when_settled(self) -> None:
+        inv, cache, _ = _settling()
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
+
+        await _settle()
+        assert cache.invalidate_connector.await_count == 2
+
+    async def test_a_burst_costs_two_drops(self) -> None:
+        """A sync narrowing access record after record must not empty the cache per record."""
+        inv, cache, graph = _settling(app_doc={"orgId": ORG})
+
+        for _ in range(50):
+            await inv.on_connector_permissions_changed("conn-1")
+
+        assert cache.invalidate_connector.await_count == 1
+        graph.get_document.assert_awaited_once()
+        await _settle()
+        assert cache.invalidate_connector.await_count == 2
+
+    async def test_a_change_after_the_window_drops_at_once(self) -> None:
+        inv, cache, _ = _settling()
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        await _settle()
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+
+        assert cache.invalidate_connector.await_count == 3
+
+    async def test_each_connector_has_its_own_window(self) -> None:
+        inv, cache, _ = _settling()
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        await inv.on_connector_permissions_changed("conn-2", ORG)
+
+        assert [c.args for c in cache.invalidate_connector.await_args_list] == [
+            (ORG, "conn-1"), (ORG, "conn-2"),
+        ]
+        await _settle()
+
+    async def test_unresolved_org_drops_nothing(self) -> None:
+        inv, cache, _ = _settling(app_doc=None)
+        await inv.on_connector_permissions_changed("conn-1")
+        await _settle()
+        cache.invalidate_connector.assert_not_called()
+
+    async def test_blank_connector_id_is_a_noop(self) -> None:
+        inv, cache, graph = _settling()
+        await inv.on_connector_permissions_changed("")
+        graph.get_document.assert_not_called()
+        cache.invalidate_connector.assert_not_called()
+
+    async def test_cache_failure_is_swallowed_both_times(self) -> None:
+        inv, cache, _ = _settling()
+        cache.invalidate_connector = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)  # must not raise
+        await _settle()
+
+        assert cache.invalidate_connector.await_count == 2

@@ -14,6 +14,7 @@ import pytest
 
 from app.services.cache.accessible_records_cache import (
     AccessibleRecordsCache,
+    AccessibleRecordsInvalidator,
     _ttl_from_env,
 )
 from app.services.cache.interface import NoopAccessibleRecordsCache
@@ -560,6 +561,52 @@ class TestInvalidation:
         cache = _cache(redis, enabled=False)
         await cache.invalidate_kb(ORG, KB)
         assert not redis.calls
+
+
+class TestPermissionChangeDropsEveryAffectedUser:
+    """Through the invalidator, against the real key layout: every user of the
+    connector loses their entry, and nothing in another org or connector does."""
+
+    async def test_removal_clears_the_connectors_users_and_nothing_else(self) -> None:
+        redis = FakeRedis()
+        cache = _cache(redis)
+        for user in ("user-a", "user-b"):
+            await cache.get_or_compute_user_connector(ORG, CONNECTOR, user, _loader({"v": "r"}))
+        await cache.get_or_compute_user_connector(ORG, "conn-other", "user-a", _loader({"v": "r"}))
+        await cache.get_or_compute_user_connector("org-2", CONNECTOR, "user-z", _loader({"v": "r"}))
+        await cache.get_or_compute_kb(ORG, KB, _loader({"k": "r"}))
+        invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+        invalidator.PERMISSION_CHANGE_SETTLE_SECONDS = 0.01
+
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+
+        loads: list[int] = []
+        for user in ("user-a", "user-b"):
+            assert await cache.get_or_compute_user_connector(
+                ORG, CONNECTOR, user, _loader({}, loads)
+            ) == {}
+        assert len(loads) == 2
+        assert cache._user_connector_key(ORG, "conn-other") in redis.hashes
+        assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
+        assert cache._kb_key(ORG, KB) in redis.strings
+        await asyncio.sleep(0.05)
+        assert cache._user_connector_key("org-2", CONNECTOR) in redis.hashes
+
+    async def test_map_written_from_a_read_before_the_change_is_dropped_too(self) -> None:
+        """A search that read the graph before the change can write its map after
+        the first drop; the second drop is what stops it living a full TTL."""
+        redis = FakeRedis()
+        cache = _cache(redis)
+        invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+        invalidator.PERMISSION_CHANGE_SETTLE_SECONDS = 0.01
+
+        await invalidator.on_connector_permissions_changed(CONNECTOR, ORG)
+        await cache.get_or_compute_user_connector(ORG, CONNECTOR, USER, _loader({"old": "r"}))
+        assert cache._user_connector_key(ORG, CONNECTOR) in redis.hashes
+
+        await asyncio.sleep(0.05)
+
+        assert cache._user_connector_key(ORG, CONNECTOR) not in redis.hashes
 
 
 class TestCrossSlotSafety:
