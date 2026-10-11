@@ -185,6 +185,46 @@ class TestAccountAndTokens:
         assert dm in store.records
 
 
+CHANNELS_ONLY_SCOPES = {"channels:history", "channels:read", "groups:history", "groups:read", "users:read"}
+
+
+class TestTokenScopes:
+    async def test_a_token_without_dm_scopes_still_syncs_its_channels(self, workspace, store, checkpoints, caplog) -> None:
+        workspace.granted_scopes = set(CHANNELS_ONLY_SCOPES)
+        posted = ts_minutes_ago(10)
+        workspace.post(GENERAL, posted, BOB, "hello")
+        connector, _ = await personal_connector(store, checkpoints)
+
+        await connector.run_sync()
+
+        assert set(store.record_groups) == {GENERAL, SECRET, PARTNERS}
+        assert posted in store.records
+        assert [c.params["types"] for c in workspace.calls_to("conversations.list")] == [
+            "public_channel,private_channel",
+        ]
+        assert "im:read, mpim:read" in caplog.text
+
+    async def test_a_token_that_can_list_none_of_the_selected_types_fails_the_sync(self, workspace, store, checkpoints) -> None:
+        workspace.granted_scopes = set(CHANNELS_ONLY_SCOPES)
+        dms_only = {"sync": {"values": {"channel_types": {
+            "operator": "in", "value": ["Direct Messages", "Group Direct Messages"], "type": "multiselect",
+        }}}}
+        connector, _ = await personal_connector(store, checkpoints, personal_config(filters=dms_only))
+
+        with pytest.raises(RuntimeError, match="im:read, mpim:read"):
+            await connector.run_sync()
+        assert workspace.calls_to("conversations.list") == []
+
+    async def test_a_refused_channel_listing_fails_the_sync_and_names_the_scope(self, workspace, store, checkpoints) -> None:
+        workspace.granted_scopes = set(CHANNELS_ONLY_SCOPES)
+        workspace.scopes_header = False
+        connector, _ = await personal_connector(store, checkpoints)
+
+        with pytest.raises(RuntimeError, match=r"missing_scope.*Needed scope: im:read"):
+            await connector.run_sync()
+        assert store.record_groups == {}
+
+
 class TestSyncing:
     @pytest.mark.xfail(strict=True, reason=(
         "When a later page of history fails, the personal connector still moves the checkpoint "

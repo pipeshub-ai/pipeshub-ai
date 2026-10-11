@@ -16,7 +16,7 @@ _SLACK_ERROR_MESSAGES: dict[str, str] = {
     ),
     "invalid_auth": "Invalid Slack token. Please check your token configuration.",
     "missing_scope": (
-        "Missing required Slack scope. Please add the necessary scopes to your bot token."
+        "Missing required Slack scope. Please add the necessary scopes to your Slack app's token."
     ),
     "account_inactive": "Slack account is inactive. Please check your workspace status.",
     "token_revoked": "Slack token has been revoked. Please generate a new token.",
@@ -62,6 +62,26 @@ def _slack_error_details(error: Exception) -> tuple[Optional[str], Optional[int]
         status,
         str(retry_after) if retry_after is not None else None,
     )
+
+
+def _granted_scopes(response: Any) -> list[str] | None:  # noqa: ANN401 - slack_sdk response
+    """The token's scopes from Slack's ``X-OAuth-Scopes`` header, or None if absent.
+
+    ``slack_sdk`` hands headers over as a plain dict, so the name's case is whatever
+    the transport produced.
+    """
+    headers = getattr(response, "headers", None)
+    if not isinstance(headers, dict):
+        return None
+    value = next(
+        (v for k, v in headers.items() if isinstance(k, str) and k.lower() == "x-oauth-scopes"),
+        None,
+    )
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    if not isinstance(value, str):
+        return None
+    return [scope.strip() for scope in value.split(",") if scope.strip()]
 
 
 class SlackDataSource:
@@ -126,20 +146,30 @@ class SlackDataSource:
             (known for known in _SLACK_ERROR_MESSAGES if known in error_msg),
             raw_code or "unknown_error",
         )
+        message = _SLACK_ERROR_MESSAGES.get(code, error_msg)
+        # Slack names the scope a missing_scope call needed; without it an admin
+        # cannot tell which one to add.
+        data = getattr(getattr(error, "response", None), "data", None)
+        needed = data.get("needed") if isinstance(data, dict) else None
+        if code == "missing_scope" and isinstance(needed, str) and needed:
+            message = f"{message} Needed scope: {needed}."
         return SlackResponse(
             success=False,
             error=code,
-            message=_SLACK_ERROR_MESSAGES.get(code, error_msg),
+            message=message,
             status_code=status_code,
             retry_after=retry_after,
         )
 
     async def check_token_scopes(self) -> SlackResponse:
-        """Check what scopes the current token has access to"""
+        """auth.test, with the token's granted scopes under ``data["scopes"]`` when Slack sends them."""
         try:
-            # Use auth.test to get token info
             response = getattr(self.client, 'auth_test')()
-            return await self._handle_slack_response(response)
+            result = await self._handle_slack_response(response)
+            scopes = _granted_scopes(response)
+            if result.success and scopes is not None:
+                result.data = {**(result.data or {}), "scopes": scopes}
+            return result
         except Exception as e:
             return await self._handle_slack_error(e)
 
