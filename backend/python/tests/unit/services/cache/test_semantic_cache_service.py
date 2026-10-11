@@ -18,6 +18,7 @@ Covers all Section 6 requirements:
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -915,3 +916,33 @@ class TestFailOpenAndMetrics:
         assert "0.1234567" not in log_text
         assert "0.9876543" not in log_text
         assert "another_random_unseen_query_secret_xyz" not in log_text
+
+    @pytest.mark.asyncio
+    async def test_corrupt_citations_field_returns_none_and_triggers_eviction(self) -> None:
+        """When cached data key has citations that is not a list, lookup returns None and evicts entry."""
+        fake_redis = fakeredis.aioredis.FakeRedis(decode_responses=True)
+        config_service = _make_mock_config_service(mode="serve")
+        service = SemanticCacheService(config_service=config_service, redis_client=fake_redis)
+
+        stored = await service.store(
+            "org_1", "u1", "query for corrupt citations test", [1.0, 0.0],
+            {"answer": "valid answer", "citations": []}, "d1", "h1"
+        )
+        assert stored is True
+
+        # Now corrupt citations in data key to a non-list
+        data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org_1}:data:*")
+        assert len(data_keys) == 1
+        data_key = data_keys[0]
+        corrupt_payload = json.dumps({"schema_version": "v1", "answer": "valid answer", "citations": "not a list"})
+        await fake_redis.set(data_key, corrupt_payload)
+
+        # Lookup must return hit=False (fail open)
+        lookup_res = await service.lookup(
+            "org_1", "u1", "query for corrupt citations test", [1.0, 0.0], "d1", "h1"
+        )
+        assert lookup_res.hit is False
+
+        # Wait for orphan cleanup task
+        await asyncio.sleep(0.05)
+        assert await fake_redis.get(data_key) is None

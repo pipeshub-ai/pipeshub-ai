@@ -174,7 +174,12 @@ async def get_semantic_cache_config(
     raw_share = raw_dict.get("share_across_org")
     if raw_share is None:
         raw_share = raw_dict.get("shareAcrossOrg", False)
-    share_across_org = bool(raw_share)
+    if isinstance(raw_share, bool):
+        share_across_org = raw_share
+    elif isinstance(raw_share, str):
+        share_across_org = raw_share.strip().lower() in {"true", "1", "yes"}
+    else:
+        share_across_org = False
 
     try:
         raw_jaccard = raw_dict.get("jaccard_threshold")

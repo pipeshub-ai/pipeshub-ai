@@ -870,7 +870,7 @@ async def run_chat_stream(
                                 qemb: list[float] | None = prefetch_result.query_embedding,
                             ) -> None:
                                 try:
-                                    await ac.store(
+                                    stored = await ac.store(
                                         org_id=context.org_id,
                                         user_id=context.user_id,
                                         query=query_info.get("query", ""),
@@ -879,13 +879,23 @@ async def run_chat_stream(
                                         config_hash=chash,
                                         completion_data=cdata,
                                     )
-                                    record_event(
-                                        "semantic_cache_write",
-                                        {
-                                            "org_id": context.org_id,
-                                            "mode": cache_config.mode,
-                                        },
-                                    )
+                                    if stored:
+                                        record_event(
+                                            "semantic_cache_write",
+                                            {
+                                                "org_id": context.org_id,
+                                                "mode": cache_config.mode,
+                                            },
+                                        )
+                                    else:
+                                        record_event(
+                                            "semantic_cache_write_skipped",
+                                            {
+                                                "reason": "store_skipped",
+                                                "org_id": context.org_id,
+                                                "mode": cache_config.mode,
+                                            },
+                                        )
                                 except Exception as exc:
                                     log.warning("SemanticCache: background store failed: %s", type(exc).__name__)
                                     record_event(

@@ -2507,7 +2507,9 @@ class TestFailOpenRobustness:
             # Patch compute_config_hash to match our seeded hash
             with patch("app.agents.chat_modes.bridge.compute_config_hash", return_value="test_config_hash"):
                 # Now corrupt the data key in Redis
-                data_key = f"pipeshub:semcache:v1:{{org-1}}:data:{entry_id}"
+                data_keys = await fake_redis.keys("pipeshub:semcache:v1:{org-1}:data:*")
+                assert len(data_keys) == 1
+                data_key = data_keys[0]
                 await fake_redis.set(data_key, bad_data_value)
 
                 events = [

@@ -68,7 +68,7 @@ class PrefetchResult:
     # `shape_image_injection` PRE_MODEL hook delivers them to the model,
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
-        collected_images: list[dict[str, Any]] = field(default_factory=list)
+    collected_images: list[dict[str, Any]] = field(default_factory=list)
     # `final_results` in the search's relevance order; `final_results` itself
     # is sorted by virtual record id for display.
     ranked_results: list[dict[str, Any]] = field(default_factory=list)

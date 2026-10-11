@@ -35,7 +35,7 @@ from app.services.cache.config import (
     get_semantic_cache_config,
 )
 from app.services.cache.guard import compare as guard_compare
-from app.services.cache.guard import normalize_for_key
+from app.services.cache.guard import normalize_for_key, normalize_query
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -602,9 +602,11 @@ class SemanticCacheService:
                 continue
 
             # Guard comparison (entity, negation, direction, numerical, and overlap checks)
-            cached_query = str(entry.get("norm_query", ""))
+            cached_guard_query = entry.get("guard_query")
+            if not cached_guard_query or not isinstance(cached_guard_query, str):
+                continue
             passed, _guard_reasons = guard_compare(
-                query, cached_query, jaccard_threshold=config.jaccard_threshold
+                normalize_query(query), cached_guard_query, jaccard_threshold=config.jaccard_threshold
             )
             if not passed:
                 self.metrics.guard_rejected += 1
@@ -701,6 +703,7 @@ class SemanticCacheService:
                 _ = asyncio.create_task(
                     self._cleanup_orphan_entry(redis, bucket_key, lru_key, entry_id, data_key)
                 )
+                return None
             # Pop storage schema version envelope key so returned completion_data matches caller's payload
             _ = parsed.pop("schema_version", None)
             return cast("dict[str, object]", parsed)
@@ -797,7 +800,6 @@ class SemanticCacheService:
             return False
 
         norm_query = normalize_for_key(query)
-        entry_id = hashlib.sha256(norm_query.encode("utf-8")).hexdigest()[:16]
 
         epoch = await self.get_epoch(org_id)
         bucket_key, lru_key, data_prefix, _ = self._build_keys(
@@ -808,6 +810,7 @@ class SemanticCacheService:
             context_digest=context_digest,
             share_across_org=config.share_across_org,
         )
+        entry_id = hashlib.sha256(f"{bucket_key}:{norm_query}".encode("utf-8")).hexdigest()[:16]
         data_key = f"{data_prefix}{entry_id}"
 
         now_ts = self._clock()
@@ -820,6 +823,7 @@ class SemanticCacheService:
             "schema_version": STORAGE_SCHEMA_VERSION,
             "entry_id": entry_id,
             "norm_query": norm_query,
+            "guard_query": normalize_query(query),
             "query_hash": hashlib.sha256(query.encode("utf-8")).hexdigest(),
             "author_user_id": user_id,
             "embedding_b64": packed_emb,

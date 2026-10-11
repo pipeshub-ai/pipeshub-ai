@@ -30,6 +30,7 @@ from app.services.cache.config import (
     clear_config_cache,
     get_semantic_cache_config,
 )
+from app.services.cache.semantic_cache_service import SemanticCacheService
 
 
 @pytest.fixture(autouse=True)
@@ -207,6 +208,31 @@ class TestSemanticCacheConfigRead:
 
         assert cfg.mode == "off"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("val", "expected"),
+        [
+            (True, True),
+            (False, False),
+            ("true", True),
+            ("True", True),
+            ("1", True),
+            ("yes", True),
+            ("false", False),
+            ("0", False),
+            ("no", False),
+            (None, False),
+            (123, False),
+        ],
+    )
+    async def test_share_across_org_truthy_and_falsy_parsing(self, val: object, expected: bool) -> None:
+        config_service = _make_mock_config_service(
+            flag_enabled=True,
+            kv_value={"mode": "shadow", "share_across_org": val},
+        )
+        cfg = await get_semantic_cache_config(config_service, org_id=f"org_share_{val}")
+        assert cfg.share_across_org is expected
+
 
 class TestInProcessCaching:
     @pytest.mark.asyncio
@@ -287,16 +313,21 @@ class TestModeOffZeroRedisCalls:
         mock_redis.hset = AsyncMock()
         mock_redis.set = AsyncMock()
 
-        # Simulate plain-RAG chat cache gate
-        async def mock_rag_turn_cache_step(config: SemanticCacheConfig, redis_client: object) -> object:
-            if config.mode == "off":
-                # Immediately bypassed
-                return None
-            # Otherwise would do Redis operations
-            return await redis_client.hgetall("some_key")
-
-        result = await mock_rag_turn_cache_step(cfg, mock_redis)
-        assert result is None
+        # Exercise SemanticCacheService.lookup with injected mock Redis
+        service = SemanticCacheService(
+            config_service=config_service,
+            redis_client=mock_redis,
+        )
+        res = await service.lookup(
+            org_id="org_zero_redis",
+            user_id="user_1",
+            query="test query",
+            query_embedding=[0.1, 0.2],
+            context_digest="digest123",
+            config_hash="hash123",
+        )
+        assert res.hit is False
+        assert res.reasons == ["mode_off"]
 
         # Assert ZERO Redis calls made
         mock_redis.eval.assert_not_called()

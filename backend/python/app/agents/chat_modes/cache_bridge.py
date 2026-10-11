@@ -139,8 +139,6 @@ def resolve_config_hash_params(
         raw_tools = cast(object, getattr(root_spec, "tool_names", None))
         if isinstance(raw_tools, (list, tuple, set, frozenset)):
             bound_tools = [str(x) for x in cast("Iterable[object]", raw_tools)]
-        elif type(raw_tools).__name__ == "MagicMock":
-            bound_tools = []
     if bound_tools is None and isinstance(getattr(context, "tool_state", None), dict):
         tool_state_dict = cast("dict[str, object]", context.tool_state)
         raw_tools = tool_state_dict.get("bound_tool_names") or tool_state_dict.get("tool_names")
