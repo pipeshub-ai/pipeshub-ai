@@ -18,21 +18,24 @@ from app.agents.agent_loop.protocol.run_usage import RunUsagePayload, emit_run_u
 from tests.unit.agents.adapter.conftest import make_context
 
 
-def _usage(requests: int, inp: int, out: int, cache_read: int = 0) -> RunUsage:
+def _usage(requests: int, inp: int, out: int, cache_read: int = 0, cache_write: int = 0) -> RunUsage:
     usage = RunUsage()
     for _ in range(requests):
-        usage.add(TokenUsage(input_tokens=inp, output_tokens=out, cache_read_tokens=cache_read))
+        usage.add(TokenUsage(
+            input_tokens=inp, output_tokens=out, cache_read_tokens=cache_read, cache_write_tokens=cache_write,
+        ))
     return usage
 
 
 def test_payload_sums_loop_and_auxiliary_usage() -> None:
-    payload = RunUsagePayload.from_usage(_usage(3, 100, 10, 40), _usage(1, 500, 50), model="m")
+    payload = RunUsagePayload.from_usage(_usage(3, 100, 10, 40, 5), _usage(1, 500, 50), model="m")
     assert payload.llmCalls == 4
     assert payload.inputTokens == 800
     assert payload.outputTokens == 80
     assert payload.cacheReadTokens == 120
     assert payload.auxiliaryLlmCalls == 1
-    assert payload.calls == [[100, 10, 40]] * 3 + [[500, 50, 0]]
+    assert payload.cacheWriteTokens == 15
+    assert payload.calls == [[100, 10, 40, 5]] * 3 + [[500, 50, 0, 0]]
 
 
 def test_agui_frame_is_custom_run_usage() -> None:

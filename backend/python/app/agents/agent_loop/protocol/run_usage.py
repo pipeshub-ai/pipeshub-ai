@@ -17,11 +17,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 RUN_USAGE_EVENT_NAME = "run_usage"
-RUN_USAGE_SCHEMA_VERSION = 1
+RUN_USAGE_SCHEMA_VERSION = 2
 
 
 class RunUsagePayload(BaseModel):
-    """`inputTokens` includes cache reads; `outputTokens` includes reasoning."""
+    """`inputTokens` includes cache reads and writes; `outputTokens` includes reasoning."""
 
     # `validate_assignment` is what makes the loop-outcome fields below safe to
     # set after construction: without it Pydantic accepts any value on
@@ -38,7 +38,8 @@ class RunUsagePayload(BaseModel):
     cacheWriteTokens: int = 0
     # Subset of the totals above spent on auto-compact summaries.
     auxiliaryLlmCalls: int = 0
-    # One `[input, output, cacheRead]` triple per LLM call, in call order.
+    # One `[input, output, cacheRead, cacheWrite]` per LLM call, in call order
+    # (schema 1 sent the first three).
     calls: list[list[int]] = Field(default_factory=list)
     # Loop outcome signals that otherwise never reach the stream.
     turns: int | None = None
@@ -57,7 +58,7 @@ class RunUsagePayload(BaseModel):
             cacheWriteTokens=loop.cache_write_tokens + auxiliary.cache_write_tokens,
             auxiliaryLlmCalls=auxiliary.requests,
             calls=[
-                [u.input_tokens, u.output_tokens, u.cache_read_tokens]
+                [u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_write_tokens]
                 for u in (*loop.per_request, *auxiliary.per_request)
             ],
         )
