@@ -10,6 +10,7 @@ NEO4J_CREATE_TRANSACTIONS=false (the kill switch) the earlier statements land as
 from __future__ import annotations
 
 import json
+import re
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,13 +47,17 @@ class _Server:
         self.error = error or RuntimeError("connection reset by peer")
         self.sent = 0
         self.autocommitted: list[str] = []
+        self.reads: list[str] = []
         self.transactions: list[_Tx] = []
 
     def run(self, query: str, tx: _Tx | None) -> MagicMock:
         self.sent += 1
         if self.sent == self.fail_at:
             raise self.error
-        (tx.ran if tx is not None else self.autocommitted).append(query)
+        if not re.search(r"\b(MERGE|CREATE|DELETE|SET)\b", query):
+            self.reads.append(query)
+        else:
+            (tx.ran if tx is not None else self.autocommitted).append(query)
         result = MagicMock()
         result.data = AsyncMock(return_value=[])
         return result
@@ -93,6 +98,12 @@ class _Session:
         return self.server.run(query, None)
 
     async def close(self) -> None:
+        pass
+
+    async def __aenter__(self) -> _Session:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
         pass
 
 
@@ -368,7 +379,10 @@ class TestAgentMcpServers:
 
         assert body["status"] == "partial_success"
         assert [w["name"] for w in body["warnings"]] == ["github"]
+        assert body["warnings"][0]["error"].startswith("We couldn't add GitHub to the agent.")
         assert [m["name"] for m in body["agent"]["mcpServers"]] == ["linear"]
+        # The check for a leftover link, which a real rollback leaves nothing for.
+        assert len(server.reads) == 1
         agent_tx, github_tx, linear_tx = server.transactions
         assert agent_tx.committed and linear_tx.committed
         assert github_tx.rolled_back and not github_tx.committed

@@ -1055,26 +1055,77 @@ class TestCreateAgent:
         assert self._attached_mcp_servers(graph, agent["_key"]) == ["i2"]
         assert graph.explicit_requests == [True, True, True]
 
-    def test_a_failed_mcp_server_link_leaves_none_of_that_server_behind(self, client, graph) -> None:
-        real = graph.batch_create_edges
+    def _refuse_github_write(self, graph: InMemoryGraph, collection: str, how: str) -> None:
+        """Fail github's write to *collection* (raising, or answering False)."""
+        is_node_write = collection in ("agentMcpServers", "agentTools")
+        method = "batch_upsert_nodes" if is_node_write else "batch_create_edges"
+        real = getattr(graph, method)
 
-        async def refuse_github_tools(edges: list[dict], collection: str, transaction: str | None = None) -> bool:
-            if collection == "mcpServerHasTool" and graph.nodes["agentMcpServers"][
-                edges[0]["_from"].split("/", 1)[1]
-            ]["instanceId"] == "i1":
-                raise RuntimeError("write conflict on mcpServerHasTool/1")
-            return await real(edges, collection, transaction)
-        graph.batch_create_edges = refuse_github_tools
+        def is_github(items: list[dict]) -> bool:
+            if collection == "agentMcpServers":
+                return items[0]["instanceId"] == "i1"
+            if collection == "agentTools":
+                return items[0]["toolsetName"] == "github"
+            server_key = items[0]["_to" if collection == "agentHasMcpServer" else "_from"].split("/", 1)[1]
+            return graph.nodes["agentMcpServers"][server_key]["instanceId"] == "i1"
+
+        async def refuse(items: list[dict], target: str, transaction: str | None = None) -> bool:
+            if target == collection and is_github(items):
+                if how == "raises":
+                    raise RuntimeError(f"write conflict on {collection}/1")
+                return False
+            return await real(items, target, transaction)
+        setattr(graph, method, refuse)
+
+    _MCP_WRITES = ["agentMcpServers", "agentHasMcpServer", "agentTools", "mcpServerHasTool"]
+
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    @pytest.mark.parametrize("how", ["raises", "returns_false"])
+    @pytest.mark.parametrize("collection", _MCP_WRITES)
+    def test_a_failed_mcp_server_is_not_left_attached(self, client, graph, collection, how, honours_explicit) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = honours_explicit
+        self._refuse_github_write(graph, collection, how)
 
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
             "name": "Helper", "mcpServers": self._TWO_MCP_SERVERS,
         })
 
         assert response.status_code == 200
-        assert response.json()["status"] == "partial_success"
-        assert [w["name"] for w in response.json()["warnings"]] == ["github"]
-        assert sorted(m["instanceId"] for m in graph.nodes["agentMcpServers"].values()) == ["i2"]
-        assert self._attached_mcp_servers(graph, response.json()["agent"]["_key"]) == ["i2"]
+        body = response.json()
+        assert body["status"] == "partial_success"
+        (warning,) = body["warnings"]
+        assert warning["name"] == "github"
+        assert warning["error"].startswith("We couldn't add GitHub to the agent.")
+        key = body["agent"]["_key"]
+        fetched = client.get(f"/api/v1/agent/{key}", headers=as_user("alice")).json()["agent"]
+        assert [m["name"] for m in fetched["mcpServers"]] == [m["name"] for m in body["agent"]["mcpServers"]] == ["linear"]
+        assert self._attached_mcp_servers(graph, key) == ["i2"]
+        if collection != "agentHasMcpServer":
+            assert sorted(m["instanceId"] for m in graph.nodes["agentMcpServers"].values()) == ["i2"]
+
+    @pytest.mark.parametrize("failing", ["get_edges_from_node_with_target_name", "delete_all_edges_for_node"])
+    def test_a_partly_attached_mcp_server_that_cannot_be_removed_is_reported_as_such(
+        self, client, graph, failing,
+    ) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = False
+        self._refuse_github_write(graph, "mcpServerHasTool", "raises")
+        graph.fail(failing)
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helper", "mcpServers": self._TWO_MCP_SERVERS,
+        })
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "partial_success"
+        (warning,) = body["warnings"]
+        assert warning["name"] == "github"
+        assert "may be partly attached" in warning["error"]
+        assert "remove GitHub and add it again" in warning["error"]
+        _no_leak(response)
+        assert self._attached_mcp_servers(graph, body["agent"]["_key"]) == ["i1", "i2"]
 
     def test_mcp_servers_are_not_attempted_when_the_agent_itself_fails(self, client, graph) -> None:
         before = set(graph.nodes[AGENTS])

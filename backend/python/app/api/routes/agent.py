@@ -1234,9 +1234,9 @@ async def _create_mcp_server_edges(
     # here would otherwise let create/update report "success" with MCP server nodes that were
     # never actually linked to the agent.
     try:
-        await graph_provider.batch_create_edges(
+        ensure_written(await graph_provider.batch_create_edges(
             agent_mcp_server_edges, CollectionNames.AGENT_HAS_MCP_SERVER.value, transaction=transaction
-        )
+        ), "the agent's MCP server links")
     except Exception as e:
         logger.error(f"Failed to create agent-mcpServer edges: {e}")
         raise
@@ -1300,9 +1300,9 @@ async def _create_mcp_server_edges(
     # response with no MCP_SERVER_HAS_TOOL edge actually connecting them.
     if mcp_server_tool_edges:
         try:
-            await graph_provider.batch_create_edges(
+            ensure_written(await graph_provider.batch_create_edges(
                 mcp_server_tool_edges, CollectionNames.MCP_SERVER_HAS_TOOL.value, transaction=transaction
-            )
+            ), "the MCP servers' tool links")
         except Exception as e:
             logger.error(f"Failed to create mcpServer-tool edges: {e}")
             raise
@@ -1329,6 +1329,48 @@ async def _create_mcp_server_edges(
     return created_mcp_servers, failed_mcp_servers
 
 
+async def _unlink_failed_mcp_servers(
+    agent_full_id: str,
+    accounted: set[str],
+    graph_provider: IGraphDBProvider,
+    logger: Logger,
+) -> bool:
+    """After an MCP server failed to attach, remove whatever of it stayed linked to
+    the agent: a rollback undoes nothing on Neo4j with NEO4J_CREATE_TRANSACTIONS=false,
+    so the agent->server link may have landed before a later write failed. Links
+    not in *accounted* (servers attached, or already handled) are that leftover.
+    Returns whether the agent is known to be free of it."""
+    agent_link = CollectionNames.AGENT_HAS_MCP_SERVER.value
+    tool_link = CollectionNames.MCP_SERVER_HAS_TOOL.value
+    try:
+        edges = await graph_provider.get_edges_from_node_with_target_name(agent_full_id, agent_link, raise_on_error=True)
+    except Exception as read_error:
+        logger.error(f"Could not read the MCP servers of {agent_full_id} after one failed to attach: {read_error}")
+        return False
+    leftover = [e["_to"] for e in edges or [] if e.get("_to") and e["_to"] not in accounted]
+    accounted.update(leftover)
+    for server_id in leftover:
+        try:
+            await graph_provider.delete_all_edges_for_node(server_id, agent_link)
+        except Exception as cleanup_error:
+            logger.error(f"Failed to unlink MCP server {server_id} from {agent_full_id}: {cleanup_error}")
+            return False
+        # Unlinked, the server and its tools are never read again, so this is tidy-up only.
+        try:
+            tool_keys = [
+                e["_to"].split("/", 1)[1]
+                for e in await graph_provider.get_edges_from_node(server_id, tool_link) or []
+                if "/" in (e.get("_to") or "")
+            ]
+            await graph_provider.delete_all_edges_for_node(server_id, tool_link)
+            if tool_keys:
+                await graph_provider.delete_nodes(tool_keys, CollectionNames.AGENT_TOOLS.value)
+            await graph_provider.delete_nodes([server_id.split("/", 1)[1]], CollectionNames.AGENT_MCP_SERVERS.value)
+        except Exception as cleanup_error:
+            logger.error(f"Failed to remove unlinked MCP server {server_id}: {cleanup_error}")
+    return True
+
+
 async def _attach_mcp_servers_to_new_agent(
     agent_key: str,
     mcp_servers_with_tools: dict[str, dict[str, Any]],
@@ -1341,8 +1383,10 @@ async def _attach_mcp_servers_to_new_agent(
     transaction per server, so one that fails is reported and leaves the agent
     and the other servers in place (the create's "partial_success")."""
     store = GraphDataStore(logger, graph_provider)
+    agent_full_id = f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}"
     created: list[dict[str, Any]] = []
     failed: list[dict[str, Any]] = []
+    accounted: set[str] = set()
 
     async def attach(tx_store: "TransactionStore", one: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
         attached, _ = await _create_mcp_server_edges(
@@ -1353,16 +1397,24 @@ async def _attach_mcp_servers_to_new_agent(
 
     for instance_id, mcp_data in mcp_servers_with_tools.items():
         try:
-            created.extend(await store.execute_in_transaction(attach, {instance_id: mcp_data}, explicit=True))
+            attached = await store.execute_in_transaction(attach, {instance_id: mcp_data}, explicit=True)
         except Exception as e:
             logger.error(f"Agent {agent_key} was created without MCP server '{mcp_data['name']}': {e}", exc_info=True)
-            failed.append({
-                "name": mcp_data["name"],
-                "error": (
-                    f"We couldn't add {mcp_data['displayName']} to the agent. "
+            name = mcp_data["displayName"]
+            if await _unlink_failed_mcp_servers(agent_full_id, accounted, graph_provider, logger):
+                error = (
+                    f"We couldn't add {name} to the agent. "
                     "Edit the agent to add it again; if it keeps failing, contact your admin."
-                ),
-            })
+                )
+            else:
+                error = (
+                    f"We couldn't fully add {name} to the agent, so it may be partly attached. "
+                    f"Edit the agent to remove {name} and add it again; if it keeps failing, contact your admin."
+                )
+            failed.append({"name": mcp_data["name"], "error": error})
+            continue
+        created.extend(attached)
+        accounted.update(f"{CollectionNames.AGENT_MCP_SERVERS.value}/{server['key']}" for server in attached)
     return created, failed
 
 

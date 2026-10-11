@@ -374,6 +374,23 @@ class InMemoryGraph:
         self._enter("get_edges_from_node", node_id, edge_collection)
         return copy.deepcopy(self.edges_from(edge_collection, node_id))
 
+    async def get_edges_from_node_with_target_name(
+        self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> list[dict]:
+        # Like the real providers: a failed read is [] unless raise_on_error.
+        try:
+            self._enter("get_edges_from_node_with_target_name", node_id, edge_collection)
+        except Exception:
+            if raise_on_error:
+                raise
+            return []
+        out = []
+        for edge in self.edges_from(edge_collection, node_id):
+            collection, key = edge["_to"].split("/", 1)
+            target = self.nodes.get(collection, {}).get(key, {})
+            out.append({**copy.deepcopy(edge), "name": target.get("name", key)})
+        return out
+
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None = None) -> int:
         self._enter("delete_all_edges_for_node", node_key, collection)
         kept = [e for e in self.edges.get(collection, []) if node_key not in (e["_from"], e["_to"])]
