@@ -1,13 +1,17 @@
 """Untrusted pull-request code must never share a job with repository secrets.
 
-Stdlib only: main.yml runs `python3 -m unittest discover -s scripts` without
-installing anything.
+The secret checks parse each workflow with PyYAML (main.yml installs the
+version integration-tests/uv.lock pins), since every regex reading of YAML
+missed some spelling GitHub accepts. The rest is pattern-based.
 """
 
 import os
 import re
 import unittest
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 REPO = Path(os.environ.get("REPO_ROOT", Path(__file__).resolve().parent.parent))
 WORKFLOWS = sorted((REPO / ".github" / "workflows").glob("*.y*ml"))
@@ -41,8 +45,6 @@ _SECRET = re.compile(
 # runs on the release workflow (tag pushes only) and checks out the default branch.
 PRIVILEGED_TRIGGER_ALLOWLIST = {"post-release-probe.yml"}
 
-_PULL_REQUEST_TRIGGER = _trigger("pull_request")
-_SECRETS_INHERIT = re.compile(r"^\s+secrets:[ \t]*inherit[ \t]*(?:#.*)?$", re.M)
 _FORK_GUARDS = {
     "github.event.pull_request.head.repo.full_name == github.repository",
     "github.repository == github.event.pull_request.head.repo.full_name",
@@ -51,47 +53,10 @@ _FORK_GUARDS = {
 _EXCLUDES_PULL_REQUEST = re.compile(
     r"^github\.event_name (?:!= 'pull_request'|== '(?!pull_request')[^']*')$"
 )
-_JOBS_KEY = re.compile(r"^jobs:\s*$", re.M)
 
 
 def _text(path: Path) -> str:
-    return _lf(path.read_text(encoding="utf-8"))
-
-
-def _lf(text: str) -> str:
-    """GitHub accepts CRLF workflows; the line patterns here expect LF."""
-    return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _jobs(text: str) -> dict[str, tuple[str, int]]:
-    """Job id -> (block, the indent of the job's own keys). Works for any indent width."""
-    jobs_key = _JOBS_KEY.search(text)
-    if jobs_key is None:
-        return {}
-    body = text[jobs_key.end():]
-    next_top_level = re.search(r"^\S", body, re.M)
-    if next_top_level is not None:
-        body = body[: next_top_level.start()]
-    first_key = re.search(r"^( +)[^\s#]", body, re.M)
-    if first_key is None:
-        return {}
-    indent = len(first_key.group(1))
-    # Every key at job indent starts a job. One that is not a plain `id:` (quoted,
-    # escaped, `? id`) keeps its raw text as the name, so it is still checked.
-    header = re.compile(rf"^ {{{indent}}}(?:([A-Za-z0-9_-]+):(?:[ \t]+#[^\n]*)?[ \t]*|([^\s#][^\n]*))$", re.M)
-    headers = list(header.finditer(body))
-    jobs = {}
-    for i, h in enumerate(headers):
-        block = body[h.end(): headers[i + 1].start() if i + 1 < len(headers) else len(body)]
-        first_job_key = re.search(r"^( +)[^\s#]", block, re.M)
-        jobs[h.group(1) or h.group(2)] = (block, len(first_job_key.group(1)) if first_job_key else indent + 2)
-    return jobs
-
-
-def _job_condition(block: str, key_indent: int) -> str | None:
-    """The job-level `if:` plus any folded/continued lines indented deeper than it."""
-    match = re.search(rf"^ {{{key_indent}}}if:(.*(?:\n {{{key_indent + 1},}}.*)*)", block, re.M)
-    return match.group(1) if match else None
+    return path.read_text(encoding="utf-8")
 
 
 def _split_top_level(expr: str, op: str) -> list[str]:
@@ -153,22 +118,82 @@ def _admits_fork_pull_requests(expr: str) -> bool:
     return False
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """SafeLoader that refuses duplicate keys, where parsers may disagree on which wins."""
+
+
+def _mapping_without_duplicates(loader: yaml.SafeLoader, node: yaml.MappingNode) -> dict[Any, Any]:
+    loader.flatten_mapping(node)
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=True)
+        if key in seen:
+            raise yaml.constructor.ConstructorError(None, None, f"duplicate key {key!r}", key_node.start_mark)
+        seen.add(key)
+    return yaml.SafeLoader.construct_mapping(loader, node, deep=True)
+
+
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _mapping_without_duplicates)
+
+
+def _triggers(workflow: dict[Any, Any]) -> set[str]:
+    # YAML 1.1 reads a bare `on` key as True.
+    names: set[str] = set()
+    for on in (workflow.get("on"), workflow.get(True)):
+        if isinstance(on, str):
+            names.add(on)
+        elif isinstance(on, (list, dict)):
+            names.update(str(event) for event in on)
+    return names
+
+
+def _reads_secrets(value: Any) -> bool:
+    """Any key or string anywhere below `value` reads a secret other than GITHUB_TOKEN."""
+    if isinstance(value, str):
+        return bool(_SECRET.search(value))
+    if isinstance(value, dict):
+        return any(_reads_secrets(k) or _reads_secrets(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(_reads_secrets(v) for v in value)
+    return False
+
+
+def _secret_jobs(text: str) -> list[tuple[str, Any]]:
+    """(job id, job) for each job of a pull_request workflow that can reach secrets.
+
+    Fails closed: a workflow that doesn't parse, or whose jobs aren't a mapping,
+    comes back as one pseudo-job so the caller reports it.
+    """
+    try:
+        workflow = yaml.load(text, Loader=_StrictLoader)
+    except yaml.YAMLError as e:
+        return [(f"<does not parse: {type(e).__name__}>", None)]
+    if not isinstance(workflow, dict):
+        return [("<not a mapping>", None)]
+    if "pull_request" not in _triggers(workflow):
+        return []
+    jobs = workflow.get("jobs")
+    if not isinstance(jobs, dict):
+        return [("<jobs is not a mapping>", None)] if _reads_secrets(workflow) else []
+    # Workflow-level env (anywhere outside jobs) reaches every job.
+    shared = _reads_secrets({k: v for k, v in workflow.items() if k != "jobs"})
+    found = []
+    for job_id, job in jobs.items():
+        # `secrets:` on a reusable-workflow call is `inherit` or a map of references;
+        # any other value is something this check can't read, so it counts.
+        passes = isinstance(job, dict) and job.get("secrets") is not None and not isinstance(job.get("secrets"), dict)
+        if shared or passes or _reads_secrets(job):
+            found.append((str(job_id), job))
+    return found
+
+
 def _unguarded_secret_jobs(text: str) -> list[str]:
     """Jobs of a pull_request workflow that can read secrets without their own fork guard."""
-    text = _lf(text)
-    if not _PULL_REQUEST_TRIGGER.search(text):
-        return []
-    jobs_key = _JOBS_KEY.search(text)
-    # Secrets in workflow-level env reach every job.
-    workflow_level_secret = bool(jobs_key and _SECRET.search(text[: jobs_key.start()]))
     offenders = []
-    for name, (block, key_indent) in _jobs(text).items():
-        reads_secrets = workflow_level_secret or _SECRET.search(block) or _SECRETS_INHERIT.search(block)
-        if not reads_secrets:
-            continue
-        condition = _job_condition(block, key_indent)
-        if condition is None or _admits_fork_pull_requests(_normalize_condition(condition)):
-            offenders.append(name)
+    for job_id, job in _secret_jobs(text):
+        condition = job.get("if") if isinstance(job, dict) else None
+        if condition is None or _admits_fork_pull_requests(_normalize_condition(str(condition))):
+            offenders.append(job_id)
     return offenders
 
 
@@ -182,55 +207,17 @@ APPROVAL_GATED_ENVIRONMENTS = {
 }
 
 
-_YAML_BLANK = " \t"
-
-
-def _plain_value(raw: str, below: str, key_indent: int) -> str | None:
-    """A key's value if it is an unquoted one-line scalar; "" if a mapping follows; else None.
-
-    Fails closed: only space and tab are YAML whitespace, a quote or escape is
-    kept for the allowlist to miss, and a deeper line folds into a non-empty value.
-    """
-    if raw.lstrip(_YAML_BLANK).startswith("#"):
-        value = ""
-    else:
-        value = re.split(r"[ \t]#", raw, maxsplit=1)[0].strip(_YAML_BLANK)
-    for line in below.split("\n"):
-        if line.strip(_YAML_BLANK) == "":
-            continue
-        if len(line) - len(line.lstrip(" ")) > key_indent:
-            return None if value else ""
-        break
-    return value
-
-
-def _job_environment(block: str, key_indent: int) -> str | None:
-    """The job's environment name, from `environment: x` or its `name:` child."""
-    match = re.search(rf"^ {{{key_indent}}}environment:(.*)$", block, re.M)
-    if match is None:
-        return None
-    rest = block[match.end():]
-    value = _plain_value(match.group(1), rest, key_indent)
-    if value != "":
-        return value
-    child = re.search(rf"\A\n( {{{key_indent + 1},}})name:(.*)$", rest, re.M)
-    if child is None:
-        return None
-    return _plain_value(child.group(2), rest[child.end():], len(child.group(1))) or None
+def _job_environment(job: Any) -> Any:
+    environment = job.get("environment") if isinstance(job, dict) else None
+    return environment.get("name") if isinstance(environment, dict) else environment
 
 
 def _ungated_secret_jobs(text: str) -> list[str]:
     """Jobs of a pull_request workflow that read secrets without waiting for an approval."""
-    text = _lf(text)
-    if not _PULL_REQUEST_TRIGGER.search(text):
-        return []
-    jobs_key = _JOBS_KEY.search(text)
-    workflow_level_secret = bool(jobs_key and _SECRET.search(text[: jobs_key.start()]))
     return [
-        name
-        for name, (block, key_indent) in _jobs(text).items()
-        if (workflow_level_secret or _SECRET.search(block) or _SECRETS_INHERIT.search(block))
-        and _job_environment(block, key_indent) not in APPROVAL_GATED_ENVIRONMENTS
+        job_id
+        for job_id, job in _secret_jobs(text)
+        if not isinstance(_job_environment(job), str) or _job_environment(job) not in APPROVAL_GATED_ENVIRONMENTS
     ]
 
 
@@ -381,11 +368,64 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "    steps:\n"
             "      - run: echo ${{ secrets.API_KEY }}\n"
         )
-        # `? lint` puts its value on the `:` line, so that line carries the secret read.
-        expected = ['"build":', ":", "leak"]
+        expected = ["build", "lint", "leak"]
         self.assertEqual(_ungated_secret_jobs(workflow), expected)
         self.assertEqual(_ungated_secret_jobs(workflow.replace("\n", "\r\n")), expected)
 
+
+    def test_every_yaml_spelling_of_a_secret_job_is_flagged(self) -> None:
+        job = "  build:\n    steps:\n      - run: echo ${{ secrets.API_KEY }}\n"
+        cases = {
+            "commented jobs key": "on:\n  pull_request:\njobs: # keep\n" + job,
+            "quoted jobs key": 'on:\n  pull_request:\n"jobs":\n' + job,
+            "explicit jobs key": "on:\n  pull_request:\n? jobs\n:\n" + job,
+            "space before colon": "on:\n  pull_request:\njobs :\n" + job,
+            "quoted trigger": 'on: "pull_request"\njobs:\n' + job,
+            "quoted trigger key": 'on:\n  "pull_request":\njobs:\n' + job,
+            "flow trigger": "on: {pull_request: {branches: [main]}}\njobs:\n" + job,
+            "flow jobs": 'on: pull_request\njobs: {build: {steps: [{run: "echo ${{ secrets.API_KEY }}"}]}}\n',
+            "flow job": 'on: pull_request\njobs:\n  build: {steps: [{run: "echo ${{ secrets.API_KEY }}"}]}\n',
+            "root env after jobs": "on: pull_request\njobs:\n  build:\n    steps:\n      - run: echo hi\n"
+            "env:\n  TOKEN: ${{ secrets.API_KEY }}\n",
+        }
+        for label, workflow in cases.items():
+            with self.subTest(label):
+                self.assertEqual(_ungated_secret_jobs(workflow), ["build"])
+                self.assertEqual(_ungated_secret_jobs(workflow.replace("\n", "\r\n")), ["build"])
+
+    def test_every_spelling_of_secrets_inherit_counts(self) -> None:
+        for secrets in (
+            "secrets: inherit",
+            'secrets: "inherit"',
+            "secrets: 'inherit'",
+            "secrets : inherit",
+            '"secrets": inherit',
+            "secrets: >-\n      inherit",
+            "secrets:\n      inherit",
+        ):
+            with self.subTest(secrets=secrets):
+                workflow = f"on: pull_request\njobs:\n  leak:\n    uses: ./.github/workflows/x.yml\n    {secrets}\n"
+                self.assertEqual(_ungated_secret_jobs(workflow), ["leak"])
+                self.assertEqual(_unguarded_secret_jobs(workflow), ["leak"])
+
+    def test_a_workflow_that_cannot_be_read_is_reported(self) -> None:
+        duplicate = "on: pull_request\njobs:\n  build:\n    steps: []\n  build:\n    steps: []\n"
+        self.assertEqual(len(_ungated_secret_jobs(duplicate)), 1)
+        self.assertEqual(len(_ungated_secret_jobs("on: [pull_request\n")), 1)
+
+    def test_the_gated_forms_the_workflows_use_stay_gated(self) -> None:
+        for environment in (
+            "environment: integration-test-dev",
+            "environment:\n      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}",
+        ):
+            with self.subTest(environment=environment):
+                workflow = (
+                    "on: pull_request\njobs:\n  build:\n"
+                    f"    {environment}\n"
+                    "    steps:\n      - run: echo ${{ secrets.API_KEY }}\n"
+                )
+                self.assertEqual(_ungated_secret_jobs(workflow), [])
+                self.assertEqual(_ungated_secret_jobs(workflow.replace("\n", "\r\n")), [])
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
