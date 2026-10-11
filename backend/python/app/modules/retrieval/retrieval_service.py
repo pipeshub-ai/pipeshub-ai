@@ -448,9 +448,11 @@ class RetrievalService:
         virtual_record_ids_from_tool: list[str] | None = None,
         knowledge_search: bool = False,
         time_range: dict[str, int] | None = None,
+        *,
+        out_query_embedding: list[list[float]] | None = None,
     ) -> dict[str, Any]:
         """Perform semantic search on records the given user may access (graph permission checks)."""
-
+        plan = _QueryPlan()
         try:
             # Get accessible records
             if not self.graph_provider:
@@ -556,6 +558,7 @@ class RetrievalService:
                     queries, filter, limit, org_id, user_id, containers,
                     allow_requery=not virtual_record_ids_from_tool,
                     scope_connector_ids=containers.scope_connector_ids,
+                    plan=plan,
                 )
                 if verification_degraded:
                     # The graph could not answer. Telling this user to upload
@@ -566,7 +569,7 @@ class RetrievalService:
                     )
             else:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, limit, org_id, user_id
+                    queries, filter, limit, org_id, user_id, plan=plan
                 )
 
             if not search_results:
@@ -939,6 +942,9 @@ class RetrievalService:
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+        finally:
+            if out_query_embedding is not None and plan.dense:
+                out_query_embedding.extend(plan.dense)
 
     async def _container_filter_enabled(self) -> bool:
         """Whether searches scope by container instead of by record id.
@@ -1181,6 +1187,7 @@ class RetrievalService:
         *,
         allow_requery: bool,
         scope_connector_ids: frozenset[str] | None,
+        plan: "_QueryPlan | None" = None,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
 
@@ -1192,7 +1199,8 @@ class RetrievalService:
         back — after which the intersection downstream behaves exactly as it did
         against a precomputed map, so nothing past this point changes.
         """
-        plan = _QueryPlan()
+        if plan is None:
+            plan = _QueryPlan()
         fetch_limit = self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below

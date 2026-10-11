@@ -20,7 +20,7 @@ identical to the model, and citation ref numbering stays on one
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -35,6 +35,7 @@ from app.utils.chat_helpers import (
 if TYPE_CHECKING:
     import logging
 
+    from app.modules.retrieval.retrieval_service import RetrievalService
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -67,7 +68,9 @@ class PrefetchResult:
     # `shape_image_injection` PRE_MODEL hook delivers them to the model,
     # since prefetch produces plain text (folded into `goal.constraints`),
     # not a tool result that could carry a multipart `ToolMessage`.
-    collected_images: list[dict[str, Any]] = field(default_factory=list)
+    collected_images: list[dict[str, object]] = field(default_factory=list[dict[str, object]])
+    query_embedding: list[float] | None = field(default=None)
+    record_fingerprints: list[tuple[str, object, object, object, object]] | None = field(default=None)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -82,7 +85,7 @@ async def prefetch_retrieval(
     query: str,
     org_id: str,
     user_id: str,
-    retrieval_service: Any,
+    retrieval_service: RetrievalService,
     graph_provider: "IGraphDBProvider",
     blob_store: "BlobStorage",
     filters: dict[str, Any] | None,
@@ -116,6 +119,7 @@ async def prefetch_retrieval(
         return None
 
     ref_mapper = ref_mapper if ref_mapper is not None else CitationRefMapper()
+    query_embedding_holder: list[list[float]] = []
     try:
         result = await retrieval_service.search_with_filters(
             queries=[query],
@@ -123,8 +127,9 @@ async def prefetch_retrieval(
             user_id=user_id,
             limit=limit,
             filter_groups=filters,
+            out_query_embedding=query_embedding_holder,
         )
-    except Exception as exc:  # noqa: BLE001 - surfaced as a graceful empty prefetch
+    except Exception as exc:  # surfaced as a graceful empty prefetch
         logger.error("prefetch_retrieval: search_with_filters failed: %s", exc, exc_info=True)
         return PrefetchResult(
             formatted_context="",
@@ -136,6 +141,8 @@ async def prefetch_retrieval(
             error_message=str(exc),
         )
 
+    query_embedding = query_embedding_holder[0] if query_embedding_holder else None
+
     status_code = result.get("status_code", 500)
     if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
         return PrefetchResult(
@@ -146,6 +153,8 @@ async def prefetch_retrieval(
             citation_ref_mapper=ref_mapper,
             is_empty=True,
             error_message=result.get("message", "Search failed"),
+            query_embedding=query_embedding,
+            record_fingerprints=None,
         )
 
     search_results = result.get("searchResults", [])
@@ -181,6 +190,8 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
+            query_embedding=query_embedding,
+            record_fingerprints=None,
         )
 
     collected_images: list[dict[str, Any]] = []
@@ -195,6 +206,39 @@ async def prefetch_retrieval(
         part["text"] for part in flat_parts if part.get("type") == "text" and part.get("text")
     )
 
+    record_fingerprints: list[tuple[str, object, object, object, object]] | None = None
+    if virtual_record_id_to_result:
+        fingerprints_list: list[tuple[str, object, object, object, object]] = []
+        is_cacheable = True
+        for vrid, tool_rec in virtual_record_id_to_result.items():
+            if tool_rec is None:
+                is_cacheable = False
+                break
+            raw_rec = virtual_to_record_map.get(vrid)
+            if not raw_rec or not isinstance(raw_rec, dict):
+                # An item feeding prompt (e.g. FK child) has no matching raw graph record.
+                # Safest behavior: turn becomes non-cacheable.
+                logger.debug(
+                    "prefetch_retrieval: tool record %s has no matching raw record in virtual_to_record_map; turning non-cacheable",
+                    vrid,
+                )
+                is_cacheable = False
+                break
+            raw_rec_dict: dict[str, object] = cast("dict[str, object]", raw_rec)
+            rec_id_val = raw_rec_dict.get("id") or raw_rec_dict.get("_key") or vrid
+            rec_id = str(rec_id_val)
+            updated_at = raw_rec_dict.get("updatedAtTimestamp")
+            source_modified = raw_rec_dict.get("sourceLastModifiedTimestamp")
+            version = raw_rec_dict.get("version")
+            md5_checksum = raw_rec_dict.get("md5Checksum")
+            fingerprints_list.append((rec_id, updated_at, source_modified, version, md5_checksum))
+
+        if is_cacheable and fingerprints_list:
+            fingerprints_list.sort(key=lambda x: x[0])
+            record_fingerprints = fingerprints_list
+        else:
+            record_fingerprints = None
+
     return PrefetchResult(
         formatted_context=formatted_context,
         final_results=final_results,
@@ -203,4 +247,6 @@ async def prefetch_retrieval(
         citation_ref_mapper=ref_mapper,
         is_empty=not formatted_context.strip(),
         collected_images=collected_images,
+        query_embedding=query_embedding,
+        record_fingerprints=record_fingerprints,
     )
