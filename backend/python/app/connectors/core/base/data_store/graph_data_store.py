@@ -399,8 +399,8 @@ class GraphTransactionStore(TransactionStore):
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
-    ) -> None:
-        await self.graph_provider.link_record_to_group(
+    ) -> int:
+        return await self.graph_provider.link_record_to_group(
             record_id, record_group_id, inherit=inherit, leaving_group_id=leaving_group_id, transaction=self.txn
         )
 

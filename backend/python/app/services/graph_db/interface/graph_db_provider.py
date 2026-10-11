@@ -995,7 +995,7 @@ class IGraphDBProvider(ABC):
         inherit: bool | None,
         leaving_group_id: str | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         """Take the record out of *leaving_group_id*, then put it in *record_group_id*.
 
         Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group.
@@ -1003,33 +1003,43 @@ class IGraphDBProvider(ABC):
         false removes that edge and None leaves it alone. Either group may be None.
         Neo4j overrides it with one statement: a record that left its group but
         kept the inherit edge stayed readable to the old group's members.
+
+        Returns the number of INHERIT_PERMISSIONS edges removed, counted by the
+        deletes themselves, so a caller learns the record lost inherited access
+        without reading the edge first.
         """
+        removed = 0
         if leaving_group_id:
             await self._delete_record_group_edge(
                 record_id, leaving_group_id, CollectionNames.BELONGS_TO.value, transaction
             )
-            await self._set_record_group_inheritance(record_id, leaving_group_id, transaction, inherit=False)
+            removed += await self._set_record_group_inheritance(
+                record_id, leaving_group_id, transaction, inherit=False
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id, transaction)
             if inherit is not None:
-                await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+                removed += await self._set_record_group_inheritance(
+                    record_id, record_group_id, transaction, inherit=inherit
+                )
+        return removed
 
     async def _set_record_group_inheritance(
         self, record_id: str, record_group_id: str, transaction: str | None, *, inherit: bool
-    ) -> None:
+    ) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
-        else:
-            await self._delete_record_group_edge(
-                record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
-            )
+            return 0
+        return await self._delete_record_group_edge(
+            record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
+        )
 
     async def _delete_record_group_edge(
         self, record_id: str, record_group_id: str, collection: str, transaction: str | None
-    ) -> None:
+    ) -> int:
         # Not delete_edge: ArangoDB's answers False when the delete fails, so the
         # transaction went on to commit the rest beside an edge that should have gone.
-        await self.batch_delete_edges(
+        return await self.batch_delete_edges(
             [{
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,

@@ -5844,8 +5844,33 @@ class TestRecordLinksAreOneStatement:
         assert "DELETE old" not in query
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("leaving", "inherit", "returned"),
+        [
+            ("old", False, "RETURN left_inherits + unlinked AS removed"),
+            ("old", True, "RETURN left_inherits AS removed"),
+            (None, False, "RETURN unlinked AS removed"),
+            (None, None, "RETURN 0 AS removed"),
+        ],
+    )
+    async def test_the_statement_counts_the_inherit_edges_it_removed(
+        self, neo4j_provider: Neo4jProvider, leaving: str | None, inherit: bool | None, returned: str
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"removed": 1}]
+
+        removed = await neo4j_provider.link_record_to_group("r1", "g1", inherit=inherit, leaving_group_id=leaving)
+
+        assert removed == 1
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.args[0].rstrip().endswith(returned)
+        if leaving:
+            assert "count(old_inherit) AS left_inherits" in call.args[0]
+            assert call.kwargs["parameters"]["inherit_type"] == "INHERIT_PERMISSIONS"
+
+    @pytest.mark.asyncio
     async def test_nothing_to_leave_or_join_runs_nothing(self, neo4j_provider: Neo4jProvider) -> None:
-        await neo4j_provider.link_record_to_group("r1", None, inherit=True)
+        assert await neo4j_provider.link_record_to_group("r1", None, inherit=True) == 0
 
         neo4j_provider.client.execute_query.assert_not_awaited()
 

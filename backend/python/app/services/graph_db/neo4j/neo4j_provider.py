@@ -1704,7 +1704,10 @@ class Neo4jProvider(IGraphDBProvider):
 
     @staticmethod
     def _record_group_link_cypher(collection: str, *, create: bool) -> str:
-        """A subquery writing or removing one edge from $record_id to the record group $group_id."""
+        """A subquery writing or removing one edge from $record_id to the record group $group_id.
+
+        The removing one yields ``unlinked``, the number of edges it deleted.
+        """
         relationship_type = edge_collection_to_relationship(collection)
         record_label = collection_to_label(CollectionNames.RECORDS.value)
         group_label = collection_to_label(CollectionNames.RECORD_GROUPS.value)
@@ -1720,6 +1723,7 @@ class Neo4jProvider(IGraphDBProvider):
             CALL {{
                 MATCH (:{record_label} {{id: $record_id}})-[link:{relationship_type}]->(:{group_label} {{id: $group_id}})
                 DELETE link
+                RETURN count(*) AS unlinked
             }}"""
 
     async def replace_record_permissions(
@@ -1768,7 +1772,7 @@ class Neo4jProvider(IGraphDBProvider):
         inherit: bool | None,
         leaving_group_id: str | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         # One statement: written apart, a record could leave its old group and keep
         # the inherit edge to it, which the old group's members still read through.
         now = get_epoch_timestamp_in_ms()
@@ -1778,27 +1782,36 @@ class Neo4jProvider(IGraphDBProvider):
             "link_props": {"createdAtTimestamp": now, "updatedAtTimestamp": now},
         }
         parts = []
+        removed = []
         if leaving_group_id:
             parameters["leaving_group_id"] = leaving_group_id
             belongs_to = edge_collection_to_relationship(CollectionNames.BELONGS_TO.value)
             inherits = edge_collection_to_relationship(CollectionNames.INHERIT_PERMISSIONS.value)
+            parameters["inherit_type"] = inherits
             parts.append(f"""
             OPTIONAL MATCH (:{collection_to_label(CollectionNames.RECORDS.value)} {{id: $record_id}})
                 -[old:{belongs_to}|{inherits}]->
                 (:{collection_to_label(CollectionNames.RECORD_GROUPS.value)} {{id: $leaving_group_id}})
+            WITH old, CASE WHEN type(old) = $inherit_type THEN 1 END AS old_inherit
             DELETE old
-            WITH count(*) AS _""")
+            WITH count(old_inherit) AS left_inherits""")
+            removed.append("left_inherits")
         if record_group_id:
             parts.append(self._record_group_link_cypher(CollectionNames.BELONGS_TO.value, create=True))
             if inherit is not None:
                 parts.append(
                     self._record_group_link_cypher(CollectionNames.INHERIT_PERMISSIONS.value, create=inherit)
                 )
+                if not inherit:
+                    removed.append("unlinked")
         if not parts:
-            return
-        await self.client.execute_query(
-            f"{''.join(parts)}\n            RETURN count(*) AS done", parameters=parameters, txn_id=transaction
+            return 0
+        rows = await self.client.execute_query(
+            f"{''.join(parts)}\n            RETURN {' + '.join(removed) or '0'} AS removed",
+            parameters=parameters,
+            txn_id=transaction,
         )
+        return rows[0]["removed"] if rows else 0
 
     async def batch_create_edges(
         self,
