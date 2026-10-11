@@ -313,7 +313,8 @@ async def select_loop_and_goal(
             opik_project_name=opik_project_name,
         )
         goal = _build_goal(query, decision, attachments=attachments)
-        clarifying_questions = list(decision.clarifying_questions)
+        # A turn that answers an approval card always runs: the approved call runs in it.
+        clarifying_questions = [] if context.tool_approval is not None else list(decision.clarifying_questions)
 
         # Propagate the whole-document bit from the intent result.
         # When the model emitted the WHOLE_DOCUMENT marker, use it directly;

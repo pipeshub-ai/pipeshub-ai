@@ -87,6 +87,18 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       expect(payload.tools, 'an explicit empty list disables tools').to.deep.equal([])
     })
 
+    it('forwards the answer to a tool approval card on both agent paths', () => {
+      const toolApproval = { approvalId: 'ap-1', decision: 'allow_once' }
+      const agent = buildAiChatRequest({ kind: 'agent', agentKey: 'a1' }, { query: 'q', toolApproval }, context())
+      const assistantAgent = buildAiChatRequest({ kind: 'assistant' }, { query: 'q', chatMode: 'agent', toolApproval }, context())
+      const search = buildAiChatRequest({ kind: 'assistant' }, { query: 'q', toolApproval }, context())
+
+      expect(agent.payload.toolApproval).to.deep.equal(toolApproval)
+      expect(assistantAgent.payload.toolApproval).to.deep.equal(toolApproval)
+      // No MCP tools run on the search path.
+      expect(search.payload).not.to.have.property('toolApproval')
+    })
+
     it('omits quickMode on an agent follow-up and tools when none were sent', () => {
       const { payload } = buildAiChatRequest({ kind: 'agent', agentKey: 'a1' }, { query: 'q' }, context())
       expect(payload).not.to.have.property('quickMode')

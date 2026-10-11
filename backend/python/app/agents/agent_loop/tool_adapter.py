@@ -100,7 +100,59 @@ def _normalized_schema_keywords(node: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = frozenset()) -> Any:  # noqa: ANN401
+# Nodes one schema may cost while its `$ref`s are inlined. Definitions that share sub-definitions
+# expand exponentially (a 2 KB schema became 17 MB), so past this a reference is left as a
+# placeholder: one server's schema can't stall the event loop or flood the model's context.
+MAX_INLINED_SCHEMA_NODES = 5_000
+
+
+class _NodeBudget:
+    __slots__ = ("remaining",)
+
+    def __init__(self, limit: int) -> None:
+        self.remaining = limit
+
+    def spend(self) -> bool:
+        """Take one node; False once the budget is gone."""
+        self.remaining -= 1
+        return self.remaining >= 0
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining < 0
+
+
+def _ref_target(ref: str, defs: dict[str, Any], root: Any) -> Any:  # noqa: ANN401
+    """What a local `$ref` points at, or None. `#/$defs/X` and `#/definitions/X` use `defs`;
+    any other `#/...` pointer is walked through the document; a remote reference isn't
+    fetched. A pointer that doesn't resolve falls back to its last segment in `defs`, which
+    is how references were looked up before."""
+    if not ref.startswith("#"):
+        return None
+    segments = [part.replace("~1", "/").replace("~0", "~") for part in ref[2:].split("/")] if ref[2:] else []
+    if len(segments) == 2 and segments[0] in ("$defs", "definitions") and segments[1] in defs:
+        return defs[segments[1]]
+    node = root
+    for part in segments:
+        if isinstance(node, dict) and part in node:
+            node = node[part]
+        elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            node = node[int(part)]
+        else:
+            node = None
+            break
+    if node is not None:
+        return node
+    return defs.get(segments[-1]) if segments else None
+
+
+def _resolve_json_refs(
+    node: Any,  # noqa: ANN401
+    defs: dict[str, Any],
+    seen: frozenset[str] = frozenset(),
+    budget: _NodeBudget | None = None,
+    root: Any = None,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
     """Inlines every `$ref`/`$defs` indirection in `node` into a single
     self-contained schema fragment, and normalizes union spellings on the way
     through (see `_normalized_schema_keywords`).
@@ -114,17 +166,33 @@ def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = f
     recursive branch. Once a ref name is on the current resolution path, a
     revisit returns a bounded placeholder instead of recursing again; every
     OTHER branch of the schema still resolves normally.
+
+    `budget` caps the nodes one schema may cost (`MAX_INLINED_SCHEMA_NODES`); once it is spent,
+    a reference is left as a placeholder like a recursive one, so the walk stays linear in the
+    input however the definitions are shared.
     """
+    if budget is None:
+        budget = _NodeBudget(MAX_INLINED_SCHEMA_NODES)
     if isinstance(node, dict):
+        within_budget = budget.spend()
         ref = node.get("$ref")
-        if ref:
-            ref_name = ref.rsplit("/", 1)[-1]
-            if ref_name in seen:
+        if isinstance(ref, str) and ref:
+            ref_name = ref.rsplit("/", 1)[-1] or ref
+            if ref in seen:
                 return {
                     "type": "object",
                     "description": f"(recursive reference to '{ref_name}', not expanded further)",
                 }
-            resolved = _resolve_json_refs(defs.get(ref_name, {}), defs, seen | {ref_name})
+            if not within_budget:
+                return {
+                    "type": "object",
+                    "description": f"(reference to '{ref_name}' not expanded: the schema is too large)",
+                }
+            target = _ref_target(ref, defs, root)
+            if not isinstance(target, dict):
+                # `{}` here would be a typeless schema, which Gemini rejects for the whole request.
+                target = {"type": "object", "description": f"(reference to '{ref_name}' could not be resolved)"}
+            resolved = _resolve_json_refs(target, defs, seen | {ref}, budget, root)
             # Siblings are resolved too, not copied verbatim: a `$ref` nested
             # inside one (`{"$ref": ..., "items": {"$ref": ...}}`, legal since
             # draft 2019-09) would otherwise survive to the transports, where
@@ -133,18 +201,19 @@ def _resolve_json_refs(node: Any, defs: dict[str, Any], seen: frozenset[str] = f
             # {ref_name}`) because a sibling is at the referencing node's
             # level, not inside the definition being expanded.
             siblings = {
-                key: value if key in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(value, defs, seen)
+                key: value if key in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(value, defs, seen, budget, root)
                 for key, value in node.items()
                 if key != "$ref"
             }
             return _normalized_schema_keywords({**resolved, **siblings})
         return _normalized_schema_keywords({
-            k: v if k in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(v, defs, seen)
+            k: v if k in _NON_SCHEMA_VALUE_KEYS else _resolve_json_refs(v, defs, seen, budget, root)
             for k, v in node.items()
             if k != "$defs"
         })
     if isinstance(node, list):
-        return [_resolve_json_refs(item, defs, seen) for item in node]
+        budget.spend()
+        return [_resolve_json_refs(item, defs, seen, budget, root) for item in node]
     return node
 
 
@@ -174,7 +243,70 @@ def _json_schema_dict_from_source(schema: Any) -> dict[str, Any] | None:  # noqa
     # Walked even with no `$defs` to resolve: `_resolve_json_refs` also
     # normalizes the union spellings Gemini can't consume, which a schema
     # carrying no indirection at all still needs.
-    return _resolve_json_refs(raw, defs)
+    budget = _NodeBudget(MAX_INLINED_SCHEMA_NODES)
+    resolved = _resolve_json_refs(raw, defs, budget=budget, root=raw)
+    if budget.exhausted:
+        logger.warning(
+            "Tool schema %r exceeded %d nodes while inlining references; the rest were left as placeholders",
+            raw.get("title") or "<untitled>", MAX_INLINED_SCHEMA_NODES,
+        )
+    return resolved
+
+
+_COMBINATORS = ("anyOf", "oneOf", "allOf")
+# Missing `items` is rejected by OpenAI and Gemini; a string is what every provider accepts.
+_DEFAULT_ARRAY_ITEMS = {"type": "string"}
+
+
+def _is_object_schema(node: Any) -> bool:  # noqa: ANN401
+    return isinstance(node, dict) and (node.get("type") == "object" or "properties" in node)
+
+
+def _merge_object_arms(base: dict[str, Any], arms: list[dict[str, Any]], *, all_apply: bool) -> dict[str, Any]:
+    """One object from a root `anyOf`/`oneOf` (any one arm applies) or `allOf` (all apply):
+    every arm's properties, and as required what every arm requires, or what any does."""
+    properties = dict(base.get("properties") or {})
+    for arm in arms:
+        for name, prop in (arm.get("properties") or {}).items():
+            properties.setdefault(name, prop)
+    required_sets = [set(arm.get("required") or []) for arm in arms]
+    arm_required = set.union(*required_sets) if all_apply else set.intersection(*required_sets)
+    required = [name for name in properties if name in set(base.get("required") or []) | arm_required]
+    merged = {k: v for k, v in base.items() if k not in (*_COMBINATORS, "properties", "required", "type")}
+    merged.update(type="object", properties=properties)
+    if required:
+        merged["required"] = required
+    return merged
+
+
+def _object_root(schema: dict[str, Any]) -> dict[str, Any]:
+    """A tool's parameters as one object without a combinator at the top: Anthropic rejects
+    `anyOf`/`oneOf`/`allOf` there and OpenAI wants `type: object`, and one tool they reject
+    fails every tool in the request."""
+    combinator = next((key for key in _COMBINATORS if isinstance(schema.get(key), list) and schema[key]), None)
+    if combinator:
+        # A `null` arm only makes the whole argument object optional, which it already is.
+        arms = [arm for arm in schema[combinator] if isinstance(arm, dict) and arm.get("type") != "null"]
+        object_arms = [arm for arm in arms if _is_object_schema(arm)]
+        if object_arms and (len(object_arms) == len(arms) or _is_object_schema(schema)):
+            return _merge_object_arms(schema, object_arms, all_apply=combinator == "allOf")
+    if _is_object_schema(schema):
+        return {**{k: v for k, v in schema.items() if k not in _COMBINATORS}, "type": "object"}
+    if schema.get("type") is None and not combinator and not any(k in schema for k in ("items", "enum", "const")):
+        return {**schema, "type": "object", "properties": {}}
+    logger.warning("Tool schema %r is not an object; the tool is offered without parameters", schema.get("title"))
+    return {"type": "object", "properties": {}, **({"description": schema["description"]} if "description" in schema else {})}
+
+
+def _with_array_items(node: Any) -> Any:  # noqa: ANN401
+    if isinstance(node, list):
+        return [_with_array_items(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: v if k in _NON_SCHEMA_VALUE_KEYS else _with_array_items(v) for k, v in node.items()}
+    if out.get("type") == "array" and not isinstance(out.get("items"), (dict, list)):
+        out["items"] = dict(_DEFAULT_ARRAY_ITEMS)
+    return out
 
 
 def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
@@ -192,7 +324,9 @@ def resolve_json_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
     the request, since they all go up in one API call.
     """
     resolved = _json_schema_dict_from_source(schema)
-    return resolved or {"type": "object", "properties": {}}
+    if not resolved:
+        return {"type": "object", "properties": {}}
+    return _with_array_items(_object_root(resolved))
 
 
 def _tool_parameter_from_json_schema(name: str, prop_schema: dict[str, Any], required: bool) -> ToolParameter:

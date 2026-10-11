@@ -71,20 +71,22 @@ export function buildCatalogToolGroups(toolsets: BuilderSidebarToolset[]): Catal
 export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToolGroupRow[] {
   const groups: CatalogToolGroupRow[] = [];
   for (const entry of instances) {
-    const rawFullNames = (entry.tools || [])
-      .map((t) => (typeof t.namespacedName === 'string' ? t.namespacedName.trim() : ''))
-      .filter(Boolean);
-    if (rawFullNames.length === 0) continue;
+    const tools = (entry.tools || []).filter(
+      (t) => typeof t.namespacedName === 'string' && t.namespacedName.trim()
+    );
+    if (tools.length === 0) continue;
 
-    const fullNames = rawFullNames.map((fn) => `${entry._id}:${fn}`);
-
+    const fullNames: string[] = [];
     const toolDescriptions: Record<string, string> = {};
-    rawFullNames.forEach((_rawFn, j) => {
-      const key = fullNames[j]!;
-      const tool = (entry.tools || [])[j];
-      const d = tool && typeof tool.description === 'string' ? tool.description.trim() : '';
-      if (d) toolDescriptions[key] = d;
-    });
+    const toolLabels: Record<string, string> = {};
+    for (const tool of tools) {
+      const key = `${entry._id}:${tool.namespacedName.trim()}`;
+      fullNames.push(key);
+      const description = typeof tool.description === 'string' ? tool.description.trim() : '';
+      if (description) toolDescriptions[key] = description;
+      // The server's own name; `namespacedName` carries an `mcp_{server}_` prefix.
+      if (tool.name) toolLabels[key] = tool.name;
+    }
 
     groups.push({
       label: (entry.name || 'MCP Server').trim(),
@@ -92,6 +94,7 @@ export function buildCatalogMcpGroups(instances: McpMyServerEntry[]): CatalogToo
       instanceId: entry._id,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
+      toolLabels,
       isAuthenticated: Boolean(entry.isAuthenticated),
     });
   }

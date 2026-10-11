@@ -3,7 +3,25 @@
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
-import type { McpMyServerEntry, McpServerTemplate } from '../types';
+import type { McpMyServerEntry, McpPersonalInstanceSummary, McpServerInstance, McpServerTemplate } from '../types';
+
+type DeleteTarget = Pick<McpServerInstance, '_id' | 'name' | 'scope'>;
+
+/**
+ * The org's servers as the admin page edits them: the full records from the admin listing
+ * (`listInstances`), with this admin's own connection status from `getMyMcpServers`. The edit
+ * form must start from the full record; `getMyMcpServers` leaves out how a server is reached
+ * whenever the caller isn't confirmed as an administrator.
+ */
+export function orgInstancesWithStatus(
+  fullRecords: McpServerInstance[],
+  withStatus: McpMyServerEntry[],
+): McpMyServerEntry[] {
+  const statusById = new Map(withStatus.map((entry) => [entry._id, entry]));
+  return fullRecords
+    .filter((instance) => instance.scope !== 'personal')
+    .map((instance) => ({ isAuthenticated: false, tools: [], ...statusById.get(instance._id), ...instance }));
+}
 
 // ========================================
 // State
@@ -28,13 +46,15 @@ interface McpTeamState {
    * for themselves the same way the personal page does.
    */
   instances: McpMyServerEntry[];
+  /** Every user's personal instances, for review and removal. */
+  userCreatedInstances: McpPersonalInstanceSummary[];
 
   isLoading: boolean;
   searchQuery: string;
 
   configPanel: ConfigPanelState;
 
-  deleteTarget: McpMyServerEntry | null;
+  deleteTarget: DeleteTarget | null;
 }
 
 // ========================================
@@ -45,6 +65,7 @@ interface McpTeamActions {
   setTemplates: (templates: McpServerTemplate[]) => void;
   setCustomStdioAllowed: (allowed: boolean) => void;
   setInstances: (instances: McpMyServerEntry[]) => void;
+  setUserCreatedInstances: (instances: McpPersonalInstanceSummary[]) => void;
   setLoading: (loading: boolean) => void;
   setSearchQuery: (query: string) => void;
 
@@ -53,7 +74,7 @@ interface McpTeamActions {
   openEditInstance: (instance: McpMyServerEntry) => void;
   closeConfigPanel: () => void;
 
-  openDeleteDialog: (instance: McpMyServerEntry) => void;
+  openDeleteDialog: (instance: DeleteTarget) => void;
   closeDeleteDialog: () => void;
 
   reset: () => void;
@@ -74,6 +95,7 @@ const initialState: McpTeamState = {
   templates: [],
   customStdioAllowed: false,
   instances: [],
+  userCreatedInstances: [],
   isLoading: false,
   searchQuery: '',
   configPanel: initialConfigPanel,
@@ -100,6 +122,10 @@ export const useMcpTeamStore = create<McpTeamState & McpTeamActions>()(
       setInstances: (instances) =>
         set((s) => {
           s.instances = instances;
+        }),
+      setUserCreatedInstances: (instances) =>
+        set((s) => {
+          s.userCreatedInstances = instances;
         }),
       setLoading: (loading) =>
         set((s) => {

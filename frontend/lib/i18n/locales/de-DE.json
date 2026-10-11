@@ -723,6 +723,41 @@
     "showDiagramSource": "Quelle anzeigen",
     "hideDiagramSource": "Quelle ausblenden",
     "stoppedMarker": "Gestoppt",
+    "toolCard": {
+      "arguments": "Argumente",
+      "result": "Ergebnis",
+      "error": "Fehler",
+      "blocked": "Blockiert",
+      "awaitingApproval": "Wartet auf Freigabe",
+      "viewRaw": "Rohdaten anzeigen",
+      "hideRaw": "Rohdaten ausblenden",
+      "showingOf": "{{shown}} von {{total}} angezeigt",
+      "open": "Öffnen"
+    },
+    "mcpConnect": {
+      "title": "Verbinden Sie diese MCP-Server, um diesen Agenten zu nutzen",
+      "connect": "Verbinden",
+      "connecting": "Verbinde…",
+      "connected": "Verbunden",
+      "removed": "Entfernt. Bitten Sie den Eigentümer des Agenten, ihn zu aktualisieren.",
+      "waitingForAdmin": "Wartet darauf, dass ein Admin die gemeinsamen Anmeldedaten hinzufügt",
+      "setUpInBuilder": "Im Agent Builder einrichten",
+      "serviceAccount": "Dieser Agent nutzt eigene Anmeldedaten. Sein Eigentümer richtet sie im Agent Builder ein.",
+      "openAgentBuilder": "Agent Builder öffnen",
+      "allConnected": "Alles verbunden. Senden Sie Ihre Nachricht erneut, um fortzufahren.",
+      "tryAgain": "Erneut versuchen",
+      "unavailable": "Die Anmeldung konnte hier nicht gestartet werden. Verbinden Sie den Server unter Workspace → MCP-Server."
+    },
+    "mcpSignIn": {
+      "title": "Melden Sie sich erneut an, um diesen MCP-Servern die angeforderte Berechtigung zu geben",
+      "needs": "Benötigt: {{scopes}}",
+      "signIn": "Erneut anmelden",
+      "signingIn": "Anmeldung läuft…",
+      "signedIn": "Angemeldet",
+      "askAnEditor": "Bitten Sie jemanden, der diesen Agenten bearbeiten darf, sich erneut anzumelden",
+      "allSignedIn": "Angemeldet. Versuchen Sie die Anfrage erneut.",
+      "retryMessage": "Ich habe mich erneut bei {{servers}} angemeldet. Bitte versuche es noch einmal."
+    },
     "fullTableView": "Vollständige Tabellenansicht",
     "toasts": {
       "stopStreamTitle": "Wird gestoppt…",
@@ -1128,7 +1163,28 @@
     "sendMessage": "Nachricht senden",
     "demoHide": "Demodaten ausblenden",
     "demoRestrictedHint": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. So wirken Berechtigungen.",
-    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen."
+    "demoRestrictedHintSignIn": "Nur für das Preiskomitee, deshalb erhalten Sie hier keine Antwort. Melden Sie sich als {{email}} an, um die Antwort zu sehen.",
+    "toolApproval": {
+      "title": "Diese Aktion freigeben?",
+      "subtitle": "{{tool}} auf {{server}} ausführen",
+      "noArguments": "Keine Details",
+      "companyAlwaysAsk": "Ihre Organisation fragt jedes Mal, bevor dieses Tool ausgeführt wird.",
+      "allowOnce": "Einmal erlauben",
+      "allowChat": "Für diesen Chat erlauben",
+      "always": "Immer erlauben",
+      "deny": "Ablehnen",
+      "expired": "Diese Anfrage ist abgelaufen. Fragen Sie erneut, falls sie noch nötig ist.",
+      "sent": {
+        "allow_once": "Einmal erlauben: {{tool}} auf {{server}}",
+        "allow_chat": "Für diesen Chat erlauben: {{tool}} auf {{server}}",
+        "always": "Immer erlauben: {{tool}} auf {{server}}",
+        "deny": "Ablehnen: {{tool}} auf {{server}}"
+      },
+      "showAll": "Alles anzeigen",
+      "showLess": "Weniger anzeigen",
+      "partial": "Nur der Anfang der Details wird angezeigt: Der vollständige Aufruf ist länger.",
+      "deletesData": "Löscht Daten"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -2532,6 +2588,7 @@
       "searchPlaceholder": "MCP-Server durchsuchen...",
       "loading": "MCP-Server werden geladen…",
       "noResults": "Keine MCP-Server entsprechen Ihrer Suche",
+      "replacedNotice": "Wird nicht mehr gepflegt. Fügen Sie stattdessen {{name}} hinzu.",
       "addServer": "Server hinzufügen",
       "custom": "Benutzerdefiniert",
       "inherited": "Geerbt",
@@ -2540,17 +2597,33 @@
       "sharedAuth": "Gemeinsame Admin-Authentifizierung",
       "toolsCount_one": "{{count}} Tool",
       "toolsCount_other": "{{count}} Tools",
+      "toolsCachedAt": "Tools mit Stand {{time}}",
+      "editImpact": {
+        "title": "Gespeicherte Anmeldungen entfernen?",
+        "body": "Wenn Sie ändern, wie dieser Server erreicht oder angemeldet wird, werden die Anmeldedaten entfernt, die Personen und Agenten dafür gespeichert haben. Alle müssen sich neu verbinden.",
+        "personalBody": "Wenn Sie ändern, wie dieser Server erreicht oder angemeldet wird, werden die Anmeldedaten entfernt, die Sie und Ihre Agenten dafür gespeichert haben. Sie müssen sich neu verbinden.",
+        "sharedBody": "Wenn Sie die gemeinsamen Anmeldedaten deaktivieren, werden sie entfernt. Alle müssen sich mit eigenen Anmeldedaten verbinden.",
+        "confirm": "Speichern und Anmeldungen entfernen"
+      },
       "cta": {
         "manage": "Verwalten",
         "delete": "Löschen",
         "reauthenticate": "Erneut authentifizieren",
+        "reconnect": "Neu verbinden",
         "disconnect": "Trennen",
         "connect": "Verbinden",
-        "addInstance": "Instanz hinzufügen"
+        "addInstance": "Instanz hinzufügen",
+        "edit": "Bearbeiten"
       },
       "status": {
         "ready": "Bereit",
         "notConnected": "Nicht verbunden",
+        "reconnectNeeded": "Neue Verbindung nötig",
+        "waitingForAdmin": "Wartet auf Admin",
+        "sharedCredentialMissing": "Gemeinsame Anmeldedaten fehlen",
+        "blocked": "Durch Richtlinie blockiert",
+        "unreachable": "Server nicht erreichbar",
+        "slow": "Antwortet langsam",
         "needsAuth": "Authentifizierung erforderlich",
         "disabled": "Deaktiviert"
       },
@@ -2558,13 +2631,24 @@
         "title": "MCP-Server",
         "subtitle": "Verbinden Sie Model-Context-Protocol-Server, um die Fähigkeiten der Agenten Ihres Teams zu erweitern.",
         "emptyTitle": "Noch keine MCP-Server",
-        "emptyDescription": "Fügen Sie einen Server aus dem Katalog hinzu oder konfigurieren Sie einen benutzerdefinierten Server, um zu beginnen."
+        "emptyDescription": "Fügen Sie einen Server aus dem Katalog hinzu oder konfigurieren Sie einen benutzerdefinierten Server, um zu beginnen.",
+        "userCreatedTitle": "Von Benutzern erstellte Server",
+        "userCreatedDescription": "Server, die Ihre Benutzer für sich selbst hinzugefügt haben. Nur die Person, die einen hinzugefügt hat, kann ihn verwenden; Sie können ihn entfernen.",
+        "userCreatedOwner": "Hinzugefügt von {{name}}"
       },
       "personal": {
         "title": "MCP-Server",
-        "subtitle": "Authentifizieren Sie sich bei den MCP-Servern, die Ihr Administrator bereitgestellt hat.",
+        "subtitle": "Verbinden Sie sich mit den MCP-Servern, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
         "emptyTitle": "Keine MCP-Server verfügbar",
-        "emptyDescription": "Ihr Administrator hat noch keine MCP-Server hinzugefügt."
+        "emptyDescription": "Fügen Sie einen eigenen hinzu oder bitten Sie Ihren Administrator, einen für alle hinzuzufügen.",
+        "yourServersDescription": "Von Ihnen hinzugefügte Server. Nur Sie können sie sehen und verwenden, und sie können nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind.",
+        "tabs": {
+          "all": "Alle",
+          "connected": "Verbunden",
+          "notConnected": "Nicht verbunden"
+        },
+        "yours": "Ihrer",
+        "noneInTab": "Hier gibt es keine MCP-Server."
       },
       "details": {
         "breadcrumbLabel": "MCP-Server",
@@ -2584,12 +2668,14 @@
         "authBannerTitle": "Authentifizierung erforderlich",
         "authBannerDescription": "Authentifizieren Sie diesen MCP-Server, damit die Agenten Ihres Teams ihn nutzen können.",
         "authBannerAuthenticatedTitle": "Verbunden",
+        "reconnectBannerDescription": "Die Anmeldung für diesen Server ist abgelaufen oder wurde abgelehnt. Verbinden Sie ihn neu, um ihn weiter zu nutzen.",
         "authBannerAuthenticatedDescription": "Sie können diesen MCP-Server erneut authentifizieren oder trennen.",
         "createdBy": "Erstellt von"
       },
       "deleteDialog": {
         "title": "MCP-Server löschen?",
-        "body": "Der Server \"{{name}}\" wird endgültig entfernt. Teammitglieder, die ihn verwenden, verlieren den Zugriff."
+        "body": "Der Server \"{{name}}\" wird endgültig entfernt. Teammitglieder, die ihn verwenden, verlieren den Zugriff.",
+        "personalBody": "Der Server \"{{name}}\" und seine gespeicherten Anmeldedaten werden endgültig entfernt."
       },
       "toasts": {
         "loadError": "MCP-Server konnten nicht geladen werden",
@@ -2603,10 +2689,15 @@
         "disconnected": "Erfolgreich getrennt",
         "disconnectError": "Trennen fehlgeschlagen",
         "credentialsSaveError": "Server gespeichert, aber die Anmeldedaten konnten nicht gespeichert werden. Sie können sie später über \"Verwalten\" hinzufügen.",
+        "credentialsSaved": "Anmeldedaten gespeichert",
+        "credentialsReset": "MCP-Server aktualisiert. Gespeicherte Anmeldedaten wurden entfernt, da sich die Verbindung geändert hat. Verbinden Sie sich erneut, um ihn zu verwenden.",
+        "oauthTimedOut": "Die Anmeldung hat zu lange gedauert und wurde abgebrochen. Versuchen Sie es erneut.",
+        "oauthProviderError": "Anmeldung fehlgeschlagen: {{message}}",
         "discoveryError": "Tools konnten nicht erkannt werden"
       },
       "authDialog": {
         "title": "Bei {{name}} authentifizieren",
+        "docsLink": "Wo Sie das finden",
         "description": "Geben Sie Ihre Anmeldedaten ein, um diesen MCP-Server zu verbinden."
       },
       "form": {
@@ -2618,6 +2709,7 @@
         "argsPlaceholder": "Argument hinzufügen",
         "requiredEnv": "Erforderliche Umgebungsvariablen",
         "requiredEnvPlaceholder": "Umgebungsvariable hinzufügen (z. B. API_KEY)",
+        "defaultTokenEnvHint": "Ohne angegebene Variablen wird das Token als {{name}} an den Befehl übergeben.",
         "url": "URL",
         "authMode": "Authentifizierungsmodus",
         "headerName": "Header-Name",
@@ -2633,14 +2725,55 @@
         "credentialsHint": "Fügen Sie jetzt Anmeldedaten hinzu oder überspringen Sie dies und verbinden Sie sich später über den Tab \"Verbindung & Tools\".",
         "multiEnvIncomplete": "Füllen Sie jede erforderliche Umgebungsvariable aus, oder lassen Sie alle leer, um später zu verbinden.",
         "oauthPairRequired": "Geben Sie sowohl die Client-ID als auch das Client-Secret ein, oder lassen Sie beide leer.",
-        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden."
+        "connectAfterCreateHint": "Speichern Sie diesen Server und öffnen Sie dann erneut \"Verwalten\", um ihn zu verbinden.",
+        "timeoutsHeading": "Zeitlimits",
+        "connectTimeout": "Verbindungszeitlimit (Sekunden)",
+        "callTimeout": "Zeitlimit für Tool-Aufrufe (Sekunden)",
+        "timeoutRange": "Geben Sie eine Zahl von {{min}} bis {{max}} ein oder lassen Sie das Feld für den Standardwert leer."
       },
       "configPanel": {
         "editTitle": "MCP-Server bearbeiten",
         "createTitle": "MCP-Server hinzufügen",
         "tabs": {
           "configuration": "Konfiguration",
-          "connection": "Verbindung & Tools"
+          "tools": "Tools & Freigaben"
+        },
+        "synced": "Synchronisiert {{time}}",
+        "refreshTools": "Tool-Liste aktualisieren",
+        "signInForTools": "Melden Sie sich an, um die Tools dieses Servers zu sehen.",
+        "toolsError": "Die Tool-Liste konnte nicht geladen werden",
+        "toolsErrorSignIn": "Der Server verlangt eine erneute Anmeldung.",
+        "rulesKept": "Ihre gespeicherten Freigaberegeln bleiben erhalten.",
+        "tryAgain": "Erneut versuchen",
+        "findingTools": "Tools auf diesem Server werden gesucht",
+        "rulesUnlock": "Freigaberegeln sind verfügbar, sobald die Liste bereit ist.",
+        "unsaved_one": "{{count}} ungespeicherte Änderung",
+        "unsaved_other": "{{count}} ungespeicherte Änderungen",
+        "allSaved": "Alle Regeln gespeichert",
+        "discard": "Verwerfen",
+        "saveRules": "Regeln speichern",
+        "discardTitle": "Ungespeicherte Regeländerungen verwerfen?",
+        "discardBody_one": "Sie haben die Regel für {{count}} Tool geändert. Beim Schließen geht diese Änderung verloren.",
+        "discardBody_other": "Sie haben die Regeln für {{count}} Tools geändert. Beim Schließen gehen diese Änderungen verloren.",
+        "noSignIn": "Keine Anmeldung nötig · {{transport}}",
+        "signInExpired": "Anmeldung abgelaufen",
+        "sharedMissing": "Gemeinsame Anmeldung fehlt",
+        "signInExpiredBody": "Tools dieses Servers können erst wieder laufen, wenn sich jemand erneut anmeldet.",
+        "notSignedIn": "Nicht angemeldet",
+        "notSignedInDetail": "Melden Sie sich an, um die Tools dieses Servers zu nutzen.",
+        "signedIn": "Angemeldet",
+        "sharedSignIn": "Gemeinsame Anmeldung",
+        "signedInDetail": "{{transport}} · angemeldet {{time}}",
+        "menu": {
+          "label": "Weitere Aktionen",
+          "copyUrl": "Server-URL kopieren",
+          "copied": "Server-URL kopiert",
+          "copyFailed": "Die Server-URL konnte nicht kopiert werden",
+          "addedBy": "Hinzugefügt von {{name}}",
+          "disconnectHint": "Meldet Sie ab. Einstellungen und Regeln bleiben.",
+          "remove": "Server entfernen",
+          "removeHint": "Löscht ihn für alle.",
+          "removeHintPersonal": "Löscht ihn und Ihre Anmeldung."
         }
       },
       "oauthConfig": {
@@ -2680,6 +2813,99 @@
         "disabledDescription": "Benutzerdefinierte STDIO-Server führen einen Befehl auf dem PipesHub-Server aus und bleiben deshalb deaktiviert, bis der Betreiber {{flag}}=true in der Umgebung der Installation setzt (Docker-Compose-.env oder config.mcpAllowCustomStdio in Helm). Bis dahin können Agenten die Tools dieses Servers nicht nutzen. Sie können ihn löschen oder auf einen Remote-Server (HTTP) umstellen.",
         "unavailableHint": "Server mit lokalem Befehl (STDIO) sind in dieser Installation deaktiviert. Um sie zuzulassen, muss der Betreiber {{flag}}=true setzen.",
         "enabledWarning": "Dieser Befehl läuft auf dem PipesHub-Server mit den Rechten des Dienstes, einschließlich seines Netzwerkzugriffs und seiner Zugangsdaten. Fügen Sie nur Befehle hinzu, denen Sie vertrauen."
+      },
+      "addDialog": {
+        "title": "MCP-Server hinzufügen",
+        "description": "Wählen Sie einen Server aus dem Katalog oder verbinden Sie einen beliebigen Remote-MCP-Server über seine URL. Nur Sie sehen ihn.",
+        "custom": "Benutzerdefinierter Server",
+        "customDescription": "Ein beliebiger Remote-MCP-Server über seine URL."
+      },
+      "toolRules": {
+        "open": "Tool-Freigaben",
+        "title": "Tool-Freigaben: {{name}}",
+        "description": {
+          "personal": "Legen Sie fest, was passiert, wenn der Assistent in Ihren Chats eines dieser Tools verwenden möchte. Agenten verwenden ihre eigenen Regeln.",
+          "company": "Diese Regeln gelten für alle in Ihrer Organisation. Mitglieder können strengere Regeln festlegen, aber keine lockereren.",
+          "agent": "Legen Sie fest, was passiert, wenn dieser Agent eines dieser Tools verwenden möchte – für alle, die mit ihm chatten."
+        },
+        "unattendedHint": "In Slack, der API und bei geplanten Ausführungen kann niemand einen Aufruf freigeben. Ein Tool, das eine Freigabe braucht, läuft dort nur, wenn Sie „Erlauben, wenn niemand freigeben kann“ aktivieren.",
+        "viewOnly": "Nur Personen, die diesen Agenten bearbeiten können, können diese Regeln ändern.",
+        "loading": "Wird geladen…",
+        "loadError": "Die Regeln konnten nicht geladen werden.",
+        "search": "Nach Name oder ID suchen",
+        "empty": "Keine Tools vorhanden. Verbinden Sie den Server, um seine Tools zu sehen, oder fügen Sie eines per Name hinzu.",
+        "notOffered": "Derzeit nicht angeboten",
+        "rule": {
+          "allow": "Vorab freigegeben",
+          "ask": "Nach Freigabe erlauben",
+          "block": "Ablehnen"
+        },
+        "company": {
+          "none": "Keine Grenze",
+          "ask": "Nach Freigabe erlauben",
+          "block": "Ablehnen"
+        },
+        "unattended": "Erlauben, wenn niemand freigeben kann",
+        "unattendedFor": "{{name}} erlauben, wenn niemand freigeben kann",
+        "addPlaceholder": "Tool per Name hinzufügen",
+        "add": "Hinzufügen",
+        "saved": "Tool-Freigaben gespeichert",
+        "saveError": "Die Tool-Freigaben konnten nicht gespeichert werden",
+        "unattendedDetail": "Slack, die API und geplante Ausführungen",
+        "unattendedDestructive": "Nur wo jemand dieses Tool erlaubt hat",
+        "kind": {
+          "read": "Nur lesend",
+          "write": "Ändert Daten",
+          "destructive": "Löscht Daten"
+        },
+        "kindSource": {
+          "name": "Laut Name",
+          "server": "Laut Server",
+          "none": "Keine Angaben vom Server"
+        },
+        "group": {
+          "destructive": "Löscht Daten",
+          "write": "Ändert Daten",
+          "read": "Nur lesend",
+          "notOffered": "Derzeit nicht angeboten",
+          "byName": "Nach Name festgelegte Regeln"
+        },
+        "groupHint": {
+          "destructive": "Diese zuerst prüfen",
+          "read": "Schlägt nur nach"
+        },
+        "filterLabel": "Tools anzeigen",
+        "filter": {
+          "all": "Alle",
+          "destructive": "Löscht Daten",
+          "write": "Ändert Daten",
+          "read": "Nur lesend",
+          "hasRule": "Mit Regel"
+        },
+        "noMatch": "Keine Tools passen zu Ihrer Suche.",
+        "clearFilters": "Suche und Filter zurücksetzen",
+        "quickSetup": {
+          "text": "Schnelleinrichtung: Freigabe für jedes Tool verlangen, das Daten ändert.",
+          "apply": "Anwenden"
+        },
+        "legend": {
+          "own": "Vorab freigegeben läuft ohne Nachfrage · Nach Freigabe erlauben fragt zuerst im Chat · Ablehnen läuft nie",
+          "company": "Keine Grenze – Mitglieder entscheiden · Nach Freigabe erlauben – jemand gibt jeden Aufruf frei · Ablehnen – läuft nie"
+        }
+      },
+      "disconnectDialog": {
+        "title": "{{name}} trennen?",
+        "yours_one": "Sie können sein {{count}} Tool erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "yours_other": "Sie können seine {{count}} Tools erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "yoursUnknown": "Sie können seine Tools erst wieder nutzen, wenn Sie sich erneut anmelden.",
+        "shared_one": "Agenten in Ihrer Organisation können sein {{count}} Tool sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "shared_other": "Agenten in Ihrer Organisation können seine {{count}} Tools sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "sharedUnknown": "Agenten in Ihrer Organisation können seine Tools sofort nicht mehr nutzen, auch in Slack und bei geplanten Ausführungen.",
+        "keeps": "Servereinstellungen und Freigaberegeln bleiben erhalten",
+        "reconnect": "Jederzeit durch erneute Anmeldung wieder verbinden",
+        "deletesYours": "Ihre gespeicherte Anmeldung wird gelöscht",
+        "deletesShared": "Die gemeinsame Anmeldung wird gelöscht",
+        "disconnecting": "Wird getrennt …"
       }
     },
     "bots": {
@@ -3757,6 +3983,9 @@
     "configureMcpTooltip": "Anmeldedaten verwalten",
     "authenticateMcpTooltip": "Diesen MCP-Server authentifizieren",
     "mcpAuthUpdatedNotify": "MCP-Authentifizierung aktualisiert.",
+    "mcpServersUnavailable": "Die MCP-Server dieses Agenten konnten nicht geladen werden",
+    "mcpServersUnavailableHint": "Sie werden hier nicht angezeigt, und Speichern ändert sie nicht. Laden Sie die Seite neu, um es erneut zu versuchen.",
+    "mcpServersUnavailableNoDrop": "Die MCP-Server dieses Agenten konnten nicht geladen werden. Bis die Seite neu geladen ist, können keine hinzugefügt werden.",
     "mcpAuthSaveError": "MCP-Anmeldedaten konnten nicht gespeichert werden.",
     "mcpAuthRemoveError": "MCP-Anmeldedaten konnten nicht entfernt werden.",
     "loadingSchema": "Schema wird geladen…",
@@ -3903,7 +4132,7 @@
     "noSkills": "Noch keine Skills — erstellen oder importieren Sie einen unter „Ihre Skills“",
     "connectionSkillToSkillsHandle": "Skills müssen mit dem Skills-Anschluss des Agenten verbunden werden",
     "dropDuplicateSkill": "{{name}} wurde diesem Agenten bereits hinzugefügt",
-    "mcpServerAlreadyAttachedNotify": "{{name}} wurde diesem Agenten bereits hinzugefügt",
+    "mcpServerAlreadyAttachedNotify": "Dieser Agent hat bereits einen anderen Server desselben Typs wie {{name}}. Ein Agent kann einen Server pro Typ verwenden.",
     "webSearchOnlyOne": "Es kann nur ein Websuchanbieter hinzugefügt werden",
     "mcpServerNodeSubtitle": "Tools eines MCP-Servers",
     "noMcpServersAvailable": "Keine MCP-Server verfügbar",
@@ -3917,7 +4146,18 @@
     "mcpServerWithToolCount_other": "MCP-Server mit {{count}} Tools",
     "deprecatedToolsBanner_one": "{{count}} Tool dieses Agenten ist veraltet. Entfernen Sie es: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} Tools dieses Agenten sind veraltet. Entfernen Sie diese: {{tools}}",
-    "skillDisabled": "Dieser Skill ist deaktiviert und steht dem Agenten erst wieder zur Verfügung, wenn er erneut aktiviert wird."
+    "skillDisabled": "Dieser Skill ist deaktiviert und steht dem Agenten erst wieder zur Verfügung, wenn er erneut aktiviert wird.",
+    "mcpAllTools": "Alle Tools",
+    "mcpAllToolsHint": "Einschließlich Tools, die der Server später hinzufügt.",
+    "mcpServerUnavailable": "Nicht verfügbar",
+    "mcpServerUnavailableHint": "Dieser Server gehört nicht zu Ihren MCP-Servern: Er wurde gelöscht oder nicht für Sie freigegeben.",
+    "mcpToolNotOnServer": "Nicht auf dem Server",
+    "mcpToolNotOnServerHint": "Der Server bietet dieses Tool nicht mehr an. Entfernen Sie es, sonst kann der Agent es nicht verwenden.",
+    "mcpAllToolsNoneYet": "Der Server hat noch keine Tools aufgelistet. Der Agent erhält alles, was er anbietet.",
+    "mcpNoToolsSelected": "Keine Tools ausgewählt. Fügen Sie Tools hinzu oder aktivieren Sie „Alle Tools“.",
+    "mcpServerNeedsToolsTooltip": "Wählen Sie Tools für jeden MCP-Server aus oder aktivieren Sie „Alle Tools“.",
+    "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
   },
   "recordView": {
     "sections": {

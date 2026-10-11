@@ -203,6 +203,16 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.equal(decoded)
     })
 
+    it("keeps the web app's client name on a session token", async () => {
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: Math.floor(Date.now() / 1000) })
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}`, 'client-name': 'pipeshub-ai' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.headers['client-name']).to.equal('pipeshub-ai')
+    })
+
     it('rejects a session belonging to a disabled account', async () => {
       // Sessions handed out before the account was disabled have to stop too,
       // or disabling only prevents the next sign-in.
@@ -523,6 +533,22 @@ describe('AuthMiddleware', () => {
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it("can't claim the web app's client name, which lets a run wait for a person's approval", async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'conversation:chat',
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', fullName: 'Test User', role: 'member' }))
+
+      const spoofed = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': 'PipesHub-AI' } })
+      await authMiddleware.authenticate(spoofed, createMockResponse(), createMockNext())
+      expect(spoofed.headers['client-name']).to.equal('api')
+
+      const other = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': 'my-script' } })
+      await authMiddleware.authenticate(other, createMockResponse(), createMockNext())
+      expect(other.headers['client-name']).to.equal('my-script')
     })
 
     it('should reject OAuth tokens without a userId', async () => {

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 
@@ -112,6 +113,37 @@ class TestToolCallParts:
         assert part["status"] == "blocked"
         assert part["resultPreview"] == "blocked after 3 failures"
 
+    async def test_a_call_awaiting_approval_is_kept_as_such(self) -> None:
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "call-5"}))
+        await collector.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "mcp_jira_create_issue", "reason": "Waiting for your approval.", "tool_call_id": "call-5",
+                "status": ToolCallStatus.AWAITING_APPROVAL, "approval": {"approvalId": "ap-1", "toolName": "create_issue"},
+            })
+        )
+
+        part = collector.parts[0]
+        assert part["status"] == "awaiting_approval"
+        assert part["resultPreview"] == "Waiting for your approval."
+        # Kept with the conversation, so the card is there after a reload.
+        assert part["approval"] == {"approvalId": "ap-1", "toolName": "create_issue"}
+
+    async def test_a_call_a_person_approved_is_marked_on_its_part(self) -> None:
+        """So the reply that ran it isn't regenerated (which could run it again)."""
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "approved_ap1", "approved": True,
+        }))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "jira_search", "args": {}, "tool_call_id": "call-9"}))
+
+        assert collector.parts[0]["approved"] is True
+        assert "approved" not in collector.parts[1]
+
     async def test_result_preview_is_truncated(self) -> None:
         collector = TranscriptCollector()
 
@@ -121,7 +153,7 @@ class TestToolCallParts:
             _event(EventType.TOOL_CALL_END, {"tool": "jira_search", "content": "x" * 10_000, "is_error": False, "tool_call_id": "call-4"})
         )
 
-        assert len(collector.parts[0]["resultPreview"]) == 500
+        assert len(collector.parts[0]["resultPreview"]) == RESULT_PREVIEW_CHARS
 
     async def test_end_without_matching_start_is_dropped(self) -> None:
         collector = TranscriptCollector()
@@ -160,6 +192,32 @@ class TestToolCallParts:
 
         assert collector.parts[0]["resultSummary"] == "Found 3 issues"
 
+    async def test_the_result_view_is_kept_like_the_live_one(self) -> None:
+        from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+
+        collector = TranscriptCollector()
+        live: list[dict] = []
+
+        class _Sink:
+            async def write(self, frame: dict) -> None:
+                live.append(frame)
+
+        emitter = AGUIEventEmitter(_Sink(), thread_id="t")  # type: ignore[arg-type]
+        view = {"kind": "records", "columns": ["Text"], "rows": [{"cells": ["y" * 100]}] * 20, "total": 20}
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        for n in range(40):
+            await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "jira_search", "args": {}, "tool_call_id": f"c-{n}"}))
+            end = _event(EventType.TOOL_CALL_END, {
+                "tool": "jira_search", "content": "[]", "is_error": False, "tool_call_id": f"c-{n}", "result_view": view,
+            })
+            await collector.emit(end)
+            await emitter.emit(end)
+
+        saved = ["resultView" in part for part in collector.parts]
+        shown = ["resultView" in frame["data"] for frame in live if frame["data"].get("role") == "tool"]
+        assert saved == shown
+        assert saved[0] and not saved[-1]
+
     async def test_tool_call_without_summaries_still_works(self) -> None:
         collector = TranscriptCollector()
 
@@ -172,6 +230,7 @@ class TestToolCallParts:
         part = collector.parts[0]
         assert "argsSummary" not in part
         assert "resultSummary" not in part
+        assert "resultView" not in part
 
 
 class TestSubAgentNesting:
@@ -305,7 +364,7 @@ class TestNoFullToolResultsLeak:
             _event(EventType.TOOL_CALL_END, {"tool": "big_tool", "content": huge_result, "is_error": False, "tool_call_id": "call-5"})
         )
 
-        assert len(collector.parts[0]["resultPreview"]) <= 500
+        assert len(collector.parts[0]["resultPreview"]) <= RESULT_PREVIEW_CHARS
 
 
 class TestLargeToolArgsStayParseable:

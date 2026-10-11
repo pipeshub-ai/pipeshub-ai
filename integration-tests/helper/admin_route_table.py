@@ -207,7 +207,6 @@ def _py(method: str, path: str, handler: str, **kw: Any) -> AdminRoute:
 
 _MCP = "/api/v1/mcp-servers"
 _TOOLSETS = "/api/v1/toolsets"
-_MCP_BODY = {"name": "it-admin-probe", "transport": "stdio", "authMode": "none"}
 _TOOLSET_BODY = {"instanceName": "it-admin-probe", "toolsetType": "it-no-such-toolset",
                  "authType": "NONE"}
 _OAUTH_BODY = {"oauthInstanceName": "it-admin-probe", "config": {"clientId": "x"},
@@ -230,20 +229,6 @@ PYTHON_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
         member_body={"enabled": False}, refusal_words="Only admins",
         admin=None, why_no_admin="turns the sample workspace on or off for the whole org"),
     _py("GET", f"{_MCP}/instances", "api/routes/mcp_servers.py::list_instances"),
-    _py("POST", f"{_MCP}/instances", "api/routes/mcp_servers.py::create_instance",
-        member_body=_MCP_BODY, admin="admin_body"),
-    _py("GET", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::get_instance"),
-    _py("PUT", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::update_instance",
-        member_body=_MCP_BODY),
-    _py("DELETE", f"{_MCP}/instances/:instanceId", "api/routes/mcp_servers.py::delete_instance"),
-    _py("POST", f"{_MCP}/oauth/discover",
-        "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint",
-        member_body={"url": "http://127.0.0.1:1/"}, admin="admin_body"),
-    _py("GET", f"{_MCP}/instances/:instanceId/oauth-config",
-        "api/routes/mcp_servers.py::get_oauth_config"),
-    _py("PUT", f"{_MCP}/instances/:instanceId/oauth-config",
-        "api/routes/mcp_servers.py::update_oauth_config",
-        member_body={"clientId": "x", "clientSecret": "y"}),
     _py("POST", f"{_TOOLSETS}/instances", "api/routes/toolsets.py::create_toolset_instance",
         member_body=_TOOLSET_BODY, admin="admin_body"),
     _py("PUT", f"{_TOOLSETS}/instances/:instanceId",
@@ -264,9 +249,6 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
     ("POST", "/api/v1/oauth/:connectorType"): {
         "oauthInstanceName": "it-admin-probe", "config": {}, "baseUrl": "http://localhost",
     },
-    ("POST", f"{_MCP}/instances"): {**_MCP_BODY, "typeId": "it-no-such-type"},
-    # A loopback address the discovery guard refuses, and a closed port if it did not.
-    ("POST", f"{_MCP}/oauth/discover"): {"url": "http://127.0.0.1:1/"},
     ("POST", f"{_TOOLSETS}/instances"): _TOOLSET_BODY,
 }
 
@@ -325,4 +307,20 @@ PYTHON_CONDITIONAL_ADMIN = {
     "api/routes/mcp_servers.py::authenticate_instance": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::update_credentials": "shared admin credential needs admin",
     "api/routes/mcp_servers.py::remove_credentials": "shared admin credential needs admin",
+    "api/routes/mcp_servers.py::reauthenticate_instance": "shared admin credential needs admin",
+    # Members add MCP servers of their own: an org server is the admins', a personal one
+    # its owner's. The server is looked up before anyone is asked, so a missing id is a 404.
+    "api/routes/mcp_servers.py::create_instance": "a member's new server is personal",
+    "api/routes/mcp_servers.py::get_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::update_instance": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::get_oauth_config": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::update_oauth_config": "a personal server is its owner's",
+    "api/routes/mcp_servers.py::delete_instance": "owner or admin",
+    "api/routes/mcp_servers.py::get_tool_policy": "org servers only, looked up first",
+    "api/routes/mcp_servers.py::update_tool_policy": "org servers only, looked up first",
+    # A member checks the URL of a server they could add: a personal one, public only.
+    "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint": "a member's URL must be public",
+    # Everyone gets the listing; only admins see how an org server is reached.
+    "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
+    "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
 }

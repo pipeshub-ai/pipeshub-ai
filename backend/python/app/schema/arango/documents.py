@@ -1368,6 +1368,7 @@ mcp_server_schema = {
             "displayName": {"type": "string"},
             "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
             "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "allTools": {"type": "boolean"},  # every tool the server offers at chat time, not just the saved list
             "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},

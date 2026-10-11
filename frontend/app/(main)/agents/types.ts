@@ -150,6 +150,8 @@ export interface AgentMcpServer {
   displayName?: string;
   typeId?: string | null;
   instanceId: string;
+  /** Absent on attachments saved before it existed — those use exactly `tools`. */
+  allTools?: boolean;
   tools: AgentMcpTool[];
 }
 
@@ -185,6 +187,8 @@ export interface AgentDetail {
   _id: string;
   toolsets: AgentToolset[];
   mcpServers?: AgentMcpServer[];
+  /** The server couldn't read this agent's MCP servers, so `mcpServers` is empty but not the agent's. */
+  mcpServersUnavailable?: boolean;
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];

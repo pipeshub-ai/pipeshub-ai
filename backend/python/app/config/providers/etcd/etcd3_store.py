@@ -337,9 +337,14 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.debug("🔍 Checking if key exists")
             existing_value = await self._run(lambda c: c.get(key))
 
-            if existing_value[0] is not None:
+            if existing_value[0] is not None and not ttl:
                 logger.debug("📋 Key exists, updating value")
                 success = await self._run(lambda c: c.put(key, value_str.encode()))
+            elif ttl:
+                # A plain put on an existing key would drop its expiry (it leaves the old lease).
+                logger.debug("🔄 Writing with a lease of %s seconds", ttl)
+                lease = await self._run(lambda c: c.lease(ttl))
+                success = await self._run(lambda c: c.put(key, value_str.encode(), lease=lease))
             else:
                 logger.debug("📋 Key doesn't exist, creating new")
                 if ttl:
@@ -503,8 +508,9 @@ class Etcd3DistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         try:
             # Ensure directory ends with '/' for proper prefix matching
             prefix = directory if directory.endswith("/") else f"{directory}/"
-            results = await self._run(lambda c: list(c.get_prefix(prefix)))
-            return [key.decode("utf-8") for key, _ in results]
+            # get_prefix yields (value, metadata) pairs; the key is on the metadata.
+            results = await self._run(lambda c: list(c.get_prefix(prefix, keys_only=True)))
+            return [metadata.key.decode("utf-8") for _, metadata in results]
         except Exception as e:
             raise ConnectionError(f"Failed to list keys in directory: {str(e)}")
 

@@ -226,24 +226,6 @@ def group_connector_toolsets(
     return True
 
 
-def _mcp_group_name_from_server_name(server_name: str) -> str:
-    """Same normalization as `mcp_tool_loader.py::_mcp_group_name`, duplicated
-    (not imported) to avoid a cycle — that module imports `MCP_PARENT` from
-    this one. Takes the plain string since the only caller here
-    (`PipesHubGlobalCatalogFallback._mcp_hits`) has no `ResolvedMCPServer` to
-    read `.name` off of — discovery already failed for these instances, so
-    nothing built one this request.
-
-    Must be fed the instance's `name`, never its `displayName`: the loader
-    normalizes `ResolvedMCPServer.name`, so an instance named `RovoMCP` with
-    display name `Atlassian Rovo` registers under `mcp_rovomcp`. Reporting
-    `mcp_atlassian_rovo` here would name a group no `fetch_tools` call can
-    resolve once the server is reachable again.
-    """
-    normalized = server_name.lower().strip().replace(" ", "_").replace("-", "_")
-    return f"mcp_{normalized}"
-
-
 class PipesHubGlobalCatalogFallback:
     """Adapts PipesHub's process-wide toolset catalog (`ToolsetRegistry` —
     every toolset the app knows how to build, across every org, whether or
@@ -344,7 +326,8 @@ class PipesHubGlobalCatalogFallback:
         request, so there is nothing live left to read.
         """
         from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
-        from app.agents.mcp.discovery import build_namespaced_tool_name
+        from app.agents.agent_loop.mcp_tool_loader import MCP_NAMES_STATE_KEY
+        from app.agents.mcp.naming import build_namespaced_tool_name, namespace_key
 
         if self._context is None:
             return []
@@ -357,17 +340,16 @@ class PipesHubGlobalCatalogFallback:
             instance_id = server.get("instanceId")
             if instance_id not in failed_ids:
                 continue
-            # `displayName` is for prose only — see
-            # `_mcp_group_name_from_server_name` on why the group key has to
-            # come from `name`.
             server_name = server.get("name") or instance_id
             display_name = server.get("displayName") or server_name
-            group_name = _mcp_group_name_from_server_name(server_name)
-            # Same discriminator `MCPToolProvider._attached_full_names` uses,
-            # so the fallback name below matches what the tool registers under
-            # once discovery succeeds.
+            # The names `MCPToolProvider` assigned this request, so a hit names the group
+            # and tool the server registers under once it is reachable again.
             instance = (self._context.mcp_server_configs.get(instance_id) or {}).get("instance") or {}
-            server_type = instance.get("typeId") or server_name
+            names = self._context.tool_state.get(MCP_NAMES_STATE_KEY, {}).get(instance_id) or {
+                "namespace": namespace_key(instance.get("typeId") or server.get("typeId"), server_name),
+                "group": f"mcp_{namespace_key(None, server_name)}",
+            }
+            group_name = names["group"]
 
             for tool in server.get("tools") or []:
                 tool_name = tool.get("name") or ""
@@ -378,7 +360,7 @@ class PipesHubGlobalCatalogFallback:
                 if query_terms and not any(term in haystack for term in query_terms):
                     continue
                 hits.append(GlobalToolHit(
-                    name=tool.get("fullName") or build_namespaced_tool_name(server_type, tool_name),
+                    name=build_namespaced_tool_name(names["namespace"], tool_name),
                     toolset=group_name,
                     description=(
                         f"{description} — {display_name} is attached but "

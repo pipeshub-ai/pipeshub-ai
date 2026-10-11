@@ -11,14 +11,17 @@
  * transcript.
  */
 import React, { useState, useRef, useMemo, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { PluggableList } from 'unified';
-import { Box, Flex, Text } from '@radix-ui/themes';
+import { Box, Flex, Table, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { MessagePart, StatusMessage } from '../../types';
+import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { createMarkdownComponents } from './answer-content';
@@ -82,6 +85,8 @@ export function hasMultiStepActivity(parts: MessagePart[] | undefined): boolean 
  */
 function filterRootParts(parts: MessagePart[], isStreaming: boolean): MessagePart[] {
   return parts.filter((part) => {
+    // The reply's sign-in card, drawn under the answer (`McpSignInCard`).
+    if (part.type === 'mcp_sign_in') return false;
     if (part.type !== 'text') return true;
     if (part.isFinal) return false;
     if (isStreaming && !part.settled) return false;
@@ -521,13 +526,16 @@ const TOOL_STATUS_ICON: Record<NonNullable<MessagePart['status']>, string> = {
   completed: 'check_circle',
   failed: 'warning',
   blocked: 'block',
+  awaiting_approval: 'pending_actions',
 };
 
+// A failed call is red: in grey it read like a completed one.
 const TOOL_STATUS_COLOR: Record<NonNullable<MessagePart['status']>, string> = {
   running: 'var(--blue-9)',
   completed: 'var(--green-9)',
-  failed: 'var(--slate-9)',
+  failed: 'var(--red-9)',
   blocked: 'var(--amber-9)',
+  awaiting_approval: 'var(--amber-9)',
 };
 
 
@@ -548,13 +556,26 @@ function isSearchLike(toolName: string | undefined): boolean {
 /** Renders a server-computed tool summary (e.g. "Retrieved 12 blocks from
  * 5 documents\n- Doc A\n- Doc B") as styled text rather than monospace —
  * summaries are prose/bullet-list, not raw JSON, so they read better with
- * the same lightweight markdown treatment `NarrationText` uses. */
+ * the same lightweight markdown treatment `NarrationText` uses. A summary can
+ * quote a tool's output (a title), so it loads no images and links only to
+ * http(s), in a new tab. */
 function ToolSummaryText({ content }: { content: string }) {
   return (
     <Box style={{ fontSize: 'var(--font-size-1)', color: 'var(--slate-11)', lineHeight: 1.6 }}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        skipHtml
+        disallowedElements={['img']}
+        urlTransform={(url) => safeLink(url) ?? ''}
         components={{
+          a: ({ href, children }) =>
+            href ? (
+              <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
+                {children}
+              </a>
+            ) : (
+              <>{children}</>
+            ),
           p: ({ children }) => (
             <Text size="1" as="p" style={{ margin: '0 0 var(--space-1) 0', color: 'inherit' }}>
               {children}
@@ -574,17 +595,236 @@ function ToolSummaryText({ content }: { content: string }) {
   );
 }
 
-/** One tool call: activity label, status icon, and (when expanded)
- * truncated args / result preview — never the full external tool payload,
- * see MessagePart. `showIcon` is false when this renders as a top-level
+/** Pretty-prints `raw` when it is JSON. A truncated preview is no longer
+ * valid JSON, so it is shown as-is. */
+export function formatToolPayload(raw: string): string {
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
+}
+
+function isEmptyToolArgs(raw: string | undefined): boolean {
+  const trimmed = raw?.trim();
+  return !trimmed || trimmed === '{}' || trimmed === 'null';
+}
+
+/** Monospace, scrollable view of a raw tool payload with a copy button. */
+function RawToolPayload({ raw }: { raw: string }) {
+  const { t } = useTranslation();
+  const { copied, copy } = useCopyText();
+  const text = useMemo(() => formatToolPayload(raw), [raw]);
+
+  return (
+    <Box
+      style={{
+        position: 'relative',
+        marginTop: 'var(--space-1)',
+        border: '1px solid var(--slate-5)',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: 'var(--slate-1)',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => void copy(text)}
+        aria-label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+        style={{
+          position: 'absolute',
+          top: 4,
+          right: 4,
+          display: 'inline-flex',
+          alignItems: 'center',
+          background: 'var(--slate-3)',
+          border: 'none',
+          borderRadius: 'var(--radius-1)',
+          padding: 2,
+          cursor: 'pointer',
+        }}
+      >
+        <MaterialIcon
+          name={copied ? 'check' : 'content_copy'}
+          size={13}
+          color={copied ? 'var(--accent-11)' : 'var(--slate-11)'}
+        />
+      </button>
+      <Box
+        onWheel={(e) => e.stopPropagation()}
+        style={{
+          maxHeight: 240,
+          overflow: 'auto',
+          padding: 'var(--space-2)',
+          paddingRight: 'var(--space-6)',
+          fontFamily: 'var(--font-mono, monospace)',
+          fontSize: 'var(--font-size-1)',
+          color: 'var(--slate-11)',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
+        }}
+      >
+        {text}
+      </Box>
+    </Box>
+  );
+}
+
+/** A tool's table of records or one record's fields, from its full result. */
+function ToolResultViewBlock({ view }: { view: ToolResultView }) {
+  const { t } = useTranslation();
+  if (view.kind === 'fields') {
+    return (
+      <Box
+        data-testid="tool-result-fields"
+        style={{
+          marginTop: 'var(--space-1)',
+          padding: 'var(--space-2)',
+          border: '1px solid var(--slate-5)',
+          borderRadius: 'var(--radius-2)',
+          backgroundColor: 'var(--slate-1)',
+        }}
+      >
+        <Box style={{ display: 'grid', gridTemplateColumns: 'minmax(5rem, max-content) 1fr', columnGap: 'var(--space-3)', rowGap: 4 }}>
+          {view.fields.map((field, index) => (
+            <React.Fragment key={index}>
+              <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                {field.label}
+              </Text>
+              <Text size="1" style={{ color: 'var(--slate-12)', overflowWrap: 'anywhere' }}>
+                {field.value}
+              </Text>
+            </React.Fragment>
+          ))}
+        </Box>
+        {view.url && (
+          <Text as="p" size="1" mt="2">
+            <a href={view.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
+              {t('chat.toolCard.open')}
+            </a>
+          </Text>
+        )}
+      </Box>
+    );
+  }
+  return (
+    <Box
+      data-testid="tool-result-table"
+      onWheel={(e) => e.stopPropagation()}
+      style={{ marginTop: 'var(--space-1)', maxHeight: 320, overflow: 'auto' }}
+    >
+      <Table.Root size="1" variant="surface">
+        <Table.Header>
+          <Table.Row>
+            {view.columns.map((column, index) => (
+              <Table.ColumnHeaderCell key={index} style={{ whiteSpace: 'nowrap' }}>
+                {column}
+              </Table.ColumnHeaderCell>
+            ))}
+          </Table.Row>
+        </Table.Header>
+        <Table.Body>
+          {view.rows.map((row, rowIndex) => (
+            <Table.Row key={rowIndex}>
+              {row.cells.map((cell, index) => (
+                <Table.Cell key={index} style={{ maxWidth: 280, overflowWrap: 'anywhere' }}>
+                  {index === 0 && row.url ? (
+                    <a href={row.url} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent-11)' }}>
+                      {cell || row.url}
+                    </a>
+                  ) : (
+                    cell
+                  )}
+                </Table.Cell>
+              ))}
+            </Table.Row>
+          ))}
+        </Table.Body>
+      </Table.Root>
+      {view.total > view.rows.length && (
+        <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+          {t('chat.toolCard.showingOf', { shown: view.rows.length, total: view.total })}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+/** The raw result behind a toggle, when a view of it is shown. */
+function RawResultToggle({ raw }: { raw: string }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  return (
+    <Box>
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((prev) => !prev)}
+        style={{
+          appearance: 'none',
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          marginTop: 'var(--space-1)',
+          cursor: 'pointer',
+          color: 'var(--slate-10)',
+          fontSize: 'var(--font-size-1)',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 2,
+        }}
+      >
+        <MaterialIcon name={open ? 'expand_less' : 'expand_more'} size={14} color="var(--slate-10)" />
+        {open ? t('chat.toolCard.hideRaw') : t('chat.toolCard.viewRaw')}
+      </button>
+      {open && <RawToolPayload raw={raw} />}
+    </Box>
+  );
+}
+
+/** A result that is prose, shown as text rather than code. */
+function PlainResultText({ text }: { text: string }) {
+  return (
+    <Box
+      data-testid="tool-result-text"
+      onWheel={(e) => e.stopPropagation()}
+      style={{
+        marginTop: 'var(--space-1)',
+        maxHeight: 240,
+        overflow: 'auto',
+        fontSize: 'var(--font-size-1)',
+        color: 'var(--slate-11)',
+        lineHeight: 1.5,
+        whiteSpace: 'pre-wrap',
+        wordBreak: 'break-word',
+      }}
+    >
+      {text}
+    </Box>
+  );
+}
+
+/** One tool call: activity label, status icon, and (when expanded) the
+ * server summary plus the raw args / bounded result preview — never the full
+ * external tool payload, see MessagePart. `showIcon` is false when this renders as a top-level
  * timeline row (the rail node already carries the status icon — see
  * `getTimelineIcon`); nested usage inside an expanded `ToolCallGroup` has
  * no rail of its own, so it keeps its own inline icon (the default). */
 export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; showIcon?: boolean }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const status = part.status ?? 'running';
   const toolsetLabel = extractToolsetLabel(part.toolName);
   const sourceInfo = extractSourcesFromSummary(part.argsSummary);
+  const hasRawArgs = !isEmptyToolArgs(part.args);
+  // A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file
+  // content (see `LoadSkillTool`/`LoadSkillResourceTool.summarize_result`) — never
+  // worth showing.
+  const showRawResult = Boolean(part.resultPreview) && !isSkillTool(part.toolName);
+  const rawResult = part.resultPreview ?? '';
+  const view = useMemo(() => (status === 'completed' ? toolResultView(part.resultView) : null), [status, part.resultView]);
+  const plainResult = showRawResult && !view && !looksLikeJson(rawResult);
+  // Prose whose first line is the summary needn't say it twice.
+  const summaryShown = Boolean(part.resultSummary) && !(plainResult && part.resultSummary?.trim() === rawResult.trim().split('\n')[0]?.trim());
 
   return (
     <Box
@@ -668,54 +908,40 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
             gap: 'var(--space-2)',
           }}
         >
-          {(part.argsSummary || part.args) && (
+          {(part.argsSummary || hasRawArgs) && (
             <Box>
               <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-                Arguments
+                {t('chat.toolCard.arguments')}
               </Text>
-              {part.argsSummary ? (
-                <ToolSummaryText content={part.argsSummary} />
-              ) : (
-                <Box
-                  style={{
-                    fontFamily: 'var(--font-mono, monospace)',
-                    fontSize: 'var(--font-size-1)',
-                    color: 'var(--slate-11)',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {part.args}
-                </Box>
-              )}
+              {part.argsSummary && <ToolSummaryText content={part.argsSummary} />}
+              {hasRawArgs && <RawToolPayload raw={part.args ?? ''} />}
             </Box>
           )}
-          {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body
-              or bundled-file content (see `LoadSkillTool`/
-              `LoadSkillResourceTool.summarize_result`'s docstrings) — never
-              worth showing without the summary that replaces it. Chats
-              persisted before summaries existed just show nothing here
-              instead of a wall of instructions/file text. */}
-          {(part.resultSummary || (part.resultPreview && !isSkillTool(part.toolName))) && (
+          {(part.resultSummary || showRawResult || view) && (
             <Box>
-              <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-                {status === 'failed' ? 'Error' : status === 'blocked' ? 'Blocked' : 'Result'}
+              <Text
+                size="1"
+                weight="medium"
+                style={{ color: status === 'failed' ? 'var(--red-11)' : 'var(--slate-9)' }}
+              >
+                {status === 'failed'
+                  ? t('chat.toolCard.error')
+                  : status === 'blocked'
+                    ? t('chat.toolCard.blocked')
+                    : status === 'awaiting_approval'
+                      ? t('chat.toolCard.awaitingApproval')
+                      : t('chat.toolCard.result')}
               </Text>
-              {part.resultSummary ? (
-                <ToolSummaryText content={part.resultSummary} />
-              ) : (
-                <Box
-                  style={{
-                    fontFamily: 'var(--font-mono, monospace)',
-                    fontSize: 'var(--font-size-1)',
-                    color: 'var(--slate-11)',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-word',
-                  }}
-                >
-                  {part.resultPreview}
-                </Box>
-              )}
+              {summaryShown && <ToolSummaryText content={part.resultSummary ?? ''} />}
+              {view && <ToolResultViewBlock view={view} />}
+              {showRawResult &&
+                (view ? (
+                  <RawResultToggle raw={rawResult} />
+                ) : plainResult ? (
+                  <PlainResultText text={rawResult} />
+                ) : (
+                  <RawToolPayload raw={rawResult} />
+                ))}
             </Box>
           )}
         </Box>

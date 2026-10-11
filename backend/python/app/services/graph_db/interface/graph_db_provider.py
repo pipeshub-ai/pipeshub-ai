@@ -5369,6 +5369,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_mcp_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that have the MCP server instance attached.
+
+        Args:
+            instance_id (str): MCP server instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the instance.
+        """
+        pass
+
+    @abstractmethod
     async def check_connector_in_use(
         self,
         connector_id: str,

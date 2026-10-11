@@ -95,6 +95,11 @@ class ProtocolFormatter(ABC):
     @abstractmethod
     def error(self, context: "AgentContext", *, message: str, code: str) -> list[dict[str, Any]]: ...
 
+    @abstractmethod
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]: ...
+
 
 class LegacyFormatter(ProtocolFormatter):
     """Byte-identical to today's hand-built dict literals — the default
@@ -123,6 +128,12 @@ class LegacyFormatter(ProtocolFormatter):
 
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
+
+    def tool_progress(self, context, *, tool, progress, total, message):
+        return [{
+            "event": "status",
+            "data": {"status": "running_tool", "tool": tool, "progress": progress, "total": total, "message": message},
+        }]
 
 
 class AGUIFormatter(ProtocolFormatter):
@@ -186,6 +197,15 @@ class AGUIFormatter(ProtocolFormatter):
 
     def error(self, context, *, message, code):
         return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
+
+    def tool_progress(self, context, *, tool, progress, total, message):
+        """A `running_tool` snapshot like `write_state`'s, with the server's progress on it."""
+        snapshot: dict[str, Any] = {"status": "running_tool", "current_tool": tool, "progress": progress}
+        if total is not None:
+            snapshot["total"] = total
+        if message:
+            snapshot["progress_message"] = message
+        return [frame(AGUIEventType.STATE_SNAPSHOT, runId=context.run_id, snapshot=snapshot)]
 
 
 # Both formatters are stateless (no per-instance state, no `__init__`

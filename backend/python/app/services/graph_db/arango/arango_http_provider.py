@@ -25239,6 +25239,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
+    async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with this MCP server instance attached."""
+        try:
+            server_query = f"""
+            FOR server IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                FILTER server.instanceId == @instance_id
+                RETURN server._id
+            """
+            server_ids = await self.http_client.execute_aql(server_query, bind_vars={
+                "instance_id": instance_id
+            }, txn_id=transaction)
+
+            if not server_ids:
+                return []
+
+            agent_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._to IN @server_ids
+                LET agent = DOCUMENT(edge._from)
+                FILTER agent != null
+                    AND agent.isDeleted != true
+                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
+            """
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "server_ids": server_ids,
+            }, txn_id=transaction)
+
+            return dedupe_agents_by_id(agents)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check MCP server instance usage: {str(e)}")
+            raise
+
     async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
         """
         Check if a connector is currently in use by any active agents.
@@ -25366,6 +25399,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         displayName: mcp_server.displayName,
                         typeId: mcp_server.typeId,
                         instanceId: mcp_server.instanceId,
+                        allTools: mcp_server.allTools == true,
                         tools: mcp_server_tools
                     }}
             )
@@ -25872,6 +25906,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 displayName: mcp_server.displayName,
                                 typeId: mcp_server.typeId,
                                 instanceId: mcp_server.instanceId,
+                                allTools: mcp_server.allTools == true,
                                 tools: mcp_server_tools
                             }}
                     )

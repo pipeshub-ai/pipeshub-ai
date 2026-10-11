@@ -15,6 +15,8 @@ import type {
   McpServerInstancePayload,
   McpServerTemplate,
   McpSuccessResponse,
+  McpToolPolicy,
+  McpToolRules,
   McpToolsResponse,
 } from './types';
 
@@ -33,10 +35,11 @@ export const McpServersApi = {
     return data;
   },
 
-  // ── Instances (admin-managed, org-scoped) ──
+  // ── Instances ──
 
-  async listInstances(): Promise<McpInstancesResponse> {
-    const { data } = await apiClient.get(`${BASE_URL}/instances`);
+  /** Admin only. `includePersonal` adds every user's personal instances, for review. */
+  async listInstances(params?: { includePersonal?: boolean }): Promise<McpInstancesResponse> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances`, { params });
     return data;
   },
 
@@ -50,7 +53,10 @@ export const McpServersApi = {
     return data;
   },
 
-  async updateInstance(instanceId: string, payload: McpServerInstancePayload): Promise<McpServerInstance> {
+  async updateInstance(
+    instanceId: string,
+    payload: McpServerInstancePayload,
+  ): Promise<McpServerInstance & { credentialsReset?: boolean }> {
     const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}`, payload);
     return data;
   },
@@ -126,7 +132,7 @@ export const McpServersApi = {
     return data;
   },
 
-  /** Admin-only live probe — does this server URL support OAuth DCR, and what are its real endpoints? */
+  /** Live probe — does this server URL support OAuth DCR, and what are its real endpoints? */
   async discoverOAuthMetadata(url: string): Promise<McpOAuthDiscoveryResult> {
     const { data } = await apiClient.post(`${BASE_URL}/oauth/discover`, { url });
     return data;
@@ -139,8 +145,35 @@ export const McpServersApi = {
     return data;
   },
 
-  async getInstanceTools(instanceId: string): Promise<McpToolsResponse> {
-    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tools`);
+  /** Live unless `cached`, which answers from the tool cache when it has the list. */
+  async getInstanceTools(instanceId: string, { cached = false }: { cached?: boolean } = {}): Promise<McpToolsResponse> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tools`, {
+      params: cached ? { cached: true } : undefined,
+    });
+    return data;
+  },
+
+  // ── Tool approval rules ──
+
+  /** The company's rules for an organization server (administrators). */
+  async getToolPolicy(instanceId: string): Promise<McpToolPolicy> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tool-policy`);
+    return data;
+  },
+
+  async updateToolPolicy(instanceId: string, policy: McpToolPolicy): Promise<McpToolPolicy> {
+    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tool-policy`, policy);
+    return data;
+  },
+
+  /** The caller's own rules, for their assistant chats. */
+  async getMyToolRules(instanceId: string): Promise<McpToolRules> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/my-tool-rules`);
+    return data;
+  },
+
+  async updateMyToolRules(instanceId: string, rules: McpToolRules): Promise<McpToolRules> {
+    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/my-tool-rules`, rules);
     return data;
   },
 
@@ -202,6 +235,22 @@ export const McpServersApi = {
     const { data } = await apiClient.get(
       `${BASE_URL}/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/oauth/authorize`,
       { params: baseUrl ? { baseUrl } : undefined }
+    );
+    return data;
+  },
+
+  async getAgentToolRules(agentKey: string, instanceId: string): Promise<McpToolRules> {
+    const { data } = await apiClient.get(
+      `${BASE_URL}/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/tool-rules`
+    );
+    return data;
+  },
+
+  /** Only the agent's editors can change them. */
+  async updateAgentToolRules(agentKey: string, instanceId: string, rules: McpToolRules): Promise<McpToolRules> {
+    const { data } = await apiClient.put(
+      `${BASE_URL}/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/tool-rules`,
+      rules
     );
     return data;
   },

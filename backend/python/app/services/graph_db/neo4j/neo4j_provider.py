@@ -22226,6 +22226,32 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
+    async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with this MCP server instance attached."""
+        try:
+            mcp_server_label = collection_to_label(CollectionNames.AGENT_MCP_SERVERS.value)
+            agent_label = collection_to_label(CollectionNames.AGENT_INSTANCES.value)
+            agent_has_mcp_server_rel = edge_collection_to_relationship(CollectionNames.AGENT_HAS_MCP_SERVER.value)
+
+            query = f"""
+            MATCH (server:{mcp_server_label} {{instanceId: $instance_id}})
+            MATCH (agent:{agent_label})-[r:{agent_has_mcp_server_rel}]->(server)
+            WHERE (agent.isDeleted IS NULL OR agent.isDeleted = false)
+            RETURN DISTINCT elementId(agent) AS agentId, agent.name AS agentName
+            """
+
+            results = await self.client.execute_query(
+                query,
+                parameters={"instance_id": instance_id},
+                txn_id=transaction
+            )
+
+            return dedupe_agents_by_id(results)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check MCP server instance usage: {str(e)}")
+            raise
+
     async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
         """
         Check if a connector is currently in use by any active agents.
@@ -22461,6 +22487,7 @@ class Neo4jProvider(IGraphDBProvider):
             displayName: ms.displayName,
             typeId: ms.typeId,
             instanceId: ms.instanceId,
+            allTools: coalesce(ms.allTools, false),
             tools: tools
         }} AS mcp_server
         """
@@ -22565,6 +22592,8 @@ class Neo4jProvider(IGraphDBProvider):
                 # outer except below — degrade to an empty list instead.
                 self.logger.warning(f"Agent MCP server enrichment failed for {agent_id}; returning agent without mcpServers: {str(e)}")
                 mcp_projection = {}
+                # The empty list isn't the agent's: a builder that saved it would detach every server.
+                agent["mcpServersUnavailable"] = True
             agent["mcpServers"] = mcp_projection.get(agent_id, [])
 
             # shareWithOrg: when org_id is provided match the specific org node;
@@ -22900,16 +22929,20 @@ class Neo4jProvider(IGraphDBProvider):
                 except Exception as e:
                     self.logger.warning(f"Agent list enrichment failed; returning agents without toolsets/knowledge: {str(e)}")
                     projection = {}
+                mcp_unavailable = False
                 try:
                     mcp_projection = await self._project_agents_mcp_servers(ids, transaction)
                 except Exception as e:
                     self.logger.warning(f"Agent list MCP server enrichment failed; returning agents without mcpServers: {str(e)}")
                     mcp_projection = {}
+                    mcp_unavailable = True
                 for ag in agent_list:
                     proj = projection.get(ag.get("_key"), {"toolsets": [], "knowledge": []})
                     ag["toolsets"] = proj["toolsets"]
                     ag["knowledge"] = proj["knowledge"]
                     ag["mcpServers"] = mcp_projection.get(ag.get("_key"), [])
+                    if mcp_unavailable:
+                        ag["mcpServersUnavailable"] = True
                 return agent_list
 
             has_paging = page is not None and limit is not None

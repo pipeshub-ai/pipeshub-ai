@@ -408,7 +408,9 @@ class FakeConfigService:
     def __init__(self, values: dict[str, Any] | None = None) -> None:
         self.values = values or {}
 
-    async def get_config(self, key: str, default: Any = None, use_cache: bool = True) -> Any:
+    async def get_config(
+        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,
+    ) -> Any:
         return copy.deepcopy(self.values.get(key, default))
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:

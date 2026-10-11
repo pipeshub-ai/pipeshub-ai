@@ -56,9 +56,13 @@ export function appendResumeParts(existing: MessagePart[], incoming: MessagePart
   return extra.length ? [...existing, ...extra] : existing;
 }
 
-/** Extracts the toolset/connector prefix display name. */
+/** Extracts the toolset/connector prefix display name. MCP tools are named
+ * `mcp_{server}_{tool}` with single underscores, so the server part can't be
+ * split out reliably; they get a generic "MCP" chip and the server name comes
+ * from the backend's `displayName`. */
 export function extractToolsetLabel(toolName: string | undefined): string | undefined {
-  if (!toolName || !toolName.includes('__')) return undefined;
+  if (!toolName) return undefined;
+  if (!toolName.includes('__')) return toolName.startsWith('mcp_') ? 'MCP' : undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;
   const words = prefix.split(/[_\-\s]+/).filter(Boolean);

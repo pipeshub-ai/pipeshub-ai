@@ -413,6 +413,7 @@ class TestAbstractMethodInventory:
         "get_failed_records_with_active_users",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_mcp_instance_in_use",
         "check_connector_in_use",
         # Knowledge hub operations
         "get_knowledge_hub_root_nodes",

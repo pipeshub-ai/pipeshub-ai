@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Avatar, Badge, Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Box, Callout, Checkbox, Flex, IconButton, Tabs, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { toast } from '@/lib/store/toast-store';
@@ -10,38 +10,46 @@ import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { apiClient, isProcessedError } from '@/lib/api';
 import { isMcpInstanceReadOnly, McpInheritedCallout } from '@/config';
-import { WorkspaceRightPanel } from '../../../components/workspace-right-panel';
-import { FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
+import { useWorkspaceDrawerNestedModalHost, WorkspaceRightPanel } from '../../../components/workspace-right-panel';
+import { ConfirmationDialog, FormField, SelectDropdown, TagInput, type TagItem } from '../../../components';
 import { McpServersApi } from '../../api';
-import { McpDisabledCallout } from '../../components';
+import { McpDisabledCallout, McpDisconnectDialog, isMcpInstanceDisabled } from '../../components';
+import { useToolRulesEditor, type McpToolRulesTarget } from '../../components/mcp-tool-rules-editor';
+import { mcpConnectionState, usesSharedCredential, type McpConnectionState } from '../../connection-state';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
+import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
+import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
 import {
   isOauthClientMissing,
   isOauthClientRequired,
   resolveDcrSupport,
+  resolveMcpOAuthCallbackUrl,
   type DcrProbeState,
 } from '../../oauth-dcr-requirement';
 import {
   buildMultiEnvAuthPayload,
   isMultiEnvAuthComplete,
+  isSecretFieldName,
   needsMultiEnvAuth,
 } from '../../stdio-env-auth';
+import { mcpEditCredentialImpact, type McpEditCredentialImpact } from '../../edit-impact';
+import { ruleToolsFromInfo } from '../../tool-rules';
 import type {
   McpAuthMode,
+  McpInstanceScope,
   McpMyServerEntry,
   McpOAuthConfigResponse,
   McpServerInstancePayload,
   McpServerTemplate,
-  McpToolInfo,
   McpTransport,
 } from '../../types';
-import { MCP_AUTH_MODE_LABELS, MCP_CUSTOM_STDIO_FLAG, MCP_TRANSPORT_LABELS } from '../../types';
-
-/** Matches the redirect URI the backend builds — see `_build_oauth_authorization_url` in
- * `backend/python/app/api/routes/mcp_servers.py` (trailing slash included). */
-function mcpOAuthCallbackUrl(): string | null {
-  if (typeof window === 'undefined') return null;
-  return `${window.location.origin.replace(/\/$/, '')}/mcp-servers/oauth/callback/`;
-}
+import {
+  MCP_AUTH_MODE_LABELS,
+  MCP_CUSTOM_STDIO_FLAG,
+  MCP_TIMEOUT_LIMITS,
+  MCP_TRANSPORT_LABELS,
+  isPersonalMcpInstance,
+} from '../../types';
 
 const DCR_PROBE_DEBOUNCE_MS = 500;
 
@@ -66,11 +74,11 @@ interface McpInstanceConfigPanelProps {
   onAuthenticate: (instance: McpMyServerEntry) => void;
   onReauthenticate: (instance: McpMyServerEntry) => void;
   onDisconnect: (instance: McpMyServerEntry) => void;
+  /** Where a new instance is created; an existing one keeps its own. Defaults to `org`. */
+  scope?: McpInstanceScope;
 }
 
-type PanelTab = 'configuration' | 'connection';
-
-type ToolsResult = { tools: McpToolInfo[]; error?: string; loading: boolean };
+type PanelTab = 'configuration' | 'tools';
 
 // SSE is deliberately excluded here — custom servers can only be created as STDIO or
 // Streamable HTTP; SSE remains a valid `McpTransport` value for existing/catalog instances.
@@ -78,6 +86,14 @@ const STDIO_OPTION = { value: 'stdio' as const, label: MCP_TRANSPORT_LABELS.stdi
 const HTTP_OPTION = { value: 'streamable_http' as const, label: MCP_TRANSPORT_LABELS.streamable_http };
 
 const ALL_AUTH_MODES: McpAuthMode[] = ['none', 'api_token', 'oauth', 'headers'];
+
+/** '' = use the default; otherwise a whole number of seconds within `limits`. */
+function parseTimeout(raw: string, limits: { min: number; max: number }): { value: number | null; valid: boolean } {
+  const text = raw.trim();
+  if (!text) return { value: null, valid: true };
+  const value = Number(text);
+  return { value, valid: Number.isInteger(value) && value >= limits.min && value <= limits.max };
+}
 
 function tagsToStrings(tags: TagItem[]): string[] {
   return tags.map((t) => t.value).filter(Boolean);
@@ -99,12 +115,19 @@ export function McpInstanceConfigPanel({
   onAuthenticate,
   onReauthenticate,
   onDisconnect,
+  scope = 'org',
 }: McpInstanceConfigPanelProps) {
   const { t } = useTranslation();
   const { open, mode, editingInstance, prefillTemplate } = state;
+  // The backend refuses a local command or a shared admin credential on a personal instance.
+  const isPersonal = mode === 'edit' ? isPersonalMcpInstance(editingInstance) : scope === 'personal';
 
   const [activeTab, setActiveTab] = useState<PanelTab>('configuration');
-  const [toolsResult, setToolsResult] = useState<ToolsResult | undefined>(undefined);
+  const [toolsLoad, setToolsLoad] = useState<McpToolsLoad>({ status: 'idle' });
+  const [disconnectTarget, setDisconnectTarget] = useState<McpMyServerEntry | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [creatorName, setCreatorName] = useState<string | null>(null);
+  const { copy } = useCopyText();
 
   const liveInstance = useMemo(
     () => (editingInstance ? instances.find((i) => i._id === editingInstance._id) ?? editingInstance : null),
@@ -133,7 +156,11 @@ export function McpInstanceConfigPanel({
   const [authorizationUrl, setAuthorizationUrl] = useState('');
   const [tokenUrl, setTokenUrl] = useState('');
   const [scopeTags, setScopeTags] = useState<TagItem[]>([]);
+  const [connectTimeout, setConnectTimeout] = useState('');
+  const [callTimeout, setCallTimeout] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [pendingImpact, setPendingImpact] = useState<McpEditCredentialImpact>('none');
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(open);
 
   const [apiToken, setApiToken] = useState('');
   const [envValues, setEnvValues] = useState<Record<string, string>>({});
@@ -149,10 +176,16 @@ export function McpInstanceConfigPanel({
     customStdioAllowedRef.current = customStdioAllowed;
   }, [customStdioAllowed]);
 
+  // Bumped whenever the list is asked for again or the panel reopens: an older answer is dropped.
+  const toolsRequest = useRef(0);
+
   useEffect(() => {
     if (!open) return;
     setActiveTab('configuration');
-    setToolsResult(undefined);
+    toolsRequest.current += 1;
+    setToolsLoad({ status: 'idle' });
+    setConfirmDiscard(false);
+    setPendingImpact('none');
     if (editingInstance) {
       setName(editingInstance.name);
       setDescription(editingInstance.description ?? '');
@@ -167,6 +200,8 @@ export function McpInstanceConfigPanel({
       setAuthorizationUrl(editingInstance.authorizationUrl ?? '');
       setTokenUrl(editingInstance.tokenUrl ?? '');
       setScopeTags(stringsToTags(editingInstance.scopes ?? []));
+      setConnectTimeout(editingInstance.connectTimeoutSeconds ? String(editingInstance.connectTimeoutSeconds) : '');
+      setCallTimeout(editingInstance.callTimeoutSeconds ? String(editingInstance.callTimeoutSeconds) : '');
     } else if (prefillTemplate) {
       setName(prefillTemplate.displayName);
       setDescription(prefillTemplate.description);
@@ -181,10 +216,12 @@ export function McpInstanceConfigPanel({
       setAuthorizationUrl(prefillTemplate.authorizationUrl ?? '');
       setTokenUrl(prefillTemplate.tokenUrl ?? '');
       setScopeTags(stringsToTags(prefillTemplate.defaultScopes ?? []));
+      setConnectTimeout('');
+      setCallTimeout('');
     } else {
       setName('');
       setDescription('');
-      setTransport(customStdioAllowedRef.current ? 'stdio' : 'streamable_http');
+      setTransport(customStdioAllowedRef.current && !isPersonal ? 'stdio' : 'streamable_http');
       setAuthMode('none');
       setUseAdminAuth(false);
       setCommand('');
@@ -195,18 +232,20 @@ export function McpInstanceConfigPanel({
       setAuthorizationUrl('');
       setTokenUrl('');
       setScopeTags([]);
+      setConnectTimeout('');
+      setCallTimeout('');
     }
     setApiToken('');
     setEnvValues({});
     setHeaderValue('');
     setOauthClientId('');
     setOauthClientSecret('');
-  }, [open, editingInstance, prefillTemplate]);
+  }, [open, editingInstance, prefillTemplate, isPersonal]);
 
   // An existing STDIO instance, or a STDIO form open when the setting turned off, keeps the
   // option so the dropdown still shows the selected value; saving it is blocked below.
   const transportOptions: { value: McpTransport; label: string }[] =
-    customStdioAllowed || editingInstance?.transport === 'stdio' || transport === 'stdio'
+    !isPersonal && (customStdioAllowed || editingInstance?.transport === 'stdio' || transport === 'stdio')
       ? [STDIO_OPTION, HTTP_OPTION]
       : [HTTP_OPTION];
   const customStdioBlocked = !isTemplateBased && transport === 'stdio' && !customStdioAllowed;
@@ -215,7 +254,7 @@ export function McpInstanceConfigPanel({
     ? resolvedTemplate.supportedAuthModes
     : ALL_AUTH_MODES;
 
-  const canUseAdminAuth = authMode === 'api_token' || authMode === 'headers';
+  const canUseAdminAuth = !isPersonal && (authMode === 'api_token' || authMode === 'headers');
 
   const effectiveRequiredEnv = isTemplateBased
     ? (resolvedTemplate?.requiredEnv ?? [])
@@ -328,14 +367,15 @@ export function McpInstanceConfigPanel({
       ? t('workspace.mcpServers.form.oauthPairRequired')
       : undefined;
 
+  const connectTimeoutInput = parseTimeout(connectTimeout, MCP_TIMEOUT_LIMITS.connect);
+  const callTimeoutInput = parseTimeout(callTimeout, MCP_TIMEOUT_LIMITS.call);
+
   const isValid =
+    connectTimeoutInput.valid &&
+    callTimeoutInput.valid &&
     name.trim().length > 0 &&
     (isTemplateBased ||
-      (transport === 'stdio'
-        ? command.trim().length > 0 &&
-          tagsToStrings(argTags).length > 0 &&
-          tagsToStrings(requiredEnvTags).length > 0
-        : url.trim().length > 0)) &&
+      (transport === 'stdio' ? command.trim().length > 0 : url.trim().length > 0)) &&
     !oauthPairError &&
     !oauthClientMissing &&
     !customStdioBlocked;
@@ -387,41 +427,60 @@ export function McpInstanceConfigPanel({
     }
   };
 
-  const handleSave = async () => {
+  const buildPayload = (): McpServerInstancePayload => ({
+    name: name.trim(),
+    typeId: resolvedTemplate?.typeId ?? null,
+    ...(mode === 'create' ? { scope: isPersonal ? 'personal' : 'org' } : {}),
+    transport: resolvedTemplate?.transport ?? transport,
+    authMode,
+    useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
+    description: description.trim() || null,
+    ...(isTemplateBased
+      ? {}
+      : transport === 'stdio'
+        ? {
+            command: command.trim(),
+            args: tagsToStrings(argTags),
+            requiredEnv: tagsToStrings(requiredEnvTags),
+          }
+        : { url: url.trim() }),
+    ...(authMode === 'headers' ? { headerName: headerName.trim() || null } : {}),
+    ...(authMode === 'oauth' && !isTemplateBased
+      ? {
+          authorizationUrl: authorizationUrl.trim() || null,
+          tokenUrl: tokenUrl.trim() || null,
+          scopes: tagsToStrings(scopeTags),
+        }
+      : {}),
+    connectTimeoutSeconds: connectTimeoutInput.value,
+    callTimeoutSeconds: callTimeoutInput.value,
+  });
+
+  const handleSave = () => {
     if (!isValid) return;
+    if (mode === 'edit' && editingInstance) {
+      const impact = mcpEditCredentialImpact(editingInstance, buildPayload());
+      if (impact !== 'none') {
+        setPendingImpact(impact);
+        return;
+      }
+    }
+    void save();
+  };
+
+  const save = async () => {
     setIsSaving(true);
     try {
-      const payload: McpServerInstancePayload = {
-        name: name.trim(),
-        typeId: resolvedTemplate?.typeId ?? null,
-        transport: resolvedTemplate?.transport ?? transport,
-        authMode,
-        useAdminAuth: canUseAdminAuth ? useAdminAuth : false,
-        description: description.trim() || null,
-        ...(isTemplateBased
-          ? {}
-          : transport === 'stdio'
-            ? {
-                command: command.trim(),
-                args: tagsToStrings(argTags),
-                requiredEnv: tagsToStrings(requiredEnvTags),
-              }
-            : { url: url.trim() }),
-        ...(authMode === 'headers' ? { headerName: headerName.trim() || null } : {}),
-        ...(authMode === 'oauth' && !isTemplateBased
-          ? {
-              authorizationUrl: authorizationUrl.trim() || null,
-              tokenUrl: tokenUrl.trim() || null,
-              scopes: tagsToStrings(scopeTags),
-            }
-          : {}),
-      };
-
+      const payload = buildPayload();
       let instanceId: string;
       if (mode === 'edit' && editingInstance) {
         const updated = await McpServersApi.updateInstance(editingInstance._id, payload);
         instanceId = updated._id;
-        toast.success(t('workspace.mcpServers.toasts.updated'));
+        if (updated.credentialsReset) {
+          toast.warning(t('workspace.mcpServers.toasts.credentialsReset'));
+        } else {
+          toast.success(t('workspace.mcpServers.toasts.updated'));
+        }
       } else {
         const created = await McpServersApi.createInstance(payload);
         instanceId = created._id;
@@ -431,7 +490,7 @@ export function McpInstanceConfigPanel({
       await saveCredentialsIfProvided(instanceId);
 
       onSaved();
-      onOpenChange(false);
+      requestOpenChange(false);
     } catch (error) {
       const detail = isProcessedError(error) ? error.message : undefined;
       toast.error(t('workspace.mcpServers.toasts.saveError'), detail ? { description: detail } : undefined);
@@ -440,17 +499,159 @@ export function McpInstanceConfigPanel({
     }
   };
 
-  const handleDiscoverTools = async () => {
-    if (!liveInstance) return;
-    setToolsResult({ tools: [], loading: true });
-    try {
-      const res = await McpServersApi.getInstanceTools(liveInstance._id);
-      setToolsResult({ tools: res.tools, loading: false });
-    } catch (error) {
-      const detail = isProcessedError(error) ? error.message : t('workspace.mcpServers.toasts.discoveryError');
-      setToolsResult({ tools: [], error: detail, loading: false });
+  const liveId = liveInstance?._id;
+  // Opening the tab reads the cached list; Refresh connects.
+  const loadTools = useCallback(
+    async (cached: boolean) => {
+      if (!liveId) return;
+      const request = ++toolsRequest.current;
+      setToolsLoad({ status: 'loading' });
+      try {
+        const res = await McpServersApi.getInstanceTools(liveId, { cached });
+        if (request !== toolsRequest.current) return;
+        setToolsLoad({ status: 'ready', tools: res.tools, syncedAt: res.syncedAt ?? Date.now() });
+      } catch (error) {
+        if (request !== toolsRequest.current) return;
+        const status = isProcessedError(error) ? error.statusCode : undefined;
+        setToolsLoad({
+          status: 'error',
+          code: status === 409 ? 'reauth' : status === 502 ? 'unreachable' : 'error',
+          message: isProcessedError(error) ? error.message : t('workspace.mcpServers.toasts.discoveryError'),
+        });
+      }
+    },
+    [liveId, t]
+  );
+
+  // How the server is doing, corrected by what the tool list just said.
+  const connectionState: McpConnectionState = useMemo(() => {
+    if (!liveInstance) return 'ready';
+    const base = mcpConnectionState(liveInstance, { isAdmin: !isPersonal });
+    if (base !== 'ready' || toolsLoad.status !== 'error') return base;
+    if (toolsLoad.code === 'reauth') return usesSharedCredential(liveInstance) ? 'shared_credential_missing' : 'needs_reconnect';
+    return toolsLoad.code === 'unreachable' ? 'unreachable' : base;
+  }, [liveInstance, isPersonal, toolsLoad]);
+  const canListTools =
+    connectionState !== 'needs_connect' && connectionState !== 'waiting_for_admin' && connectionState !== 'shared_credential_missing';
+
+  useEffect(() => {
+    if (open && mode === 'edit' && activeTab === 'tools' && canListTools && toolsLoad.status === 'idle') {
+      void loadTools(true);
     }
+  }, [open, mode, activeTab, canListTools, toolsLoad.status, loadTools]);
+
+  // A personal server's rules are its owner's; an organization server's are the company floor.
+  const rulesTarget: McpToolRulesTarget = useMemo(
+    () => ({ kind: isPersonal ? 'personal' : 'company', instanceId: liveId ?? '' }),
+    [isPersonal, liveId]
+  );
+  const ruleTools = useMemo(() => ruleToolsFromInfo(toolsLoad.status === 'ready' ? toolsLoad.tools : []), [toolsLoad]);
+  const rulesEditor = useToolRulesEditor(rulesTarget, ruleTools, open && mode === 'edit' && Boolean(liveId));
+
+  // Unsaved rule changes are asked about before the panel closes.
+  const requestOpenChange = (next: boolean) => {
+    if (!next && mode === 'edit' && rulesEditor.changes > 0) {
+      setConfirmDiscard(true);
+      return;
+    }
+    onOpenChange(next);
   };
+
+  // A new sign-in (Reauthenticate) makes a failed list worth reading again.
+  const connectedAt = liveInstance?.connectedAt;
+  useEffect(() => {
+    setToolsLoad((prev) => (prev.status === 'error' ? { status: 'idle' } : prev));
+  }, [connectedAt]);
+
+  const createdBy = liveInstance?.createdBy;
+  const creatorHidden = isMcpInstanceReadOnly(liveInstance);
+  useEffect(() => {
+    if (!open || !createdBy || creatorHidden) {
+      setCreatorName(null);
+      return;
+    }
+    let cancelled = false;
+    apiClient
+      .post('/api/v1/users/by-ids', { userIds: [createdBy] })
+      .then(({ data }) => {
+        if (cancelled) return;
+        const users = Array.isArray(data) ? data : data?.users ?? [];
+        const user = (users[0] ?? {}) as Record<string, unknown>;
+        const fullName = String(user.name ?? user.fullName ?? '').trim();
+        setCreatorName(fullName || createdBy);
+      })
+      .catch(() => {
+        if (!cancelled) setCreatorName(createdBy);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, createdBy, creatorHidden]);
+
+  const menuEntries: McpMenuEntry[] = [];
+  if (mode === 'edit' && liveInstance) {
+    const perPerson = liveInstance.authMode !== 'none' && !usesSharedCredential(liveInstance);
+    const canDisconnect = perPerson && liveInstance.isAuthenticated;
+    const canRemove = !isReadOnly;
+    if (canDisconnect) {
+      menuEntries.push({
+        kind: 'item',
+        id: 'reauthenticate',
+        icon: 'autorenew',
+        label: t('workspace.mcpServers.cta.reauthenticate'),
+        onSelect: () => onReauthenticate(liveInstance),
+      });
+    }
+    if (liveInstance.url) {
+      const serverUrl = liveInstance.url;
+      menuEntries.push({
+        kind: 'item',
+        id: 'copy-url',
+        icon: 'content_copy',
+        label: t('workspace.mcpServers.configPanel.menu.copyUrl'),
+        onSelect: () =>
+          void copy(serverUrl).then((ok) =>
+            ok
+              ? toast.success(t('workspace.mcpServers.configPanel.menu.copied'))
+              : toast.error(t('workspace.mcpServers.configPanel.menu.copyFailed'))
+          ),
+      });
+    }
+    if (creatorName) {
+      menuEntries.push({
+        kind: 'info',
+        id: 'added-by',
+        icon: 'person',
+        label: t('workspace.mcpServers.configPanel.menu.addedBy', { name: creatorName }),
+      });
+    }
+    if (canDisconnect || canRemove) menuEntries.push({ kind: 'separator', id: 'sep' });
+    if (canDisconnect) {
+      menuEntries.push({
+        kind: 'item',
+        id: 'disconnect',
+        icon: 'link_off',
+        label: t('workspace.mcpServers.cta.disconnect'),
+        description: t('workspace.mcpServers.configPanel.menu.disconnectHint'),
+        danger: true,
+        onSelect: () => setDisconnectTarget(liveInstance),
+      });
+    }
+    if (canRemove && editingInstance) {
+      const target = editingInstance;
+      menuEntries.push({
+        kind: 'item',
+        id: 'remove',
+        icon: 'delete',
+        label: t('workspace.mcpServers.configPanel.menu.remove'),
+        description: t(
+          isPersonal ? 'workspace.mcpServers.configPanel.menu.removeHintPersonal' : 'workspace.mcpServers.configPanel.menu.removeHint'
+        ),
+        danger: true,
+        onSelect: () => onRequestDelete(target),
+      });
+    }
+  }
 
   const panelTitle =
     mode === 'edit'
@@ -483,7 +684,7 @@ export function McpInstanceConfigPanel({
             onChange={(v) => setTransport(v as McpTransport)}
             options={transportOptions}
           />
-          {!customStdioAllowed && mode === 'create' && (
+          {!customStdioAllowed && !isPersonal && mode === 'create' && (
             <Text size="1" style={{ color: 'var(--gray-10)' }}>
               {t('workspace.mcpServers.stdioPolicy.unavailableHint', { flag: MCP_CUSTOM_STDIO_FLAG })}
             </Text>
@@ -510,15 +711,20 @@ export function McpInstanceConfigPanel({
               placeholder="npx"
             />
           </FormField>
-          <FormField label={t('workspace.mcpServers.form.args')} required>
+          <FormField label={t('workspace.mcpServers.form.args')} optional>
             <TagInput tags={argTags} onTagsChange={setArgTags} placeholder={t('workspace.mcpServers.form.argsPlaceholder')} />
           </FormField>
-          <FormField label={t('workspace.mcpServers.form.requiredEnv')} required>
+          <FormField label={t('workspace.mcpServers.form.requiredEnv')} optional>
             <TagInput
               tags={requiredEnvTags}
               onTagsChange={setRequiredEnvTags}
               placeholder={t('workspace.mcpServers.form.requiredEnvPlaceholder')}
             />
+            {authMode === 'api_token' && requiredEnvTags.length === 0 && (
+              <Text size="1" style={{ color: 'var(--gray-10)' }}>
+                {t('workspace.mcpServers.form.defaultTokenEnvHint', { name: 'API_TOKEN' })}
+              </Text>
+            )}
           </FormField>
         </>
       )}
@@ -608,7 +814,7 @@ export function McpInstanceConfigPanel({
                 <FormField key={envKey} label={envKey} optional={!isRequired}>
                   <TextField.Root
                     size="2"
-                    type={envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('key') ? 'password' : 'text'}
+                    type={isSecretFieldName(envKey) ? 'password' : 'text'}
                     value={envValues[envKey] ?? ''}
                     onChange={(e) => setEnvValues((prev) => ({ ...prev, [envKey]: e.target.value }))}
                     placeholder={credentialsPlaceholder}
@@ -647,6 +853,7 @@ export function McpInstanceConfigPanel({
           {authMode === 'oauth' && (
             <>
               <McpOAuthCallbackUrlCard
+                callbackUrl={resolveMcpOAuthCallbackUrl(dcrProbe, existingOAuthConfig)}
                 dcrProbe={dcrProbe}
                 dcrSupported={dcrSupported}
                 documentationUrl={resolvedTemplate?.documentationUrl}
@@ -717,6 +924,48 @@ export function McpInstanceConfigPanel({
         </Flex>
       )}
 
+      <Flex direction="column" gap="3">
+        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+          {t('workspace.mcpServers.form.timeoutsHeading')}
+        </Text>
+        <Flex gap="3">
+          <FormField
+            label={t('workspace.mcpServers.form.connectTimeout')}
+            optional
+            error={
+              connectTimeoutInput.valid
+                ? undefined
+                : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.connect)
+            }
+          >
+            <TextField.Root
+              size="2"
+              type="number"
+              inputMode="numeric"
+              value={connectTimeout}
+              onChange={(e) => setConnectTimeout(e.target.value)}
+              placeholder="15"
+            />
+          </FormField>
+          <FormField
+            label={t('workspace.mcpServers.form.callTimeout')}
+            optional
+            error={
+              callTimeoutInput.valid ? undefined : t('workspace.mcpServers.form.timeoutRange', MCP_TIMEOUT_LIMITS.call)
+            }
+          >
+            <TextField.Root
+              size="2"
+              type="number"
+              inputMode="numeric"
+              value={callTimeout}
+              onChange={(e) => setCallTimeout(e.target.value)}
+              placeholder="60"
+            />
+          </FormField>
+        </Flex>
+      </Flex>
+
       {mode === 'create' && authMode !== 'none' && !useAdminAuth && (
         <Text size="1" style={{ color: 'var(--gray-10)' }}>
           {t('workspace.mcpServers.form.connectAfterCreateHint')}
@@ -725,76 +974,124 @@ export function McpInstanceConfigPanel({
     </Flex>
   );
 
+  const impactMessageKey =
+    pendingImpact === 'shared_credential'
+      ? 'workspace.mcpServers.editImpact.sharedBody'
+      : isPersonal
+        ? 'workspace.mcpServers.editImpact.personalBody'
+        : 'workspace.mcpServers.editImpact.body';
+
   return (
-    <WorkspaceRightPanel
-      open={open}
-      onOpenChange={onOpenChange}
-      title={panelTitle}
-      icon="hub"
-      primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
-      secondaryLabel={t('common.cancel')}
-      primaryDisabled={!isValid}
-      primaryLoading={isSaving}
-      onPrimaryClick={handleSave}
-      hideFooter={!showFooter}
-      headerActions={
-        mode === 'edit' && editingInstance && !isReadOnly ? (
-          <button
-            type="button"
-            onClick={() => onRequestDelete(editingInstance)}
-            aria-label={t('workspace.mcpServers.cta.delete')}
-            style={{
-              appearance: 'none',
-              border: 'none',
-              background: 'transparent',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              padding: 6,
-            }}
+    <>
+      <WorkspaceRightPanel
+        open={open}
+        onOpenChange={requestOpenChange}
+        title={mode === 'edit' && liveInstance ? liveInstance.name : panelTitle}
+        icon={mode === 'edit' && liveInstance ? undefined : 'hub'}
+        titleNode={
+          mode === 'edit' && liveInstance ? (
+            <McpPanelTitle instance={liveInstance} state={isMcpInstanceDisabled(liveInstance) ? 'disabled' : connectionState} />
+          ) : undefined
+        }
+        primaryLabel={mode === 'edit' ? t('common.save') : t('common.create')}
+        secondaryLabel={t('common.cancel')}
+        primaryDisabled={!isValid}
+        primaryLoading={isSaving}
+        onPrimaryClick={handleSave}
+        hideFooter={!showFooter}
+        headerActions={
+          menuEntries.length > 0 ? <McpServerActionsMenu entries={menuEntries} container={nestedModalHost} /> : undefined
+        }
+      >
+        {mode === 'edit' ? (
+          <Tabs.Root
+            value={activeTab}
+            onValueChange={(v) => setActiveTab(v as PanelTab)}
+            style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}
           >
-            <MaterialIcon name="delete" size={18} color="var(--red-11)" />
-          </button>
-        ) : undefined
-      }
-    >
-      {mode === 'edit' ? (
-        <Tabs.Root
-          value={activeTab}
-          onValueChange={(v) => setActiveTab(v as PanelTab)}
-          style={{ width: '100%', height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}
-        >
-          <Tabs.List
-            style={{ borderBottom: '1px solid var(--olive-3)', marginBottom: 'var(--space-4)', flexShrink: 0 }}
-          >
-            <Tabs.Trigger value="configuration">
-              {t('workspace.mcpServers.configPanel.tabs.configuration')}
-            </Tabs.Trigger>
-            <Tabs.Trigger value="connection">
-              {t('workspace.mcpServers.configPanel.tabs.connection')}
-            </Tabs.Trigger>
-          </Tabs.List>
+            <Tabs.List
+              style={{ borderBottom: '1px solid var(--olive-3)', marginBottom: 'var(--space-4)', flexShrink: 0 }}
+            >
+              <Tabs.Trigger value="configuration">
+                {t('workspace.mcpServers.configPanel.tabs.configuration')}
+              </Tabs.Trigger>
+              <Tabs.Trigger value="tools">
+                {t('workspace.mcpServers.configPanel.tabs.tools')}
+              </Tabs.Trigger>
+            </Tabs.List>
 
-          <Tabs.Content value="configuration" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
-            {configurationForm}
-          </Tabs.Content>
+            <Tabs.Content value="configuration" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+              {configurationForm}
+            </Tabs.Content>
 
-          <Tabs.Content value="connection" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-            <ConnectionAndToolsTab
-              instance={liveInstance}
-              isBusy={liveInstance ? busyInstanceId === liveInstance._id : false}
-              toolsResult={toolsResult}
-              onAuthenticate={onAuthenticate}
-              onReauthenticate={onReauthenticate}
-              onDisconnect={onDisconnect}
-              onDiscoverTools={() => void handleDiscoverTools()}
-            />
-          </Tabs.Content>
-        </Tabs.Root>
-      ) : (
-        configurationForm
-      )}
-    </WorkspaceRightPanel>
+            <Tabs.Content value="tools" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+              {liveInstance ? (
+                <McpToolsApprovalsTab
+                  instance={liveInstance}
+                  state={connectionState}
+                  load={toolsLoad}
+                  editor={rulesEditor}
+                  readOnly={isMcpInstanceReadOnly(liveInstance)}
+                  isBusy={busyInstanceId === liveInstance._id}
+                  onRefresh={() => void loadTools(false)}
+                  onAuthenticate={() => onAuthenticate(liveInstance)}
+                  onReauthenticate={() => onReauthenticate(liveInstance)}
+                />
+              ) : (
+                <Text size="2" style={{ color: 'var(--gray-10)' }}>
+                  {t('workspace.mcpServers.form.connectAfterCreateHint')}
+                </Text>
+              )}
+            </Tabs.Content>
+          </Tabs.Root>
+        ) : (
+          configurationForm
+        )}
+      </WorkspaceRightPanel>
+
+      <ConfirmationDialog
+        open={pendingImpact !== 'none'}
+        onOpenChange={(next) => {
+          if (!next) setPendingImpact('none');
+        }}
+        title={t('workspace.mcpServers.editImpact.title')}
+        message={t(impactMessageKey)}
+        confirmLabel={t('workspace.mcpServers.editImpact.confirm')}
+        confirmVariant="danger"
+        onConfirm={() => {
+          setPendingImpact('none');
+          void save();
+        }}
+        container={nestedModalHost}
+      />
+
+      <McpDisconnectDialog
+        instance={disconnectTarget}
+        onOpenChange={(next) => {
+          if (!next) setDisconnectTarget(null);
+        }}
+        onConfirm={() => {
+          if (disconnectTarget) onDisconnect(disconnectTarget);
+          setDisconnectTarget(null);
+        }}
+        container={nestedModalHost}
+      />
+
+      <ConfirmationDialog
+        open={confirmDiscard}
+        onOpenChange={setConfirmDiscard}
+        title={t('workspace.mcpServers.configPanel.discardTitle')}
+        message={t('workspace.mcpServers.configPanel.discardBody', { count: rulesEditor.changes })}
+        confirmLabel={t('workspace.mcpServers.configPanel.discard')}
+        confirmVariant="danger"
+        onConfirm={() => {
+          rulesEditor.discard();
+          setConfirmDiscard(false);
+          onOpenChange(false);
+        }}
+        container={nestedModalHost}
+      />
+    </>
   );
 }
 
@@ -803,16 +1100,17 @@ export function McpInstanceConfigPanel({
 // ========================================
 
 function McpOAuthCallbackUrlCard({
+  callbackUrl,
   dcrProbe,
   dcrSupported,
   documentationUrl,
 }: {
+  callbackUrl: string | null;
   dcrProbe: DcrProbeState;
   dcrSupported: boolean | null;
   documentationUrl?: string | null;
 }) {
   const { t } = useTranslation();
-  const callbackUrl = useMemo(() => mcpOAuthCallbackUrl(), []);
 
   const hint =
     dcrProbe.status === 'loading'
@@ -889,346 +1187,5 @@ function McpOAuthCallbackUrlCard({
         </Text>
       )}
     </Flex>
-  );
-}
-
-// ========================================
-// Connection & Tools tab
-// ========================================
-
-function ConnectionAndToolsTab({
-  instance,
-  isBusy,
-  toolsResult,
-  onAuthenticate,
-  onReauthenticate,
-  onDisconnect,
-  onDiscoverTools,
-}: {
-  instance: McpMyServerEntry | null;
-  isBusy: boolean;
-  toolsResult?: ToolsResult;
-  onAuthenticate: (instance: McpMyServerEntry) => void;
-  onReauthenticate: (instance: McpMyServerEntry) => void;
-  onDisconnect: (instance: McpMyServerEntry) => void;
-  onDiscoverTools: () => void;
-}) {
-  const { t } = useTranslation();
-
-  const isReadOnly = isMcpInstanceReadOnly(instance);
-  const [createdByName, setCreatedByName] = useState<string | null>(null);
-  const [createdByAvatar, setCreatedByAvatar] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!instance?.createdBy || isReadOnly) {
-      setCreatedByName(null);
-      setCreatedByAvatar(null);
-      return;
-    }
-    let cancelled = false;
-    const createdBy = instance.createdBy;
-
-    async function fetchCreatedByUser() {
-      try {
-        const { data } = await apiClient.post('/api/v1/users/by-ids', {
-          userIds: [createdBy],
-        });
-        if (cancelled) return;
-
-        const users = Array.isArray(data) ? data : data.users ?? [];
-        if (users.length > 0) {
-          const user = users[0] as Record<string, unknown>;
-          const fullName = (user.name as string) ?? (user.fullName as string) ?? '';
-          const userId = (user.id as string) ?? (user._id as string) ?? createdBy;
-          setCreatedByName(fullName.trim() || createdBy);
-          if (userId) setCreatedByAvatar(`/api/v1/users/${userId}/dp`);
-        }
-      } catch {
-        /* ignore — fall back to the raw id */
-      }
-    }
-
-    void fetchCreatedByUser();
-    return () => {
-      cancelled = true;
-    };
-  }, [instance?.createdBy, isReadOnly]);
-
-  if (!instance) {
-    return (
-      <Text size="2" style={{ color: 'var(--gray-10)' }}>
-        {t('workspace.mcpServers.form.connectAfterCreateHint')}
-      </Text>
-    );
-  }
-
-  const managedByAdmin = instance.useAdminAuth;
-  const needsAuth = instance.authMode !== 'none' && !managedByAdmin;
-  const isReady = !needsAuth || instance.isAuthenticated;
-  const hasDiscoveredTools = Boolean(
-    toolsResult && !toolsResult.loading && !toolsResult.error && toolsResult.tools.length > 0
-  );
-
-  return (
-    <Flex direction="column" gap="4" style={{ height: '100%', minHeight: 0 }}>
-      <McpDisabledCallout instance={instance} />
-      {!isReadOnly && (
-        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          <Text size="1" weight="medium" style={{ color: 'var(--gray-10)' }}>
-            {t('workspace.mcpServers.details.createdBy', { defaultValue: 'Created by' })}
-          </Text>
-          <Avatar
-            size="1"
-            src={createdByAvatar ?? undefined}
-            fallback={createdByName?.[0] ?? '?'}
-            radius="full"
-          />
-          <Text size="2" style={{ color: 'var(--gray-12)' }}>
-            {createdByName ?? instance.createdBy}
-          </Text>
-        </Flex>
-      )}
-
-      {needsAuth && (
-        <Flex
-          direction="column"
-          gap="3"
-          style={{
-            padding: 'var(--space-3)',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--olive-4)',
-            backgroundColor: 'var(--olive-2)',
-            flexShrink: 0,
-          }}
-        >
-          <Flex align="center" justify="between" gap="2">
-            <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                {instance.isAuthenticated
-                  ? t('workspace.mcpServers.details.authBannerAuthenticatedTitle')
-                  : t('workspace.mcpServers.details.authBannerTitle')}
-              </Text>
-              <Text size="1" style={{ color: 'var(--gray-10)' }}>
-                {instance.isAuthenticated
-                  ? t('workspace.mcpServers.details.authBannerAuthenticatedDescription')
-                  : t('workspace.mcpServers.details.authBannerDescription')}
-              </Text>
-            </Flex>
-            {instance.isAuthenticated ? (
-              <Badge color="green" size="1">
-                {t('workspace.mcpServers.status.ready')}
-              </Badge>
-            ) : (
-              <Badge color="amber" size="1">
-                {t('workspace.mcpServers.status.notConnected')}
-              </Badge>
-            )}
-          </Flex>
-
-          <Flex align="center" gap="2">
-            {instance.isAuthenticated ? (
-              <>
-                <ActionButton
-                  icon="autorenew"
-                  label={t('workspace.mcpServers.cta.reauthenticate')}
-                  onClick={() => onReauthenticate(instance)}
-                  disabled={isBusy}
-                />
-                <ActionButton
-                  icon="link_off"
-                  label={t('workspace.mcpServers.cta.disconnect')}
-                  danger
-                  onClick={() => onDisconnect(instance)}
-                  disabled={isBusy}
-                />
-              </>
-            ) : (
-              <ActionButton
-                icon="link"
-                label={t('workspace.mcpServers.cta.connect')}
-                onClick={() => onAuthenticate(instance)}
-                disabled={isBusy}
-              />
-            )}
-          </Flex>
-        </Flex>
-      )}
-
-      {!needsAuth && (
-        <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          <Badge color="green" size="1">
-            {t('workspace.mcpServers.status.ready')}
-          </Badge>
-          <Text size="2" style={{ color: 'var(--gray-11)' }}>
-            {managedByAdmin
-              ? t('workspace.mcpServers.sharedAuth')
-              : t('workspace.mcpServers.details.authBannerAuthenticatedTitle')}
-          </Text>
-        </Flex>
-      )}
-
-      <Flex
-        direction="column"
-        gap="3"
-        style={{
-          padding: 'var(--space-3)',
-          borderRadius: 'var(--radius-2)',
-          border: '1px solid var(--olive-4)',
-          backgroundColor: 'var(--olive-2)',
-          flex: 1,
-          minHeight: 0,
-          overflow: 'hidden',
-        }}
-      >
-        <Text size="2" weight="medium" style={{ color: 'var(--slate-12)', flexShrink: 0 }}>
-          {t('workspace.mcpServers.details.tools')}
-        </Text>
-
-        {!isReady ? (
-          <ToolsPanelEmptyState>
-            <Text size="2" style={{ color: 'var(--gray-9)' }}>
-              {t('workspace.mcpServers.details.discoveryNeedsAuth')}
-            </Text>
-          </ToolsPanelEmptyState>
-        ) : toolsResult?.loading ? (
-          <ToolsPanelEmptyState>
-            <Text size="2" style={{ color: 'var(--gray-10)' }}>
-              {t('workspace.mcpServers.details.discovering')}
-            </Text>
-          </ToolsPanelEmptyState>
-        ) : toolsResult?.error ? (
-          <ToolsPanelEmptyState>
-            <Flex direction="column" align="center" gap="2">
-              <Text size="2" style={{ color: 'var(--red-11)' }}>
-                {toolsResult.error || t('workspace.mcpServers.details.discoveryError')}
-              </Text>
-              <ActionButton
-                icon="refresh"
-                label={t('workspace.mcpServers.details.retry')}
-                onClick={onDiscoverTools}
-              />
-            </Flex>
-          </ToolsPanelEmptyState>
-        ) : hasDiscoveredTools ? (
-          <Flex direction="column" gap="3" style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
-            <Flex align="center" justify="between" gap="2" style={{ flexShrink: 0 }}>
-              <Text size="2" style={{ color: 'var(--accent-11)' }}>
-                {t('workspace.mcpServers.details.discoveredTools', { count: toolsResult?.tools.length ?? 0 })}
-              </Text>
-              <ActionButton
-                icon="refresh"
-                label={t('workspace.mcpServers.details.retry')}
-                onClick={onDiscoverTools}
-              />
-            </Flex>
-            <Flex
-              direction="column"
-              gap="2"
-              style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}
-            >
-              {toolsResult?.tools.map((tool) => (
-                <Flex
-                  key={tool.namespacedName || tool.name}
-                  direction="column"
-                  gap="0"
-                  style={{
-                    padding: 'var(--space-2)',
-                    borderRadius: 'var(--radius-2)',
-                    backgroundColor: 'var(--gray-a2)',
-                  }}
-                >
-                  <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-                    {tool.name}
-                  </Text>
-                  {tool.description && (
-                    <Text size="1" style={{ color: 'var(--gray-10)' }}>
-                      {tool.description}
-                    </Text>
-                  )}
-                </Flex>
-              ))}
-            </Flex>
-          </Flex>
-        ) : (
-          <ToolsPanelEmptyState>
-            <ActionButton
-              icon="travel_explore"
-              label={t('workspace.mcpServers.details.discoverTools')}
-              onClick={onDiscoverTools}
-            />
-          </ToolsPanelEmptyState>
-        )}
-      </Flex>
-    </Flex>
-  );
-}
-
-/** Centers a lone status message / CTA button inside the (now full-height) tools card,
- * instead of letting `ActionButton`'s own `flex: 1` — meant for its two-button row usage —
- * stretch to fill all the leftover vertical space.
- */
-function ToolsPanelEmptyState({ children }: { children: ReactNode }) {
-  return (
-    <Flex align="center" justify="center" style={{ flex: 1, minHeight: 0 }}>
-      <Box>{children}</Box>
-    </Flex>
-  );
-}
-
-function ActionButton({
-  icon,
-  label,
-  onClick,
-  danger,
-  disabled,
-}: {
-  icon: string;
-  label: string;
-  onClick: () => void;
-  danger?: boolean;
-  disabled?: boolean;
-}) {
-  const [isHovered, setIsHovered] = useState(false);
-  const [isFocused, setIsFocused] = useState(false);
-  const color = danger ? 'var(--red-11)' : 'var(--accent-11)';
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      onFocus={() => setIsFocused(true)}
-      onBlur={() => setIsFocused(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        border: `1px solid ${danger ? 'var(--red-a6)' : 'var(--accent-a6)'}`,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        gap: 'var(--space-2)',
-        flex: 1,
-        height: 'var(--space-6)',
-        padding: '0 var(--space-4)',
-        borderRadius: 'var(--radius-2)',
-        opacity: disabled ? 0.6 : 1,
-        backgroundColor: isHovered && !disabled
-          ? danger
-            ? 'var(--red-a4)'
-            : 'var(--accent-a4)'
-          : danger
-            ? 'var(--red-a3)'
-            : 'var(--accent-a3)',
-        boxShadow: isFocused ? `0 0 0 2px ${danger ? 'var(--red-8)' : 'var(--accent-8)'}` : 'none',
-        cursor: disabled ? 'not-allowed' : 'pointer',
-        transition: 'background-color 150ms ease',
-      }}
-    >
-      <MaterialIcon name={icon} size={16} color={color} />
-      <span style={{ fontSize: 14, fontWeight: 500, lineHeight: '20px', color }}>{label}</span>
-    </button>
   );
 }

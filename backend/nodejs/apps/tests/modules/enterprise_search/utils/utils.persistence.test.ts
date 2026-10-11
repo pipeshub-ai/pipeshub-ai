@@ -244,6 +244,16 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(conversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
     })
 
+    it('savePartialConversation keeps the approved calls a stopped reply ran', async () => {
+      const conversation = makeConversation()
+      const { insert } = stubAppend(5)
+      const approved = { type: 'tool_call' as const, toolCallId: 'approved_1', toolName: 'x', status: 'completed' as const, approved: true }
+
+      await savePartialConversation(asDoc(conversation), 'Created', null, { parts: [approved] })
+
+      expect(at(insert.firstCall.args[0] as InsertedMessage[]).parts).to.deep.equal([approved])
+    })
+
     it('replaceMessageWithError still marks the conversation failed when the message is gone', async () => {
       const conversation = makeConversation()
       sinon.stub(ChatSessionMessage, 'findById').resolves(null)

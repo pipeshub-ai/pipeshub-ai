@@ -25,6 +25,20 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 
+def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
+    """The request's answer to an approval card, or None when it has none or it's malformed."""
+    if not isinstance(raw, dict):
+        return None
+    from pydantic import ValidationError
+
+    from app.agents.agent_loop.tool_approvals import ToolApprovalAnswer
+
+    try:
+        return ToolApprovalAnswer.model_validate(raw)
+    except ValidationError:
+        return None
+
+
 class AgentContext(BaseModel):
     """Per-request context for tool execution and prompt building."""
 
@@ -127,6 +141,14 @@ class AgentContext(BaseModel):
     # Mutable per-request state
     conversation_id: str | None = None
     has_ui_client: bool = False
+    # Per-tool approvals (`tool_approvals.py`): the client, whose rules apply, who may change an
+    # agent's rules, and the person's answer to an approval card, when this request carries one.
+    client_name: str | None = None
+    agent_key: str | None = None
+    is_assistant: bool = False
+    can_edit_agent: bool = False
+    chat_streaming: bool = True
+    tool_approval: Any = None
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
@@ -150,6 +172,14 @@ class AgentContext(BaseModel):
     # onto `tool_state["mcp_tool_load_failures"]` the same way
     # `toolset_load_failures` is, for the same reason (see comment above).
     mcp_tool_load_failures: list[dict[str, Any]] = Field(default_factory=list)
+
+    # MCP servers whose sign-in lacked a scope this request, for the reply's sign-in card
+    # (`mcp_sign_in.py`).
+    mcp_sign_in_needed: list[dict[str, Any]] = Field(default_factory=list)
+
+    # `{"instanceId", "name", "instructions"}` for each loaded MCP server whose `initialize`
+    # result carried instructions, for the capability summary.
+    mcp_server_instructions: list[dict[str, Any]] = Field(default_factory=list)
 
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
     # `PipesHubToolLoader`'s `group_name`, not the registry's raw toolset
@@ -404,6 +434,12 @@ class AgentContext(BaseModel):
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
             has_ui_client=bool(state.get("has_ui_client", False)),
+            client_name=state["client_name"] if isinstance(state.get("client_name"), str) else None,
+            agent_key=state.get("agent_key"),
+            is_assistant=bool(state.get("is_assistant_chat", False)),
+            can_edit_agent=bool(state.get("can_edit_agent", False)),
+            chat_streaming=state.get("chat_streaming", True) is not False,
+            tool_approval=_tool_approval_answer(state.get("tool_approval")),
             previous_conversations=state.get("previous_conversations") or [],
             event_sink=event_sink,
             protocol=protocol,
@@ -524,6 +560,7 @@ class AgentContext(BaseModel):
             # here so the tool does not need a direct context reference.
             "needs_whole_document": self.needs_whole_document,
             "mcp_tool_load_failures": self.mcp_tool_load_failures,
+            "mcp_server_instructions": self.mcp_server_instructions,
         }
 
 

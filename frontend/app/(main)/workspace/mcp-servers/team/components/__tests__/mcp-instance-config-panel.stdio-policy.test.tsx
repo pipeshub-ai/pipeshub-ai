@@ -12,7 +12,7 @@ vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCal
 vi.mock('../../../api', () => ({
   McpServersApi: { discoverOAuthMetadata: vi.fn(), getOAuthConfig: vi.fn() },
 }));
-vi.mock('../../../components', () => ({ McpDisabledCallout: () => null }));
+vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
   WorkspaceRightPanel: ({
     open,
@@ -31,6 +31,7 @@ vi.mock('../../../../components/workspace-right-panel', () => ({
         </button>
       </div>
     ) : null,
+  useWorkspaceDrawerNestedModalHost: () => null,
 }));
 // Native controls so the test can read the selected transport and the offered options.
 vi.mock('../../../../components', () => ({
@@ -57,6 +58,7 @@ vi.mock('../../../../components', () => ({
     </select>
   ),
   TagInput: () => null,
+  ConfirmationDialog: () => null,
 }));
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';

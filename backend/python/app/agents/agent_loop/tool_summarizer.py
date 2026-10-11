@@ -50,6 +50,7 @@ from app.agents.actions.util.tool_summaries import (
     bullet_list as _bullet_list,
     domain_of as _domain,
     first_line as _first_line,
+    inline_args,
     parse_json_maybe as _parse_json_maybe,
 )
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
@@ -459,7 +460,8 @@ def _generic_args_formatter(args: dict[str, Any], tool_name: str) -> str | None:
             if len(preview) > _MAX_ARG_PREVIEW_CHARS:
                 preview = preview[: _MAX_ARG_PREVIEW_CHARS - 1] + "…"
             return f'{label}: "{preview}"'
-    return label
+    args_text = inline_args(args)
+    return f"{label} — {args_text}" if args_text else label
 
 
 def _generic_result_formatter(args: dict[str, Any], result: "ToolResult") -> str | None:

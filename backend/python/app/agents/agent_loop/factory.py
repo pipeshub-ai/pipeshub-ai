@@ -181,6 +181,10 @@ from app.agents.agent_loop.skills_wiring import (
     skills_enabled,
 )
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
+from app.agents.agent_loop.tool_approvals import (
+    approval_gate,
+    run_approved_call,
+)
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.mcp.service import is_mcp_enabled
@@ -1071,6 +1075,8 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
+        # Answers an approval card: runs the call the person approved before the first step.
+        hooks.on(HookEvent.PRE_TURN).use(run_approved_call(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
@@ -1088,6 +1094,10 @@ class PipesHubAgentFactory:
                 hooks, context, sandbox_manager,
                 allow_network=allow_network, artifact_store=artifact_store,
             )
+
+        # Per-tool approvals. Last, so no later middleware can still deny a call it leaves
+        # waiting for a person (the card would show for a call that was refused anyway).
+        hooks.on(HookEvent.PRE_TOOL_USE).use(approval_gate(context))
 
         return hooks
 

@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils'
+import { Logger } from '../../../../src/libs/services/logger.service'
 import {
   listMcpCatalog,
   getMcpCatalogTemplate,
@@ -327,6 +328,69 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
     })
   })
 
+  describe('resends and timeouts', () => {
+    async function optionsFor(factory: (appConfig: any) => any, method: string): Promise<Record<string, unknown>> {
+      executeStub.resolves({ statusCode: 200, data: {} })
+      const handler = factory(createMockAppConfig())
+      await handler(createMockRequest({ method, params: { instanceId: 'inst-1', agentKey: 'a1' }, query: {} }), createMockResponse(), sinon.stub())
+      return executeStub.lastCall.args[4]
+    }
+
+    it('bounds every call and resends only plain reads', async () => {
+      expect(await optionsFor(listMcpInstances, 'GET')).to.deep.equal({ timeoutMs: 90_000, retries: 3 })
+      expect(await optionsFor(createMcpInstance, 'POST')).to.deep.equal({ timeoutMs: 90_000, retries: 1 })
+      expect(await optionsFor(deleteMcpInstance, 'DELETE')).to.deep.equal({ timeoutMs: 90_000, retries: 1 })
+    })
+
+    it('never resends a read that changes OAuth state', async () => {
+      expect((await optionsFor(handleMcpOAuthCallback, 'GET')).retries).to.equal(1)
+      expect((await optionsFor(getMcpOAuthAuthorizationUrl, 'GET')).retries).to.equal(1)
+      expect((await optionsFor(getAgentMcpOAuthAuthorizationUrl, 'GET')).retries).to.equal(1)
+    })
+  })
+
+  describe('listMcpInstances query params', () => {
+    it('should forward includePersonal', async () => {
+      executeStub.resolves({ statusCode: 200, data: { instances: [] } })
+      const handler = listMcpInstances(createMockAppConfig())
+      const req = createMockRequest({ query: { includePersonal: 'true', orgId: 'other-org' } })
+      const res = createMockResponse()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.include('includePersonal=true')
+      expect(url).to.not.include('orgId')
+    })
+
+    it('forwards includePersonal and reveal together', async () => {
+      executeStub.resolves({ statusCode: 200, data: { instances: [] } })
+      const req = createMockRequest({ query: { includePersonal: 'true', reveal: 'true' } })
+
+      await listMcpInstances(createMockAppConfig())(req, createMockResponse(), sinon.stub())
+
+      expect(executeStub.firstCall.args[0]).to.equal(
+        'http://localhost:8088/api/v1/mcp-servers/instances?includePersonal=true&reveal=true',
+      )
+    })
+  })
+
+  describe('getMcpInstanceTools query params', () => {
+    it('should forward cached, and nothing else', async () => {
+      executeStub.resolves({ statusCode: 200, data: { tools: [] } })
+      const handler = getMcpInstanceTools(createMockAppConfig())
+      const req = createMockRequest({ params: { instanceId: 'inst-1' }, query: { cached: 'true', other: 'x' } })
+      const res = createMockResponse()
+      const next = sinon.stub()
+
+      await handler(req, res, next)
+
+      const url: string = executeStub.firstCall.args[0]
+      expect(url).to.match(/\/instances\/inst-1\/tools\?cached=true$/)
+    })
+  })
+
   describe('getMyMcpServers query params', () => {
     it('should forward includeTools', async () => {
       executeStub.resolves({ statusCode: 200, data: { instances: [] } })
@@ -454,6 +518,38 @@ describe('mcp_servers/controller/mcp_servers.controller', () => {
 
       const url: string = executeStub.firstCall.args[0]
       expect(url).to.equal('http://localhost:8088/api/v1/mcp-servers/oauth/callback?code=abc&state=xyz')
+    })
+
+    it('logs the callback without its code or state', async () => {
+      executeStub.resolves({ statusCode: 200, data: { success: true } })
+      // The controller takes its logger once, at load, and under mocha's parallel workers
+      // another file may have loaded it with `Logger.getInstance` stubbed: load a private copy.
+      const debug = sinon.stub()
+      const recorder = { debug, info: sinon.stub(), warn: sinon.stub(), error: sinon.stub() } as unknown as Logger
+      const modulePath = require.resolve('../../../../src/modules/mcp_servers/controller/mcp_servers.controller')
+      const original = require.cache[modulePath]
+      delete require.cache[modulePath]
+      const getInstance = sinon.stub(Logger, 'getInstance').returns(recorder)
+      let privateCopy: { handleMcpOAuthCallback: typeof handleMcpOAuthCallback }
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        privateCopy = require(modulePath)
+      } finally {
+        getInstance.restore()
+        if (original) require.cache[modulePath] = original
+        else delete require.cache[modulePath]
+      }
+      const handler = privateCopy.handleMcpOAuthCallback(createMockAppConfig())
+      const req = createMockRequest({ query: { code: 'code-secret', state: 'state-secret' } })
+
+      await handler(req, createMockResponse(), sinon.stub())
+
+      const logged = JSON.stringify(debug.args)
+      expect(logged).to.contain('/oauth/callback')
+      expect(logged).to.not.contain('code-secret')
+      expect(logged).to.not.contain('state-secret')
+      // The Python service still gets both.
+      expect(executeStub.firstCall.args[0]).to.contain('code=code-secret&state=state-secret')
     })
 
     it('should forward provider error param', async () => {

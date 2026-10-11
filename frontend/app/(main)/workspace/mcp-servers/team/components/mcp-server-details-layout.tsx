@@ -18,6 +18,8 @@ export interface McpServerDetailsHeader {
   displayName: string;
   description: string;
   icon?: string | null;
+  /** Shown under the description, e.g. that the entry was replaced. */
+  notice?: string | null;
 }
 
 interface McpServerDetailsLayoutProps {
@@ -25,7 +27,8 @@ interface McpServerDetailsLayoutProps {
   instances: McpMyServerEntry[];
   isLoading: boolean;
   onBack: () => void;
-  onAddInstance: () => void;
+  /** Absent for an entry that makes no new servers. */
+  onAddInstance?: () => void;
   onManageInstance: (instance: McpMyServerEntry) => void;
   onDeleteInstance: (instance: McpMyServerEntry) => void;
   onAuthenticate: (instance: McpMyServerEntry) => void;
@@ -116,6 +119,11 @@ export function McpServerDetailsLayout({
             <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {header?.description ?? ''}
             </Text>
+            {header?.notice ? (
+              <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                {header.notice}
+              </Text>
+            ) : null}
           </Flex>
         </Flex>
 
@@ -144,15 +152,17 @@ export function McpServerDetailsLayout({
               {t('workspace.mcpServers.details.refreshAll')}
             </Button>
           ) : null}
-          <Button
-            variant="solid"
-            size="2"
-            onClick={onAddInstance}
-            style={{ cursor: 'pointer' }}
-          >
-            <MaterialIcon name="add" size={16} color="white" />
-            {t('workspace.mcpServers.details.addInstance')}
-          </Button>
+          {onAddInstance ? (
+            <Button
+              variant="solid"
+              size="2"
+              onClick={onAddInstance}
+              style={{ cursor: 'pointer' }}
+            >
+              <MaterialIcon name="add" size={16} color="white" />
+              {t('workspace.mcpServers.details.addInstance')}
+            </Button>
+          ) : null}
         </Flex>
       </Flex>
 

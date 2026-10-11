@@ -6,6 +6,8 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 # Kept in step with SENSITIVE_QUERY_PARAMS in the Node log-redaction utils.
 SENSITIVE_QUERY_PARAMS = frozenset({
     "code",
+    # An OAuth callback's CSRF state: with the code, it completes the sign-in.
+    "state",
     "token",
     "access_token",
     "refresh_token",
@@ -24,6 +26,7 @@ SENSITIVE_QUERY_PARAMS = frozenset({
 })
 
 REDACTED = "[REDACTED]"
+_URL_IN_TEXT = re.compile(r"https?://[^\s'\")]+")
 
 
 def redact_url(url: str) -> str:
@@ -70,3 +73,8 @@ def redact_sensitive_query_params(url: str) -> str:
     except ValueError:
         return parts[0]
     return "".join(redacted)
+
+
+def redact_urls_in_text(text: str) -> str:
+    """`text` with every http(s) URL in it reduced as `redact_url` does."""
+    return _URL_IN_TEXT.sub(lambda m: redact_url(m.group(0)), text)

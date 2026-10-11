@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.agents.mcp.client import MCPConnectionError
+from app.agents.mcp.client import MCPConnectionError, ToolListing
 from app.agents.mcp.models import (
     MCPAuthMode,
     MCPServerInstanceConfig,
@@ -28,7 +28,6 @@ from app.api.routes.mcp_servers import (
     _check_user_is_admin,
     _filter_stdio_env,
     _get_configured_frontend_base_url,
-    _sweep_expired_oauth_states,
     authenticate_agent_instance,
     authenticate_instance,
     auto_authenticate_instance,
@@ -52,6 +51,9 @@ from app.api.routes.mcp_servers import (
     update_instance,
     update_oauth_config,
 )
+from app.config.constants.service import DefaultEndpoints
+
+_DEFAULT_FRONTEND = DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
 
 
 def _mock_request(user=None, headers=None, app_state=None) -> MagicMock:
@@ -148,11 +150,21 @@ class TestGetConfiguredFrontendBaseUrl:
         assert await _get_configured_frontend_base_url(config_service) == "https://app.example.com"
 
     @pytest.mark.asyncio
-    async def test_falls_back_on_error(self) -> None:
+    async def test_without_configuration_uses_the_default(self) -> None:
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=None)
+        assert await _get_configured_frontend_base_url(config_service) == _DEFAULT_FRONTEND
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_store_is_an_error_not_the_default(self) -> None:
+        """The default address would make every registered OAuth client look registered for the
+        wrong address and get replaced, signing out everyone who signed in through it."""
         config_service = MagicMock()
         config_service.get_config = AsyncMock(side_effect=RuntimeError("boom"))
-        result = await _get_configured_frontend_base_url(config_service)
-        assert result.startswith("http")
+        with pytest.raises(HTTPException) as exc:
+            await _get_configured_frontend_base_url(config_service)
+        assert exc.value.status_code == 503
+        assert config_service.get_config.await_args.kwargs["raise_on_error"] is True
 
 
 class TestFilterStdioEnv:
@@ -160,33 +172,6 @@ class TestFilterStdioEnv:
         instance = {"requiredEnv": ["API_KEY"], "optionalEnv": ["DEBUG"]}
         filtered = _filter_stdio_env(instance, {"API_KEY": " secret ", "DEBUG": "", "OTHER": "x"})
         assert filtered == {"API_KEY": "secret"}
-
-
-class TestSweepExpiredOauthStates:
-    @pytest.mark.asyncio
-    async def test_deletes_only_expired(self) -> None:
-        config_service = MagicMock()
-        config_service.list_keys_in_directory = AsyncMock(return_value=["/s/a", "/s/b"])
-        config_service.get_config = AsyncMock(
-            side_effect=[
-                {"expiresAt": 1},
-                {"expiresAt": 9_999_999_999_999},
-            ]
-        )
-        config_service.delete_config = AsyncMock()
-        await _sweep_expired_oauth_states(config_service)
-        config_service.delete_config.assert_awaited_once_with("/s/a")
-
-    @pytest.mark.asyncio
-    async def test_list_failure_is_non_fatal(self) -> None:
-        config_service = MagicMock()
-        config_service.list_keys_in_directory = AsyncMock(side_effect=RuntimeError("down"))
-        await _sweep_expired_oauth_states(config_service)  # no raise
-
-
-# ---------------------------------------------------------------------------
-# Catalog
-# ---------------------------------------------------------------------------
 
 
 class TestCatalogHandlers:
@@ -307,13 +292,13 @@ class TestStdioPolicy:
         config_service.set_config = AsyncMock(return_value=True)
         request = _admin_request(config_service=config_service, registry=_real_registry())
         payload = MCPServerInstanceConfig(
-            name="Slack", type_id="slack", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN,
-            command="npx", args=["-y", "@modelcontextprotocol/server-slack"],
+            name="Exa", type_id="exa", transport=MCPTransport.STDIO, auth_mode=MCPAuthMode.API_TOKEN,
+            command="npx", args=["-y", "exa-mcp-server@3.4.1"],
         )
         with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
             record = await create_instance(request, payload)
         assert record["command"] == "npx"
-        assert record["args"] == ["-y", "@modelcontextprotocol/server-slack"]
+        assert record["args"] == ["-y", "exa-mcp-server@3.4.1"]
         assert record["transport"] == MCPTransport.STDIO.value
 
     @pytest.mark.asyncio
@@ -422,6 +407,7 @@ class TestInstanceCrud:
         registry = MagicMock()
         registry.get_template.return_value = MagicMock(
             transport=MCPTransport.STDIO,
+            supported_auth_modes=[MCPAuthMode.API_TOKEN],
             command="npx",
             args=["-y", "server"],
             required_env=["API_KEY"],
@@ -430,6 +416,7 @@ class TestInstanceCrud:
             authorization_url=None,
             token_url=None,
             default_scopes=[],
+            replaced_by=None,
         )
         request = _admin_request(config_service=config_service, registry=registry)
         payload = MCPServerInstanceConfig(
@@ -447,10 +434,15 @@ class TestInstanceCrud:
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_create_instance_rejects_disallowed_stdio_env(self) -> None:
+    async def test_create_instance_ignores_env_values_in_the_payload(self) -> None:
+        """Credential values are never part of an instance; they arrive per user through
+        /authenticate. An `env` map on create is ignored, not stored."""
+        config_service = MagicMock()
+        config_service.set_config = AsyncMock(return_value=True)
         registry = MagicMock()
         registry.get_template.return_value = MagicMock(
             transport=MCPTransport.STDIO,
+            supported_auth_modes=[MCPAuthMode.API_TOKEN],
             command="npx",
             args=[],
             required_env=["API_KEY"],
@@ -459,21 +451,19 @@ class TestInstanceCrud:
             authorization_url=None,
             token_url=None,
             default_scopes=[],
+            replaced_by=None,
         )
-        request = _admin_request(registry=registry)
-        payload = MCPServerInstanceConfig(
-            name="Brave",
-            type_id="brave_search",
-            transport=MCPTransport.STDIO,
-            auth_mode=MCPAuthMode.API_TOKEN,
-            env={"API_KEY": "x", "EVIL": "y"},
-        )
+        request = _admin_request(config_service=config_service, registry=registry)
+        payload = MCPServerInstanceConfig.model_validate({
+            "name": "Brave", "typeId": "brave_search", "transport": "stdio", "authMode": "api_token",
+            "env": {"API_KEY": "x", "EVIL": "y"},
+        })
 
         with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
-            with pytest.raises(HTTPException) as exc:
-                await create_instance(request, payload)
-        assert exc.value.status_code == 400
-        assert "EVIL" in str(exc.value.detail)
+            record = await create_instance(request, payload)
+
+        assert "env" not in record
+        assert "EVIL" not in str(config_service.set_config.await_args.args[1])
 
     @pytest.mark.asyncio
     async def test_create_instance_set_config_failure(self) -> None:
@@ -523,6 +513,8 @@ class TestInstanceCrud:
     async def test_update_instance_happy_path(self) -> None:
         config_service = MagicMock()
         config_service.set_config = AsyncMock(return_value=True)
+        config_service.list_keys_in_directory = AsyncMock(return_value=[])
+        config_service.delete_config = AsyncMock(return_value=True)
         registry = MagicMock()
         registry.get_template.return_value = None
         request = _admin_request(config_service=config_service, registry=registry)
@@ -542,6 +534,8 @@ class TestInstanceCrud:
 
         assert result["name"] == "Renamed"
         assert result["url"] == "https://new.example.com"
+        # A new URL invalidates every stored credential for the old one.
+        assert result["credentialsReset"] is True
         config_service.set_config.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -561,6 +555,7 @@ class TestInstanceCrud:
             ]
         )
         request = _admin_request(config_service=config_service)
+        request.app.state.graph_provider.check_mcp_instance_in_use = AsyncMock(return_value=[])
         refresh = MagicMock()
         refresh.cancel_refresh_tasks_for_instance = MagicMock(return_value=1)
 
@@ -687,6 +682,14 @@ class TestAuthHandlers:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _instance_in_callers_org():
+    """The handler under test looks the instance up (org-scoped); this one exists."""
+    with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1"})):
+        yield
+
+
+@pytest.mark.usefixtures("_instance_in_callers_org")
 class TestOauthRouteWrappers:
     @pytest.mark.asyncio
     async def test_get_oauth_authorization_url_not_found(self) -> None:
@@ -751,7 +754,9 @@ class TestOauthRouteWrappers:
         config_service.get_config = AsyncMock(return_value=None)
         request = _admin_request(config_service=config_service)
         with patch("app.api.routes.mcp_servers._check_user_is_admin", new=AsyncMock(return_value=True)):
-            assert await get_oauth_config(request, "inst-1") == {"configured": False}
+            result = await get_oauth_config(request, "inst-1")
+        # Unconfigured, it still names the redirect URI an admin registers the app with.
+        assert result == {"configured": False, "redirectUri": f"{_DEFAULT_FRONTEND}/mcp-servers/oauth/callback/"}
 
     @pytest.mark.asyncio
     async def test_update_oauth_config_requires_admin(self) -> None:
@@ -805,6 +810,26 @@ class TestDiscoveryHandlers:
         assert result["instances"][0]["tools"] == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("record,connected_at", [
+        ({"isAuthenticated": True, "credentials": {"apiToken": "t"}, "connectedAt": 1_791_000_000_000}, 1_791_000_000_000),
+        ({"isAuthenticated": True, "credentials": {"apiToken": "t"}}, None),
+        ({"isAuthenticated": True, "credentials": {"apiToken": "t"}, "connectedAt": "yesterday"}, None),
+    ])
+    async def test_each_server_says_when_its_sign_in_was_made(self, record: dict, connected_at: int | None) -> None:
+        """So the chat's sign-in card can tell that a new sign-in went through."""
+        config_service = MagicMock()
+        config_service.get_config = AsyncMock(return_value=record)
+        request = _admin_request(config_service=config_service)
+
+        with patch(
+            "app.api.routes.mcp_servers.resolve_mcp_instances_with_inheritance",
+            new=AsyncMock(return_value=[_api_token_instance()]),
+        ):
+            result = await get_my_mcp_servers(request, include_tools=False)
+
+        assert result["instances"][0]["connectedAt"] == connected_at
+
+    @pytest.mark.asyncio
     async def test_get_my_mcp_servers_records_tools_error(self) -> None:
         config_service = MagicMock()
         config_service.get_config = AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}})
@@ -816,7 +841,7 @@ class TestDiscoveryHandlers:
                 new=AsyncMock(return_value=[_api_token_instance()]),
             ),
             patch(
-                "app.api.routes.mcp_servers.discover_tools",
+                "app.agents.mcp.discovery.discover_tool_listing",
                 new=AsyncMock(side_effect=MCPConnectionError("refused")),
             ),
         ):
@@ -845,7 +870,7 @@ class TestDiscoveryHandlers:
                 "app.api.routes.mcp_servers._resolve_effective_user_auth",
                 new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
             ),
-            patch("app.api.routes.mcp_servers.discover_tools", new=AsyncMock(return_value=[tool])),
+            patch("app.agents.mcp.discovery.discover_tool_listing", new=AsyncMock(return_value=ToolListing(tools=[tool]))),
         ):
             result = await get_instance_tools(request, "inst-1")
         assert result["tools"][0]["namespacedName"] == "mcp_brave_search_search"
@@ -860,7 +885,7 @@ class TestDiscoveryHandlers:
                 new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
             ),
             patch(
-                "app.api.routes.mcp_servers.discover_tools",
+                "app.agents.mcp.discovery.discover_tool_listing",
                 new=AsyncMock(side_effect=MCPConnectionError("down")),
             ),
         ):
@@ -880,7 +905,7 @@ class TestDiscoveryHandlers:
                 "app.api.routes.mcp_servers._resolve_effective_user_auth",
                 new=AsyncMock(return_value={"isAuthenticated": True, "credentials": {"apiToken": "t"}}),
             ),
-            patch("app.api.routes.mcp_servers.discover_tools", new=AsyncMock(side_effect=error)),
+            patch("app.agents.mcp.discovery.discover_tool_listing", new=AsyncMock(side_effect=error)),
             patch("app.api.routes.mcp_servers.logger") as mock_logger,
         ):
             with pytest.raises(HTTPException) as exc:

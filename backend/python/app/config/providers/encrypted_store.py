@@ -17,7 +17,6 @@ from app.utils.encryption.encryption_service import EncryptionService
 dotenv.load_dotenv()
 
 # Constants
-ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
 
 UNENCRYPTED_KEYS = (
     config_node_constants.ENDPOINTS.value,
@@ -348,57 +347,15 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         return await self.store.watch_key(key, on_change, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
-        """
-        List all keys in a directory, decrypting encrypted keys.
-
-        Args:
-            directory: Directory path to filter keys. If empty or "/", returns all keys.
-                      Otherwise, returns keys starting with this path.
-
-        Returns:
-            List of decrypted keys matching the directory prefix.
-        """
+        """Keys under `directory`. Only values are encrypted, never key names, so a directory
+        (ending in "/") is listed by the backend's own prefix scan instead of reading every key.
+        The root ("" or "/") lists every key; a prefix without the trailing slash is matched
+        as given, so "/a/b" still finds "/a/b-2/..." as it always has."""
         try:
-            # Get all keys from etcd (they are stored encrypted)
-            encrypted_keys = await self.store.get_all_keys()
-
-            if not encrypted_keys:
-                return []
-
-            # Kept as given: stripping the trailing slash let "/a/b/" also match "/a/b" and "/a/b-2/...".
-            directory_prefix = directory if directory != "/" else ""
-
-            decrypted_keys = []
-            for encrypted_key in encrypted_keys:
-                try:
-                    # Check if key is unencrypted (excluded from encryption)
-                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_KEYS)
-
-                    if is_unencrypted:
-                        decrypted_key = encrypted_key
-                    else:
-                        # Try to decrypt the key
-                        # Encrypted format: "iv:ciphertext:authTag" (3 parts)
-                        if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
-                            try:
-                                decrypted_key = self.encryption_service.decrypt(encrypted_key)
-                            except Exception:
-                                # Decryption failed, use as-is (might be unencrypted)
-                                decrypted_key = encrypted_key
-                        else:
-                            # Not in encrypted format, use as-is
-                            decrypted_key = encrypted_key
-
-                    # Filter by directory prefix if provided
-                    if not directory_prefix or decrypted_key.startswith(directory_prefix):
-                        decrypted_keys.append(decrypted_key)
-
-                except Exception as e:
-                    self.logger.debug(f"Skipping key due to error: {e}")
-                    continue
-
-            return decrypted_keys
-
+            if directory not in ("", "/") and directory.endswith("/"):
+                return await self.store.list_keys_in_directory(directory)
+            keys = await self.store.get_all_keys() or []
+            return keys if directory in ("", "/") else [key for key in keys if key.startswith(directory)]
         except Exception as e:
             self.logger.error(
                 "Failed to list keys in directory (%s)", type(e).__name__

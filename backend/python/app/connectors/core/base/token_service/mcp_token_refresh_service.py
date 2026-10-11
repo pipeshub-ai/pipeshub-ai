@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from app.agents.constants.mcp_server_constants import get_mcp_oauth_states_prefix
+from app.agents.mcp import lifecycle as mcp_lifecycle
 from app.agents.mcp import oauth_client as oauth_client_module
 from app.agents.mcp import token_refresh as mcp_token_refresh
 from app.agents.mcp.models import OAuthTokens
@@ -117,6 +118,16 @@ class MCPTokenRefreshService:
                 path_parts = config_path.strip("/").split("/")
                 if len(path_parts) != MIN_PATH_PARTS_COUNT:
                     continue
+                # A scheduled refresh re-reads its record when it fires, so the periodic pass
+                # only has to find credentials nothing is watching yet.
+                if self._has_live_task(config_path):
+                    continue
+                # A credential whose server is gone (deleted before cleanup existed, or a
+                # cleanup that failed) must not be renewed forever.
+                if await mcp_lifecycle.credential_has_instance(self.configuration_service, config_path) is False:
+                    self.logger.info(f"Removing MCP credential {config_path}: its server no longer exists")
+                    await self.configuration_service.delete_config(config_path)
+                    continue
 
                 record, has_oauth = await self._load_token_from_config(config_path)
                 if not has_oauth or record is None:
@@ -146,7 +157,9 @@ class MCPTokenRefreshService:
     # Refresh execution
     # ------------------------------------------------------------------
 
-    async def _perform_token_refresh(self, config_path: str, refresh_token: str) -> OAuthTokens:  # noqa: ARG002
+    async def _perform_token_refresh(
+        self, config_path: str, refresh_token: str, *, stale_access_token: Optional[str] = None,  # noqa: ARG002
+    ) -> OAuthTokens:
         """`refresh_token` is accepted for backward-compat call-site parity (see
         `_refresh_credential`) but the actual refresh token used is always the one
         currently persisted on the credential record — resolved, along with the DCR/admin
@@ -156,8 +169,10 @@ class MCPTokenRefreshService:
         path_parts = config_path.strip("/").split("/")
         instance_id, user_id = path_parts[-2], path_parts[-1]
 
+        # Every replica schedules every credential; the token it loaded tells the shared
+        # refresh whether another replica already rotated it.
         new_tokens = await mcp_token_refresh.refresh_credential_record(
-            instance_id, user_id, self.configuration_service,
+            instance_id, user_id, self.configuration_service, stale_access_token=stale_access_token,
         )
 
         self._last_refresh_time[config_path] = time.time()
@@ -198,11 +213,17 @@ class MCPTokenRefreshService:
             token, has_oauth = await self._load_token_from_config(config_path)
             if not has_oauth or token is None:
                 return
+            if not token.expires_in:
+                # Nothing says when it lapses, so refreshing it on every pass, on every replica,
+                # only spends refresh tokens. A 401 from the server refreshes it when needed.
+                return
 
             delay, refresh_time = self._calculate_refresh_delay(token)
             if delay <= 0:
                 try:
-                    new_token = await self._perform_token_refresh(config_path, token.refresh_token)
+                    new_token = await self._perform_token_refresh(
+                        config_path, token.refresh_token, stale_access_token=token.access_token,
+                    )
                     await self.schedule_token_refresh(config_path, new_token)
                 except oauth_client_module.MCPRefreshTokenInvalidError as e:
                     await self._handle_refresh_token_invalid(config_path, e)
@@ -283,6 +304,10 @@ class MCPTokenRefreshService:
             async with schedule_lock:
                 if self._refresh_tasks.get(config_path) is asyncio.current_task():
                     del self._refresh_tasks[config_path]
+
+    def _has_live_task(self, config_path: str) -> bool:
+        task = self._refresh_tasks.get(config_path)
+        return task is not None and not task.done()
 
     def cancel_refresh_task(self, config_path: str) -> None:
         task = self._refresh_tasks.get(config_path)

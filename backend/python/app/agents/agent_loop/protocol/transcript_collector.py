@@ -22,12 +22,13 @@ same occurrence (`Agent.emit()`'s `_AG_UI_ALIASES` table), so matching only
 the alias side (exactly like `AGUIEventEmitter` does) avoids collecting
 every tool call / run lifecycle event twice.
 
-Full external tool results are never stored here beyond the ~200-char
-preview `agent_loop_lib/agent/tool_loop.py::execute_tool_call` already
-truncates `TOOL_RESULT`/`TOOL_BLOCKED` payloads to before emission — this
-collector only ever sees that already-bounded preview, never the raw
-tool output, so "don't store full external tool results" holds by
-construction, not by an extra truncation step here.
+Full external tool results are never stored here beyond the bounded
+preview (`RESULT_PREVIEW_CHARS`) `agent_loop_lib/agent/tool_loop.py`
+truncates `TOOL_RESULT` payloads to before emission — this collector only
+ever sees that already-bounded preview, never the raw tool output, so
+"don't store full external tool results" holds by construction. A tool's
+small view of its result (`resultView`, a table or a record's fields) is
+kept too, within a per-reply budget (`result_views.py`).
 """
 
 from __future__ import annotations
@@ -36,7 +37,9 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
+from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
+from app.agents.agent_loop.protocol.result_views import ResultViewBudget
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
@@ -58,9 +61,9 @@ __all__ = ["MessagePart", "TranscriptCollector"]
 
 # Tool args are already bounded by whatever the model produced this turn;
 # this is a defensive cap, not the primary truncation mechanism (that's
-# tool_loop.py's 200-char result preview).
+# tool_loop.py's result preview, which this matches).
 _MAX_TOOL_ARGS_CHARS = 2000
-_MAX_TOOL_RESULT_CHARS = 500
+_MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 
 # Longest single argument value kept verbatim. Anything longer is shortened
 # in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
@@ -116,17 +119,25 @@ def _serialize_tool_args(args: object) -> str:
 
 
 class MessagePart(TypedDict, total=False):
-    type: Literal["text", "reasoning", "tool_call", "sub_agent"]
+    type: Literal["text", "reasoning", "tool_call", "sub_agent", "mcp_sign_in"]
+    # On the `mcp_sign_in` part (`mcp_sign_in.py`): the servers to sign in to again.
+    servers: list[dict[str, Any]]
     content: str
     toolCallId: str
     toolName: str
     displayName: str
     args: str
     argsSummary: str
-    status: Literal["running", "completed", "failed", "blocked"]
+    status: Literal["running", "completed", "failed", "blocked", "awaiting_approval"]
     resultPreview: str
     resultSummary: str
+    # A small table / field list of the result for the tool card (`Tool.result_view`).
+    resultView: dict[str, Any]
     artifactId: str
+    # A call waiting for a person's approval: what the approval card shows.
+    approval: dict[str, Any]
+    # The call a person approved, run at the start of their answer's turn.
+    approved: bool
     runId: str
     roleName: str
     parts: list["MessagePart"]
@@ -163,9 +174,15 @@ class TranscriptCollector(EventEmitter):
         # `_prenormalize_source_citations`, so a reply continued after the
         # output-token limit is rejoined from the model's own text.
         self._last_text: dict[str, tuple[MessagePart, str]] = {}
+        self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
         self._collect(event)
+
+    def append_final_text(self, content: str) -> None:
+        """Adds the final answer after the text already streamed instead of replacing it: a
+        turn that ended waiting for approval keeps what the model said before it asked."""
+        self.parts.append({"type": "text", "content": content, "isFinal": True})
 
     def replace_final_text(self, content: str) -> None:
         """Swaps the ROOT run's last streamed `text` part for the
@@ -286,6 +303,8 @@ class TranscriptCollector(EventEmitter):
             args_summary = payload.get("args_summary")
             if isinstance(args_summary, str):
                 part["argsSummary"] = args_summary
+            if payload.get("approved") is True:
+                part["approved"] = True
             self._container_for(run_id).append(part)
             self._open_tool_calls[tool_call_id] = part
             return
@@ -299,15 +318,20 @@ class TranscriptCollector(EventEmitter):
             # TOOL_RESULT and TOOL_BLOCKED alias to TOOL_CALL_END, and only
             # `payload["status"]` (set by the producer — see `ToolCallStatus`)
             # says which one this actually was.
-            if payload.get("status") == ToolCallStatus.BLOCKED:
-                part["status"] = "blocked"
+            if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
+                part["status"] = "blocked" if payload.get("status") == ToolCallStatus.BLOCKED else "awaiting_approval"
                 part["resultPreview"] = str(payload.get("reason", ""))[:_MAX_TOOL_RESULT_CHARS]
+                if part["status"] == "awaiting_approval" and isinstance(payload.get("approval"), dict):
+                    # Kept with the conversation, so the card is there after a reload too.
+                    part["approval"] = payload["approval"]
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
                 part["resultPreview"] = str(payload.get("content", ""))[:_MAX_TOOL_RESULT_CHARS]
                 result_summary = payload.get("result_summary")
                 if isinstance(result_summary, str):
                     part["resultSummary"] = result_summary
+                if result_view := self._view_budget.admit(payload.get("result_view")):
+                    part["resultView"] = result_view
                 artifact_id = payload.get("artifact_id")
                 if isinstance(artifact_id, str):
                     part["artifactId"] = artifact_id

@@ -78,12 +78,16 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     "signed_link": ("signed_token",),
     # A built-in skill, and a member's own skills: one switched on, one off.
     "skills": ("builtin_skill", "custom_skill", "disabled_skill"),
-    # MCP servers: one every user shares the admin's credential on, one each
-    # user signs in to themselves.
-    "mcp": ("shared_mcp", "own_mcp"),
+    # MCP servers: two of the admin's, one every user shares the admin's
+    # credential on and one each user signs in to themselves, and the creator's
+    # personal one. All at MCP_SERVER_URL.
+    "mcp": ("shared_mcp", "own_mcp", "personal_mcp"),
+    # An agent of the admin's, which nobody else can see.
+    "agents": ("admin_agent",),
 }
-# Made new each time they are asked for.
-FRESH_KEYS = frozenset({"fresh_team", "fresh_personal", "unique_name"})
+# Made new each time they are asked for: a connector, or an MCP server (the
+# admin's, or the creator's personal one) for a case that deletes it.
+FRESH_KEYS = frozenset({"fresh_team", "fresh_personal", "fresh_mcp", "fresh_personal_mcp", "unique_name"})
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
 WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)
 
@@ -245,9 +249,14 @@ _SERVICE_TOKEN_ONLY = "This route requires a service token"
 _ADMIN_ONLY_SKILL = "only an organization admin can change its availability"
 _WRONG_SKILL_STATE = "cannot transition"
 _SHARED_CREDENTIAL = "shared admin credential; only administrators can manage it"
+# Saved as is (no lookup at save time) and never resolves, so nothing is ever reached.
+MCP_SERVER_URL = "https://it-mcp.invalid/mcp"
+_MCP_NOT_FOUND = "MCP server instance not found"
+_MCP_SUCCESS = '"success":true'
 _TOKEN_REQUIRED = "apiToken is required for this instance"
 _SKILLS = "/api/v1/skills"
-_MCP = "/api/v1/mcp-servers/instances"
+_MCP_ROOT = "/api/v1/mcp-servers"
+_MCP = f"{_MCP_ROOT}/instances"
 _TOOLSETS = "/api/v1/toolsets"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
 
@@ -276,6 +285,42 @@ def _mcp(name: str, method: str, suffix: str, status: int, words: str) -> Condit
             Case("own_mcp", MEMBER, True, status, words),
         ),
         body=None if method == "DELETE" else {},
+    )
+
+
+def _mcp_owned(name: str, method: str, suffix: str, action: str, status: int, words: str,
+               **kw: Any) -> ConditionalRoute:
+    """An org server is the admins' to manage; a personal one its owner's, and nobody else
+    even finds it."""
+    return ConditionalRoute(
+        f"api/routes/mcp_servers.py::{name}", method, f"{_MCP}/{{target}}{suffix}",
+        cases=(
+            Case("shared_mcp", MEMBER, False, 403, f"Only administrators can {action} this MCP server"),
+            Case("shared_mcp", ADMIN, True, status, words),
+            Case("personal_mcp", CREATOR, True, status, words),
+            Case("personal_mcp", MEMBER, False, 404, _MCP_NOT_FOUND),
+        ),
+        **kw,
+    )
+
+
+def _mcp_company_rules(name: str, method: str, **kw: Any) -> ConditionalRoute:
+    return ConditionalRoute(
+        f"api/routes/mcp_servers.py::{name}", method, f"{_MCP}/{{target}}/tool-policy",
+        cases=(
+            Case("shared_mcp", MEMBER, False, 403,
+                 "Only administrators can set company tool rules for this MCP server"),
+            Case("shared_mcp", ADMIN, True, 200, '"tools":{}'),
+        ),
+        **kw,
+    )
+
+
+def _mcp_listing(name: str, path: str, target: str, refused: Case) -> ConditionalRoute:
+    return ConditionalRoute(
+        f"api/routes/mcp_servers.py::{name}", "GET", path,
+        cases=(refused, Case(target, ADMIN, True, 200, MCP_SERVER_URL)),
+        params={"includeTools": "false"},
     )
 
 
@@ -456,7 +501,56 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     _mcp("authenticate_instance", "POST", "/authenticate", 400, _TOKEN_REQUIRED),
     _mcp("update_credentials", "PUT", "/credentials", 400, _TOKEN_REQUIRED),
     # Removes the caller's own stored credential, of which there is none.
-    _mcp("remove_credentials", "DELETE", "/credentials", 200, '"success":true'),
+    _mcp("remove_credentials", "DELETE", "/credentials", 200, _MCP_SUCCESS),
+    _mcp("reauthenticate_instance", "POST", "/reauthenticate", 200, _MCP_SUCCESS),
+    # A member's new server is personal, and a personal server can't share an admin
+    # credential. Past that, the admin's is refused for its loopback URL: nothing is made.
+    ConditionalRoute(
+        "api/routes/mcp_servers.py::create_instance", "POST", _MCP,
+        cases=(
+            Case("org", MEMBER, False, 400, "can't share an administrator credential", absent=("loopback",)),
+            Case("org", ADMIN, True, 400, "loopback"),
+        ),
+        body={
+            "name": "it-admin-probe", "transport": "streamable_http", "authMode": "api_token",
+            "useAdminAuth": True, "url": "http://127.0.0.1:1/mcp",
+        },
+    ),
+    _mcp_owned("get_instance", "GET", "", "view", 200, "{target}"),
+    # No url: refused for that once past the check, so nothing changes.
+    _mcp_owned("update_instance", "PUT", "", "update", 400, "requires a url",
+               body={"name": "it-admin-probe", "transport": "streamable_http", "authMode": "none"}),
+    _mcp_owned("get_oauth_config", "GET", "/oauth-config", "view the OAuth app of", 200, '"redirectUri"'),
+    _mcp_owned("update_oauth_config", "PUT", "/oauth-config", "configure the OAuth app of", 200, _MCP_SUCCESS,
+               body={"clientId": "it-admin-probe", "clientSecret": "it-admin-probe"}),
+    # Each case deletes a server made for it. Admins may remove a user's personal server.
+    ConditionalRoute(
+        "api/routes/mcp_servers.py::delete_instance", "DELETE", f"{_MCP}/{{target}}",
+        cases=(
+            Case("fresh_mcp", MEMBER, False, 403, "Only administrators can delete this MCP server"),
+            Case("fresh_mcp", ADMIN, True, 200, _MCP_SUCCESS),
+            Case("fresh_personal_mcp", CREATOR, True, 200, _MCP_SUCCESS),
+            Case("fresh_personal_mcp", MEMBER, False, 404, _MCP_NOT_FOUND),
+            Case("fresh_personal_mcp", ADMIN, True, 200, _MCP_SUCCESS),
+        ),
+    ),
+    _mcp_company_rules("get_tool_policy", "GET"),
+    _mcp_company_rules("update_tool_policy", "PUT", body={"tools": {}}),
+    # A private address: past a member's guard only for an admin, whose lookups then find
+    # nothing (the address has no route here).
+    ConditionalRoute(
+        "api/routes/mcp_servers.py::discover_oauth_metadata_endpoint", "POST", f"{_MCP_ROOT}/oauth/discover",
+        cases=(
+            Case("org", MEMBER, False, 400, "must be a public http(s) URL"),
+            Case("org", ADMIN, True, 200, '"metadataFound":false'),
+        ),
+        body={"url": "http://[fd00::1]:1/"},
+    ),
+    _mcp_listing("get_my_mcp_servers", f"{_MCP_ROOT}/my-mcp-servers", "shared_mcp",
+                 Case("shared_mcp", MEMBER, False, 200, "{target}", absent=(MCP_SERVER_URL,))),
+    # Nobody else can see the admin's agent; the member side of the rule is the listing above.
+    _mcp_listing("get_agent_mcp_servers", f"{_MCP_ROOT}/agents/{{target}}", "admin_agent",
+                 Case("admin_agent", MEMBER, False, 404, "not found")),
 )
 
 # The (target, caller, allowed) cases a connector rule must cover, by the rule's

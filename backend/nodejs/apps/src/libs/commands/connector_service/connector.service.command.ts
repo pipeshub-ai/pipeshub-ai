@@ -10,6 +10,12 @@ export interface ConnectorServiceCommandOptions {
   headers?: Record<string, string>;
   queryParams?: Record<string, string | number | boolean>;
   body?: any;
+  /** Abort an attempt after this long. A timed-out request is not retried: the service
+   * may still be doing the work. */
+  timeoutMs?: number;
+  /** Attempts in all, the first included. Defaults to 3; pass 1 for a request that must not
+   * be sent twice. */
+  retries?: number;
 }
 
 export interface ConnectorServiceResponse<T> {
@@ -23,15 +29,25 @@ const logger = Logger.getInstance({
   service: 'ConnectorServiceCommand',
 });
 
+const isTimeout = (error: unknown): boolean => (error as { name?: unknown } | null)?.name === 'TimeoutError';
+
 export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
+  private timeoutMs?: number;
+  private retries: number;
 
   constructor(options: ConnectorServiceCommandOptions) {
     super(options.uri, options.queryParams, options.headers);
     this.method = options.method;
     this.body = this.sanitizeBody(options.body);
     this.headers = this.sanitizeHeaders(options.headers || {});
+    this.timeoutMs = options.timeoutMs;
+    this.retries = options.retries ?? 3;
+  }
+
+  private attempt(url: string, requestOptions: RequestInit): Promise<Response> {
+    return fetch(url, this.timeoutMs ? { ...requestOptions, signal: AbortSignal.timeout(this.timeoutMs) } : requestOptions);
   }
   
   // Execute the HTTP request based on the provided options.
@@ -45,9 +61,10 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
 
     try {
       const response = await this.fetchWithRetry(
-        async () => fetch(url, requestOptions),
-        3,
+        async () => this.attempt(url, requestOptions),
+        this.retries,
         300,
+        (error) => !isTimeout(error),
       );
 
       logger.debug('Connector service command success', {

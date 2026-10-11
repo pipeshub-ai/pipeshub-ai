@@ -732,6 +732,41 @@
     "showDiagramSource": "Mostrar código",
     "hideDiagramSource": "Ocultar código",
     "stoppedMarker": "Detenido",
+    "toolCard": {
+      "arguments": "Argumentos",
+      "result": "Resultado",
+      "error": "Error",
+      "blocked": "Bloqueado",
+      "awaitingApproval": "Esperando aprobación",
+      "viewRaw": "Ver sin formato",
+      "hideRaw": "Ocultar sin formato",
+      "showingOf": "Se muestran {{shown}} de {{total}}",
+      "open": "Abrir"
+    },
+    "mcpConnect": {
+      "title": "Conecta estos servidores MCP para usar este agente",
+      "connect": "Conectar",
+      "connecting": "Conectando…",
+      "connected": "Conectado",
+      "removed": "Eliminado. Pide al propietario del agente que lo actualice.",
+      "waitingForAdmin": "Esperando a que un administrador añada la credencial compartida",
+      "setUpInBuilder": "Configurar en Agent Builder",
+      "serviceAccount": "Este agente usa sus propias credenciales. Su propietario las configura en Agent Builder.",
+      "openAgentBuilder": "Abrir Agent Builder",
+      "allConnected": "Todo conectado. Vuelve a enviar tu mensaje para continuar.",
+      "tryAgain": "Reintentar",
+      "unavailable": "No se pudo iniciar el inicio de sesión aquí. Conéctalo en Workspace → Servidores MCP."
+    },
+    "mcpSignIn": {
+      "title": "Vuelve a iniciar sesión para dar a estos servidores MCP el permiso que pidieron",
+      "needs": "Necesita: {{scopes}}",
+      "signIn": "Volver a iniciar sesión",
+      "signingIn": "Iniciando sesión…",
+      "signedIn": "Sesión iniciada",
+      "askAnEditor": "Pide a alguien que pueda editar este agente que vuelva a iniciar sesión",
+      "allSignedIn": "Sesión iniciada. Vuelve a intentar la solicitud.",
+      "retryMessage": "He vuelto a iniciar sesión en {{servers}}. Inténtalo de nuevo, por favor."
+    },
     "toasts": {
       "stopStreamTitle": "Deteniendo…",
       "stopStreamDescription": "La respuesta se detendrá en breve. Se conservará cualquier respuesta parcial.",
@@ -1143,7 +1178,28 @@
       "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
-    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
+    "toolApproval": {
+      "title": "¿Aprobar esta acción?",
+      "subtitle": "Ejecutar {{tool}} en {{server}}",
+      "noArguments": "Sin detalles",
+      "companyAlwaysAsk": "Tu organización pide confirmación cada vez antes de ejecutar esta herramienta.",
+      "allowOnce": "Permitir una vez",
+      "allowChat": "Permitir en este chat",
+      "always": "Permitir siempre",
+      "deny": "Denegar",
+      "expired": "Esta solicitud ha caducado. Vuelve a pedirlo si aún es necesario.",
+      "sent": {
+        "allow_once": "Permitir una vez: {{tool}} en {{server}}",
+        "allow_chat": "Permitir en este chat: {{tool}} en {{server}}",
+        "always": "Permitir siempre: {{tool}} en {{server}}",
+        "deny": "Denegar: {{tool}} en {{server}}"
+      },
+      "showAll": "Mostrar todo",
+      "showLess": "Mostrar menos",
+      "partial": "Solo se muestra el principio de los detalles: la llamada completa es más larga.",
+      "deletesData": "Elimina datos"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -2548,6 +2604,7 @@
       "searchPlaceholder": "Buscar servidores MCP...",
       "loading": "Cargando servidores MCP…",
       "noResults": "Ningún servidor MCP coincide con tu búsqueda",
+      "replacedNotice": "Ya no se mantiene. Añade {{name}} en su lugar.",
       "addServer": "Añadir servidor",
       "custom": "Personalizado",
       "inherited": "Heredado",
@@ -2556,17 +2613,33 @@
       "sharedAuth": "Autenticación de administrador compartida",
       "toolsCount_one": "{{count}} herramienta",
       "toolsCount_other": "{{count}} herramientas",
+      "toolsCachedAt": "Herramientas a fecha de {{time}}",
+      "editImpact": {
+        "title": "¿Eliminar los inicios de sesión guardados?",
+        "body": "Cambiar cómo se accede a este servidor o cómo se inicia sesión en él elimina las credenciales que personas y agentes guardaron para él. Todos tendrán que volver a conectarse.",
+        "personalBody": "Cambiar cómo se accede a este servidor o cómo se inicia sesión en él elimina las credenciales que tú y tus agentes guardasteis para él. Tendrás que volver a conectarte.",
+        "sharedBody": "Desactivar la credencial compartida la elimina. Todos tendrán que conectarse con la suya.",
+        "confirm": "Guardar y eliminar inicios de sesión"
+      },
       "cta": {
         "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
+        "reconnect": "Volver a conectar",
         "disconnect": "Desconectar",
         "connect": "Conectar",
-        "addInstance": "Añadir instancia"
+        "addInstance": "Añadir instancia",
+        "edit": "Editar"
       },
       "status": {
         "ready": "Listo",
         "notConnected": "No conectado",
+        "reconnectNeeded": "Hay que volver a conectar",
+        "waitingForAdmin": "Esperando al administrador",
+        "sharedCredentialMissing": "Falta la credencial compartida",
+        "blocked": "Bloqueado por política",
+        "unreachable": "No se puede acceder al servidor",
+        "slow": "Responde despacio",
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
@@ -2574,13 +2647,24 @@
         "title": "Servidores MCP",
         "subtitle": "Conecta servidores Model Context Protocol para ampliar lo que pueden hacer los agentes de tu equipo.",
         "emptyTitle": "Aún no hay servidores MCP",
-        "emptyDescription": "Añade un servidor del catálogo o configura uno personalizado para empezar."
+        "emptyDescription": "Añade un servidor del catálogo o configura uno personalizado para empezar.",
+        "userCreatedTitle": "Servidores creados por usuarios",
+        "userCreatedDescription": "Servidores que tus usuarios han añadido para sí mismos. Solo quien lo añadió puede usarlo; tú puedes eliminarlo.",
+        "userCreatedOwner": "Añadido por {{name}}"
       },
       "personal": {
         "title": "Servidores MCP",
-        "subtitle": "Autentícate con los servidores MCP que tu administrador ha puesto a disposición.",
+        "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
-        "emptyDescription": "Tu administrador todavía no ha añadido ningún servidor MCP."
+        "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
+        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
+        "tabs": {
+          "all": "Todos",
+          "connected": "Conectados",
+          "notConnected": "No conectados"
+        },
+        "yours": "Tuyo",
+        "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
@@ -2600,13 +2684,15 @@
         "authBannerTitle": "Se requiere autenticación",
         "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
         "authBannerAuthenticatedTitle": "Conectado",
+        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
         "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
         "createdBy": "Creado por",
         "discoveredTools_many": "{{count}} de herramientas disponibles"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
-        "body": "El servidor \"{{name}}\" se eliminará permanentemente. Los miembros del equipo que lo usen perderán el acceso."
+        "body": "El servidor \"{{name}}\" se eliminará permanentemente. Los miembros del equipo que lo usen perderán el acceso.",
+        "personalBody": "El servidor \"{{name}}\" y sus credenciales guardadas se eliminarán permanentemente."
       },
       "toasts": {
         "loadError": "No se pudieron cargar los servidores MCP",
@@ -2620,10 +2706,15 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "credentialsSaved": "Credenciales guardadas",
+        "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",
+        "oauthTimedOut": "El inicio de sesión tardó demasiado y se detuvo. Inténtalo de nuevo.",
+        "oauthProviderError": "Error al iniciar sesión: {{message}}",
         "discoveryError": "No se pudieron descubrir las herramientas"
       },
       "authDialog": {
         "title": "Autenticarse con {{name}}",
+        "docsLink": "Dónde encontrarlo",
         "description": "Introduce tus credenciales para conectar este servidor MCP."
       },
       "form": {
@@ -2635,6 +2726,7 @@
         "argsPlaceholder": "Añadir un argumento",
         "requiredEnv": "Variables de entorno requeridas",
         "requiredEnvPlaceholder": "Añadir un nombre de variable (p. ej. API_KEY)",
+        "defaultTokenEnvHint": "Si no se indica ninguna variable, el token se pasa al comando como {{name}}.",
         "url": "URL",
         "authMode": "Modo de autenticación",
         "headerName": "Nombre del encabezado",
@@ -2650,14 +2742,57 @@
         "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
-        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo."
+        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo.",
+        "timeoutsHeading": "Tiempos de espera",
+        "connectTimeout": "Tiempo de espera de conexión (segundos)",
+        "callTimeout": "Tiempo de espera de las llamadas a herramientas (segundos)",
+        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado."
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Añadir servidor MCP",
         "tabs": {
           "configuration": "Configuración",
-          "connection": "Conexión y herramientas"
+          "tools": "Herramientas y aprobaciones"
+        },
+        "synced": "Sincronizado {{time}}",
+        "refreshTools": "Actualizar la lista de herramientas",
+        "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
+        "toolsError": "No se pudo cargar la lista de herramientas",
+        "toolsErrorSignIn": "El servidor pide que vuelvas a iniciar sesión.",
+        "rulesKept": "Tus reglas de aprobación guardadas se conservan.",
+        "tryAgain": "Reintentar",
+        "findingTools": "Buscando herramientas en este servidor",
+        "rulesUnlock": "Las reglas de aprobación estarán disponibles cuando la lista esté lista.",
+        "unsaved_one": "{{count}} cambio sin guardar",
+        "unsaved_other": "{{count}} cambios sin guardar",
+        "unsaved_many": "{{count}} cambios sin guardar",
+        "allSaved": "Todas las reglas guardadas",
+        "discard": "Descartar",
+        "saveRules": "Guardar reglas",
+        "discardTitle": "¿Descartar los cambios de reglas sin guardar?",
+        "discardBody_one": "Cambiaste la regla de {{count}} herramienta. Si cierras ahora, se pierde ese cambio.",
+        "discardBody_other": "Cambiaste las reglas de {{count}} herramientas. Si cierras ahora, se pierden esos cambios.",
+        "discardBody_many": "Cambiaste las reglas de {{count}} herramientas. Si cierras ahora, se pierden esos cambios.",
+        "noSignIn": "No hace falta iniciar sesión · {{transport}}",
+        "signInExpired": "El inicio de sesión caducó",
+        "sharedMissing": "Falta el inicio de sesión compartido",
+        "signInExpiredBody": "Las herramientas de este servidor no pueden ejecutarse hasta que alguien vuelva a iniciar sesión.",
+        "notSignedIn": "Sin iniciar sesión",
+        "notSignedInDetail": "Inicia sesión para usar las herramientas de este servidor.",
+        "signedIn": "Sesión iniciada",
+        "sharedSignIn": "Inicio de sesión compartido",
+        "signedInDetail": "{{transport}} · sesión iniciada {{time}}",
+        "menu": {
+          "label": "Más acciones",
+          "copyUrl": "Copiar la URL del servidor",
+          "copied": "URL del servidor copiada",
+          "copyFailed": "No se pudo copiar la URL del servidor",
+          "addedBy": "Añadido por {{name}}",
+          "disconnectHint": "Cierra tu sesión. La configuración y las reglas se mantienen.",
+          "remove": "Quitar servidor",
+          "removeHint": "Lo elimina para todos.",
+          "removeHintPersonal": "Lo elimina junto con tu inicio de sesión."
         }
       },
       "oauthConfig": {
@@ -2698,6 +2833,101 @@
         "disabledDescription": "Los servidores STDIO personalizados ejecutan un comando en el servidor de PipesHub, por lo que permanecen desactivados hasta que el operador establezca {{flag}}=true en el entorno de la instalación (.env de Docker Compose o config.mcpAllowCustomStdio en Helm). Hasta entonces, los agentes no pueden usar las herramientas de este servidor. Puedes eliminarlo o cambiarlo a un servidor remoto (HTTP).",
         "unavailableHint": "Los servidores con comando local (STDIO) están desactivados en esta instalación. Para permitirlos, el operador debe establecer {{flag}}=true.",
         "enabledWarning": "Este comando se ejecuta en el servidor de PipesHub con los privilegios del servicio, incluidos su acceso a la red y sus credenciales. Añade solo comandos de confianza."
+      },
+      "addDialog": {
+        "title": "Añadir un servidor MCP",
+        "description": "Elige un servidor del catálogo o conecta cualquier servidor MCP remoto mediante su URL. Solo tú lo verás.",
+        "custom": "Servidor personalizado",
+        "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
+      },
+      "toolRules": {
+        "open": "Aprobaciones de herramientas",
+        "title": "Aprobaciones de herramientas: {{name}}",
+        "description": {
+          "personal": "Elige qué ocurre cuando el asistente quiere usar una de estas herramientas en tus chats. Los agentes usan sus propias reglas.",
+          "company": "Estas reglas se aplican a todos en tu organización. Los miembros pueden añadir reglas más estrictas, nunca más flexibles.",
+          "agent": "Elige qué ocurre cuando este agente quiere usar una de estas herramientas, para todos los que chatean con él."
+        },
+        "unattendedHint": "En Slack, la API y las ejecuciones programadas nadie puede aprobar una llamada, así que una herramienta que necesita aprobación no se ejecuta allí salvo que actives «Permitir cuando nadie puede aprobar».",
+        "viewOnly": "Solo quienes pueden editar este agente pueden cambiar estas reglas.",
+        "loading": "Cargando…",
+        "loadError": "No se pudieron cargar las reglas.",
+        "search": "Buscar por nombre o ID",
+        "empty": "No hay herramientas que mostrar. Conecta el servidor para ver sus herramientas o añade una por su nombre.",
+        "notOffered": "No disponible ahora",
+        "rule": {
+          "allow": "Aprobada de antemano",
+          "ask": "Permitir tras aprobar",
+          "block": "Denegar"
+        },
+        "company": {
+          "none": "Sin límite",
+          "ask": "Permitir tras aprobar",
+          "block": "Denegar"
+        },
+        "unattended": "Permitir cuando nadie puede aprobar",
+        "unattendedFor": "Permitir {{name}} cuando nadie puede aprobar",
+        "addPlaceholder": "Añadir una herramienta por su nombre",
+        "add": "Añadir",
+        "saved": "Aprobaciones de herramientas guardadas",
+        "saveError": "No se pudieron guardar las aprobaciones de herramientas",
+        "unattendedDetail": "Slack, la API y las ejecuciones programadas",
+        "unattendedDestructive": "Solo donde alguien haya permitido esta herramienta",
+        "kind": {
+          "read": "Solo lectura",
+          "write": "Cambia datos",
+          "destructive": "Elimina datos"
+        },
+        "kindSource": {
+          "name": "Por su nombre",
+          "server": "Según el servidor",
+          "none": "Sin etiquetas del servidor"
+        },
+        "group": {
+          "destructive": "Elimina datos",
+          "write": "Cambia datos",
+          "read": "Solo lectura",
+          "notOffered": "No disponible ahora",
+          "byName": "Reglas definidas por nombre"
+        },
+        "groupHint": {
+          "destructive": "Revisa estas primero",
+          "read": "Solo consulta información"
+        },
+        "filterLabel": "Mostrar herramientas",
+        "filter": {
+          "all": "Todas",
+          "destructive": "Elimina datos",
+          "write": "Cambia datos",
+          "read": "Solo lectura",
+          "hasRule": "Con regla"
+        },
+        "noMatch": "Ninguna herramienta coincide con tu búsqueda.",
+        "clearFilters": "Borrar búsqueda y filtros",
+        "quickSetup": {
+          "text": "Configuración rápida: exigir aprobación para cada herramienta que cambia datos.",
+          "apply": "Aplicar"
+        },
+        "legend": {
+          "own": "Aprobada de antemano se ejecuta sin preguntar · Permitir tras aprobar pregunta primero en el chat · Denegar nunca se ejecuta",
+          "company": "Sin límite – deciden los miembros · Permitir tras aprobar – alguien aprueba cada llamada · Denegar – nunca se ejecuta"
+        }
+      },
+      "disconnectDialog": {
+        "title": "¿Desconectar {{name}}?",
+        "yours_one": "Dejarás de usar su {{count}} herramienta hasta que vuelvas a iniciar sesión.",
+        "yours_other": "Dejarás de usar sus {{count}} herramientas hasta que vuelvas a iniciar sesión.",
+        "yours_many": "Dejarás de usar sus {{count}} herramientas hasta que vuelvas a iniciar sesión.",
+        "yoursUnknown": "Dejarás de usar sus herramientas hasta que vuelvas a iniciar sesión.",
+        "shared_one": "Los agentes de tu organización dejarán de usar su {{count}} herramienta de inmediato, también en Slack y en las ejecuciones programadas.",
+        "shared_other": "Los agentes de tu organización dejarán de usar sus {{count}} herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "shared_many": "Los agentes de tu organización dejarán de usar sus {{count}} herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "sharedUnknown": "Los agentes de tu organización dejarán de usar sus herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "keeps": "Se conservan la configuración del servidor y las reglas de aprobación",
+        "reconnect": "Vuelve a conectarte cuando quieras iniciando sesión de nuevo",
+        "deletesYours": "Se elimina tu inicio de sesión guardado",
+        "deletesShared": "Se elimina el inicio de sesión compartido",
+        "disconnecting": "Desconectando…"
       }
     },
     "bots": {
@@ -3785,6 +4015,9 @@
     "configureMcpTooltip": "Administrar credenciales",
     "authenticateMcpTooltip": "Autenticar este servidor MCP",
     "mcpAuthUpdatedNotify": "Autenticación MCP actualizada.",
+    "mcpServersUnavailable": "No se pudieron cargar los servidores MCP de este agente",
+    "mcpServersUnavailableHint": "No se muestran aquí y guardar no los cambiará. Recarga la página para volver a intentarlo.",
+    "mcpServersUnavailableNoDrop": "No se pudieron cargar los servidores MCP de este agente, así que no se puede añadir ninguno hasta que recargues la página.",
     "mcpAuthSaveError": "No se pudieron guardar las credenciales MCP.",
     "mcpAuthRemoveError": "No se pudieron eliminar las credenciales MCP.",
     "loadingSchema": "Cargando esquema…",
@@ -3930,7 +4163,7 @@
     "removeDeprecatedTools": "Eliminar herramientas obsoletas",
     "showMore": "Mostrar más",
     "showLess": "Mostrar menos",
-    "mcpServerAlreadyAttachedNotify": "{{name}} ya está adjuntado a este agente",
+    "mcpServerAlreadyAttachedNotify": "Este agente ya tiene otro servidor del mismo tipo que {{name}}. Un agente puede usar un servidor de cada tipo.",
     "webSearchOnlyOne": "Solo se puede adjuntar un proveedor de búsqueda web",
     "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
     "noMcpServersAvailable": "No hay servidores MCP disponibles",
@@ -3945,7 +4178,18 @@
     "deprecatedToolsBanner_one": "{{count}} herramienta de este agente está obsoleta. Quítela: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} herramientas de este agente están obsoletas. Quítelas: {{tools}}",
     "mcpServerWithToolCount_many": "Servidor MCP con {{count}} de herramientas",
-    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}"
+    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}",
+    "mcpAllTools": "Todas las herramientas",
+    "mcpAllToolsHint": "Incluye las herramientas que el servidor añada más adelante.",
+    "mcpServerUnavailable": "No disponible",
+    "mcpServerUnavailableHint": "Este servidor no está entre tus servidores MCP: se eliminó o no se ha compartido contigo.",
+    "mcpToolNotOnServer": "No está en el servidor",
+    "mcpToolNotOnServerHint": "El servidor ya no ofrece esta herramienta. Quítala; de lo contrario, el agente no podrá usarla.",
+    "mcpAllToolsNoneYet": "El servidor aún no ha publicado herramientas. El agente recibirá todo lo que ofrezca.",
+    "mcpNoToolsSelected": "No hay herramientas seleccionadas. Añade herramientas o activa «Todas las herramientas».",
+    "mcpServerNeedsToolsTooltip": "Elige herramientas para cada servidor MCP o activa «Todas las herramientas».",
+    "mcpServerNeedsToolsBanner": "Elige al menos una herramienta para {{names}} o activa «Todas las herramientas».",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} es tu servidor MCP personal. No se puede añadir a un agente compartido con tu organización ni a uno que se ejecute como cuenta de servicio."
   },
   "recordView": {
     "sections": {

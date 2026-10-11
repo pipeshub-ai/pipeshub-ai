@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { createAGUIEventHandler, type AGUIStreamTracking } from '../agui-event-handler';
 import type { StreamMessageCallbacks } from '../api';
 import type { SSEEvent } from '@/lib/api';
+import { ChatStreamError } from '../stream-error';
 
 function frame(type: string, fields: Record<string, unknown> = {}): SSEEvent {
   return { event: type, data: { type, ...fields } };
@@ -449,6 +450,20 @@ describe('createAGUIEventHandler', () => {
     expect(errorArg.message).toBe('Agent crashed');
   });
 
+  it('passes on the code and details of a root RUN_ERROR', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const details = { agentId: 'a-1', serviceAccount: false, servers: [{ instanceId: 'inst-1', problem: 'not_connected' }] };
+
+    handle(frame('RUN_ERROR', { message: 'Connect GitHub', code: 'mcp_server_config_missing', details }));
+
+    const errorArg = spies.onError.mock.calls[0][0] as ChatStreamError;
+    expect(errorArg).toBeInstanceOf(ChatStreamError);
+    expect(errorArg.message).toBe('Connect GitHub');
+    expect(errorArg.code).toBe('mcp_server_config_missing');
+    expect(errorArg.details).toEqual(details);
+  });
+
   it('falls back to a generic message when RUN_ERROR carries no message', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
@@ -508,6 +523,22 @@ describe('createAGUIEventHandler', () => {
 
     expect(spies.onStatus).toHaveBeenCalledWith({ status: 'calling_llm', message: 'Thinking...' });
     expect(spies.onAnswerFinal).not.toHaveBeenCalled();
+  });
+
+  it("shows an MCP server's progress on the running tool", () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const running = { status: 'running_tool', current_tool: 'mcp_jira_search' };
+
+    handle(frame('STATE_SNAPSHOT', { snapshot: { ...running, progress: 3, total: 10 } }));
+    handle(frame('STATE_SNAPSHOT', { snapshot: { ...running, progress: 0.25, total: 1 } }));
+    handle(frame('STATE_SNAPSHOT', { snapshot: { ...running, progress: 3, total: 10, progress_message: 'Reading page 3' } }));
+    handle(frame('STATE_SNAPSHOT', { snapshot: { ...running, progress: 7 } }));
+
+    const messages = spies.onStatus.mock.calls.map(([update]: [{ message: string }]) => update.message);
+    const label = messages[3];
+    expect(label.endsWith('...')).toBe(true);
+    expect(messages.slice(0, 3)).toEqual([`${label} 3/10`, `${label} 25%`, `${label} Reading page 3`]);
   });
 
   it('reports `snapshot.final` as the settled answer and emits no progress status', () => {
@@ -599,6 +630,17 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
     ]);
   });
 
+  it('keeps up to 2000 characters of the result preview, matching the server cap', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'x' }));
+    handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'call-1', content: 'z'.repeat(5000), status: 'completed' }));
+
+    const lastCall = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(lastCall[0].resultPreview).toHaveLength(2000);
+  });
+
   it('builds tool_call part with argsSummary and resultSummary when present', () => {
     const { callbacks, spies } = makeCallbacks();
     const handle = createAGUIEventHandler(callbacks);
@@ -609,11 +651,14 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
     }));
     handle(frame('TOOL_CALL_RESULT', {
       runId: 'root', toolCallId: 'call-1', content: '3 issues', status: 'completed', resultSummary: 'Found 3 issues',
+      resultView: { kind: 'records', columns: ['Key'], rows: [{ cells: ['PA-1'] }], total: 3 },
     }));
 
     const lastCall = spies.onParts.mock.calls.at(-1)?.[0];
     expect(lastCall[0].argsSummary).toBe("Searched for 'bug'");
     expect(lastCall[0].resultSummary).toBe('Found 3 issues');
+    // Kept as sent, like a saved part; the card checks it.
+    expect(lastCall[0].resultView).toEqual({ kind: 'records', columns: ['Key'], rows: [{ cells: ['PA-1'] }], total: 3 });
   });
 
   it('tool_call part omits summaries when wire fields are absent', () => {
@@ -728,6 +773,48 @@ describe('createAGUIEventHandler — live agent-activity parts timeline', () => 
     const second = spies.onParts.mock.calls.at(-1)?.[0];
 
     expect(first).not.toBe(second);
+  });
+
+  it('keeps the approval card details on a call left waiting for approval', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+    const approval = {
+      approvalId: 'ap-1', instanceId: 'inst-1', serverName: 'Jira', toolName: 'create_issue',
+      canAlwaysAllow: true, expiresAt: 1_900_000_000_000, arguments: { title: 'Bug' },
+    };
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'mcp_jira_create_issue' }));
+    handle(frame('TOOL_CALL_RESULT', {
+      runId: 'root', toolCallId: 'call-1', content: 'Waiting for your approval', status: 'awaiting_approval', approval,
+    }));
+
+    const [part] = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(part.status).toBe('awaiting_approval');
+    expect(part.approval).toMatchObject({ approvalId: 'ap-1', serverName: 'Jira', arguments: { title: 'Bug' } });
+  });
+
+  it('marks the call a person approved', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'approved_1', toolCallName: 'mcp_jira_create_issue', approved: true }));
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-2', toolCallName: 'search' }));
+
+    const parts = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(parts.map((p: { approved?: boolean }) => p.approved)).toEqual([true, undefined]);
+  });
+
+  it('ignores approval details on a call that ran, and malformed ones', () => {
+    const { callbacks, spies } = makeCallbacks();
+    const handle = createAGUIEventHandler(callbacks);
+
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-1', toolCallName: 'x' }));
+    handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'call-1', content: 'ok', status: 'completed', approval: { approvalId: 'ap-1' } }));
+    handle(frame('TOOL_CALL_START', { runId: 'root', toolCallId: 'call-2', toolCallName: 'y' }));
+    handle(frame('TOOL_CALL_RESULT', { runId: 'root', toolCallId: 'call-2', content: 'wait', status: 'awaiting_approval', approval: { approvalId: 'ap-2' } }));
+
+    const parts = spies.onParts.mock.calls.at(-1)?.[0];
+    expect(parts.map((p: { approval?: unknown }) => p.approval)).toEqual([undefined, undefined]);
   });
 });
 

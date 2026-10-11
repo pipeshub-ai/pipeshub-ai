@@ -90,6 +90,8 @@ export interface ScopedToolGroupRow {
   label: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
+  /** Display name per `fullNames` entry, where the full name doesn't read as one (MCP). */
+  toolLabels?: Record<string, string>;
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;

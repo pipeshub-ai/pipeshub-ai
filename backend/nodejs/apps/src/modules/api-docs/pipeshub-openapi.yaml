@@ -289,6 +289,18 @@ tags:
     description: Configure authentication and settings for toolset instances
   - name: Toolset OAuth
     description: OAuth 2.0 authorization flow for toolsets requiring user consent
+  - name: MCP Server Catalog
+    description: Well-known MCP (Model Context Protocol) servers that instances can be created from
+  - name: MCP Server Instances
+    description: |
+      MCP servers of the organization (created by administrators, visible to everyone) and
+      personal ones (created by any user, visible to and usable by that user alone)
+  - name: MCP Server Credentials
+    description: Each user's own credential for an MCP server
+  - name: MCP Server OAuth
+    description: OAuth 2.0 connection flow and OAuth app configuration for MCP servers
+  - name: MCP Servers for Agents
+    description: MCP credentials that belong to a service-account agent rather than a user
 
   - name: MCP Servers
     description: |
@@ -393,6 +405,34 @@ components:
       schema:
         type: string
         pattern: '^[0-9a-fA-F]{24}$'
+    McpInstanceId:
+      name: instanceId
+      in: path
+      required: true
+      description: The MCP server instance's id.
+      schema:
+        type: string
+    McpTypeId:
+      name: typeId
+      in: path
+      required: true
+      description: A catalog MCP server type.
+      schema:
+        type: string
+    McpAgentKey:
+      name: agentKey
+      in: path
+      required: true
+      description: The service-account agent's key.
+      schema:
+        type: string
+    McpOAuthBaseUrl:
+      name: baseUrl
+      in: query
+      required: false
+      description: The frontend origin the OAuth callback returns to; must match the configured one.
+      schema:
+        type: string
   headers:
     X-Conversation-Id:
       description: |
@@ -1323,6 +1363,404 @@ components:
 
     # ==================== COMMON HTTP ERROR SCHEMAS ====================
 
+    McpTransport:
+      type: string
+      enum: [stdio, sse, streamable_http]
+    McpAuthMode:
+      type: string
+      enum: [none, api_token, oauth, headers]
+    McpServerTemplate:
+      type: object
+      description: A catalog entry. Pure metadata, never credentials.
+      properties:
+        typeId:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        defaultAuthMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        supportedAuthModes:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpAuthMode'
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        defaultUrl:
+          type: string
+          nullable: true
+        authorizationUrl:
+          type: string
+          nullable: true
+        tokenUrl:
+          type: string
+          nullable: true
+        defaultScopes:
+          type: array
+          items:
+            type: string
+        supportsDcr:
+          type: boolean
+        documentationUrl:
+          type: string
+          nullable: true
+        tags:
+          type: array
+          items:
+            type: string
+        replacedBy:
+          type: string
+          nullable: true
+          description: The entry that took this one's place. A replaced entry can't be used to create a server; servers already made from it keep running.
+    McpServerInstancePayload:
+      type: object
+      description: Create or update an MCP server instance. No credentials; those are set per user or agent.
+      required:
+        - name
+        - transport
+        - authMode
+      properties:
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+          description: A catalog type; its command, URL and OAuth endpoints then come from the template.
+        scope:
+          type: string
+          enum: [org, personal]
+          description: Create only. Administrators default to `org`; everyone else always gets `personal`.
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+          description: Everyone uses one administrator-set credential (api_token or headers). Not for personal servers.
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+          description: Custom STDIO only.
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          description: Custom STDIO only — names of the environment variables the process needs.
+          items:
+            type: string
+        url:
+          type: string
+          nullable: true
+        headerName:
+          type: string
+          nullable: true
+        authorizationUrl:
+          type: string
+          nullable: true
+        tokenUrl:
+          type: string
+          nullable: true
+        scopes:
+          type: array
+          items:
+            type: string
+        connectTimeoutSeconds:
+          type: number
+          minimum: 1
+          maximum: 45
+          nullable: true
+          description: Blank uses the default, 15.
+        callTimeoutSeconds:
+          type: number
+          minimum: 1
+          maximum: 600
+          nullable: true
+          description: Blank uses the default, 60.
+    McpServerInstance:
+      type: object
+      description: A stored MCP server instance. Never carries credentials.
+      properties:
+        _id:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        scope:
+          type: string
+          enum: [org, personal]
+          description: Absent on records saved before personal servers existed; those are `org`.
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+          nullable: true
+        headerName:
+          type: string
+          nullable: true
+        authorizationUrl:
+          type: string
+          nullable: true
+        tokenUrl:
+          type: string
+          nullable: true
+        scopes:
+          type: array
+          items:
+            type: string
+        connectTimeoutSeconds:
+          type: number
+          nullable: true
+        callTimeoutSeconds:
+          type: number
+          nullable: true
+        isCustom:
+          type: boolean
+        hasOAuthClientConfig:
+          type: boolean
+        disabledReason:
+          type: string
+          nullable: true
+          enum: [custom_stdio_disabled, null]
+          description: |
+            Set on list/get responses only. `custom_stdio_disabled` means this is a
+            custom STDIO server and the deployment does not allow those
+            (`MCP_ALLOW_CUSTOM_STDIO` is not `true`): it will not connect, and its
+            tools are not offered to agents, until the operator enables the flag.
+        createdAt:
+          type: integer
+        updatedAt:
+          type: integer
+    ToolApprovalAnswer:
+      type: object
+      description: |
+        The person's answer to a tool approval card, sent with the next message. The call it
+        approves is the one saved server-side when the card was shown (15 minutes, single use,
+        bound to the asking user and conversation); only its id and the decision travel here.
+      required: [approvalId, decision]
+      properties:
+        approvalId:
+          type: string
+          maxLength: 64
+        decision:
+          type: string
+          enum: [allow_once, allow_chat, always, deny]
+          description: |
+            `allow_chat` stops later calls of the tool in this conversation from asking;
+            `always` sets the tool to Allow (in an agent chat only for people who can edit the
+            agent, otherwise it counts as `allow_chat`). Neither applies over a company
+            "Always ask".
+    McpToolRules:
+      type: object
+      properties:
+        tools:
+          type: object
+          maxProperties: 500
+          additionalProperties:
+            type: string
+            enum: [allow, ask, block]
+          description: Tool name → rule. A tool without one starts at Allow when the server marks it read-only, otherwise Ask.
+    McpToolPolicy:
+      type: object
+      properties:
+        tools:
+          type: object
+          maxProperties: 500
+          additionalProperties:
+            type: object
+            properties:
+              rule:
+                type: string
+                nullable: true
+                enum: [ask, block, null]
+                description: A floor no agent or person can go below.
+              unattended:
+                type: boolean
+                description: In a run nobody can answer a card (Slack, the API), Ask becomes Allow.
+    McpToolInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: The server's own tool name.
+        namespacedName:
+          type: string
+          description: The name the agent sees, `mcp_{server}_{tool}`.
+        description:
+          type: string
+          nullable: true
+        inputSchema:
+          type: object
+          additionalProperties: true
+        annotations:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            The server's own hints about the tool (`readOnlyHint`, `destructiveHint`,
+            `idempotentHint`, `openWorldHint`, `title`), as it sent them. Hints only.
+        kind:
+          type: string
+          enum: [read, write, destructive]
+          description: >-
+            What the tool does to data, which sets its starting approval rule: `read` is
+            pre-approved, `write` is allowed on approval, `destructive` is denied. A name with a
+            deleting word (delete, remove, drop, …) is `destructive` whatever the hints say;
+            otherwise the hints decide, and a tool without them is `write`.
+        kindSource:
+          type: string
+          enum: [name, server, none]
+          description: Where `kind` came from - the tool's name, the server's hints, or neither.
+    McpMyServerEntry:
+      allOf:
+        - $ref: '#/components/schemas/McpServerInstance'
+        - type: object
+          properties:
+            isAuthenticated:
+              type: boolean
+            tools:
+              type: array
+              items:
+                $ref: '#/components/schemas/McpToolInfo'
+            toolsError:
+              type: string
+              nullable: true
+            toolsTimedOut:
+              type: boolean
+              description: |
+                The server took longer than the listing's 10 s budget to list its tools. Chats still
+                wait for it up to its own timeout.
+            toolsCachedAt:
+              type: integer
+              nullable: true
+              description: |
+                When the tools shown were discovered (epoch ms), if they came from the tool cache
+                rather than from the server just now. `GET /instances/{instanceId}/tools` always
+                asks the server and replaces them.
+    McpAuthenticateRequest:
+      type: object
+      description: The fields the instance's auth mode needs.
+      properties:
+        apiToken:
+          type: string
+          format: password
+        headerName:
+          type: string
+        headerValue:
+          type: string
+          format: password
+        env:
+          type: object
+          description: STDIO only; keys must be among the instance's required or optional env names.
+          additionalProperties:
+            type: string
+    McpAuthResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+    McpDeleteResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        _id:
+          type: string
+    McpOAuthAuthorizationUrl:
+      type: object
+      properties:
+        authorizationUrl:
+          type: string
+          format: uri
+    McpOAuthDiscoveryResult:
+      type: object
+      properties:
+        metadataFound:
+          type: boolean
+        supportsDcr:
+          type: boolean
+        authorizationEndpoint:
+          type: string
+          nullable: true
+        tokenEndpoint:
+          type: string
+          nullable: true
+        registrationEndpoint:
+          type: string
+          nullable: true
+        scopesSupported:
+          type: array
+          items:
+            type: string
+    McpOAuthCallbackResult:
+      type: object
+      properties:
+        success:
+          type: boolean
+        instanceId:
+          type: string
+          description: Set on success.
+        error:
+          type: string
+          description: |
+            On failure: the provider's error, or one of `missing_params`, `invalid_state`,
+            `expired_state`, `caller_mismatch`, `instance_not_found`, `client_config_changed`,
+            `token_exchange_failed`.
+        errorMessage:
+          type: string
     ErrorResponse:
       type: object
       additionalProperties: false
@@ -6829,6 +7267,8 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -7035,6 +7475,8 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -7161,6 +7603,8 @@ components:
             compatibility with callers that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -7266,6 +7710,8 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -7437,6 +7883,8 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        toolApproval:
+          $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
           type: string
           format: uuid
@@ -10249,182 +10697,6 @@ components:
                   tool's `fullName` is no longer in the runtime tool registry
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
-
-    McpTransport:
-      type: string
-      enum: [stdio, sse, streamable_http]
-
-    McpAuthMode:
-      type: string
-      enum: [none, api_token, oauth, headers]
-
-    McpCatalogTemplate:
-      type: object
-      additionalProperties: true
-      description: A catalog entry. Pure metadata; never carries credentials.
-      required: [typeId, displayName, description, transport, defaultAuthMode]
-      properties:
-        typeId:
-          type: string
-          example: slack
-        displayName:
-          type: string
-        description:
-          type: string
-        icon:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        defaultAuthMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        supportedAuthModes:
-          type: array
-          items:
-            $ref: '#/components/schemas/McpAuthMode'
-        command:
-          type: string
-          nullable: true
-          description: STDIO only. Always the command an instance of this server runs.
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        optionalEnv:
-          type: array
-          items:
-            type: string
-        defaultUrl:
-          type: string
-          nullable: true
-
-    McpServerInstanceRequest:
-      type: object
-      additionalProperties: true
-      description: |
-        Create/update body. With `typeId`, `transport` must match the catalog
-        server's and `command`/`args` must be omitted or equal the catalog values
-        (otherwise 400). Without `typeId` and with `transport: stdio`, the request
-        is refused with 403 unless the operator set `MCP_ALLOW_CUSTOM_STDIO=true`.
-        Env var names (`requiredEnv`, keys of `env`) must match
-        `^[A-Z][A-Z0-9_]{0,63}$` and may not be loader/runtime variables such as
-        `PATH`, `LD_*`, `NODE_*` or `PYTHON*` (otherwise 400).
-      required: [name, transport, authMode]
-      properties:
-        name:
-          type: string
-        typeId:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        authMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        useAdminAuth:
-          type: boolean
-        description:
-          type: string
-          nullable: true
-        command:
-          type: string
-          nullable: true
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        env:
-          type: object
-          additionalProperties:
-            type: string
-        url:
-          type: string
-          nullable: true
-        headerName:
-          type: string
-          nullable: true
-        authorizationUrl:
-          type: string
-          nullable: true
-        tokenUrl:
-          type: string
-          nullable: true
-        scopes:
-          type: array
-          items:
-            type: string
-
-    McpServerInstance:
-      type: object
-      additionalProperties: true
-      description: Stored instance metadata. No secrets.
-      required: [_id, orgId, createdBy, name, transport, authMode, isCustom]
-      properties:
-        _id:
-          type: string
-        orgId:
-          type: string
-        createdBy:
-          type: string
-        name:
-          type: string
-        typeId:
-          type: string
-          nullable: true
-        transport:
-          $ref: '#/components/schemas/McpTransport'
-        authMode:
-          $ref: '#/components/schemas/McpAuthMode'
-        useAdminAuth:
-          type: boolean
-        description:
-          type: string
-          nullable: true
-        command:
-          type: string
-          nullable: true
-        args:
-          type: array
-          items:
-            type: string
-        requiredEnv:
-          type: array
-          items:
-            type: string
-        optionalEnv:
-          type: array
-          items:
-            type: string
-        url:
-          type: string
-          nullable: true
-        isCustom:
-          type: boolean
-        createdAt:
-          type: integer
-          format: int64
-        updatedAt:
-          type: integer
-          format: int64
-        hasOAuthClientConfig:
-          type: boolean
-          description: Set on list/get responses only.
-        disabledReason:
-          type: string
-          nullable: true
-          enum: [custom_stdio_disabled, null]
-          description: |
-            Set on list/get responses only. `custom_stdio_disabled` means this is a
-            custom STDIO server and the deployment does not allow those
-            (`MCP_ALLOW_CUSTOM_STDIO` is not `true`): it will not connect, and its
-            tools are not offered to agents, until the operator enables the flag.
 
     McpServer:
       type: object
@@ -38564,6 +38836,1027 @@ paths:
         '409':
           description: OAuth config is in use by one or more toolset instances
 
+  # -------------------- MCP Servers --------------------
+  # Proxied to the connectors service (`backend/python/app/api/routes/mcp_servers.py`).
+  # Every call is bounded at 90 s; writes and the OAuth reads that change state are never resent.
+  /mcp-servers/catalog:
+    get:
+      tags:
+        - MCP Server Catalog
+      summary: List catalog MCP servers
+      description: Well-known MCP servers an instance can be created from. Templates carry no credentials.
+      operationId: listMcpCatalog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: search
+          in: query
+          description: Matches name, description and tags.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: One page of templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpServerTemplate'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  customStdioAllowed:
+                    type: boolean
+                    description: |
+                      Whether a custom (non-catalog) server may run a local command on this
+                      deployment (`MCP_ALLOW_CUSTOM_STDIO`, off by default). Catalog STDIO servers
+                      are unaffected.
+        '401':
+          description: Unauthorized
+
+  /mcp-servers/catalog/{typeId}:
+    get:
+      tags:
+        - MCP Server Catalog
+      summary: Get a catalog MCP server
+      operationId: getMcpCatalogTemplate
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpTypeId'
+      responses:
+        '200':
+          description: The template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerTemplate'
+        '401':
+          description: Unauthorized
+        '404':
+          description: No template with this type id
+
+  /mcp-servers/my-mcp-servers:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List the MCP servers I can use
+      description: |
+        The organization's MCP servers plus the caller's own personal ones, each with the
+        caller's connection state. With `includeTools`, every connected server is asked for
+        its tools, each within 10 s so one slow server can't hold the page; a server that fails
+        or misses that reports `toolsError` (and `toolsTimedOut`) instead.
+
+        How an organization server is reached (`url`, `command`, `args`, `authorizationUrl`,
+        `tokenUrl`, `scopes`) is returned to administrators only; members get the rest of the
+        record. A personal server is listed only to its owner, in full.
+      operationId: getMyMcpServers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: includeTools
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Servers visible to the caller
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpMyServerEntry'
+        '401':
+          description: Unauthorized
+
+  /mcp-servers/instances:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: List MCP server instances (administrators)
+      description: |
+        The organization's MCP servers. With `includePersonal`, every user's personal servers
+        are listed too, so an administrator can review and delete them. A personal entry is a
+        summary — id, owner (`createdBy`), name, type, transport, auth mode and dates, with
+        `scope: personal` — and never says how to reach the server: a URL or argument can carry
+        the user's credential.
+      operationId: listMcpInstances
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: includePersonal
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        '200':
+          description: Instances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an administrator
+    post:
+      tags:
+        - MCP Server Instances
+      summary: Create an MCP server instance
+      description: |
+        An administrator's instance is visible to the whole organization, unless they send
+        `scope: personal`. Anyone else's is always personal: visible and usable by them alone,
+        and never attachable to an agent shared with the organization or running as a service
+        account.
+
+        A personal instance can't run a local command (STDIO), can't share an administrator
+        credential, may only use public URLs, and counts against the per-user limit
+        (`MCP_MAX_PERSONAL_INSTANCES`, default 25). A catalog instance takes its command, URL
+        and OAuth endpoints from its template; any sent in the body are ignored.
+      operationId: createMcpInstance
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstancePayload'
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '400':
+          description: |
+            Invalid payload, a URL that isn't allowed, a catalog server's transport,
+            command or args overridden, a disallowed env var name, or a setting a
+            personal server can't have.
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            An org server requested by a non-administrator, or a custom `stdio` server
+            while the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`).
+        '409':
+          description: The caller already has the maximum number of personal servers
+
+  /mcp-servers/instances/{instanceId}:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: Get an MCP server instance
+      description: An organization instance for administrators, or the caller's own personal instance.
+      operationId: getMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: An organization instance and the caller is not an administrator
+        '404':
+          description: Not found, in another organization, or someone else's personal instance
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Update an MCP server instance
+      description: |
+        Organization instances are updated by administrators, a personal instance by its owner.
+        `scope` can't change. When the connection target changes (transport, URL, command,
+        arguments, auth mode or token URL), every stored credential for the instance is
+        removed first and the response has `credentialsReset: true`: the old credentials were
+        given for the old target. A catalog server's target is its template's, so for one only
+        a change of auth mode or catalog type counts.
+      operationId: updateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstancePayload'
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/McpServerInstance'
+                  - type: object
+                    properties:
+                      credentialsReset:
+                        type: boolean
+        '400':
+          description: |
+            Invalid payload, a URL that isn't allowed, a catalog server's transport,
+            command or args overridden, or a disallowed env var name.
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            The caller may not manage this instance, or a custom `stdio` server was
+            requested and the deployment does not allow them (`MCP_ALLOW_CUSTOM_STDIO`).
+        '404':
+          description: Not found
+    delete:
+      tags:
+        - MCP Server Instances
+      summary: Delete an MCP server instance
+      description: |
+        Organization instances are deleted by administrators, a personal instance by its owner
+        or an administrator. Removes every stored credential and the OAuth app configuration too.
+      operationId: deleteMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpDeleteResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller may not delete this instance
+        '404':
+          description: Not found
+        '409':
+          description: Agents still use this server; remove it from them first
+        '500':
+          description: Whether agents use the server couldn't be checked, so nothing was deleted
+
+  /mcp-servers/instances/{instanceId}/tools:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: Discover an MCP server's tools
+      description: >-
+        Connects with the caller's credential and lists the server's tools; what it finds
+        replaces the cached list. With `cached=true`, the tool cache's list is returned when
+        there is one, without connecting.
+      operationId: getMcpInstanceTools
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+        - name: cached
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: Answer from the tool cache when it has this sign-in's list.
+      responses:
+        '200':
+          description: Tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tools:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpToolInfo'
+                  syncedAt:
+                    type: integer
+                    description: When the list was read from the server (epoch milliseconds).
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+        '409':
+          description: The caller hasn't connected this server, or its authorization expired
+        '502':
+          description: The server couldn't be reached or refused the connection
+
+  /mcp-servers/instances/{instanceId}/tool-policy:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: Get the company's tool rules for an MCP server
+      operationId: getMcpToolPolicy
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolPolicy'
+        '403':
+          description: Not an administrator (company rules exist for organization servers only)
+        '404':
+          description: Not found
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set the company's tool rules for an MCP server
+      operationId: updateMcpToolPolicy
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolPolicy'
+      responses:
+        '200':
+          description: The rules saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolPolicy'
+        '403':
+          description: Not an administrator (company rules exist for organization servers only)
+        '404':
+          description: Not found
+        '422':
+          description: A rule or a tool name isn't valid, or more than 500 tools have one
+
+  /mcp-servers/instances/{instanceId}/my-tool-rules:
+    get:
+      tags:
+        - MCP Server Instances
+      summary: Get my tool rules for an MCP server
+      operationId: getMyMcpToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolRules'
+        '403':
+          description: Not allowed
+        '404':
+          description: Not found
+    put:
+      tags:
+        - MCP Server Instances
+      summary: Set my tool rules for an MCP server (my assistant chats)
+      operationId: updateMyMcpToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolRules'
+      responses:
+        '200':
+          description: The rules saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolRules'
+        '403':
+          description: Not allowed
+        '404':
+          description: Not found
+        '422':
+          description: A rule or a tool name isn't valid, or more than 500 tools have one
+
+  /mcp-servers/instances/{instanceId}/authenticate:
+    post:
+      tags:
+        - MCP Server Credentials
+      summary: Save my credential for an MCP server
+      description: |
+        An API token, a header value, or (STDIO) environment values, depending on the
+        instance's auth mode. For a server that uses a shared administrator credential only an
+        administrator can set it.
+      operationId: authenticateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpAuthenticateRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '400':
+          description: Missing values, or the instance uses OAuth
+        '401':
+          description: Unauthorized
+        '403':
+          description: A shared credential and the caller is not an administrator
+        '404':
+          description: Not found
+
+  /mcp-servers/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - MCP Server Credentials
+      summary: Replace my credential for an MCP server
+      operationId: updateMcpCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpAuthenticateRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '400':
+          description: Missing values, or the instance uses OAuth
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+    delete:
+      tags:
+        - MCP Server Credentials
+      summary: Disconnect me from an MCP server
+      operationId: removeMcpCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: A shared credential and the caller is not an administrator
+        '404':
+          description: Not found
+
+  /mcp-servers/instances/{instanceId}/auto-authenticate:
+    post:
+      tags:
+        - MCP Server Credentials
+      summary: Use the shared administrator credential
+      description: For a server set to share an administrator's credential, connects the caller with it.
+      operationId: autoAuthenticateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Connected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '400':
+          description: The server doesn't use a shared credential
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+  /mcp-servers/instances/{instanceId}/reauthenticate:
+    post:
+      tags:
+        - MCP Server Credentials
+      summary: Clear my credential so I can connect again
+      operationId: reauthenticateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+
+  /mcp-servers/instances/{instanceId}/oauth/authorize:
+    get:
+      tags:
+        - MCP Server OAuth
+      summary: Start connecting me with OAuth
+      description: |
+        Returns the provider's authorization URL to open in a popup. Discovers the server's
+        OAuth metadata and, when no OAuth app is configured and the provider supports it,
+        registers a client dynamically. Creates a single-use state that expires in 10 minutes.
+      operationId: getMcpOAuthAuthorizationUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+        - $ref: '#/components/parameters/McpOAuthBaseUrl'
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthAuthorizationUrl'
+        '400':
+          description: The instance doesn't use OAuth, or its OAuth endpoints are unknown
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+        '409':
+          description: No OAuth app is configured and the provider doesn't support dynamic registration
+        '502':
+          description: Dynamic client registration with the provider failed
+
+  /mcp-servers/instances/{instanceId}/oauth/refresh:
+    post:
+      tags:
+        - MCP Server OAuth
+      summary: Refresh my OAuth token now
+      operationId: refreshMcpOAuthToken
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Not found
+        '409':
+          description: The authorization can't be refreshed; connect again
+
+  /mcp-servers/instances/{instanceId}/oauth-config:
+    get:
+      tags:
+        - MCP Server OAuth
+      summary: Get the OAuth app of an MCP server
+      description: Masked. Organization instances for administrators, a personal instance for its owner.
+      operationId: getMcpOAuthConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The OAuth app, masked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+                  clientId:
+                    type: string
+                    description: Masked
+                  clientSecret:
+                    type: string
+                    description: Masked
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller may not manage this instance
+        '404':
+          description: Not found
+    put:
+      tags:
+        - MCP Server OAuth
+      summary: Set the OAuth app of an MCP server
+      operationId: updateMcpOAuthConfig
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - clientId
+                - clientSecret
+              properties:
+                clientId:
+                  type: string
+                clientSecret:
+                  type: string
+                  format: password
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller may not manage this instance
+        '404':
+          description: Not found
+
+  /mcp-servers/oauth/discover:
+    post:
+      tags:
+        - MCP Server OAuth
+      summary: Probe a server URL for OAuth metadata
+      description: |
+        Before an instance exists: does this server support OAuth dynamic client registration,
+        and what are its real endpoints? A non-administrator's URL is probed under the
+        public-only policy of a personal server.
+      operationId: discoverMcpOAuthMetadata
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  format: uri
+      responses:
+        '200':
+          description: What was found; `metadataFound` false means nothing could be discovered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthDiscoveryResult'
+        '400':
+          description: The URL isn't allowed
+        '401':
+          description: Unauthorized
+
+  /mcp-servers/oauth/callback:
+    get:
+      tags:
+        - MCP Server OAuth
+      summary: Complete connecting with OAuth
+      description: |
+        Exchanges the authorization code. The state is single-use and bound to the session
+        that started the authorization. Failures are a 200 with `success: false`, so the popup
+        can show them.
+      operationId: handleMcpOAuthCallback
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: code
+          in: query
+          schema:
+            type: string
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: error
+          in: query
+          description: Set by the provider when the user declined or it failed
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The outcome
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthCallbackResult'
+        '401':
+          description: Unauthorized
+
+  /mcp-servers/agents/{agentKey}:
+    get:
+      tags:
+        - MCP Servers for Agents
+      summary: List MCP servers for a service-account agent
+      description: |
+        The organization's MCP servers with the agent's own connection state. Personal servers
+        are never listed: they can't be attached to a service-account agent. Requires access to
+        the agent. Tools are listed only for a caller who can edit it, because listing them
+        connects with the agent's own credentials; anyone else gets the connection state alone.
+        Connection details are returned to administrators only, as on `/my-mcp-servers`.
+      operationId: getAgentMcpServers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - name: includeTools
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Servers
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpMyServerEntry'
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent not found
+
+  /mcp-servers/agents/{agentKey}/instances/{instanceId}/authenticate:
+    post:
+      tags:
+        - MCP Servers for Agents
+      summary: Save a service-account agent's credential for an MCP server
+      operationId: authenticateAgentMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpAuthenticateRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '400':
+          description: Missing values, or the instance uses OAuth
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent or instance not found
+
+  /mcp-servers/agents/{agentKey}/instances/{instanceId}/tool-rules:
+    get:
+      tags:
+        - MCP Server Credentials
+      summary: Get an agent's tool rules for an MCP server
+      operationId: getAgentMcpToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolRules'
+        '403':
+          description: Only people who can edit the agent can change them
+        '404':
+          description: Not found
+    put:
+      tags:
+        - MCP Server Credentials
+      summary: Set an agent's tool rules for an MCP server
+      operationId: updateAgentMcpToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpToolRules'
+      responses:
+        '200':
+          description: The rules saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpToolRules'
+        '403':
+          description: Only people who can edit the agent can change them
+        '404':
+          description: Not found
+        '422':
+          description: A rule or a tool name isn't valid, or more than 500 tools have one
+
+  /mcp-servers/agents/{agentKey}/instances/{instanceId}/credentials:
+    put:
+      tags:
+        - MCP Servers for Agents
+      summary: Replace a service-account agent's credential for an MCP server
+      operationId: updateAgentMcpCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - $ref: '#/components/parameters/McpInstanceId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpAuthenticateRequest'
+      responses:
+        '200':
+          description: Saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent or instance not found
+    delete:
+      tags:
+        - MCP Servers for Agents
+      summary: Disconnect a service-account agent from an MCP server
+      operationId: removeAgentMcpCredentials
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Disconnected
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent or instance not found
+
+  /mcp-servers/agents/{agentKey}/instances/{instanceId}/reauthenticate:
+    post:
+      tags:
+        - MCP Servers for Agents
+      summary: Clear a service-account agent's credential so it can connect again
+      operationId: reauthenticateAgentMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - $ref: '#/components/parameters/McpInstanceId'
+      responses:
+        '200':
+          description: Cleared
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpAuthResult'
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent or instance not found
+
+  /mcp-servers/agents/{agentKey}/instances/{instanceId}/oauth/authorize:
+    get:
+      tags:
+        - MCP Servers for Agents
+      summary: Start connecting a service-account agent with OAuth
+      description: Same flow as for a user; the resulting tokens belong to the agent.
+      operationId: getAgentMcpOAuthAuthorizationUrl
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/McpAgentKey'
+        - $ref: '#/components/parameters/McpInstanceId'
+        - $ref: '#/components/parameters/McpOAuthBaseUrl'
+      responses:
+        '200':
+          description: Authorization URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpOAuthAuthorizationUrl'
+        '400':
+          description: The instance doesn't use OAuth, or its OAuth endpoints are unknown
+        '401':
+          description: Unauthorized
+        '403':
+          description: No edit access to the agent, or it is not a service account
+        '404':
+          description: Agent or instance not found
+        '409':
+          description: No OAuth app is configured and the provider doesn't support dynamic registration
+
   # -------------------- Skills --------------------
   /skills:
     get:
@@ -43674,250 +44967,6 @@ paths:
           description: No organisations found in the system
         '500':
           description: Internal server error
-
-  /mcp-servers/catalog:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP server catalog
-      operationId: listMcpCatalog
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: page
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            default: 1
-        - name: limit
-          in: query
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 200
-            default: 50
-        - name: search
-          in: query
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Catalog page
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [templates, total, page, limit, customStdioAllowed]
-                properties:
-                  templates:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/McpCatalogTemplate'
-                  total:
-                    type: integer
-                  page:
-                    type: integer
-                  limit:
-                    type: integer
-                  customStdioAllowed:
-                    type: boolean
-                    description: |
-                      Whether this deployment accepts custom servers with the `stdio`
-                      transport (operator setting `MCP_ALLOW_CUSTOM_STDIO`).
-        '401':
-          description: Unauthorized
-        '403':
-          description: MCP is disabled for this organization
-
-  /mcp-servers/instances:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP server instances
-      description: List the organization's MCP server instances (admin only).
-      operationId: listMcpInstances
-      security:
-        - bearerAuth: []
-      responses:
-        '200':
-          description: Instances
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  instances:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/McpServerInstance'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Not an administrator, or MCP is disabled for this organization
-    post:
-      tags:
-        - MCP Servers
-      summary: Create MCP server instance
-      description: Create an MCP server instance (admin only).
-      operationId: createMcpInstance
-      security:
-        - bearerAuth: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/McpServerInstanceRequest'
-      responses:
-        '201':
-          description: Instance created
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '400':
-          description: |
-            Invalid request: unknown `typeId`, a catalog server's transport,
-            command or args overridden, a missing command/url, or a disallowed
-            env var name.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized
-        '403':
-          description: |
-            Not an administrator, MCP is disabled for this organization, or a
-            custom `stdio` server was requested and the deployment does not allow
-            them (`MCP_ALLOW_CUSTOM_STDIO`).
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /mcp-servers/instances/{instanceId}:
-    get:
-      tags:
-        - MCP Servers
-      summary: Get MCP server instance
-      operationId: getMcpInstance
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: instanceId
-          in: path
-          required: true
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Instance
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '401':
-          description: Unauthorized
-        '403':
-          description: Not an administrator, or MCP is disabled for this organization
-        '404':
-          description: Instance not found
-    put:
-      tags:
-        - MCP Servers
-      summary: Update MCP server instance
-      description: Replace an MCP server instance's configuration (admin only). Same rules as create.
-      operationId: updateMcpInstance
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: instanceId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/McpServerInstanceRequest'
-      responses:
-        '200':
-          description: Instance updated
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/McpServerInstance'
-        '400':
-          description: Invalid request (see create)
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized
-        '403':
-          description: |
-            Not an administrator, MCP is disabled for this organization, or a
-            custom `stdio` server was requested and the deployment does not allow them.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: Instance not found
-
-  /mcp-servers/my-mcp-servers:
-    get:
-      tags:
-        - MCP Servers
-      summary: List MCP servers for the current user
-      description: Org MCP server instances merged with the caller's auth status and, optionally, live tools.
-      operationId: getMyMcpServers
-      security:
-        - bearerAuth: []
-      parameters:
-        - name: includeTools
-          in: query
-          schema:
-            type: boolean
-            default: true
-      responses:
-        '200':
-          description: Instances with the caller's status
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  instances:
-                    type: array
-                    items:
-                      allOf:
-                        - $ref: '#/components/schemas/McpServerInstance'
-                        - type: object
-                          properties:
-                            isAuthenticated:
-                              type: boolean
-                            tools:
-                              type: array
-                              items:
-                                type: object
-                                additionalProperties: true
-                            toolsError:
-                              type: string
-                              nullable: true
-        '401':
-          description: Unauthorized
-        '403':
-          description: MCP is disabled for this organization
-
-  # ── MCP (Model Context Protocol) ──────────────────────────────────
-  # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).
-  # Use the root server URL: {instance_url}/mcp
 
   /mcp:
     post:

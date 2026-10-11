@@ -1,7 +1,8 @@
 import React from 'react';
-import { describe, it, expect, afterEach } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/react';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { render, screen, fireEvent, cleanup, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
+import '@/lib/__tests__/test-i18n';
 import {
   AgentActivityTimeline,
   toolActivityLabel,
@@ -10,6 +11,7 @@ import {
   buildActivitySummary,
   CollapsibleActivitySection,
   ToolCallCard,
+  formatToolPayload,
 } from '../agent-activity';
 import type { MessagePart, StatusMessage } from '../../../types';
 
@@ -43,6 +45,16 @@ function renderCard(part: MessagePart) {
 }
 
 const STATUS: StatusMessage = { id: 's1', status: 'executing', message: 'Using Jira Search...', timestamp: '' };
+
+describe('getVisibleRootParts — the sign-in part', () => {
+  it("isn't activity, so a reply with only an answer and the card has no timeline", () => {
+    const parts: MessagePart[] = [
+      { type: 'text', content: 'Drive needs more permission.', isFinal: true },
+      { type: 'mcp_sign_in', servers: [{ instanceId: 'inst-drive', serverName: 'Drive', scopes: ['files.write'] }] },
+    ];
+    expect(getVisibleRootParts(parts, false)).toEqual([]);
+  });
+});
 
 describe('AgentActivityTimeline — narration text', () => {
   it('renders a root-level narration text part', () => {
@@ -339,7 +351,211 @@ describe('ToolCallCard — skill tool result preview gating', () => {
 
     fireEvent.click(screen.getByRole('button'));
 
-    expect(screen.getByText('{"stdout": "hello"}')).toBeTruthy();
+    expect(screen.getByText(/"stdout": "hello"/)).toBeTruthy();
+  });
+});
+
+describe('ToolCallCard — raw arguments and result', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  it('shows the args summary AND the raw arguments, pretty-printed', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'call-1',
+      toolName: 'mcp_pangea_get_audit_logs',
+      status: 'completed',
+      argsSummary: 'start: "2026-09-01"',
+      args: '{"start":"2026-09-01","limit":50}',
+    });
+
+    expect(screen.getByText('start: "2026-09-01"')).toBeTruthy();
+    expect(screen.getByText(/"limit": 50/).textContent).toBe('{\n  "start": "2026-09-01",\n  "limit": 50\n}');
+  });
+
+  it('shows the raw arguments when there is no summary', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+
+    expect(screen.getByText(/"q": "hi"/)).toBeTruthy();
+  });
+
+  it.each(['{}', 'null', '   '])('hides the Arguments section for empty args %j', (args) => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args });
+
+    expect(screen.queryByText('Arguments')).toBeNull();
+  });
+
+  it('labels the arguments section', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+
+    expect(screen.getByText('Arguments')).toBeTruthy();
+  });
+
+  it('marks a failed call as an error, in red', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_github_create_issue',
+      status: 'failed',
+      resultSummary: 'The GitHub MCP server rejected the stored credentials (HTTP 401).',
+    });
+
+    const heading = screen.getByText('Error');
+    expect(heading.style.color).toBe('var(--red-11)');
+    expect(screen.getByText(/rejected the stored credentials/)).toBeTruthy();
+  });
+
+  it('shows the result summary AND the raw preview', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_pangea_get_audit_logs',
+      status: 'completed',
+      resultSummary: 'Returned 2 items in events',
+      resultPreview: '{"events":[{"id":1},{"id":2}]}',
+    });
+
+    expect(screen.getByText('Returned 2 items in events')).toBeTruthy();
+    expect(screen.getByText(/"events": \[/)).toBeTruthy();
+  });
+
+  it('shows a truncated (non-JSON) preview verbatim', () => {
+    const preview = '{"events":[{"id":1},… [truncated: 9000 chars total]';
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', resultPreview: preview });
+
+    expect(screen.getByText(preview)).toBeTruthy();
+  });
+
+  it('shows the reason for a blocked call', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'blocked', resultPreview: 'denied by policy' });
+
+    expect(screen.getByText('Blocked')).toBeTruthy();
+    expect(screen.getByText('denied by policy')).toBeTruthy();
+  });
+
+  it('says a call is waiting for approval', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'awaiting_approval', resultPreview: 'Waiting for your approval' });
+
+    expect(screen.getByText('Waiting for approval')).toBeTruthy();
+  });
+
+  it('copies the formatted payload', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+
+    fireEvent.click(screen.getByRole('button', { name: /copy/i }));
+
+    expect(writeText).toHaveBeenCalledWith('{\n  "q": "hi"\n}');
+  });
+});
+
+describe('ToolCallCard — a readable result', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  const SEARCH: MessagePart = {
+    type: 'tool_call',
+    toolCallId: 'c',
+    toolName: 'mcp_atlassian_searchJiraIssuesUsingJql',
+    status: 'completed',
+    resultSummary: 'Found 23 issues',
+    resultPreview: '{"issues":[{"key":"PA-1"}]}',
+    resultView: {
+      kind: 'records',
+      columns: ['Key', 'Summary', 'Status'],
+      rows: [
+        { cells: ['PA-1', 'Login fails', 'In Progress'], url: 'https://example.atlassian.net/browse/PA-1' },
+        { cells: ['PA-2', 'Crash on save', 'Done'], url: 'javascript:alert(1)' },
+      ],
+      total: 23,
+    },
+  };
+
+  it('shows a table of what was found, linked, with the raw output behind a toggle', () => {
+    expand(SEARCH);
+
+    expect(screen.getByText('Found 23 issues')).toBeTruthy();
+    const table = within(screen.getByTestId('tool-result-table'));
+    expect(table.getByText('Summary')).toBeTruthy();
+    expect(table.getByRole('link', { name: 'PA-1' }).getAttribute('href')).toBe('https://example.atlassian.net/browse/PA-1');
+    expect(table.getByRole('link', { name: 'PA-1' }).getAttribute('rel')).toBe('noopener noreferrer');
+    // Not a web link: shown as text.
+    expect(table.queryByRole('link', { name: 'PA-2' })).toBeNull();
+    expect(table.getByText('PA-2')).toBeTruthy();
+    expect(screen.getByText('Showing 2 of 23')).toBeTruthy();
+    expect(screen.queryByText(/"issues": \[/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /View raw/ }));
+    expect(screen.getByText(/"issues": \[/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /Hide raw/ }));
+    expect(screen.queryByText(/"issues": \[/)).toBeNull();
+  });
+
+  it("shows one record's fields", () => {
+    expand({
+      ...SEARCH,
+      resultSummary: 'PA-7 · Login fails',
+      resultView: { kind: 'fields', fields: [{ label: 'Status', value: 'Done' }], url: 'https://example.atlassian.net/browse/PA-7' },
+    });
+
+    const fields = within(screen.getByTestId('tool-result-fields'));
+    expect(fields.getByText('Status')).toBeTruthy();
+    expect(fields.getByText('Done')).toBeTruthy();
+    expect(fields.getByRole('link', { name: 'Open' }).getAttribute('href')).toBe('https://example.atlassian.net/browse/PA-7');
+  });
+
+  it.each([
+    ['not a view', 'a table'],
+    ['an unknown kind', { kind: 'html', html: '<b>x</b>' }],
+    ['no rows', { kind: 'records', columns: ['A'], rows: [] }],
+  ])('ignores %s and shows the raw output as before', (_label, resultView) => {
+    expand({ ...SEARCH, resultView });
+
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
+    expect(screen.getByText(/"issues": \[/)).toBeTruthy();
+  });
+
+  it('shows a prose result as text, without repeating its first line', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'mcp_docs_search',
+      status: 'completed',
+      resultSummary: '# Results',
+      resultPreview: '# Results\nThe page explains the setup.',
+    });
+
+    expect(screen.getByTestId('tool-result-text').textContent).toBe('# Results\nThe page explains the setup.');
+    expect(screen.getAllByText(/# Results/)).toHaveLength(1);
+  });
+
+  it('loads no image and links only to the web from a summary', () => {
+    expand({
+      ...SEARCH,
+      resultView: undefined,
+      resultSummary: 'PA-1 · ![x](https://tracker.example/pixel.png) [click](javascript:alert(1)) [docs](https://example.com/d)',
+    });
+
+    expect(document.querySelector('img')).toBeNull();
+    expect(screen.queryByRole('link', { name: 'click' })).toBeNull();
+    const docs = screen.getByRole('link', { name: 'docs' });
+    expect(docs.getAttribute('href')).toBe('https://example.com/d');
+    expect(docs.getAttribute('target')).toBe('_blank');
+  });
+});
+
+describe('formatToolPayload', () => {
+  it('pretty-prints JSON', () => {
+    expect(formatToolPayload('{"a":[1]}')).toBe('{\n  "a": [\n    1\n  ]\n}');
+  });
+
+  it('returns non-JSON text unchanged', () => {
+    expect(formatToolPayload('plain text')).toBe('plain text');
   });
 });
 

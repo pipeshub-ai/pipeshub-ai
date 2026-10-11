@@ -133,7 +133,7 @@ class SSEEventEmitter(EventEmitter):
 
         if event.event_type == EventType.TOOL_CALL_END:
             tool_name = payload.get("tool", "tool")
-            if payload.get("status") == ToolCallStatus.BLOCKED:
+            if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
                 # Aliased from TOOL_BLOCKED — see module docstring.
                 data = {"tool": tool_name, "result": payload.get("reason"), "status": "error"}
                 if is_child:

@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.agents.mcp.client import MCPConnectionError
+from app.agents.mcp.client import MCPConnectionError, ToolListing
 from app.agents.mcp.discovery import (
     build_auth_env_and_headers,
     build_namespaced_tool_name,
@@ -179,7 +179,7 @@ class TestDiscoverTools:
         fake_tools = [_FakeTool("web_search", "Search the web", {"type": "object"})]
 
         mock_manager = MagicMock()
-        mock_manager.list_tools = AsyncMock(return_value=fake_tools)
+        mock_manager.fetch_tool_listing = AsyncMock(return_value=ToolListing(tools=fake_tools))
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             tools = await discover_tools(config, {})
@@ -196,7 +196,7 @@ class TestDiscoverTools:
         fake_tools = [_FakeTool("do_thing")]
 
         mock_manager = MagicMock()
-        mock_manager.list_tools = AsyncMock(return_value=fake_tools)
+        mock_manager.fetch_tool_listing = AsyncMock(return_value=ToolListing(tools=fake_tools))
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             tools = await discover_tools(config, {})
@@ -204,12 +204,23 @@ class TestDiscoverTools:
         assert tools[0].namespaced_name == "mcp_my_custom_server_do_thing"
 
     @pytest.mark.asyncio
+    async def test_a_given_namespace_replaces_the_type(self) -> None:
+        config = _config(type_id="brave_search")
+        mock_manager = MagicMock()
+        mock_manager.fetch_tool_listing = AsyncMock(return_value=ToolListing(tools=[_FakeTool("web_search")]))
+
+        with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
+            tools = await discover_tools(config, {}, namespace="brave_search_ab12")
+
+        assert tools[0].namespaced_name == "mcp_brave_search_ab12_web_search"
+
+    @pytest.mark.asyncio
     async def test_skips_tools_without_a_name(self) -> None:
         config = _config()
         fake_tools = [{"description": "no name here"}, _FakeTool("valid_tool")]
 
         mock_manager = MagicMock()
-        mock_manager.list_tools = AsyncMock(return_value=fake_tools)
+        mock_manager.fetch_tool_listing = AsyncMock(return_value=ToolListing(tools=fake_tools))
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             tools = await discover_tools(config, {})
@@ -223,7 +234,7 @@ class TestDiscoverTools:
         fake_tools = [{"name": "dict_tool", "description": "desc", "inputSchema": {"a": 1}}]
 
         mock_manager = MagicMock()
-        mock_manager.list_tools = AsyncMock(return_value=fake_tools)
+        mock_manager.fetch_tool_listing = AsyncMock(return_value=ToolListing(tools=fake_tools))
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             tools = await discover_tools(config, {})
@@ -240,7 +251,7 @@ class TestDiscoverTools:
             await asyncio.sleep(10)
 
         mock_manager = MagicMock()
-        mock_manager.list_tools = _hang
+        mock_manager.fetch_tool_listing = _hang
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             with pytest.raises(MCPConnectionError, match="Timed out"):
@@ -250,7 +261,7 @@ class TestDiscoverTools:
     async def test_connection_error_propagates(self) -> None:
         config = _config()
         mock_manager = MagicMock()
-        mock_manager.list_tools = AsyncMock(side_effect=MCPConnectionError("unreachable"))
+        mock_manager.fetch_tool_listing = AsyncMock(side_effect=MCPConnectionError("unreachable"))
 
         with patch("app.agents.mcp.discovery.MCPClientManager", return_value=mock_manager):
             with pytest.raises(MCPConnectionError, match="unreachable"):

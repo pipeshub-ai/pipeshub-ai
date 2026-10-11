@@ -496,14 +496,33 @@ class TestPipesHubGlobalCatalogFallback:
         hits = await fallback.search("jira issues", limit=5)
 
         assert len(hits) == 1
-        assert hits[0].name == "mcp_rovo__search_issues"
+        # The name the tool registers under once reachable, not the attachment's saved
+        # `fullName` (which reflects however names were built when the agent was saved).
+        assert hits[0].name == "mcp_rovomcp_search_issues"
         assert hits[0].reason == "mcp_unavailable"
         assert "unavailable" in hits[0].description.lower()
-        # `name`, not `displayName` — `mcp_tool_loader.py::_mcp_group_name`
-        # normalizes `ResolvedMCPServer.name`, so reporting
-        # `mcp_atlassian_rovo` here would name a group no later
-        # `fetch_tools` call could resolve.
+        # `name`, not `displayName` — the loader groups by `ResolvedMCPServer.name`, so
+        # reporting `mcp_atlassian_rovo` here would name a group no later `fetch_tools`
+        # call could resolve.
         assert hits[0].toolset == "mcp_rovomcp"
+
+    async def test_reports_the_names_the_loader_assigned_this_request(self, monkeypatch) -> None:
+        """A second same-type instance gets tagged names; the fallback must report those."""
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-2", "name": "Rovo", "tools": [{"name": "search_issues", "description": "Search Jira"}],
+            }],
+            mcp_tool_load_failures=[{"instanceId": "inst-2", "name": "Rovo", "reason": "discovery_failed"}],
+        )
+        context.tool_state["mcp_names"] = {"inst-2": {"namespace": "atlassian_rovo_ab12", "group": "mcp_rovo_ab12"}}
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira", limit=5)
+
+        assert (hits[0].name, hits[0].toolset) == ("mcp_atlassian_rovo_ab12_search_issues", "mcp_rovo_ab12")
 
     async def test_mcp_hit_without_full_name_falls_back_to_the_namespaced_name(
         self, monkeypatch,

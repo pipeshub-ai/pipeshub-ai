@@ -834,6 +834,41 @@
     "showDiagramSource": "소스 표시",
     "hideDiagramSource": "소스 숨기기",
     "stoppedMarker": "중지됨",
+    "toolCard": {
+      "arguments": "인수",
+      "result": "결과",
+      "error": "오류",
+      "blocked": "차단됨",
+      "awaitingApproval": "승인 대기 중",
+      "viewRaw": "원본 보기",
+      "hideRaw": "원본 숨기기",
+      "showingOf": "{{total}}개 중 {{shown}}개 표시",
+      "open": "열기"
+    },
+    "mcpConnect": {
+      "title": "이 에이전트를 사용하려면 다음 MCP 서버를 연결하세요",
+      "connect": "연결",
+      "connecting": "연결 중…",
+      "connected": "연결됨",
+      "removed": "삭제되었습니다. 에이전트 소유자에게 업데이트를 요청하세요.",
+      "waitingForAdmin": "관리자가 공유 자격 증명을 추가하기를 기다리는 중",
+      "setUpInBuilder": "Agent Builder에서 설정",
+      "serviceAccount": "이 에이전트는 자체 자격 증명을 사용합니다. 소유자가 Agent Builder에서 설정합니다.",
+      "openAgentBuilder": "Agent Builder 열기",
+      "allConnected": "모두 연결되었습니다. 계속하려면 메시지를 다시 보내세요.",
+      "tryAgain": "다시 시도",
+      "unavailable": "여기서 로그인을 시작할 수 없습니다. Workspace → MCP 서버에서 연결하세요."
+    },
+    "mcpSignIn": {
+      "title": "이 MCP 서버가 요청한 권한을 부여하려면 다시 로그인하세요",
+      "needs": "필요: {{scopes}}",
+      "signIn": "다시 로그인",
+      "signingIn": "로그인 중…",
+      "signedIn": "로그인됨",
+      "askAnEditor": "이 에이전트를 편집할 수 있는 사람에게 다시 로그인을 요청하세요",
+      "allSignedIn": "로그인되었습니다. 요청을 다시 시도하세요.",
+      "retryMessage": "{{servers}}에 다시 로그인했습니다. 다시 시도해 주세요."
+    },
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
@@ -1211,7 +1246,28 @@
       "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
-    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다."
+    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다.",
+    "toolApproval": {
+      "title": "이 작업을 승인할까요?",
+      "subtitle": "{{server}}에서 {{tool}} 실행",
+      "noArguments": "세부 정보 없음",
+      "companyAlwaysAsk": "조직에서 이 도구를 실행할 때마다 확인하도록 설정했습니다.",
+      "allowOnce": "한 번 허용",
+      "allowChat": "이 채팅에서 허용",
+      "always": "항상 허용",
+      "deny": "거부",
+      "expired": "이 요청은 만료되었습니다. 아직 필요하면 다시 요청하세요.",
+      "sent": {
+        "allow_once": "한 번 허용: {{server}}의 {{tool}}",
+        "allow_chat": "이 채팅에서 허용: {{server}}의 {{tool}}",
+        "always": "항상 허용: {{server}}의 {{tool}}",
+        "deny": "거부: {{server}}의 {{tool}}"
+      },
+      "showAll": "모두 보기",
+      "showLess": "간단히 보기",
+      "partial": "세부 정보의 앞부분만 표시됩니다. 전체 호출은 더 깁니다.",
+      "deletesData": "데이터 삭제"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -2669,6 +2725,7 @@
       "searchPlaceholder": "MCP 서버 검색...",
       "loading": "MCP 서버를 불러오는 중…",
       "noResults": "검색과 일치하는 MCP 서버가 없습니다",
+      "replacedNotice": "더 이상 유지 관리되지 않습니다. 대신 {{name}}을(를) 추가하세요.",
       "addServer": "서버 추가",
       "custom": "사용자 지정",
       "inherited": "상속됨",
@@ -2677,17 +2734,33 @@
       "sharedAuth": "공유 관리자 인증",
       "toolsCount_one": "도구 {{count}}개",
       "toolsCount_other": "도구 {{count}}개",
+      "toolsCachedAt": "{{time}} 기준 도구",
+      "editImpact": {
+        "title": "저장된 로그인을 삭제할까요?",
+        "body": "이 서버에 접속하거나 로그인하는 방식을 바꾸면 사용자와 에이전트가 저장한 자격 증명이 삭제됩니다. 모두 다시 연결해야 합니다.",
+        "personalBody": "이 서버에 접속하거나 로그인하는 방식을 바꾸면 나와 내 에이전트가 저장한 자격 증명이 삭제됩니다. 다시 연결해야 합니다.",
+        "sharedBody": "공유 자격 증명을 끄면 삭제됩니다. 모두 각자의 자격 증명으로 연결해야 합니다.",
+        "confirm": "저장하고 로그인 삭제"
+      },
       "cta": {
         "manage": "관리",
         "delete": "삭제",
         "reauthenticate": "재인증",
+        "reconnect": "다시 연결",
         "disconnect": "연결 해제",
         "connect": "연결",
-        "addInstance": "인스턴스 추가"
+        "addInstance": "인스턴스 추가",
+        "edit": "편집"
       },
       "status": {
         "ready": "준비됨",
         "notConnected": "연결 안 됨",
+        "reconnectNeeded": "다시 연결 필요",
+        "waitingForAdmin": "관리자 대기 중",
+        "sharedCredentialMissing": "공유 자격 증명 없음",
+        "blocked": "정책으로 차단됨",
+        "unreachable": "서버에 연결할 수 없음",
+        "slow": "응답이 느림",
         "needsAuth": "인증 필요",
         "disabled": "비활성화됨"
       },
@@ -2695,13 +2768,24 @@
         "title": "MCP 서버",
         "subtitle": "Model Context Protocol 서버를 연결하여 팀 에이전트의 기능을 확장하세요.",
         "emptyTitle": "MCP 서버가 없습니다",
-        "emptyDescription": "카탈로그에서 서버를 추가하거나 사용자 지정 서버를 구성하여 시작하세요."
+        "emptyDescription": "카탈로그에서 서버를 추가하거나 사용자 지정 서버를 구성하여 시작하세요.",
+        "userCreatedTitle": "사용자가 만든 서버",
+        "userCreatedDescription": "사용자가 직접 추가한 서버입니다. 추가한 사용자만 사용할 수 있으며, 관리자는 삭제할 수 있습니다.",
+        "userCreatedOwner": "{{name}}님이 추가함"
       },
       "personal": {
         "title": "MCP 서버",
-        "subtitle": "관리자가 제공한 MCP 서버에 인증하세요.",
+        "subtitle": "관리자가 제공한 MCP 서버에 연결하거나 직접 서버를 추가하세요.",
         "emptyTitle": "사용 가능한 MCP 서버가 없습니다",
-        "emptyDescription": "관리자가 아직 MCP 서버를 추가하지 않았습니다."
+        "emptyDescription": "직접 추가하거나 관리자에게 모두를 위한 서버를 추가해 달라고 요청하세요.",
+        "yourServersDescription": "직접 추가한 서버입니다. 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다.",
+        "tabs": {
+          "all": "전체",
+          "connected": "연결됨",
+          "notConnected": "연결 안 됨"
+        },
+        "yours": "내 서버",
+        "noneInTab": "여기에 MCP 서버가 없습니다."
       },
       "details": {
         "breadcrumbLabel": "MCP 서버",
@@ -2721,12 +2805,14 @@
         "authBannerTitle": "인증 필요",
         "authBannerDescription": "팀 에이전트가 사용할 수 있도록 이 MCP 서버를 인증하세요.",
         "authBannerAuthenticatedTitle": "연결됨",
+        "reconnectBannerDescription": "이 서버의 로그인이 만료되었거나 거부되었습니다. 계속 사용하려면 다시 연결하세요.",
         "authBannerAuthenticatedDescription": "이 MCP 서버를 재인증하거나 연결을 해제할 수 있습니다.",
         "createdBy": "만든 사람"
       },
       "deleteDialog": {
         "title": "MCP 서버를 삭제할까요?",
-        "body": "\"{{name}}\" 서버가 영구적으로 제거됩니다. 이 서버를 사용 중인 팀 구성원은 액세스 권한을 잃게 됩니다."
+        "body": "\"{{name}}\" 서버가 영구적으로 제거됩니다. 이 서버를 사용 중인 팀 구성원은 액세스 권한을 잃게 됩니다.",
+        "personalBody": "\"{{name}}\" 서버와 저장된 자격 증명이 영구적으로 제거됩니다."
       },
       "toasts": {
         "loadError": "MCP 서버를 불러오지 못했습니다",
@@ -2740,10 +2826,15 @@
         "disconnected": "연결이 해제되었습니다",
         "disconnectError": "연결 해제에 실패했습니다",
         "credentialsSaveError": "서버는 저장되었지만 자격 증명을 저장하지 못했습니다. 나중에 관리에서 추가할 수 있습니다.",
+        "credentialsSaved": "자격 증명이 저장됨",
+        "credentialsReset": "MCP 서버가 업데이트되었습니다. 연결이 변경되어 저장된 자격 증명이 삭제되었습니다. 사용하려면 다시 연결하세요.",
+        "oauthTimedOut": "로그인 시간이 너무 오래 걸려 중단되었습니다. 다시 시도하세요.",
+        "oauthProviderError": "로그인 실패: {{message}}",
         "discoveryError": "도구를 검색하지 못했습니다"
       },
       "authDialog": {
         "title": "{{name}} 인증",
+        "docsLink": "찾는 방법",
         "description": "이 MCP 서버에 연결하려면 자격 증명을 입력하세요."
       },
       "form": {
@@ -2755,6 +2846,7 @@
         "argsPlaceholder": "인수 추가",
         "requiredEnv": "필수 환경 변수",
         "requiredEnvPlaceholder": "환경 변수 이름 추가 (예: API_KEY)",
+        "defaultTokenEnvHint": "변수를 지정하지 않으면 토큰이 {{name}}(으)로 명령에 전달됩니다.",
         "url": "URL",
         "authMode": "인증 모드",
         "headerName": "헤더 이름",
@@ -2770,14 +2862,55 @@
         "credentialsHint": "지금 자격 증명을 추가하거나, 건너뛰고 나중에 연결 및 도구 탭에서 연결하세요.",
         "multiEnvIncomplete": "모든 필수 환경 변수를 입력하거나, 나중에 연결하려면 모두 비워 두세요.",
         "oauthPairRequired": "클라이언트 ID와 클라이언트 시크릿을 모두 입력하거나, 둘 다 비워 두세요.",
-        "connectAfterCreateHint": "이 서버를 저장한 후 관리를 다시 열어 연결하세요."
+        "connectAfterCreateHint": "이 서버를 저장한 후 관리를 다시 열어 연결하세요.",
+        "timeoutsHeading": "시간 제한",
+        "connectTimeout": "연결 시간 제한(초)",
+        "callTimeout": "도구 호출 시간 제한(초)",
+        "timeoutRange": "{{min}}에서 {{max}} 사이의 숫자를 입력하거나, 기본값을 사용하려면 비워 두세요."
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
         "createTitle": "MCP 서버 추가",
         "tabs": {
           "configuration": "구성",
-          "connection": "연결 및 도구"
+          "tools": "도구 및 승인"
+        },
+        "synced": "{{time}} 동기화됨",
+        "refreshTools": "도구 목록 새로 고침",
+        "signInForTools": "이 서버의 도구를 보려면 로그인하세요.",
+        "toolsError": "도구 목록을 불러오지 못했습니다",
+        "toolsErrorSignIn": "서버에서 다시 로그인하라고 요청합니다.",
+        "rulesKept": "저장된 승인 규칙은 유지됩니다.",
+        "tryAgain": "다시 시도",
+        "findingTools": "이 서버의 도구를 찾는 중",
+        "rulesUnlock": "목록이 준비되면 승인 규칙을 설정할 수 있습니다.",
+        "unsaved_one": "저장되지 않은 변경 {{count}}개",
+        "unsaved_other": "저장되지 않은 변경 {{count}}개",
+        "allSaved": "모든 규칙이 저장됨",
+        "discard": "취소",
+        "saveRules": "규칙 저장",
+        "discardTitle": "저장되지 않은 규칙 변경을 취소할까요?",
+        "discardBody_one": "도구 {{count}}개의 규칙을 변경했습니다. 지금 닫으면 변경 사항이 사라집니다.",
+        "discardBody_other": "도구 {{count}}개의 규칙을 변경했습니다. 지금 닫으면 변경 사항이 사라집니다.",
+        "noSignIn": "로그인 필요 없음 · {{transport}}",
+        "signInExpired": "로그인 만료됨",
+        "sharedMissing": "공유 로그인 정보 없음",
+        "signInExpiredBody": "누군가 다시 로그인할 때까지 이 서버의 도구를 실행할 수 없습니다.",
+        "notSignedIn": "로그인하지 않음",
+        "notSignedInDetail": "이 서버의 도구를 사용하려면 로그인하세요.",
+        "signedIn": "로그인됨",
+        "sharedSignIn": "공유 로그인",
+        "signedInDetail": "{{transport}} · {{time}} 로그인",
+        "menu": {
+          "label": "추가 작업",
+          "copyUrl": "서버 URL 복사",
+          "copied": "서버 URL을 복사했습니다",
+          "copyFailed": "서버 URL을 복사하지 못했습니다",
+          "addedBy": "{{name}} 님이 추가함",
+          "disconnectHint": "로그아웃합니다. 설정과 규칙은 유지됩니다.",
+          "remove": "서버 제거",
+          "removeHint": "모든 사용자에게서 삭제합니다.",
+          "removeHintPersonal": "서버와 로그인 정보를 삭제합니다."
         }
       },
       "oauthConfig": {
@@ -2817,6 +2950,99 @@
         "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
         "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
         "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
+      },
+      "addDialog": {
+        "title": "MCP 서버 추가",
+        "description": "카탈로그에서 서버를 선택하거나 URL로 원격 MCP 서버를 연결하세요. 나만 볼 수 있습니다.",
+        "custom": "사용자 지정 서버",
+        "customDescription": "URL로 연결하는 원격 MCP 서버"
+      },
+      "toolRules": {
+        "open": "도구 승인",
+        "title": "도구 승인: {{name}}",
+        "description": {
+          "personal": "어시스턴트가 내 채팅에서 이 도구 중 하나를 사용하려고 할 때 어떻게 할지 선택하세요. 에이전트는 자체 규칙을 사용합니다.",
+          "company": "여기의 규칙은 조직의 모든 사람에게 적용됩니다. 구성원은 더 엄격한 규칙을 추가할 수 있지만 더 느슨한 규칙은 추가할 수 없습니다.",
+          "agent": "이 에이전트가 이 도구 중 하나를 사용하려고 할 때 어떻게 할지 선택하세요. 이 에이전트와 채팅하는 모든 사람에게 적용됩니다."
+        },
+        "unattendedHint": "Slack, API, 예약 실행에서는 아무도 호출을 승인할 수 없으므로 승인이 필요한 도구는 '승인할 사람이 없을 때 허용'을 켜지 않으면 실행되지 않습니다.",
+        "viewOnly": "이 에이전트를 편집할 수 있는 사람만 이 규칙을 변경할 수 있습니다.",
+        "loading": "불러오는 중…",
+        "loadError": "규칙을 불러오지 못했습니다.",
+        "search": "이름 또는 ID로 검색",
+        "empty": "표시할 도구가 없습니다. 서버를 연결해 도구를 확인하거나 이름으로 도구를 추가하세요.",
+        "notOffered": "현재 제공되지 않음",
+        "rule": {
+          "allow": "사전 승인",
+          "ask": "승인 시 허용",
+          "block": "거부"
+        },
+        "company": {
+          "none": "제한 없음",
+          "ask": "승인 시 허용",
+          "block": "거부"
+        },
+        "unattended": "승인할 사람이 없을 때 허용",
+        "unattendedFor": "승인할 사람이 없을 때 {{name}} 허용",
+        "addPlaceholder": "이름으로 도구 추가",
+        "add": "추가",
+        "saved": "도구 승인이 저장되었습니다",
+        "saveError": "도구 승인을 저장하지 못했습니다",
+        "unattendedDetail": "Slack, API, 예약 실행",
+        "unattendedDestructive": "누군가 이 도구를 허용한 경우에만",
+        "kind": {
+          "read": "읽기 전용",
+          "write": "데이터 변경",
+          "destructive": "데이터 삭제"
+        },
+        "kindSource": {
+          "name": "이름 기준",
+          "server": "서버 기준",
+          "none": "서버 표시 없음"
+        },
+        "group": {
+          "destructive": "데이터 삭제",
+          "write": "데이터 변경",
+          "read": "읽기 전용",
+          "notOffered": "현재 제공되지 않음",
+          "byName": "이름으로 설정한 규칙"
+        },
+        "groupHint": {
+          "destructive": "먼저 검토하세요",
+          "read": "조회만 합니다"
+        },
+        "filterLabel": "도구 보기",
+        "filter": {
+          "all": "전체",
+          "destructive": "데이터 삭제",
+          "write": "데이터 변경",
+          "read": "읽기 전용",
+          "hasRule": "규칙 있음"
+        },
+        "noMatch": "검색과 일치하는 도구가 없습니다.",
+        "clearFilters": "검색 및 필터 지우기",
+        "quickSetup": {
+          "text": "빠른 설정: 데이터를 변경하는 모든 도구에 승인을 요구합니다.",
+          "apply": "적용"
+        },
+        "legend": {
+          "own": "사전 승인은 묻지 않고 실행 · 승인 시 허용은 채팅에서 먼저 확인 · 거부는 실행되지 않음",
+          "company": "제한 없음 – 구성원이 결정 · 승인 시 허용 – 매 호출을 누군가 승인 · 거부 – 실행되지 않음"
+        }
+      },
+      "disconnectDialog": {
+        "title": "{{name}} 연결을 해제할까요?",
+        "yours_one": "다시 로그인할 때까지 이 서버의 도구 {{count}}개를 사용할 수 없습니다.",
+        "yours_other": "다시 로그인할 때까지 이 서버의 도구 {{count}}개를 사용할 수 없습니다.",
+        "yoursUnknown": "다시 로그인할 때까지 이 서버의 도구를 사용할 수 없습니다.",
+        "shared_one": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구 {{count}}개를 즉시 사용할 수 없게 됩니다.",
+        "shared_other": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구 {{count}}개를 즉시 사용할 수 없게 됩니다.",
+        "sharedUnknown": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구를 즉시 사용할 수 없게 됩니다.",
+        "keeps": "서버 설정과 승인 규칙은 유지됩니다",
+        "reconnect": "언제든 다시 로그인하여 연결할 수 있습니다",
+        "deletesYours": "저장된 로그인 정보가 삭제됩니다",
+        "deletesShared": "공유 로그인 정보가 삭제됩니다",
+        "disconnecting": "연결 해제 중…"
       }
     },
     "bots": {
@@ -3880,6 +4106,9 @@
     "configureMcpTooltip": "자격 증명 관리",
     "authenticateMcpTooltip": "이 MCP 서버 인증",
     "mcpAuthUpdatedNotify": "MCP 인증이 업데이트되었습니다.",
+    "mcpServersUnavailable": "이 에이전트의 MCP 서버를 불러올 수 없습니다",
+    "mcpServersUnavailableHint": "여기에 표시되지 않으며 저장해도 변경되지 않습니다. 다시 시도하려면 페이지를 새로고침하세요.",
+    "mcpServersUnavailableNoDrop": "이 에이전트의 MCP 서버를 불러올 수 없어서 페이지를 새로고침하기 전에는 추가할 수 없습니다.",
     "mcpAuthSaveError": "MCP 자격 증명 저장에 실패했습니다.",
     "mcpAuthRemoveError": "MCP 자격 증명 제거에 실패했습니다.",
     "loadingSchema": "스키마 불러오는 중…",
@@ -3978,7 +4207,7 @@
     "removeDeprecatedTools": "지원 중단된 도구 제거",
     "showMore": "더 보기",
     "showLess": "간략히 보기",
-    "mcpServerAlreadyAttachedNotify": "{{name}}은(는) 이미 이 에이전트에 연결되어 있습니다",
+    "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
     "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
@@ -3989,7 +4218,18 @@
     "toolsetOAuthServerError": "인증에 실패했습니다. 다시 시도하거나 관리자에게 문의하세요.",
     "attached": "연결됨",
     "mcpServerWithToolCount_other": "도구 {{count}}개가 있는 MCP 서버",
-    "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}"
+    "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}",
+    "mcpAllTools": "모든 도구",
+    "mcpAllToolsHint": "서버가 나중에 추가하는 도구도 포함됩니다.",
+    "mcpServerUnavailable": "사용할 수 없음",
+    "mcpServerUnavailableHint": "이 서버는 내 MCP 서버에 없습니다. 삭제되었거나 나와 공유되지 않았습니다.",
+    "mcpToolNotOnServer": "서버에 없음",
+    "mcpToolNotOnServerHint": "서버가 더 이상 이 도구를 제공하지 않습니다. 제거하지 않으면 에이전트가 사용할 수 없습니다.",
+    "mcpAllToolsNoneYet": "서버가 아직 도구를 제공하지 않았습니다. 에이전트는 서버가 제공하는 모든 도구를 사용합니다.",
+    "mcpNoToolsSelected": "선택한 도구가 없습니다. 도구를 추가하거나 \"모든 도구\"를 켜세요.",
+    "mcpServerNeedsToolsTooltip": "모든 MCP 서버에 대해 도구를 선택하거나 \"모든 도구\"를 켜세요.",
+    "mcpServerNeedsToolsBanner": "{{names}}에 대해 도구를 하나 이상 선택하거나 \"모든 도구\"를 켜세요.",
+    "mcpPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 MCP 서버입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다."
   },
   "recordView": {
     "sections": {

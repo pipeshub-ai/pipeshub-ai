@@ -84,6 +84,7 @@ export function AgentBuilderCanvas(props: {
   onNodeDelete: (id: string) => void;
   onError?: (msg: string) => void;
   readOnly?: boolean;
+  mcpDropBlockedMessage?: string;
 }) {
   const {
     sidebarOpen,
@@ -102,6 +103,7 @@ export function AgentBuilderCanvas(props: {
     onNodeDelete,
     onError,
     readOnly,
+    mcpDropBlockedMessage,
   } = props;
 
   const { t } = useTranslation();
@@ -155,11 +157,13 @@ export function AgentBuilderCanvas(props: {
         readOnly: Boolean(readOnly),
         t,
         onError,
+        mcpDropBlockedMessage,
       });
     },
     [
       activeAgentConnectors,
       configuredConnectors,
+      mcpDropBlockedMessage,
       nodeTemplates,
       nodes,
       onError,

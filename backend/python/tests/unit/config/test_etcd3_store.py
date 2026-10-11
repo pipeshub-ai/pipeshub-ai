@@ -117,6 +117,33 @@ class TestEtcd3DistributedKeyValueStore:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_overwriting_with_a_ttl_attaches_a_lease(self, store, mock_client) -> None:
+        """A plain put on an existing key would leave it without the expiry it was asked for."""
+        mock_client.get = MagicMock(return_value=(b"old_value", MagicMock()))
+        mock_lease = MagicMock()
+        mock_client.lease = MagicMock(return_value=mock_lease)
+        mock_client.put = MagicMock(return_value=True)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            result = await store.create_key("key3", "new_value", overwrite=True, ttl=120)
+
+        assert result is True
+        mock_client.lease.assert_called_once_with(120)
+        mock_client.put.assert_called_once_with("key3", b"new_value", lease=mock_lease)
+
+    @pytest.mark.asyncio
+    async def test_overwriting_without_a_ttl_is_a_plain_put(self, store, mock_client) -> None:
+        mock_client.get = MagicMock(return_value=(b"old_value", MagicMock()))
+        mock_client.lease = MagicMock()
+        mock_client.put = MagicMock(return_value=True)
+
+        with patch("app.config.providers.etcd.etcd3_store.asyncio.to_thread", side_effect=_passthrough_to_thread):
+            await store.create_key("key3", "new_value", overwrite=True)
+
+        mock_client.lease.assert_not_called()
+        mock_client.put.assert_called_once_with("key3", b"new_value")
+
+    @pytest.mark.asyncio
     async def test_create_key_exists_overwrite_false(self, store, mock_client):
         """Not overwriting when overwrite=False and key exists."""
         mock_client.put_if_not_exists = MagicMock(return_value=False)
@@ -469,13 +496,15 @@ class TestEtcd3DistributedKeyValueStore:
     @pytest.mark.asyncio
     async def test_list_keys_in_directory_with_trailing_slash(self, store, mock_client):
         """Prefix matching uses trailing slash."""
+        # etcd3 yields (value, metadata); the key is on the metadata.
         mock_client.get_prefix = MagicMock(return_value=[
-            (b"/app/dir/key1", MagicMock()),
-            (b"/app/dir/key2", MagicMock()),
+            (b"", MagicMock(key=b"/app/dir/key1")),
+            (b"", MagicMock(key=b"/app/dir/key2")),
         ])
 
         result = await store.list_keys_in_directory("/app/dir/")
         assert result == ["/app/dir/key1", "/app/dir/key2"]
+        mock_client.get_prefix.assert_called_once_with("/app/dir/", keys_only=True)
 
     @pytest.mark.asyncio
     async def test_list_keys_in_directory_without_trailing_slash(self, store, mock_client):
@@ -483,7 +512,7 @@ class TestEtcd3DistributedKeyValueStore:
         mock_client.get_prefix = MagicMock(return_value=[])
 
         await store.list_keys_in_directory("/app/dir")
-        mock_client.get_prefix.assert_called_once_with("/app/dir/")
+        mock_client.get_prefix.assert_called_once_with("/app/dir/", keys_only=True)
 
     @pytest.mark.asyncio
     async def test_list_keys_in_directory_exception(self, store, mock_client):

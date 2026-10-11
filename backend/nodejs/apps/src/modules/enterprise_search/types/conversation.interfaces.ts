@@ -122,11 +122,12 @@ export interface IReasoningTurn {
  * discriminated union) since Mongoose persists this as `Schema.Types.Mixed`
  * and every field beyond `type` is optional depending on the part kind.
  *
- * Only ever carries a bounded preview of any external tool result (see
- * that module's docstring) — never the full tool payload.
+ * Only ever carries a bounded preview of any external tool result, plus a
+ * small view of it within a per-reply budget (see that module's docstring) —
+ * never the full tool payload.
  */
 export interface IMessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -135,15 +136,23 @@ export interface IMessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  /** The call a person approved, run at the start of their answer's turn. */
+  approved?: boolean;
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
+  /** A call waiting for a person's approval: what the approval card shows (Python `tool_approvals.py`). */
+  approval?: Record<string, unknown>;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
   resultSummary?: string;
+  /** A small table or field list of the result for the tool card (Python `result_view.py`); the UI checks its shape. */
+  resultView?: unknown;
   /** Blob-backed artifact ID for the full tool result (recoverable on follow-up turns). */
   artifactId?: string;
   runId?: string;
   roleName?: string;
   parts?: IMessagePart[];
+  /** On an `mcp_sign_in` part: the MCP servers to sign in to again, for more permission (Python `mcp_sign_in.py`). */
+  servers?: Array<{ instanceId: string; serverName: string; scopes: string[]; agentKey?: string }>;
 }
 
 export interface IMessage {

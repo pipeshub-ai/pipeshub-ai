@@ -20,6 +20,7 @@ from tests.support.agent_routes import (
     ORGS_COLL,
     PERMISSION,
     USERS_COLL,
+    FakeConfigService,
     InMemoryGraph,
     as_user,
     make_client,
@@ -40,9 +41,17 @@ def graph() -> InMemoryGraph:
     return g
 
 
+# MCP server instances the attach tests use; `other-org` belongs to mallory's org. An
+# attachment takes its name and type from these stored records, not from the request.
+_MCP_INSTANCES = {
+    f"/services/mcp/instances/{instance_id}": {"_id": instance_id, "orgId": org_id, "name": "github", "typeId": "github"}
+    for instance_id, org_id in (("inst-9", "org-1"), ("i1", "org-1"), ("other-org", "org-2"))
+}
+
+
 @pytest.fixture
 def client(graph: InMemoryGraph) -> TestClient:
-    c, _ = make_client(graph)
+    c, _ = make_client(graph, FakeConfigService(dict(_MCP_INSTANCES)))
     return c
 
 
@@ -506,8 +515,21 @@ class TestUpdateAttachments:
         assert server["instanceId"] == "inst-9" and server["typeId"] == "github"
         assert server["userId"] == "u-alice"
         (tool,) = graph.nodes["agentTools"].values()
-        assert tool["fullName"] == "github.list_issues"
-        assert len(graph.committed) == 2
+        assert tool["fullName"] == "mcp_github_list_issues"
+        # Removing the old servers and attaching the new ones is one transaction.
+        assert len(graph.committed) == 1
+
+    @pytest.mark.parametrize("instance_id", ["never-existed", "other-org"])
+    def test_attaching_an_mcp_server_outside_the_org_is_rejected_before_any_write(
+        self, client, graph, instance_id,
+    ) -> None:
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"mcpServers": [
+            {"instanceId": instance_id, "name": "github", "displayName": "GitHub", "tools": [{"name": "t"}]},
+        ]})
+        assert response.status_code == 400
+        assert "MCP server(s) not found: GitHub" in response.json()["detail"]
+        assert not graph.calls_to("update_agent")
+        assert graph.committed == []
 
     def test_detaching_every_mcp_server(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
@@ -957,6 +979,13 @@ class TestCreateAgent:
         assert agent["skills"] == [{"name": "mine"}]
         assert len(graph.calls_to("begin_transaction")) == 1
         assert len(graph.committed) == 1
+
+    def test_creating_with_an_unknown_mcp_server_writes_nothing(self, client, graph) -> None:
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Bad", "mcpServers": [{"instanceId": "never-existed", "name": "github", "tools": []}],
+        })
+        assert response.status_code == 400
+        assert not graph.calls_to("begin_transaction")
 
     def test_each_tool_is_filed_under_its_own_toolset(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

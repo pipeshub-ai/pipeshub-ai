@@ -1080,6 +1080,7 @@ export function MessageList() {
                   persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
+                  streamError={pair.streamError}
                   unanswered={pair.unanswered}
                 />
 

@@ -12,6 +12,8 @@ export type McpAuthMode = 'none' | 'api_token' | 'oauth' | 'headers';
 export type McpInstanceDisabledReason = 'custom_stdio_disabled';
 
 export const MCP_CUSTOM_STDIO_FLAG = 'MCP_ALLOW_CUSTOM_STDIO';
+/** `org`: an administrator's instance, visible to everyone. `personal`: one user's own. */
+export type McpInstanceScope = 'org' | 'personal';
 
 export interface McpAuthHint {
   label: string;
@@ -47,23 +49,26 @@ export interface McpServerTemplate {
   documentationUrl?: string | null;
   authHint?: McpAuthHint | null;
   tags: string[];
+  /** The entry that took this one's place: no new servers from it, existing ones keep running. */
+  replacedBy?: string | null;
 }
 
-/** Admin-facing request body for creating/updating an instance. */
+/** Request body for creating/updating an instance. */
 export interface McpServerInstancePayload {
   name: string;
   typeId?: string | null;
+  /** Create only. Ignored for non-admins, whose instances are always personal. */
+  scope?: McpInstanceScope;
   transport: McpTransport;
   authMode: McpAuthMode;
   useAdminAuth?: boolean;
   description?: string | null;
 
-  // STDIO — env is an explicit allowlist mapping (never arbitrary passthrough)
+  // STDIO — credential values are supplied per user via /authenticate, never on the instance.
   command?: string | null;
   args?: string[];
   /** Custom STDIO only — env var names the process expects (e.g. API_KEY). Catalog templates supply this. */
   requiredEnv?: string[];
-  env?: Record<string, string>;
 
   // SSE / Streamable HTTP
   url?: string | null;
@@ -73,6 +78,10 @@ export interface McpServerInstancePayload {
   authorizationUrl?: string | null;
   tokenUrl?: string | null;
   scopes?: string[];
+
+  /** null = the deployment default (15 s to connect, 60 s per tool call). */
+  connectTimeoutSeconds?: number | null;
+  callTimeoutSeconds?: number | null;
 }
 
 /** Persisted instance metadata — no secrets. */
@@ -87,8 +96,10 @@ export interface McpServerInstance {
   useAdminAuth: boolean;
   description?: string | null;
 
+  // How the server is reached (command, args, url, OAuth endpoints, scopes) is sent only to
+  // administrators and, for a personal server, its owner; members get the rest.
   command?: string | null;
-  args: string[];
+  args?: string[];
   requiredEnv: string[];
   optionalEnv: string[];
 
@@ -97,9 +108,14 @@ export interface McpServerInstance {
 
   authorizationUrl?: string | null;
   tokenUrl?: string | null;
-  scopes: string[];
+  scopes?: string[];
+
+  connectTimeoutSeconds?: number | null;
+  callTimeoutSeconds?: number | null;
 
   isCustom: boolean;
+  /** Absent on records saved before personal instances existed — those are org instances. */
+  scope?: McpInstanceScope;
   createdAt: number;
   updatedAt: number;
 
@@ -109,20 +125,54 @@ export interface McpServerInstance {
   disabledReason?: McpInstanceDisabledReason | null;
 }
 
+/** What an administrator sees of a user's personal server (`listInstances({ includePersonal })`):
+ * enough to recognise and delete it, never how to reach it. */
+export type McpPersonalInstanceSummary = Pick<
+  McpServerInstance,
+  '_id' | 'orgId' | 'createdBy' | 'name' | 'typeId' | 'transport' | 'authMode' | 'isCustom' | 'createdAt' | 'updatedAt' | 'scope'
+>;
+
 /** A single tool discovered from a connected MCP server. */
 export interface McpToolInfo {
   name: string;
   namespacedName: string;
   description?: string | null;
   inputSchema: Record<string, unknown>;
+  /** The server's own hints (`readOnlyHint`, `destructiveHint`, …), as it sent them. */
+  annotations?: Record<string, unknown> | null;
+  /** What the tool does to data, which sets its starting approval rule (worked out by the backend). */
+  kind?: McpToolKind;
+  kindSource?: McpToolKindSource;
 }
+
+/** read → Pre-approved, write → Allow on approval, destructive → Deny, until someone sets a rule. */
+export type McpToolKind = 'read' | 'write' | 'destructive';
+/** Where a tool's kind came from: a deleting word in its name, the server's hints, or neither. */
+export type McpToolKindSource = 'name' | 'server' | 'none';
 
 /** `GET /my-mcp-servers` entry — instance + the caller's effective auth/tool state. */
 export interface McpMyServerEntry extends McpServerInstance {
   isAuthenticated: boolean;
   tools: McpToolInfo[];
   toolsError?: string | null;
+  /** The server missed the listing's time budget; chat still waits for it. */
+  toolsTimedOut?: boolean;
+  /** Why `toolsError` is set, so the page needn't match on its text. */
+  toolsErrorCode?: McpToolsErrorCode | null;
+  /** When the tools shown were discovered (epoch ms), if they came from the tool cache. */
+  toolsCachedAt?: number | null;
+  /** When the current sign-in was made (epoch ms); absent on records from before it was kept. */
+  connectedAt?: number | null;
 }
+
+export type McpToolsErrorCode =
+  | 'auth_expired'
+  | 'unauthorized'
+  | 'needs_permission'
+  | 'blocked'
+  | 'unreachable'
+  | 'timeout'
+  | 'error';
 
 export interface McpCatalogResponse {
   templates: McpServerTemplate[];
@@ -143,6 +193,27 @@ export interface McpMyServersResponse {
 
 export interface McpToolsResponse {
   tools: McpToolInfo[];
+  /** When the list was read from the server (epoch ms). */
+  syncedAt?: number;
+}
+
+/** Whether a tool call runs, asks the person in the chat first, or never runs. */
+export type McpToolRule = 'allow' | 'ask' | 'block';
+
+/** A person's or an agent's rules: tool name → rule. A tool without one uses its starting rule. */
+export interface McpToolRules {
+  tools: Record<string, McpToolRule>;
+}
+
+/** A company rule is a floor: nobody's own rule can be less strict. */
+export interface McpCompanyToolRule {
+  rule?: 'ask' | 'block' | null;
+  /** In a run nobody can answer a card (Slack, the API), Ask becomes Allow. */
+  unattended?: boolean;
+}
+
+export interface McpToolPolicy {
+  tools: Record<string, McpCompanyToolRule>;
 }
 
 export interface McpAuthenticatePayload {
@@ -162,6 +233,9 @@ export interface McpOAuthConfigResponse {
   configured: boolean;
   clientId?: string;
   clientSecret?: string;
+  /** The redirect URI the server sends to the provider; register the OAuth app with this.
+   * Null when the server couldn't read its address just then. */
+  redirectUri?: string | null;
 }
 
 export interface McpOAuthAuthorizationUrlResponse {
@@ -186,11 +260,24 @@ export interface McpOAuthDiscoveryResult {
   tokenEndpoint?: string | null;
   registrationEndpoint?: string | null;
   scopesSupported: string[];
+  /** The redirect URI the server sends to the provider; register the OAuth app with this.
+   * Null when the server couldn't read its address just then. */
+  redirectUri?: string | null;
 }
 
 export interface McpSuccessResponse {
   success: boolean;
   isAuthenticated?: boolean;
+}
+
+/** Bounds the backend enforces (`MCPServerInstanceConfig`). */
+export const MCP_TIMEOUT_LIMITS = {
+  connect: { min: 1, max: 45 },
+  call: { min: 1, max: 600 },
+} as const;
+
+export function isPersonalMcpInstance(instance: Pick<McpServerInstance, 'scope'> | null | undefined): boolean {
+  return instance?.scope === 'personal';
 }
 
 // ── UI-only state ──

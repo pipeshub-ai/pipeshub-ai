@@ -8279,6 +8279,43 @@ class TestDeleteNodesByConnectorId:
 
 
 # ---------------------------------------------------------------------------
+# check_mcp_instance_in_use
+# ---------------------------------------------------------------------------
+
+
+class TestCheckMcpInstanceInUse:
+    @pytest.mark.asyncio
+    async def test_no_mcp_server_nodes_means_not_in_use(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
+        assert await connected_provider.check_mcp_instance_in_use("inst1") == []
+        assert connected_provider.http_client.execute_aql.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_returns_agents_attached_to_the_instance(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(
+            side_effect=[
+                ["agentMcpServers/s1"],
+                [{"agentId": "agents/a1", "agentName": "Sales bot"}, {"agentId": "agents/a2", "agentName": "Sales bot"}],
+            ]
+        )
+
+        result = await connected_provider.check_mcp_instance_in_use("inst1")
+
+        assert result == ["Sales bot", "Sales bot"]
+        first_query = connected_provider.http_client.execute_aql.await_args_list[0].args[0]
+        second_query = connected_provider.http_client.execute_aql.await_args_list[1].args[0]
+        assert "agentMcpServers" in first_query
+        assert "agentHasMcpServer" in second_query
+        assert "isDeleted != true" in second_query
+
+    @pytest.mark.asyncio
+    async def test_raises_on_query_error(self, connected_provider):
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=RuntimeError("arango down"))
+        with pytest.raises(RuntimeError, match="arango down"):
+            await connected_provider.check_mcp_instance_in_use("inst1")
+
+
+# ---------------------------------------------------------------------------
 # check_toolset_instance_in_use
 # ---------------------------------------------------------------------------
 
