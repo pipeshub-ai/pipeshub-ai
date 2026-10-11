@@ -76,7 +76,7 @@ class _Tx:
 
 def _wire(conn: JiraDataCenterConnector | LinearConnector, store: _Store) -> MagicMock:
     conn.data_store_provider = MagicMock()
-    conn.data_store_provider.transaction = MagicMock(side_effect=lambda: _Tx(store))
+    conn.data_store_provider.transaction = MagicMock(side_effect=lambda explicit=None: _Tx(store))
     processor = MagicMock()
     processor.org_id = "org-1"
     processor.on_records_soft_deleted = AsyncMock(return_value={"success": True})
