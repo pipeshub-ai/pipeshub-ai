@@ -82,9 +82,12 @@ def _read_by_guards(guards: list[str], tmp_path: Path) -> dict:
 def _tracked() -> set[str]:
     # A pull request lists only tracked files, so an untracked read (the editable
     # install's egg-info, its finder's path hook) is not one a change can touch.
-    listed = subprocess.run(
-        ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=False,
-    )
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "-z"], cwd=_ROOT, capture_output=True, text=True, check=False,
+        )
+    except FileNotFoundError:
+        pytest.skip("needs git to tell tracked files apart, and git is not installed")
     if listed.returncode != 0:
         pytest.skip(f"needs a git checkout to tell tracked files apart: {listed.stderr.strip()}")
     return set(listed.stdout.split("\0")) - {""}
