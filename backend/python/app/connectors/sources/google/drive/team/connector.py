@@ -1787,7 +1787,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         # access intact, and stale access is the worse way to be wrong here.
         self.logger.info(f"Removing permission from record {record.record_name} for user {user.email}")
         await self.data_entities_processor.delete_permission_from_record(
-            record_id=record.id, user_email=user.email
+            record_id=record.id, user_email=user.email, connector_id=record.connector_id
         )
 
     async def _apply_removed_change(
@@ -1833,7 +1833,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             )
             if record is not None:
                 await self.data_entities_processor.delete_permission_from_record(
-                    record_id=record.id, user_email=user.email
+                    record_id=record.id, user_email=user.email, connector_id=record.connector_id
                 )
             return None
         if file_id:

@@ -21,6 +21,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.connectors.sources.github_teams.issues import IssuesSync
 from app.connectors.sources.github_teams.runtime import RuntimeHelper
 from app.connectors.sources.github_teams.streaming import StreamingHelper
@@ -379,6 +380,60 @@ class TestStreamIsExemptFromTheReserve:
         assert (await ds.get_issue("acme", "widgets", 2)).is_rate_limited is True
 
         response = await StreamingHelper(c).stream_record(TestStreamReportsRateLimitNotAccessDenied._ticket())
+
+        assert response.status_code == HttpStatusCode.SUCCESS.value
+
+
+class TestIndexingKeepsTheReserve:
+    """Indexing stops at the reserve like sync, and is told when to come back."""
+
+    async def test_streaming_to_indexing_stops_at_the_reserve_with_the_reset_as_retry_after(
+        self, no_sleep: AsyncMock
+    ) -> None:
+        reset_at = int(time.time()) + 1800
+        sent: list[str] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            sent.append(request.url.path)
+            return httpx.Response(200, json={"number": 7, "title": "Crash", "body": "b"},
+                                  headers=_ok(remaining=400, reset_at=reset_at).headers)
+
+        ds = _data_source(handler)
+        c, _runtime = _runtime_over(ds)
+        c.issues = IssuesSync(c)
+        await ds.get_issue("acme", "widgets", 1)
+        before = len(sent)
+
+        with streaming_for_indexing(), pytest.raises(HTTPException) as exc:
+            await StreamingHelper(c).stream_record(TestStreamReportsRateLimitNotAccessDenied._ticket())
+
+        assert exc.value.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
+        assert 1790 <= int((exc.value.headers or {})["Retry-After"]) <= 1800
+        assert len(sent) == before, "nothing more was spent from the reserve"
+        no_sleep.assert_not_awaited()
+
+    async def test_the_same_record_opened_by_a_person_is_still_served(self, no_sleep: AsyncMock) -> None:
+        reset_at = int(time.time()) + 1800
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/repositories/42":
+                return httpx.Response(200, json={"id": 42, "name": "widgets", "owner": {"login": "acme"}},
+                                      headers=_ok(remaining=400, reset_at=reset_at).headers)
+            return httpx.Response(200, json={"number": 7, "title": "Crash", "body": "b"},
+                                  headers=_ok(remaining=399, reset_at=reset_at).headers)
+
+        ds = _data_source(handler)
+        c, _runtime = _runtime_over(ds)
+        c.issues = IssuesSync(c)
+        c.comments.embed_images_as_base64 = AsyncMock(return_value="body")
+        c.comments.make_child_records_of_attachments = AsyncMock(return_value=([], []))
+        c.comments.build_issue_comment_blocks = AsyncMock(return_value=([], []))
+        await ds.get_issue("acme", "widgets", 1)
+        ticket = TestStreamReportsRateLimitNotAccessDenied._ticket()
+
+        with streaming_for_indexing(), pytest.raises(HTTPException):
+            await StreamingHelper(c).stream_record(ticket)
+        response = await StreamingHelper(c).stream_record(ticket)
 
         assert response.status_code == HttpStatusCode.SUCCESS.value
 

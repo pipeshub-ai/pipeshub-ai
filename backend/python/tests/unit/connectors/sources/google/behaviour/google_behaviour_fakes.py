@@ -475,7 +475,9 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self._upsert_permissions(record.external_record_id, permissions)
 
-    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
+    async def delete_permission_from_record(
+        self, record_id: str, user_email: str, connector_id: str | None = None
+    ) -> None:
         record = self.by_id(record_id)
         if record is not None:
             self.permissions[record.external_record_id] = [

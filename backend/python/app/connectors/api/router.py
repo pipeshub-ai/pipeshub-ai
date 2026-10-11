@@ -92,6 +92,7 @@ from app.connectors.core.base.connector.connector_service import (
     ConnectorInitError,
 )
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
+from app.connectors.core.base.connector.stream_purpose import streaming_for_indexing
 from app.connectors.core.base.error.stream_errors import to_internal_service_error, to_stream_error
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthProvider,
@@ -1312,9 +1313,10 @@ async def stream_record_internal(
             logger=logger,
         )
 
-        return await _invoke_connector_stream(
-            connector_obj, record, token_user_id
-        )
+        with streaming_for_indexing():
+            return await _invoke_connector_stream(
+                connector_obj, record, token_user_id
+            )
 
     except HTTPException:
         raise
@@ -7920,12 +7922,19 @@ async def toggle_connector_instance(
                 )
 
         # Update connector status
+        now = get_epoch_timestamp_in_ms()
         updates = {
             status_field: target_status,
-            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+            "updatedAtTimestamp": now,
             "updatedBy": user_id,
             **owner_updates,
         }
+        if toggle_type == "sync" and target_status:
+            # The stranded-record sweep waits this long past it before sending
+            # records parked while the connector was off, so it does not send
+            # them beside the appEnabled re-queue. updatedAtTimestamp would do
+            # too, but every app write moves it.
+            updates["enabledAtTimestamp"] = now
 
         success = await connector_registry.update_connector_instance(
             connector_id=connector_id,

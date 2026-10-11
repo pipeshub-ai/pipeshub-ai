@@ -153,6 +153,18 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_link_record_to_group_answers_the_inherit_edges_removed(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.link_record_to_group = AsyncMock(return_value=1)
+
+        assert await tx_store.link_record_to_group("r1", "g1", inherit=False) == 1
+
+        mock_graph_provider.link_record_to_group.assert_awaited_once_with(
+            "r1", "g1", inherit=False, leaving_group_id=None, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
     async def test_deleting_a_record_drops_it_from_the_cache(
         self, tx_store, mock_graph_provider
     ) -> None:
@@ -777,8 +789,15 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_edge = AsyncMock(return_value=None)
         await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll")
         mock_graph_provider.get_edge.assert_awaited_once_with(
-            "from1", "from_coll", "to1", "to_coll", "edge_coll", transaction="txn-123"
+            "from1", "from_coll", "to1", "to_coll", "edge_coll",
+            transaction="txn-123", raise_on_error=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_get_edge_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        mock_graph_provider.get_edge = AsyncMock(return_value=None)
+        await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll", raise_on_error=True)
+        assert mock_graph_provider.get_edge.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_get_record_by_conversation_index(self, tx_store, mock_graph_provider) -> None:

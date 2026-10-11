@@ -3011,6 +3011,102 @@ class TestRepublishBackOff:
         producer.send_event.assert_not_awaited()
 
 
+class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
+    """A record the handler put back in line because its source rate-limited
+    it. Its event was acknowledged, so the sweep sends it once its
+    ``retryNotBefore`` has passed: not before, not on the stranded rules."""
+
+    @staticmethod
+    def _waiting(now: int, **overrides: object) -> dict:
+        fields = {
+            "queuedAtTimestamp": now - 30 * 60_000,
+            "retryNotBefore": now - 1000,
+            "rateLimitedSince": now - 30 * 60_000,
+            **overrides,
+        }
+        return TestRepublishStrandedRecords._old_record(**fields)
+
+    @pytest.mark.asyncio
+    async def test_sent_once_due_though_younger_than_the_minimum_age(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "r1"
+        claim = graph.update_node.await_args_list[0].args[2]
+        assert set(claim) == {"lastRepublishedAt"}, "a rate-limit wait earns no stranded back-off"
+        assert claim["lastRepublishedAt"] >= now
+
+    @pytest.mark.asyncio
+    async def test_not_sent_before_its_time(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=now + HOUR_MS, queuedAtTimestamp=1)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+        logger = MagicMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, logger=logger) == 0
+
+        producer.send_event.assert_not_awaited()
+        assert any("waiting out their source's rate limit" in c.args[0] for c in logger.info.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_neither_the_queue_nor_the_duplicate_rule_holds_it_back(self) -> None:
+        """Its own event is gone, and an earlier index left it an md5 and a vrid."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, md5Checksum="abc", virtualRecordId="vr-1", version=1)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+        backlog = _lanes({"lane": now - 5 * HOUR_MS}, lambda payload: {"lane"})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 1
+
+        assert producer.send_event.await_args.kwargs["event_type"] == EventTypes.REINDEX_RECORD.value
+        backlog.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_connectors_record_is_left_to_its_own_sweep(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids=set())
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_send_puts_the_claim_back_for_the_next_pass(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids={"live"})
+        graph.update_node = AsyncMock(return_value=True)
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        writes = [c.args[2] for c in graph.update_node.await_args_list]
+        assert writes[1] == {"lastRepublishedAt": None}
+
+    @pytest.mark.asyncio
+    async def test_once_sent_it_is_an_ordinary_waiting_record(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, lastRepublishedAt=now - 500)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+
 class TestStrandedSweepSummary:
     @pytest.mark.asyncio
     async def test_one_line_per_pass_counts_what_happened_to_each_record(self) -> None:
