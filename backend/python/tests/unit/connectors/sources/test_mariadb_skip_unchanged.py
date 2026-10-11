@@ -207,6 +207,21 @@ class TestFullSyncSkipsUnchangedTables:
         assert await h.full_sync() == [("newRecord", h.record("orders").id)]
 
     @pytest.mark.asyncio
+    async def test_insert_past_the_row_limit_is_not_queued(self):
+        h = await _indexed_harness()
+        h.connector._max_rows_per_table = lambda _filters: 2
+        h.source.tables["orders"]["ddl"] = (
+            "CREATE TABLE `orders` (`id` int NOT NULL AUTO_INCREMENT) ENGINE=InnoDB AUTO_INCREMENT=3"
+        )
+        await h.full_sync()
+        h.index_everything()
+        h.source.tables["orders"]["rows"].append({"id": 3, "name": "c"})
+        h.source.tables["orders"]["ddl"] = (
+            "CREATE TABLE `orders` (`id` int NOT NULL AUTO_INCREMENT) ENGINE=InnoDB AUTO_INCREMENT=4"
+        )
+        assert await h.full_sync() == []
+
+    @pytest.mark.asyncio
     async def test_schema_change_is_queued_again(self):
         h = await _indexed_harness()
         h.source.tables["customers"]["columns"].append({"name": "email", "data_type": "varchar"})

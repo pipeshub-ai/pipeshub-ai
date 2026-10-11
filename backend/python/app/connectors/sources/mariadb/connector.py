@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from logging import Logger
@@ -91,6 +92,8 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 MAX_ROWS_PER_TABLE_LIMIT = 10000
+
+_AUTO_INCREMENT_OPTION = re.compile(r"\s+AUTO_INCREMENT=\d+")
 
 
 class MariaDBTableState(BaseModel):
@@ -619,6 +622,9 @@ class MariaDBConnector(BaseConnector):
         content["foreign_keys"] = sorted(
             content["foreign_keys"], key=lambda fk: json.dumps(fk, sort_keys=True, default=str)
         )
+        # SHOW CREATE TABLE carries the next AUTO_INCREMENT value, which moves on
+        # every insert, even one past the row limit that never reaches the index.
+        content["ddl"] = _AUTO_INCREMENT_OPTION.sub("", content["ddl"] or "")
         serialized = json.dumps(content, sort_keys=True, default=str)
         return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
