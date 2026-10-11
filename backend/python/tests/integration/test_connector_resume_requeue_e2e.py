@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
@@ -42,6 +43,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.indexing_main import _republish_stranded_records
 from app.models.entities import RecordGroupType, RecordType, TicketRecord
 from app.modules.indexing.connector_off_events import connector_off_updates
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -71,14 +73,28 @@ logger = logging.getLogger("resume-requeue-it")
 class _RecordingProducer:
     def __init__(self) -> None:
         self.sent: list[tuple[str, dict]] = []
+        self.refuse: set[str] = set()
 
     async def send_messages(self, topic: str, messages: list) -> list[bool]:
-        self.sent.extend(messages)
-        return [True] * len(messages)
+        acked = []
+        for key, message in messages:
+            ok = key not in self.refuse
+            if ok:
+                self.sent.append((key, message))
+            acked.append(ok)
+        return acked
+
+    async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
+        self.sent.append((key, {"eventType": event_type, "payload": payload}))
+        return True
 
     async def send_message(self, topic: str, message: dict, key: str | None = None) -> bool:
         self.sent.append((key, message))
         return True
+
+
+async def _run(coro: object) -> object:
+    return await coro
 
 
 async def _remove_connector_data(graph: IGraphDBProvider, connector_id: str) -> None:
@@ -162,7 +178,7 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
         processor.org_id = ORG_ID
         processor.messaging_producer = _RecordingProducer()
-        names = ["queued-1", "queued-2", "in-flight", "manual-only", "failed", "trashed"]
+        names = ["queued-1", "queued-2", "in-flight", "manual-only", "failed", "trashed", "refused"]
         issues = {name: _issue(connector_id, name) for name in names}
         await processor.on_new_records([(issue, []) for issue in issues.values()])
         ids = {name: issue.id for name, issue in issues.items()}
@@ -219,7 +235,9 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         )
 
         await _set_active(graph, connector_id, True)
-        # Two pages, so the key cursor is what reaches the third record.
+        # The broker refuses one; it stays parked for the sweep below.
+        producer.refuse = {ids["refused"]}
+        # Two pages, so the key cursor is what reaches the later records.
         with patch.object(entity_module, "_REQUEUE_PAGE_SIZE", 2):
             assert await service._requeue_records_parked_while_off(connector_id) == 3
 
@@ -238,6 +256,28 @@ async def test_pause_and_resume_requeue_only_what_the_pause_parked(graph: IGraph
         assert (failed["indexingStatus"], failed["reason"]) == (ProgressStatus.FAILED.value, "parse error")
 
         assert (await stored("trashed"))["indexingStatus"] == ProgressStatus.QUEUED.value
+        refused = await stored("refused")
+        assert (refused["indexingStatus"], refused["reason"]) == (ProgressStatus.AUTO_INDEX_OFF.value, CONNECTOR_OFF)
 
-        # Nothing is left parked, so a second enable sends nothing more.
+        # Only the refused one is still parked.
         assert await service._requeue_records_parked_while_off(connector_id) == 0
+
+        # The stranded sweep is the net for it, once it is old enough. The
+        # filtered record is just as old and must not be sent.
+        for name in ("refused", "manual-only"):
+            await graph.update_node(ids[name], CollectionNames.RECORDS.value, {
+                "queuedAtTimestamp": 1, "updatedAtTimestamp": 1,
+            })
+        sent_before = len(producer.sent)
+        with patch.dict(os.environ, {"STRANDED_RECORD_REPUBLISH_AFTER_SECONDS": "3600"}):
+            assert await _republish_stranded_records(
+                graph_provider=graph,
+                logger=logger,
+                producer=producer,
+                run_coordination=_run,
+                concurrency_manager=None,
+                page_size=100,
+            ) == 1
+        assert [key for key, _ in producer.sent[sent_before:]] == [ids["refused"]]
+        assert (await stored("refused"))["lastRepublishedAt"] >= now
+        assert (await stored("manual-only")).get("lastRepublishedAt") is None
