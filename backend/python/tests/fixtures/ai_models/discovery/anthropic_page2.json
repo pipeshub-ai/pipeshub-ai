@@ -1,0 +1,11 @@
+{
+  "data": [
+    {
+      "id": "claude-haiku",
+      "max_input_tokens": 200000,
+      "capabilities": {}
+    }
+  ],
+  "has_more": false,
+  "last_id": "claude-haiku"
+}

@@ -1938,9 +1938,57 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
       const response = res.json.firstCall.args[0]
       expect(response.details.wasDefault).to.be.true
+    })
+
+    it('promotes a default that was set while the usage check was running', async () => {
+      const before = {
+        llm: [
+          { modelKey: 'k1', isDefault: false, provider: 'openai', configuration: { model: 'gpt-4' } },
+          { modelKey: 'k2', isDefault: true, provider: 'openai', configuration: { model: 'gpt-3.5' } },
+        ],
+      }
+      const during = {
+        llm: [
+          { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'gpt-4' } },
+          { modelKey: 'k2', isDefault: false, provider: 'openai', configuration: { model: 'gpt-3.5' } },
+        ],
+      }
+      let stored = mockEncService.encrypt(JSON.stringify(before))
+      const raced = mockEncService.encrypt(JSON.stringify(during))
+      let attempts = 0
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async () => stored),
+        compareAndSet: sinon.stub().callsFake(async (_key: string, expected: string, next: string) => {
+          attempts += 1
+          if (attempts === 1) {
+            stored = raced
+            return false
+          }
+          if (expected !== stored) return false
+          stored = next
+          return true
+        }),
+      })
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { success: true, agents: [] },
+      })
+      const handler = deleteAIModelProvider(kvs, createMockEventService(), { cmBackend: 'http://cm', aiBackend: 'http://ai' } as any)
+      const req = createMockRequest({ params: { modelType: 'llm', modelKey: 'k1' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      const saved = JSON.parse(String(stored).replace(/^encrypted:/, ''))
+      expect(saved.llm).to.have.length(1)
+      expect(saved.llm[0].modelKey).to.equal('k2')
+      expect(saved.llm[0].isDefault).to.equal(true)
+      expect(res.json.firstCall.args[0].details.wasDefault).to.equal(true)
     })
   })
 
@@ -1983,7 +2031,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
     })
   })
 
@@ -3450,6 +3498,10 @@ describe('ConfigurationManager Controller', () => {
       return createMockKeyValueStore({ get: sinon.stub().resolves('encrypted:data') })
     }
 
+    // AI model writes go through compare-and-set; count both so a refusal proves nothing was saved.
+    const storeWrites = (kvs: ReturnType<typeof storedModels>): number =>
+      kvs.set.callCount + kvs.compareAndSet.callCount
+
     const openai: StoredModel = { modelKey: 'k1', isDefault: true, provider: 'openai', configuration: { model: 'text-embedding-3-small' } }
     const local: StoredModel = { modelKey: 'k2', isDefault: false, provider: 'sentenceTransformers', configuration: { model: 'BAAI/bge-small-en-v1.5' } }
 
@@ -3502,7 +3554,7 @@ describe('ConfigurationManager Controller', () => {
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0].statusCode).to.equal(400)
       expect(next.firstCall.args[0].message).to.equal(IN_USE)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
       const [takeover] = takeoverCalls(calls)
       expect(models(takeover)).to.have.length(1)
       expect(models(takeover)?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
@@ -3520,7 +3572,7 @@ describe('ConfigurationManager Controller', () => {
       )
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(storeWrites(kvs)).to.equal(1)
       expect(takeoverCalls(calls)).to.have.length(1)
     })
 
@@ -3537,7 +3589,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(models(takeoverCalls(calls)[0])).to.deep.equal([])
       expect(next.firstCall.args[0].message).to.equal(IN_USE)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it('keeps the setup error when the built-in model the delete falls back to cannot be used', async () => {
@@ -3556,7 +3608,7 @@ describe('ConfigurationManager Controller', () => {
       expect(next.called).to.be.false
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(setupError.message)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it('deletes an embedding model that is not in use without checking the store', async () => {
@@ -3608,7 +3660,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it("keeps the health check's own reason when the model being added is misconfigured", async () => {
@@ -3616,7 +3668,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it('gives the plain refusal when an edit changes the model name of the default while vectors are stored', async () => {
@@ -3624,7 +3676,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it("keeps the health check's own reason when an edit to the default is misconfigured", async () => {
@@ -3632,7 +3684,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(configError.data?.message)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it('checks the model that takes over when an edit takes the default off the model that embeds', async () => {
@@ -3653,7 +3705,7 @@ describe('ConfigurationManager Controller', () => {
       expect(payload(check)?.becomesActive).to.equal(false)
       expect(models(takeoverCalls(calls)[0])?.[0]?.configuration?.model).to.equal('BAAI/bge-small-en-v1.5')
       expect(res.status.calledWith(400)).to.be.true
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
     it('gives the same plain refusal when an edit would hand embedding to another model while vectors are stored', async () => {
       stubAiService(400)
@@ -3686,7 +3738,7 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(400)).to.be.true
       expect(res.json.firstCall.args[0].error.message).to.equal(IN_USE)
-      expect(kvs.set.called).to.be.false
+      expect(storeWrites(kvs)).to.equal(0)
     })
 
     it("passes on the incoming model's own health failure when setting the default", async () => {
@@ -5277,7 +5329,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       if (!next.called) {
-        expect(kvs.set.calledOnce).to.be.true
+        expect(kvs.compareAndSet.calledOnce).to.be.true
         expect(res.status.calledWith(200)).to.be.true
         expect(eventService.start.calledOnce).to.be.true
       }
@@ -5306,7 +5358,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       if (!next.called) {
-        expect(kvs.set.calledOnce).to.be.true
+        expect(kvs.compareAndSet.calledOnce).to.be.true
         expect(res.status.calledWith(200)).to.be.true
       }
     })
@@ -5480,7 +5532,7 @@ describe('ConfigurationManager Controller', () => {
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
-        expect(kvs.set.calledOnce).to.be.true
+        expect(kvs.compareAndSet.calledOnce).to.be.true
       }
     })
 
@@ -5562,6 +5614,44 @@ describe('ConfigurationManager Controller', () => {
         const response = res.json.firstCall.args[0]
         expect(response).to.have.property('status', 'success')
       }
+    })
+
+    it('keeps a key rotated while the health check was running', async () => {
+      const entry = (apiKey: string) => ({
+        llm: [{ provider: 'openai', configuration: { model: 'gpt-3.5', apiKey }, modelKey: 'key-1', isDefault: true, connectionId: 'conn-1' }],
+        embedding: [],
+      })
+      let stored = mockEncService.encrypt(JSON.stringify(entry('old')))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().callsFake(async () => stored),
+        compareAndSet: sinon.stub().callsFake(async (_key: string, expected: string, next: string) => {
+          if (expected !== stored) return false
+          stored = next
+          return true
+        }),
+      })
+      const checkedKeys: unknown[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(async function (this: AIServiceCommand<unknown>) {
+        const body = (this as unknown as { body?: string }).body
+        checkedKeys.push(body ? JSON.parse(body).configuration?.apiKey : undefined)
+        stored = mockEncService.encrypt(JSON.stringify(entry('rotated')))
+        return { statusCode: 200, data: { status: 'healthy' } } as any
+      })
+
+      const res = createMockResponse()
+      await updateAIModelProvider(kvs, createMockEventService(), { aiBackend: 'http://ai', cmBackend: 'http://cm' } as any)(
+        createMockRequest({
+          params: { modelType: 'llm', modelKey: 'key-1' },
+          body: { provider: 'openai', configuration: { model: 'gpt-4' }, isDefault: true },
+        }),
+        res,
+        createMockNext(),
+      )
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(checkedKeys).to.deep.equal(['old'])
+      const saved = JSON.parse(String(stored).replace(/^encrypted:/, ''))
+      expect(saved.llm[0].configuration).to.deep.equal({ model: 'gpt-4', apiKey: 'rotated' })
     })
 
     it('should return 400 when provider is missing', async () => {
@@ -6751,7 +6841,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
     })
 
     it('should call next when no config body', async () => {
@@ -6853,7 +6943,7 @@ describe('ConfigurationManager Controller', () => {
       const check = calls.find((call) => call.uri.endsWith('/api/v1/model-endpoint-check'))
       expect(check).to.not.be.undefined
       expect(JSON.parse(String(check!.body))).to.deep.equal(Object.values(otherTypes).flat())
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
     })
 
     it('refuses the save with the AI service reason when an endpoint is refused', async () => {
@@ -6936,7 +7026,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
     })
 
     it('should return 400 when required fields are missing', async () => {
@@ -7054,7 +7144,7 @@ describe('ConfigurationManager Controller', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(kvs.set.calledOnce).to.be.true
+      expect(kvs.compareAndSet.calledOnce).to.be.true
     })
 
     it('should return 400 when provider is missing', async () => {
@@ -7632,8 +7722,8 @@ describe('ConfigurationManager Controller', () => {
         embedding: [{ provider: 'openai', modelKey: 'ada-key', configuration: {} }],
       }
       const encData = mockEncService.encrypt(JSON.stringify(aiModels))
-      const setStub = sinon.stub().resolves()
-      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData), set: setStub })
+      const casStub = sinon.stub().resolves(true)
+      const kvs = createMockKeyValueStore({ get: sinon.stub().resolves(encData), compareAndSet: casStub })
       const handler = updateModelRoles(kvs)
       const req = createMockRequest({
         body: { roles: { primary: { modelType: 'llm', modelKey: 'gpt-4-key' } } },
@@ -7647,7 +7737,7 @@ describe('ConfigurationManager Controller', () => {
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.status).to.equal('success')
       expect(jsonArg.modelRoles).to.deep.equal({ primary: { modelType: 'llm', modelKey: 'gpt-4-key' } })
-      expect(setStub.calledOnce).to.be.true
+      expect(casStub.calledOnce).to.be.true
     })
 
     it('should handle empty AI config (no models configured yet)', async () => {

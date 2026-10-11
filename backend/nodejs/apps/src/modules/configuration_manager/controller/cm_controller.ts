@@ -24,8 +24,10 @@ import {
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   aiModelRoute,
+  AI_MODEL_TYPES,
   AIServiceResponse,
   googleWorkspaceTypes,
+  isAIModelType,
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
@@ -69,6 +71,11 @@ import {
   readStoredAiModelsConfig,
 } from '../utils/util';
 import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../types/ai-models.types';
+import {
+  AiModelsConfigRepository,
+  AiModelsWriteAborted,
+  findModelEntry,
+} from '../services/aiModelsConfig.repository';
 import { WebSearchConfig } from '../types/web-search.types';
 import { WebSearchProviderConfiguration } from '../types/web-search.types';
 import {
@@ -2792,17 +2799,7 @@ export const createAIModelsConfig =
         });
       }
 
-      // Encrypt and store configuration
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiConfig));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedAIConfig,
-      );
+      await new AiModelsConfigRepository(keyValueStoreService).replace(aiConfig);
 
       // Notify other services about the new AI config. The initial config
       // may include LLM and/or embedding models; fire a separate event per
@@ -2869,12 +2866,9 @@ export const getAIModelsProviders =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(200).json({
           status: 'success',
           models: {
@@ -2893,27 +2887,7 @@ export const getAIModelsProviders =
         return;
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-        imageGeneration: [],
-        tts: [],
-        stt: [],
-      };
-
-      for (const key of Object.keys(defaultStructure)) {
+      for (const key of AI_MODEL_TYPES) {
         if (!aiModels[key]) {
           aiModels[key] = [];
         }
@@ -2945,30 +2919,16 @@ export const getModelsByType =
         });
         return;
       }
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(200).json({
           status: 'success',
           models: [],
@@ -2976,13 +2936,6 @@ export const getModelsByType =
         });
         return;
       }
-
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
 
       if (!aiModels[modelType]) {
         res.status(200).json({
@@ -3030,32 +2983,17 @@ export const getAvailableModelsByType =
         });
         return;
       }
-      // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(200).json({
           status: 'success',
           models: [],
@@ -3063,14 +3001,6 @@ export const getAvailableModelsByType =
         });
         return;
       }
-      logger.debug('encryptedAIConfig', encryptedAIConfig);
-
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
 
       if (!aiModels[modelType]) {
         res.status(200).json({
@@ -3357,22 +3287,10 @@ export const addAIModelProvider =
         return;
       }
 
-      // Validate model type
-      const validTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (!validTypes.includes(modelType)) {
+      if (!isAIModelType(modelType)) {
         res.status(400).json({
           status: 'error',
-          message: `Invalid model type. Must be one of: ${validTypes.join(', ')}`,
+          message: `Invalid model type. Must be one of: ${AI_MODEL_TYPES.join(', ')}`,
         });
         return;
       }
@@ -3434,87 +3352,36 @@ export const addAIModelProvider =
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
-
-      let aiModels: any = {};
-      if (encryptedAIConfig) {
-        aiModels = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
-        );
-      }
-
-      // Ensure all top-level keys exist
-      const defaultStructure = {
-        ocr: [],
-        embedding: [],
-        slm: [],
-        llm: [],
-        reasoning: [],
-        multiModal: [],
-        imageGeneration: [],
-        tts: [],
-        stt: [],
-      };
-      for (const key of Object.keys(defaultStructure)) {
-        if (!(key in aiModels)) {
-          aiModels[key] = [];
-        }
-      }
-      if (!aiModels.modelRoles) {
-        aiModels.modelRoles = {};
-      }
-
-      // Generate unique model key with collision check
-      let modelKey: string;
-      let existingKeys: string[];
-      do {
-        modelKey = randomUUID();
-        existingKeys = aiModels[modelType].map(
-          (config: any) => config.modelKey,
-        );
-      } while (existingKeys.includes(modelKey));
-
-      // Extract modelFriendlyName from configuration if present
       const modelFriendlyName = configuration.modelFriendlyName;
+      let modelKey = '';
+      await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+        const existingKeys = new Set(
+          AI_MODEL_TYPES.flatMap((type) =>
+            (aiModels[type] ?? []).map((config) => config.modelKey),
+          ),
+        );
+        do {
+          modelKey = randomUUID();
+        } while (existingKeys.has(modelKey));
 
-      // Prepare the new configuration
-      const newConfig = {
-        provider,
-        configuration,
-        modelKey,
-        isMultimodal,
-        isDefault,
-        isReasoning,
-        contextLength,
-        ...(modelFriendlyName && { modelFriendlyName }),
-      };
+        const newConfig = {
+          provider,
+          configuration,
+          modelKey,
+          isMultimodal,
+          isDefault,
+          isReasoning,
+          contextLength,
+          ...(modelFriendlyName && { modelFriendlyName }),
+        };
 
-      // If this is set as default, remove default flag from other models
-      if (isDefault) {
-        for (const config of aiModels[modelType]) {
-          config.isDefault = false;
+        if (isDefault) {
+          for (const config of aiModels[modelType] ?? []) {
+            config.isDefault = false;
+          }
         }
-      }
-
-      // Add the new configuration
-      aiModels[modelType].push(newConfig);
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
+        aiModels[modelType]!.push(newConfig);
+      });
 
       // Emit an event specific to the model type so downstream services
       // refresh the right cache. Embedding changes MUST NOT use the LLM
@@ -3566,6 +3433,13 @@ export const updateAIModelProvider =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
+      if (!modelType || !modelKey) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType and modelKey are required',
+        });
+        return;
+      }
       const {
         provider,
         configuration,
@@ -3595,12 +3469,9 @@ export const updateAIModelProvider =
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(404).json({
           status: 'error',
           message: 'No AI models configuration found',
@@ -3608,35 +3479,16 @@ export const updateAIModelProvider =
         return;
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      // Find the model with the specified key across all model types
-      let targetModel = null;
-      let targetModelType = null;
-
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        for (const config of modelConfigs as any[]) {
-          if (config.modelKey === modelKey) {
-            targetModel = config;
-            targetModelType = modelTypeKey;
-            break;
-          }
-        }
-        if (targetModel) break;
-      }
-
-      if (!targetModel || !targetModelType) {
+      const located = findModelEntry(aiModels, modelKey);
+      if (!located) {
         res.status(404).json({
           status: 'error',
           message: `Model with key '${modelKey}' not found or model type not found`,
         });
         return;
       }
+      const targetModel = located.model;
+      const targetModelType = located.modelType;
 
       // Verify the model type matches if provided
       if (modelType && targetModelType !== modelType) {
@@ -3747,37 +3599,45 @@ export const updateAIModelProvider =
         }
       }
 
-      // Extract modelFriendlyName from configuration if present
       const modelFriendlyName = configuration.modelFriendlyName;
-
-      // Update the model configuration
-      targetModel.configuration = mergedConfiguration;
-      targetModel.isMultimodal = isMultimodal;
-      targetModel.isDefault = isDefault;
-      targetModel.isReasoning = isReasoning;
-      targetModel.contextLength = contextLength || null;
-      if (modelFriendlyName !== undefined) {
-        targetModel.modelFriendlyName = modelFriendlyName;
-      }
-      // If this is set as default, remove default flag from other models of the same type
-      if (isDefault) {
-        for (const config of aiModels[targetModelType]) {
-          if (config.modelKey !== modelKey) {
-            config.isDefault = false;
+      let saved: AIModelsConfig;
+      try {
+        saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+          const current = findModelEntry(latest, modelKey);
+          if (!current || current.modelType !== targetModelType) {
+            throw new AiModelsWriteAborted();
           }
+          // A credential rotation can land during the health check; keep its keys.
+          current.model.configuration = mergeAiModelCredentials(
+            configuration,
+            current.model.configuration as Record<string, unknown>,
+          );
+          current.model.isMultimodal = isMultimodal;
+          current.model.isDefault = isDefault;
+          current.model.isReasoning = isReasoning;
+          current.model.contextLength = contextLength || null;
+          if (modelFriendlyName !== undefined) {
+            current.model.modelFriendlyName = modelFriendlyName;
+          }
+          if (isDefault) {
+            for (const config of latest[current.modelType] ?? []) {
+              if (config.modelKey !== modelKey) {
+                config.isDefault = false;
+              }
+            }
+          }
+        });
+      } catch (error) {
+        if (error instanceof AiModelsWriteAborted) {
+          res.status(404).json({
+            status: 'error',
+            message: `Model with key '${modelKey}' not found or model type not found`,
+          });
+          return;
         }
+        throw error;
       }
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
+      const updatedModel = findModelEntry(saved, modelKey)?.model ?? targetModel;
 
       const event: Event =
         targetModelType === 'embedding'
@@ -3796,9 +3656,7 @@ export const updateAIModelProvider =
               } as LLMConfiguredEvent,
             };
       await sendEvent(eventService, event);
-      const modelForResponse = stripAiModelSecrets(
-        targetModel as AIModelConfiguration,
-      );
+      const modelForResponse = stripAiModelSecrets(updatedModel);
       res.status(200).json({
         status: 'success',
         message: `${targetModelType.toUpperCase()} provider updated successfully`,
@@ -3828,13 +3686,17 @@ export const deleteAIModelProvider =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
+      if (!modelType || !modelKey) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType and modelKey are required',
+        });
+        return;
+      }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(404).json({
           status: 'error',
           message: 'No AI models configuration found',
@@ -3842,36 +3704,9 @@ export const deleteAIModelProvider =
         return;
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      // Find the model with the specified key across all model types
-      let deletedModel = null;
-      let targetModelType = null;
-      let modelIndex = -1;
-
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        if (!Array.isArray(modelConfigs)) continue;
-        for (let i = 0; i < modelConfigs.length; i++) {
-          const config = modelConfigs[i];
-          if (
-            config &&
-            typeof config === 'object' &&
-            'modelKey' in config &&
-            config.modelKey === modelKey
-          ) {
-            deletedModel = config;
-            targetModelType = modelTypeKey;
-            modelIndex = i;
-            break;
-          }
-        }
-        if (deletedModel) break;
-      }
+      const locatedForDelete = findModelEntry(aiModels, modelKey);
+      const deletedModel = locatedForDelete?.model ?? null;
+      const targetModelType = locatedForDelete?.modelType ?? null;
 
       if (!deletedModel || !targetModelType) {
         res.status(404).json({
@@ -3989,35 +3824,43 @@ export const deleteAIModelProvider =
         }
       }
 
-      const wasDefault = deletedModel.isDefault || false;
+      let wasDefault = deletedModel.isDefault || false;
 
-      // Remove the model from the configuration
-      aiModels[targetModelType].splice(modelIndex, 1);
-
-      // If the deleted model was default, set the first remaining model as default
-      if (wasDefault && aiModels[targetModelType].length > 0) {
-        aiModels[targetModelType][0].isDefault = true;
-      }
-
-      // Remove any role assignments that reference this deleted modelKey
-      if (aiModels.modelRoles) {
-        for (const roleName of Object.keys(aiModels.modelRoles)) {
-          if (aiModels.modelRoles[roleName].modelKey === modelKey) {
-            delete aiModels.modelRoles[roleName];
+      try {
+        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+          const current = findModelEntry(latest, modelKey);
+          if (!current || current.modelType !== targetModelType) {
+            throw new AiModelsWriteAborted();
           }
+          // The agent-usage check can take seconds. A concurrent default
+          // change lands in this document, so the flag has to come from it.
+          const removedWasDefault = current.model.isDefault === true;
+          wasDefault = removedWasDefault;
+          latest[current.modelType]?.splice(current.index, 1);
+          const remaining = latest[current.modelType] ?? [];
+          if (removedWasDefault && remaining.length > 0) {
+            const nextDefault = remaining[0];
+            if (nextDefault) nextDefault.isDefault = true;
+          }
+          if (latest.modelRoles) {
+            for (const roleName of Object.keys(latest.modelRoles)) {
+              const role = latest.modelRoles[roleName];
+              if (role?.modelKey === modelKey) {
+                delete latest.modelRoles[roleName];
+              }
+            }
+          }
+        });
+      } catch (error) {
+        if (error instanceof AiModelsWriteAborted) {
+          res.status(404).json({
+            status: 'error',
+            message: `Model with key '${modelKey}' not found`,
+          });
+          return;
         }
+        throw error;
       }
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
 
       const event: Event =
         targetModelType === 'embedding'
@@ -4066,13 +3909,17 @@ export const updateDefaultAIModel =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const { modelType, modelKey } = req.params;
+      if (!modelType || !modelKey) {
+        res.status(400).json({
+          status: 'error',
+          message: 'modelType and modelKey are required',
+        });
+        return;
+      }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(404).json({
           status: 'error',
           message: 'No AI models configuration found',
@@ -4080,35 +3927,16 @@ export const updateDefaultAIModel =
         return;
       }
 
-      const aiModels = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
-
-      // Find the model with the specified key across all model types
-      let targetModel = null;
-      let targetModelType = null;
-
-      for (const [modelTypeKey, modelConfigs] of Object.entries(aiModels)) {
-        for (const config of modelConfigs as any[]) {
-          if (config.modelKey === modelKey) {
-            targetModel = config;
-            targetModelType = modelTypeKey;
-            break;
-          }
-        }
-        if (targetModel) break;
-      }
-
-      if (!targetModel || !targetModelType) {
+      const locatedDefault = findModelEntry(aiModels, modelKey);
+      if (!locatedDefault) {
         res.status(404).json({
           status: 'error',
           message: `Model with key '${modelKey}' not found`,
         });
         return;
       }
+      const targetModel = locatedDefault.model;
+      const targetModelType = locatedDefault.modelType;
 
       // Verify the model type matches if provided
       if (modelType && targetModelType !== modelType) {
@@ -4142,18 +3970,7 @@ export const updateDefaultAIModel =
       // changes). For other model types we use the generic per-model
       // `/health-check/{type}` endpoint which validates reachability and
       // credentials.
-      const healthCheckSupportedTypes = [
-        'llm',
-        'embedding',
-        'ocr',
-        'slm',
-        'reasoning',
-        'multiModal',
-        'imageGeneration',
-        'tts',
-        'stt',
-      ];
-      if (healthCheckSupportedTypes.includes(targetModelType)) {
+      if ((AI_MODEL_TYPES as readonly string[]).includes(targetModelType)) {
         logger.debug(
           `Health Check for AI ${targetModelType} default-update API calling`,
         );
@@ -4209,24 +4026,27 @@ export const updateDefaultAIModel =
         }
       }
 
-      // Remove default flag from all models in this type
-      for (const config of aiModels[targetModelType]) {
-        config.isDefault = false;
+      try {
+        await new AiModelsConfigRepository(keyValueStoreService).mutate((latest) => {
+          const current = findModelEntry(latest, modelKey);
+          if (!current || current.modelType !== targetModelType) {
+            throw new AiModelsWriteAborted();
+          }
+          for (const config of latest[current.modelType] ?? []) {
+            config.isDefault = false;
+          }
+          current.model.isDefault = true;
+        });
+      } catch (error) {
+        if (error instanceof AiModelsWriteAborted) {
+          res.status(404).json({
+            status: 'error',
+            message: `Model with key '${modelKey}' not found`,
+          });
+          return;
+        }
+        throw error;
       }
-
-      // Set the target model as default
-      targetModel.isDefault = true;
-
-      // Encrypt and save the updated configuration
-      const encryptedUpdatedConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(
-        configPaths.aiModels,
-        encryptedUpdatedConfig,
-      );
 
       const event: Event =
         targetModelType === 'embedding'
@@ -5146,22 +4966,12 @@ export const getModelRoles =
   (keyValueStoreService: KeyValueStoreService) =>
   async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      const aiModels = await new AiModelsConfigRepository(keyValueStoreService).read();
 
-      if (!encryptedAIConfig) {
+      if (!aiModels) {
         res.status(200).json({ status: 'success', modelRoles: {} });
         return;
       }
-
-      const aiModels: AIModelsConfig = JSON.parse(
-        EncryptionService.getInstance(
-          configManagerConfig.algorithm,
-          configManagerConfig.secretKey,
-        ).decrypt(encryptedAIConfig),
-      );
 
       res.status(200).json({
         status: 'success',
@@ -5189,79 +4999,54 @@ export const updateModelRoles =
         return;
       }
 
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedAIConfig = await keyValueStoreService.get<string>(
-        configPaths.aiModels,
-      );
+      let rejection: string | null = null;
+      let savedRoles: AIModelsConfig['modelRoles'] = roles;
+      try {
+        const saved = await new AiModelsConfigRepository(keyValueStoreService).mutate((aiModels) => {
+          for (const [roleName, assignment] of Object.entries(roles)) {
+            if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
+              rejection = `Role "${roleName}" assignment must be an object`;
+              throw new AiModelsWriteAborted();
+            }
 
-      let aiModels: AIModelsConfig = {};
-      if (encryptedAIConfig) {
-        aiModels = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAIConfig),
-        );
+            const { modelType, modelKey } = assignment;
+
+            if (!modelType || !modelKey) {
+              rejection = `Role "${roleName}" must have both modelType and modelKey`;
+              throw new AiModelsWriteAborted();
+            }
+
+            if (!isAIModelType(modelType)) {
+              rejection = `Role "${roleName}": modelType "${modelType}" is not valid`;
+              throw new AiModelsWriteAborted();
+            }
+
+            const bucket = aiModels[modelType];
+            const exists = Array.isArray(bucket) && bucket.some((m) => m.modelKey === modelKey);
+            if (!exists) {
+              rejection = `Role "${roleName}": no model with key "${modelKey}" found in "${modelType}"`;
+              throw new AiModelsWriteAborted();
+            }
+          }
+
+          aiModels.modelRoles = roles;
+        });
+        savedRoles = saved.modelRoles;
+      } catch (error) {
+        if (error instanceof AiModelsWriteAborted) {
+          res.status(400).json({
+            status: 'error',
+            message: rejection ?? 'Invalid model role assignment',
+          });
+          return;
+        }
+        throw error;
       }
-
-      // Validate each role assignment: the modelKey must exist in the
-      // specified modelType array, and modelType must be a valid bucket.
-      const validModelTypes = [
-        'llm', 'slm', 'embedding', 'ocr', 'reasoning', 'multiModal',
-        'imageGeneration', 'tts', 'stt',
-      ];
-
-      for (const [roleName, assignment] of Object.entries(roles)) {
-        if (!assignment || typeof assignment !== 'object' || Array.isArray(assignment)) {
-          res.status(400).json({
-            status: 'error',
-            message: `Role "${roleName}" assignment must be an object`,
-          });
-          return;
-        }
-
-        const { modelType, modelKey } = assignment;
-
-        if (!modelType || !modelKey) {
-          res.status(400).json({
-            status: 'error',
-            message: `Role "${roleName}" must have both modelType and modelKey`,
-          });
-          return;
-        }
-
-        if (!validModelTypes.includes(modelType)) {
-          res.status(400).json({
-            status: 'error',
-            message: `Role "${roleName}": modelType "${modelType}" is not valid`,
-          });
-          return;
-        }
-
-        const bucket = (aiModels as any)[modelType] as AIModelConfiguration[] | undefined;
-        const exists = Array.isArray(bucket) && bucket.some((m) => m.modelKey === modelKey);
-        if (!exists) {
-          res.status(400).json({
-            status: 'error',
-            message: `Role "${roleName}": no model with key "${modelKey}" found in "${modelType}"`,
-          });
-          return;
-        }
-      }
-
-      aiModels.modelRoles = roles;
-
-      const encryptedUpdated = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(aiModels));
-
-      await keyValueStoreService.set<string>(configPaths.aiModels, encryptedUpdated);
 
       res.status(200).json({
         status: 'success',
         message: 'Model roles updated successfully',
-        modelRoles: aiModels.modelRoles,
+        modelRoles: savedRoles,
       });
     } catch (error: any) {
       logger.error('Error updating model roles', { error });

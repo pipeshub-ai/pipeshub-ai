@@ -5,9 +5,16 @@ from fastapi.responses import JSONResponse
 
 # Importing triggers provider registration via __init__.py side-effect
 import app.config.ai_models.providers  # noqa: F401
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.auth import deny_service_tokens
 from app.config.ai_models.registry import ai_model_registry
 from app.config.ai_models.types import CAPABILITY_TO_MODEL_TYPE, ModelCapability
+from app.services.ai_models.discovery.registry import discovery_registry
+from app.services.ai_models.discovery.service import ModelDiscoveryService
+from app.services.ai_models.discovery.types import DiscoveryRequest
+
+# One service so the discovery cache survives across requests.
+_discovery_service = ModelDiscoveryService()
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
@@ -26,13 +33,27 @@ async def get_registry(
         providers = ai_model_registry.filter_by_capability(capability)
     else:
         providers = ai_model_registry.list_providers()
+    enriched = []
+    for provider in providers:
+        copy = dict(provider)
+        copy["discovery"] = discovery_registry.describe(str(provider.get("providerId") or ""))
+        enriched.append(copy)
     return JSONResponse(
         content={
             "success": True,
-            "providers": providers,
-            "total": len(providers),
+            "providers": enriched,
+            "total": len(enriched),
         }
     )
+
+
+@router.post("/ai-models/discover", dependencies=[Depends(require_admin_caller)])
+async def discover_models(body: DiscoveryRequest) -> JSONResponse:
+    """List models for a provider. Credentials stay in the body and are not logged."""
+    result = await _discovery_service.discover(body)
+    payload = result.model_dump(by_alias=True, mode="json")
+    payload["success"] = result.error_code is None
+    return JSONResponse(content=payload)
 
 
 @router.get("/ai-models/registry/capabilities")

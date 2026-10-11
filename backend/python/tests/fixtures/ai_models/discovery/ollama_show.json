@@ -1,0 +1,11 @@
+{
+  "capabilities": [
+    "completion",
+    "vision",
+    "tools",
+    "thinking"
+  ],
+  "model_info": {
+    "llama.context_length": 8192
+  }
+}

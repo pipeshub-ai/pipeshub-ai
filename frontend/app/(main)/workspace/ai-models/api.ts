@@ -1,14 +1,13 @@
 import { apiClient } from '@/lib/api';
-import { streamSSEGet, type SSEEvent } from '@/lib/api/streaming';
+import { streamSSEGet, streamSSERequest, type SSEEvent, type SSEStreamingOptions } from '@/lib/api/streaming';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type {
   AllModelsResponse,
-  CapabilitiesResponse,
+  DiscoveryResponse,
   DownloadProgressPayload,
   ModelRoleAssignment,
   ModelRolesResponse,
   ModelsByTypeResponse,
-  ProviderSchemaResponse,
   RegistryResponse,
 } from './types';
 
@@ -23,17 +22,41 @@ export const AIModelsApi = {
     return data;
   },
 
-  getCapabilities: async () => {
-    const { data } = await apiClient.get<CapabilitiesResponse>(
-      `${BASE}/ai-models/registry/capabilities`
-    );
+  discoverModels: async (body: {
+    provider: string;
+    capability?: string;
+    configuration?: Record<string, unknown>;
+    modelKey?: string;
+    query?: string;
+  }, signal?: AbortSignal) => {
+    const { data } = await apiClient.post<DiscoveryResponse>(`${BASE}/ai-models/discover`, body, {
+      signal,
+    });
     return data;
   },
 
-  getProviderSchema: async (providerId: string, capability?: string) => {
-    const { data } = await apiClient.get<ProviderSchemaResponse>(
-      `${BASE}/ai-models/registry/${providerId}/schema`,
-      { params: capability ? { capability } : undefined }
+  batchAddModels: (
+    body: {
+      modelType: string;
+      provider: string;
+      configuration: Record<string, unknown>;
+      models: Array<{
+        model: string;
+        modelFriendlyName?: string;
+        isMultimodal: boolean;
+        isReasoning: boolean;
+        contextLength?: number | null;
+      }>;
+      defaultModel?: string;
+      connectionId?: string;
+    },
+    options: SSEStreamingOptions,
+  ) => streamSSERequest(`${BASE}/ai-models/providers/batch`, body, options),
+
+  rotateConnectionCredentials: async (connectionId: string, configuration: Record<string, unknown>) => {
+    const { data } = await apiClient.put(
+      `${BASE}/ai-models/connections/${encodeURIComponent(connectionId)}/credentials`,
+      { configuration },
     );
     return data;
   },

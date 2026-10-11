@@ -57,6 +57,7 @@ interface ConfiguredModelsGridProps {
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   /** When true (default), empty embedding shows the system built-in row. Disable on onboarding. */
   showEmbeddingBuiltinPlaceholder?: boolean;
@@ -70,6 +71,7 @@ export function ConfiguredModelsGrid({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
   isLoading = false,
   showEmbeddingBuiltinPlaceholder = true,
 }: ConfiguredModelsGridProps) {
@@ -155,6 +157,7 @@ export function ConfiguredModelsGrid({
           onEdit={onEdit}
           onSetDefault={onSetDefault}
           onDelete={onDelete}
+          onRotate={onRotate}
         />
       ))}
     </Flex>
@@ -167,12 +170,14 @@ function ConfiguredModelRow({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
 }: {
   model: ConfiguredModel;
   provider: AIModelProvider | undefined;
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
 }) {
   const { t } = useTranslation();
   const [hover, setHover] = useState(false);
@@ -305,6 +310,17 @@ function ConfiguredModelRow({
                   }}
                 />
               )}
+              {model.connectionId && onRotate ? (
+                <PopoverMenuItem
+                  icon="key"
+                  label={t('workspace.aiModels.rotateCredentials')}
+                  disabled={settingDefault}
+                  onClick={() => {
+                    setPopoverOpen(false);
+                    onRotate(model);
+                  }}
+                />
+              ) : null}
               <PopoverMenuItem
                 icon="delete"
                 label={t('workspace.aiModels.actionDelete')}

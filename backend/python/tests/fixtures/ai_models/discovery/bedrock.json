@@ -1,0 +1,45 @@
+{
+  "summaries": [
+    {
+      "modelId": "amazon.titan-embed-text-v2:0",
+      "outputModalities": [
+        "EMBEDDING"
+      ],
+      "inputModalities": [
+        "TEXT"
+      ],
+      "inferenceTypesSupported": [
+        "ON_DEMAND"
+      ],
+      "modelLifecycle": {
+        "status": "ACTIVE"
+      }
+    },
+    {
+      "modelId": "anthropic.claude-sonnet",
+      "outputModalities": [
+        "TEXT"
+      ],
+      "inputModalities": [
+        "TEXT",
+        "IMAGE"
+      ],
+      "inferenceTypesSupported": [
+        "INFERENCE_PROFILE"
+      ],
+      "modelLifecycle": {
+        "status": "LEGACY"
+      }
+    }
+  ],
+  "profiles": [
+    {
+      "inferenceProfileId": "us.anthropic.claude-sonnet",
+      "models": [
+        {
+          "modelArn": "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet"
+        }
+      ]
+    }
+  ]
+}
