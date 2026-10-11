@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
+from collections.abc import Iterator
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -3514,6 +3515,105 @@ class TestSyncPermissionsEdges:
         )
         await connector._sync_permissions_edges(api_version="59.0")
         mock_tx.batch_create_edges.assert_awaited()
+
+
+class TestSyncPermissionsEdgesDropsCachedAccess:
+    """Rewriting the permission edges can take access away, so the search cache's
+    access lists for the connector are dropped once the transaction has ended."""
+
+    _NOTIFY = "app.connectors.sources.salesforce.connector.notify_connector_permissions_changed"
+
+    def _connector(
+        self, events: list, records: list[dict[str, Any]] | None = None
+    ) -> tuple[SalesforceConnector, MagicMock]:
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages(
+            [{"Id": "sf-user-1", "Email": "alice@example.com"}],
+        )
+        connector._sync_permissions_for_user = AsyncMock(
+            return_value=[("alice@example.com", "opp-1", "READER", False)]
+        )
+        mock_tx = connector.data_store_provider.transaction.return_value
+
+        async def end(exc_type: object, *_: object) -> bool:
+            events.append("rollback" if exc_type else "commit")
+            return False
+
+        mock_tx.__aexit__ = AsyncMock(side_effect=end)
+        default_records = [
+            {"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1", "orgId": "org-of-record"}
+        ]
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=lambda **kwargs: {
+            "records": records if records is not None else default_records,
+            "recordGroups": [],
+            "users": [{"email": "alice@example.com", "id": "user-1"}],
+        }[kwargs["collection"]])
+        return connector, mock_tx
+
+    @pytest.fixture
+    def events(self) -> list:
+        return []
+
+    @pytest.fixture
+    def notify(self, events: list) -> Iterator[AsyncMock]:
+        async def record(connector_id: str, org_id: str | None = None) -> None:
+            events.append(("drop", connector_id, org_id))
+
+        with patch(self._NOTIFY, new=AsyncMock(side_effect=record)) as mock:
+            yield mock
+
+    async def test_removed_edges_drop_the_records_org_after_commit(self, events: list, notify: AsyncMock) -> None:
+        connector, mock_tx = self._connector(events)
+        mock_tx.delete_edges_to = AsyncMock(return_value=2)
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        assert events[-2:] == ["commit", ("drop", "conn-sf-1", "org-of-record")]
+        notify.assert_awaited_once()
+
+    async def test_record_without_an_org_falls_back_to_the_processors(self, events: list, notify: AsyncMock) -> None:
+        records = [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}]
+        connector, mock_tx = self._connector(events, records=records)
+        mock_tx.delete_edges_to = AsyncMock(return_value=1)
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        notify.assert_awaited_once_with("conn-sf-1", "org-sf-1")
+
+    async def test_nothing_to_remove_drops_nothing(self, events: list, notify: AsyncMock) -> None:
+        connector, mock_tx = self._connector(events)
+        mock_tx.delete_edges_to = AsyncMock(return_value=0)
+
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        mock_tx.batch_create_edges.assert_awaited()
+        notify.assert_not_called()
+
+    async def test_failed_delete_drops_nothing(self, events: list, notify: AsyncMock) -> None:
+        connector, mock_tx = self._connector(events)
+        mock_tx.delete_edges_to = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await connector._sync_permissions_edges(api_version="59.0")
+
+        notify.assert_not_called()
+
+    async def test_rerun_after_a_deadlock_still_dropped(self, events: list, notify: AsyncMock) -> None:
+        """The first attempt's deletes landed before its create deadlocked; the
+        rerun finds no edge to delete, so only the failed attempt can drop."""
+        connector, mock_tx = self._connector(events)
+        mock_tx.delete_edges_to = AsyncMock(side_effect=[1, 0])
+        mock_tx.batch_create_edges = AsyncMock(side_effect=[
+            RuntimeError("{neo4j_code: Neo.TransientError.Transaction.DeadlockDetected}"),
+            None,
+        ])
+
+        with pytest.raises(RuntimeError):
+            await connector._sync_permissions_edges(api_version="59.0")
+        await connector._sync_permissions_edges(api_version="59.0")
+
+        notify.assert_awaited_once_with("conn-sf-1", "org-of-record")
+        assert events.index("rollback") < events.index(("drop", "conn-sf-1", "org-of-record"))
 
 
 # ===========================================================================
