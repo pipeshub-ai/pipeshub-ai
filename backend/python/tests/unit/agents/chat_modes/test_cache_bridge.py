@@ -648,6 +648,20 @@ class TestConfigHashResolution:
         p_flags = SemanticCacheConfigHashParams(**{**base_params.__dict__, "enrichment_flags": "chatMode=other"})
         assert compute_config_hash(p_flags) != base_hash
 
+        # 17. tools_hash changes
+        p_tools = SemanticCacheConfigHashParams(**{**base_params.__dict__, "tools_hash": "different_tools_hash"})
+        assert compute_config_hash(p_tools) != base_hash
+
+    def test_compute_config_hash_differs_when_tools_hash_differs(self) -> None:
+        p1 = SemanticCacheConfigHashParams(tools_hash="tools_hash_a")
+        p2 = SemanticCacheConfigHashParams(tools_hash="tools_hash_b")
+        assert compute_config_hash(p1) != compute_config_hash(p2)
+
+    def test_compute_config_hash_differs_between_zero_and_none_temperature(self) -> None:
+        p_zero = SemanticCacheConfigHashParams(sampling_temperature=0.0)
+        p_none = SemanticCacheConfigHashParams(sampling_temperature=None)
+        assert compute_config_hash(p_zero) != compute_config_hash(p_none)
+
 
 class TestContextDigestFingerprints:
     def test_digest_changes_when_updated_at_alone_changes(self) -> None:
@@ -1387,6 +1401,67 @@ class TestBridgeIntegration:
         assert store_kwargs["context_digest"] == compute_context_digest(fake_prefetch.record_fingerprints)
         assert len(store_kwargs["config_hash"]) == 64
         assert store_kwargs["completion_data"] == completion_data
+
+    @pytest.mark.asyncio
+    async def test_turn_with_state_tool_call_rejected_at_bridge_level_even_without_completion_data_keys(self) -> None:
+        """A turn that made a tool call in state is rejected at bridge level even if completion_data lacks tool keys."""
+        sql_patch, slack_patch = _patch_connectors()
+        mock_cache = AsyncMock()
+        mock_cache.lookup.return_value = CacheLookupResult(hit=False, kind="none")
+
+        config_service = _make_mock_config_service(flag_enabled=True, kv_value={"mode": "serve"})
+
+        fake_prefetch = _make_fake_prefetch(
+            query_embedding=[0.1, 0.2, 0.3],
+            tool_records=[{"id": "r1", "connector": "google_drive"}],
+            record_fingerprints=[("r1", "1", 100, "meta", "hash")],
+        )
+
+        live_agent = _stream_agent(
+            MagicMock(success=True, error=None, output="Live answer text.", cancelled=False)
+        )
+
+        # completion_data intentionally contains NO tool keys
+        completion_data = {
+            "answer": "Live answer text.",
+            "confidence": "High",
+            "citations": [{"id": "r1"}],
+        }
+
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1",
+                    "user_id": "user-1",
+                    "query": "what is the security policy?",
+                    "all_tool_results": [{"tool_name": "internal_search", "status": "success"}],
+                },
+            ),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", return_value=fake_prefetch),
+            patch(
+                "app.agents.chat_modes.bridge.PipesHubAgentFactory.create",
+                return_value=(live_agent, MagicMock(), MagicMock(description="goal", constraints=[]), []),
+            ),
+            patch(
+                "app.agents.chat_modes.bridge.AnswerFinalizer.run",
+                return_value=completion_data,
+            ),
+        ):
+            _ = [
+                chunk
+                async for chunk in run_chat_stream(
+                    **self._base_kwargs(config_service, semantic_cache_service=mock_cache)
+                )
+            ]
+
+        # Wait for any background tasks
+        await asyncio.sleep(0.05)
+
+        # Store must NOT be called because agent state recorded a tool call
+        mock_cache.store.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_bridge_semantic_hit_serve_mode(self) -> None:

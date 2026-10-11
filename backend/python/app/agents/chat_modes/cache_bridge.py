@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Iterable, cast
 
 from app.agent_loop_lib.transport.opik_tracing import (
     is_opik_configured,
@@ -132,6 +132,33 @@ def resolve_config_hash_params(
 
     enrichment_flags = f"chatMode={query_info.get('chatMode', '')};multimodal={context.is_multimodal_llm}"
 
+    # Resolve tool list bound to the agent for this request
+    bound_tools: list[str] | None = None
+    root_spec = getattr(context, "root_agent_spec", None)
+    if root_spec is not None:
+        raw_tools = cast(object, getattr(root_spec, "tool_names", None))
+        if isinstance(raw_tools, (list, tuple, set, frozenset)):
+            bound_tools = [str(x) for x in cast("Iterable[object]", raw_tools)]
+        elif type(raw_tools).__name__ == "MagicMock":
+            bound_tools = []
+    if bound_tools is None and isinstance(getattr(context, "tool_state", None), dict):
+        tool_state_dict = cast("dict[str, object]", context.tool_state)
+        raw_tools = tool_state_dict.get("bound_tool_names") or tool_state_dict.get("tool_names")
+        if isinstance(raw_tools, (list, tuple, set, frozenset)):
+            bound_tools = [str(x) for x in cast("Iterable[object]", raw_tools)]
+    if bound_tools is None:
+        raw_tools = cast(object, getattr(context, "bound_tool_names", None) or query_info.get("bound_tool_names"))
+        if isinstance(raw_tools, (list, tuple, set, frozenset)):
+            bound_tools = [str(x) for x in cast("Iterable[object]", raw_tools)]
+    if bound_tools is None and query_info.get("chatMode") == "internal_search":
+        bound_tools = []
+
+    if bound_tools is None:
+        return None
+
+    sorted_tools = sorted(bound_tools)
+    tools_hash = hashlib.sha256("\n".join(sorted_tools).encode("utf-8")).hexdigest()
+
     return SemanticCacheConfigHashParams(
         embedding_provider="default",
         embedding_model="default",
@@ -146,6 +173,7 @@ def resolve_config_hash_params(
         system_prompt_template_hash=system_prompt_template_hash,
         project_instructions_hash=project_instructions_hash,
         enrichment_flags=enrichment_flags,
+        tools_hash=tools_hash,
     )
 
 

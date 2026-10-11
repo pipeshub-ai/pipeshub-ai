@@ -127,6 +127,7 @@ class SemanticCacheConfigHashParams:
     system_prompt_template_hash: str = ""
     project_instructions_hash: str = ""
     enrichment_flags: str = ""
+    tools_hash: str = ""
 
 
 def compute_config_hash(params: SemanticCacheConfigHashParams) -> str:
@@ -138,6 +139,9 @@ def compute_config_hash(params: SemanticCacheConfigHashParams) -> str:
     embedding_identifier = (
         f"{params.embedding_provider}:{params.embedding_model}:{params.embedding_dimension}"
     )
+    sampling_temp_str = (
+        "" if params.sampling_temperature is None else str(params.sampling_temperature)
+    )
     items: list[tuple[str, str]] = [
         ("embedding_identifier", embedding_identifier),
         ("enrichment_flags", params.enrichment_flags),
@@ -147,9 +151,10 @@ def compute_config_hash(params: SemanticCacheConfigHashParams) -> str:
         ("prompt_template_version", str(params.prompt_template_version)),
         ("reasoning_effort", str(params.reasoning_effort or "")),
         ("response_language", str(params.response_language or "")),
-        ("sampling_temperature", str(params.sampling_temperature or "")),
+        ("sampling_temperature", sampling_temp_str),
         ("storage_schema_version", params.storage_schema_version),
         ("system_prompt_template_hash", params.system_prompt_template_hash),
+        ("tools_hash", params.tools_hash),
     ]
     canonical = "\n".join(f"{k}={v}" for k, v in items)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()

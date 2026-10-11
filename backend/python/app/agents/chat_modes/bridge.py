@@ -47,7 +47,7 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
-from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.respond import AnswerFinalizer, _tool_names_from_state
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -848,6 +848,14 @@ async def run_chat_stream(
                             is_cancelled=(result.cancelled or cancellation_token.is_cancelled),
                             agent_success=result.success,
                         )
+                        if is_eligible:
+                            state_tools = _tool_names_from_state(context.tool_state)
+                            if (
+                                state_tools.get("succeeded_tool_names")
+                                or state_tools.get("failed_tool_names")
+                            ):
+                                is_eligible = False
+                                skip_reason = "tool_calls"
                         if is_eligible:
                             async def _bg_store(
                                 ac: SemanticCacheService = active_cache,
