@@ -142,7 +142,34 @@ class TestRemovalsDropTheConnector:
 
         await proc.delete_permission_from_record("rec-1", "ana@example.com")
 
+        tx.get_record_by_key.assert_awaited_once_with("rec-1", raise_on_error=True)
         _dropped_after_commit(events)
+
+    async def test_unshare_with_the_callers_connector_reads_no_record(self, notify, events) -> None:
+        tx = AsyncMock()
+        tx.get_user_by_email = AsyncMock(return_value=_user())
+        tx.batch_delete_edges = AsyncMock(return_value=1)
+        proc = _processor(tx, events)
+
+        await proc.delete_permission_from_record("rec-1", "ana@example.com", connector_id=CONNECTOR)
+
+        tx.get_record_by_key.assert_not_called()
+        _dropped_after_commit(events)
+
+    async def test_unreadable_record_fails_before_the_delete(self, notify, events) -> None:
+        """Read after the delete, a failed lookup lost the drop for good: the edge
+        was gone, so the retry found nothing to delete and never dropped either."""
+        tx = AsyncMock()
+        tx.get_user_by_email = AsyncMock(return_value=_user())
+        tx.get_record_by_key = AsyncMock(side_effect=RuntimeError("graph down"))
+        tx.batch_delete_edges = AsyncMock(return_value=1)
+        proc = _processor(tx, events)
+
+        with pytest.raises(RuntimeError):
+            await proc.delete_permission_from_record("rec-1", "ana@example.com")
+
+        tx.batch_delete_edges.assert_not_called()
+        notify.assert_not_called()
 
     async def test_user_access_removed_from_a_folder_item(self, notify, events) -> None:
         tx = AsyncMock()

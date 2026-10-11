@@ -3571,7 +3571,7 @@ class TestSharedWithMeFromSharedDrive:
         await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
 
         connector.data_entities_processor.delete_permission_from_record.assert_awaited_once_with(
-            record_id="rec-1", user_email="u@t.com"
+            record_id="rec-1", user_email="u@t.com", connector_id="drive-fc-1"
         )
 
     @pytest.mark.asyncio

@@ -4533,8 +4533,14 @@ class DataSourceEntitiesProcessor:
             await self._handle_record_permissions(record, permissions, tx_store)
 
     @retry_on_deadlock()
-    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
-        """Delete permissions from a record."""
+    async def delete_permission_from_record(
+        self, record_id: str, user_email: str, connector_id: str | None = None
+    ) -> None:
+        """Delete permissions from a record.
+
+        ``connector_id`` is the record's connector, read from the record when not
+        given -- before the delete, and loudly: once the edge is gone a retry
+        finds nothing to delete and could never drop the search cache."""
 
         async with self.data_store_provider.transaction() as tx_store:
             # A user who could not be read is not a user who is not there: returning
@@ -4543,6 +4549,10 @@ class DataSourceEntitiesProcessor:
             if not user:
                 self.logger.warning(f"User with email {user_email} not found in database")
                 return
+
+            if connector_id is None:
+                stored = await tx_store.get_record_by_key(record_id, raise_on_error=True)
+                connector_id = (stored or {}).get("connectorId")
 
             # Not delete_edge: ArangoDB's answers False when the delete fails, which
             # read here as "nothing to delete" and left the user with the permission.
@@ -4556,10 +4566,9 @@ class DataSourceEntitiesProcessor:
                 collection=CollectionNames.PERMISSION.value,
             )
 
-            record = await tx_store.get_record_by_key(record_id) if deleted else None
 
         if deleted:
-            await self._access_changed([record.get("connectorId") if isinstance(record, dict) else None])
+            await self._access_changed([connector_id])
             self.logger.info(f"Deleted permission from record {record_id} for user {user_email}")
         else:
             self.logger.warning(f"No permission on record {record_id} to delete for user {user_email}")
