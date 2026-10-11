@@ -237,3 +237,13 @@ async def test_client_without_config_service_sends_every_block() -> None:
     client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
     payload = await _sent_payload(client, container)
     assert payload["block_container"]["blocks"] == classify_request_blocks(container.blocks, None)
+
+
+@pytest.mark.asyncio
+async def test_the_trim_budget_reads_the_models_uncached_like_the_service() -> None:
+    # The service reads contextLength uncached (app/utils/llm.py); a cached copy
+    # could hold a length an admin has since raised and trim a tail it would read.
+    client = _client({"llm": [{"provider": "openai", "contextLength": 8000}]})
+    await _sent_payload(client, _container(n_text=3))
+    client._config_service.get_config.assert_awaited_once()
+    assert client._config_service.get_config.await_args.kwargs.get("use_cache") is False

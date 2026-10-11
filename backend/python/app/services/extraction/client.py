@@ -120,12 +120,16 @@ class ExtractionClient(BaseServiceClient):
         defaulting to DEFAULT_CONTEXT_LENGTH. Every entry it could pick is in
         the AI-models config, so their maximum bounds its budget whichever it
         picks. ``None`` (send every block) when that cannot be read.
+
+        Read uncached, as the service reads it (``app/utils/llm.py``): a cached
+        copy could hold a context length an admin has since raised, and the
+        tail trimmed here would then be one the service still reads.
         """
         if self._config_service is None:
             return None
         try:
             ai_models = await self._config_service.get_config(
-                config_node_constants.AI_MODELS.value, use_cache=True
+                config_node_constants.AI_MODELS.value, use_cache=False
             )
         except Exception:  # trimming is an optimisation; send every block
             return None
