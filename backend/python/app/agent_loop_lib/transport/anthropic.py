@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+import logging
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from app.agent_loop_lib.core.exceptions import TransportError
@@ -26,6 +27,15 @@ from app.agent_loop_lib.core.streaming import (
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
 from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
+from app.agent_loop_lib.transport.prompt_cache import (
+    anthropic_breakpoint,
+    anthropic_top_level_allowed,
+)
+from app.agent_loop_lib.transport.provider_conflicts import (
+    is_prompt_cache_param_conflict,
+)
+
+logger = logging.getLogger(__name__)
 
 # Status codes considered transient/retryable regardless of which SDK exception
 # type raised them. Kept in sync with RetryConfig.retryable_status_codes default.
@@ -70,6 +80,8 @@ class AnthropicTransport(LLMTransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
+        cache_ttl: str | None = "5m",
+        on_cache_rejected: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -95,6 +107,13 @@ class AnthropicTransport(LLMTransport):
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
         self._client = _anthropic.AsyncAnthropic(**client_kwargs)
+        # One marker value for the tools, the stable system block and the
+        # request's last block; None sends no cache markers at all.
+        self._breakpoint = anthropic_breakpoint(cache_ttl) if cache_ttl else None
+        self._on_cache_rejected = on_cache_rejected
+        # The client can be pointed elsewhere (ANTHROPIC_BASE_URL); only
+        # Anthropic's own API is known to take the top-level marker.
+        self._top_level_cache = anthropic_top_level_allowed(str(self._client.base_url))
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; `Agent.usage` (a `RunUsage` built from each call's
         # returned `ModelResponse.usage`) is the source of truth callers
@@ -108,7 +127,8 @@ class AnthropicTransport(LLMTransport):
 
     @classmethod
     def from_langchain_model(
-        cls, llm: Any, model_name: str = "", model_key: str | None = None,
+        cls, llm: Any, model_name: str = "", model_key: str | None = None, cache_ttl: str | None = "5m",
+        on_cache_rejected: Callable[[], None] | None = None,
     ) -> "AnthropicTransport":
         """Build from an already-configured `ChatAnthropic`.
 
@@ -158,6 +178,8 @@ class AnthropicTransport(LLMTransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
+            cache_ttl=cache_ttl,
+            on_cache_rejected=on_cache_rejected,
         )
 
     @staticmethod
@@ -299,10 +321,12 @@ class AnthropicTransport(LLMTransport):
             value = getattr(obj, name, 0) if obj is not None else 0
             return value if isinstance(value, int) else 0
 
-        input_tokens = _int_field(usage, "input_tokens")
         output_tokens = _int_field(usage, "output_tokens")
         cache_read = _int_field(usage, "cache_read_input_tokens")
         cache_write = _int_field(usage, "cache_creation_input_tokens")
+        # Anthropic's input_tokens counts only what came after the last cache
+        # breakpoint; TokenUsage.input_tokens includes cached tokens.
+        input_tokens = _int_field(usage, "input_tokens") + cache_read + cache_write
 
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
@@ -337,31 +361,34 @@ class AnthropicTransport(LLMTransport):
     # Public LLMTransport interface
     # ------------------------------------------------------------------
 
-    def _apply_prompt_cache(self, formatted: list[dict]) -> None:
-        """
-        Mark the most recent stable tool result for prompt caching.
+    def _drop_cache_params(self, exc: Exception) -> bool:
+        """Whether `exc` is the API refusing the cache markers this transport
+        sends (a proxy behind ANTHROPIC_BASE_URL, say); if so, this and every
+        later request go without them."""
+        if self._breakpoint is None or not is_prompt_cache_param_conflict(exc, {"cache_control"}):
+            return False
+        logger.warning("AnthropicTransport: cache_control rejected; resending without cache markers: %s", exc)
+        self._breakpoint = None
+        if self._on_cache_rejected is not None:
+            self._on_cache_rejected()
+        return True
 
-        Anthropic charges 10% of normal price for cache reads vs 100% for fresh
-        reads. Cache TTL is 5 minutes. We mark the last large tool result that
-        is NOT in the final 2 messages (which change every turn), so successive
-        turns get a cache hit on everything up to that point.
-
-        We only add ONE breakpoint here (plus one for the system below) to stay
-        safely within the 4-breakpoint limit.
-        """
-        if len(formatted) <= 2:
-            return
-        _MIN = 300  # chars — don't bother caching tiny results
-        for fmsg in reversed(formatted[:-2]):
-            content = fmsg.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                btype = block.get("type")
-                raw   = block.get("content", "") if btype == "tool_result" else block.get("text", "")
-                if isinstance(raw, str) and len(raw) >= _MIN and "cache_control" not in block:
-                    block["cache_control"] = {"type": "ephemeral"}
-                    return  # one breakpoint is enough
+    def _message_cache(self, formatted: list[dict]) -> dict[str, Any]:
+        """Cache everything up to the request's last block: the top-level
+        ``cache_control`` (returned as a request kwarg) where the API takes it,
+        otherwise a marker on the last block of the last non-assistant message.
+        Each turn then reads every earlier turn from cache."""
+        if self._breakpoint is None:
+            return {}
+        if self._top_level_cache:
+            return {"cache_control": dict(self._breakpoint)}
+        if formatted and formatted[-1].get("role") != "assistant":
+            content = formatted[-1].get("content")
+            if isinstance(content, str) and content:
+                formatted[-1]["content"] = [{"type": "text", "text": content, "cache_control": dict(self._breakpoint)}]
+            elif isinstance(content, list) and content and isinstance(content[-1], dict):
+                content[-1] = {**content[-1], "cache_control": dict(self._breakpoint)}
+        return {}
 
     def _apply_tool_cache(self, tools: list[dict]) -> list[dict]:
         """Mark the last tool schema as a cache breakpoint.
@@ -371,10 +398,10 @@ class AnthropicTransport(LLMTransport):
         normally a 100% cache-hit boundary, same rationale as the system
         prompt breakpoint. Copies rather than mutates caller-owned dicts.
         """
-        if not tools:
+        if not tools or self._breakpoint is None:
             return tools
         copied = [dict(t) for t in tools]
-        copied[-1] = {**copied[-1], "cache_control": {"type": "ephemeral"}}
+        copied[-1] = {**copied[-1], "cache_control": dict(self._breakpoint)}
         return copied
 
     def _format_tools(self, tools: list[ToolSchema] | None) -> list[dict] | None:
@@ -407,24 +434,30 @@ class AnthropicTransport(LLMTransport):
         When only ``system`` is supplied (legacy / non-PipesHub builder):
           - one cached block, same as today
 
-        Returns ``None`` when there is no system content at all.
-        Uses all 4 Anthropic cache breakpoints:
-          ``_apply_prompt_cache`` (message) + system (1 or 2 here) + ``_apply_tool_cache`` = 3 or 4.
+        Returns ``None`` when there is no system content at all. With
+        ``_message_cache`` and ``_apply_tool_cache`` a request carries three of
+        Anthropic's four breakpoints.
         """
         if system_blocks:
             blocks: list[dict] = []
             for i, text in enumerate(system_blocks):
                 if not text:
                     continue
-                block: dict = {"type": "text", "text": text}
+                # Adjacent system blocks reach the model with nothing between
+                # them; the separator goes on the volatile side so the cached
+                # stable block is the same bytes on every request.
+                block: dict = {"type": "text", "text": f"\n\n{text}" if blocks else text}
                 # Only the stable block gets the cache marker — the volatile
                 # tail must stay uncached so it doesn't evict the stable block.
-                if i == 0:
-                    block["cache_control"] = {"type": "ephemeral"}
+                if i == 0 and self._breakpoint is not None:
+                    block["cache_control"] = dict(self._breakpoint)
                 blocks.append(block)
             return blocks or None
         if system:
-            return [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+            block = {"type": "text", "text": system}
+            if self._breakpoint is not None:
+                block["cache_control"] = dict(self._breakpoint)
+            return [block]
         return None
 
     async def complete(
@@ -438,12 +471,13 @@ class AnthropicTransport(LLMTransport):
         system_blocks: list[str] | None = None,
     ) -> ModelResponse:
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
+        message_cache = self._message_cache(formatted)
 
         kwargs: dict[str, Any] = {
             "model": model or self._model,
             "max_tokens": self._max_tokens,
             "messages": formatted,
+            **message_cache,
         }
         if thinking_budget:
             # Anthropic extended thinking requires max_tokens to exceed the
@@ -480,7 +514,12 @@ class AnthropicTransport(LLMTransport):
         try:
             response = await self._client.messages.create(**kwargs)
         except Exception as exc:
-            raise self._wrap_error(exc, "complete") from exc
+            if not self._drop_cache_params(exc):
+                raise self._wrap_error(exc, "complete") from exc
+            return await self.complete(
+                messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
+                effort=effort, system_blocks=system_blocks,
+            )
 
         usage = self._usage_from(response)
         message = self._parse_response(response)
@@ -501,7 +540,7 @@ class AnthropicTransport(LLMTransport):
             "input_schema": output_schema,
         }
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
+        message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
@@ -510,16 +549,18 @@ class AnthropicTransport(LLMTransport):
             "messages": formatted,
             "tools": [tool_def],
             "tool_choice": {"type": "tool", "name": "structured_output"},
+            **message_cache,
         }
-        if system:
-            kwargs["system"] = [
-                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
-            ]
+        system_list = self._build_system_kwargs(system, None)
+        if system_list:
+            kwargs["system"] = system_list
 
         try:
             response = await self._client.messages.create(**kwargs)
         except Exception as exc:
-            raise self._wrap_error(exc, "complete_structured") from exc
+            if not self._drop_cache_params(exc):
+                raise self._wrap_error(exc, "complete_structured") from exc
+            return await self.complete_structured(messages, output_schema, system=system, model=model)
 
         usage = self._usage_from(response)
 
@@ -540,13 +581,14 @@ class AnthropicTransport(LLMTransport):
         system_blocks: list[str] | None = None,
     ) -> AsyncIterator[StreamEvent]:
         formatted = [self._format_message(m) for m in messages]
-        self._apply_prompt_cache(formatted)
+        message_cache = self._message_cache(formatted)
 
         resolved_model = model or self._model
         kwargs: dict[str, Any] = {
             "model": resolved_model,
             "max_tokens": self._max_tokens,
             "messages": formatted,
+            **message_cache,
         }
         if thinking_budget:
             kwargs["thinking"] = {"type": "enabled", "budget_tokens": thinking_budget}
@@ -574,17 +616,29 @@ class AnthropicTransport(LLMTransport):
         if formatted_tools:
             kwargs["tools"] = self._apply_tool_cache(formatted_tools)
 
+        emitted = False
         try:
             async with self._client.messages.stream(**kwargs) as stream:
                 async for text_chunk in stream.text_stream:
+                    emitted = True
                     yield TextDeltaEvent(delta=text_chunk)
                 # Yield the final assembled message (includes tool calls if any)
                 final = await stream.get_final_message()
                 usage = self._usage_from(final)
                 message = self._parse_response(final)
                 stop_reason = _STOP_REASON_MAP.get(getattr(final, "stop_reason", None), StopReason.END_TURN)
+                emitted = True
                 yield StreamCompleteEvent(
                     response=ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=resolved_model)
                 )
         except Exception as exc:
-            raise self._wrap_error(exc, "stream") from exc
+            # Resending after deltas reached the caller would replay them.
+            if emitted or not self._drop_cache_params(exc):
+                raise self._wrap_error(exc, "stream") from exc
+        else:
+            return
+        async for event in self.stream(
+            messages, tools=tools, system=system, model=model, thinking_budget=thinking_budget,
+            effort=effort, system_blocks=system_blocks,
+        ):
+            yield event

@@ -547,7 +547,9 @@ def register_domain_agents(
         if not claimed_names:
             continue
         delegate_names = [d for d in definition.delegate_agents if d in claims]
-        shared_names = [n for n in shared_tool_names if n in registered]
+        # Sorted: a frozenset iterates in per-process hash order, and the tool
+        # list is the start of every cached prompt prefix.
+        shared_names = [n for n in sorted(shared_tool_names) if n in registered]
         extra_instructions = _combine_instructions(
             definition.extra_instructions,
             definition.instructions_factory(context) if definition.instructions_factory else None,

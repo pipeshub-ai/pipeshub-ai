@@ -220,7 +220,9 @@ def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> 
         # to discover and unlock them.
         return registry.schemas(spec.tool_names)
 
-    return registry.schemas(list(agent.visible_tools))
+    # Sorted, not set order: that differs between processes, and the tool
+    # list opens every request's cached prefix.
+    return registry.schemas(sorted(agent.visible_tools))
 
 
 async def execute_tool_call(

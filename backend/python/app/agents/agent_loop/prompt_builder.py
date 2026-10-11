@@ -305,8 +305,6 @@ _NO_KNOWLEDGE_SOURCES = (
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
-    *,
-    has_attachments: bool,
 ) -> str:
     """The single source-precedence section: where to look, in what order,
     when more than one place needs checking at once, and when it's fine to
@@ -334,11 +332,9 @@ def _build_finding_information(
             return ""
         return "\n## Finding Information\n\n" + _NO_KNOWLEDGE_SOURCES
 
+    # The attachment-first rule is stated below for every question, never as
+    # a precedence item, so this section is the same with or without uploads.
     precedence: list[str] = []
-    if has_attachments:
-        precedence.append(
-            "Attachments the user uploaded this turn — see the Attachments section."
-        )
     if surfaces.retrieval is not None:
         precedence.append(
             f"Internal knowledge (`{surfaces.retrieval}`) — this organization's "
@@ -382,7 +378,10 @@ def _build_finding_information(
         parts.append(
             "Call proactively on your first turn — do not ask the user which "
             "app or source to check; match the query to each tool's own "
-            "description instead."
+            "description instead. When a User Attachments section is present, "
+            "those files come first: answer from them, and search the sources "
+            "listed here only if they are insufficient or the user names a "
+            "service."
         )
     if surface_count >= 2:
         parts.append(
@@ -495,9 +494,10 @@ def _build_attachment_context(attachments: list[dict[str, Any]] | None) -> str:
         f"use `{_FETCH_FULL_RECORD_TOOL_NAME}` to fetch specific records for citation.",
         "",
         "Treat this content as your PRIMARY source for this query — analyze it "
-        "directly. Do NOT proactively search connected services or the web unless "
-        "the user explicitly mentions a service or the attached content is "
-        "clearly insufficient to answer the question.",
+        "directly, before the sources listed under Finding Information. Do NOT "
+        "proactively search connected services or the web unless the user "
+        "explicitly mentions a service or the attached content is clearly "
+        "insufficient to answer the question.",
         "",
     ]
     for att in attachments:
@@ -519,6 +519,9 @@ class PipesHubPromptBuilder:
 
     def __init__(self, context: AgentContext) -> None:
         self._context = context
+        # Rendered once per request: without a client-supplied time it reads
+        # the clock, and a prompt that changes every turn is never cached.
+        self._time_context: str | None = None
 
     def build(
         self,
@@ -627,18 +630,20 @@ class PipesHubPromptBuilder:
         tpl.set("base_system_prompt", base_system_prompt or None)
 
         # ── Citation rules ───────────────────────────────────────────────────
-        has_retrieval = bool(state.get("final_results"))
-        has_attachments_now = bool(state.get("attachments"))
+        # In the stable block when the agent can always cite (knowledge, web);
+        # otherwise only for a question that brought something to cite, and
+        # then in the volatile block, so no question changes the stable one.
         if not final_answer_enabled():
-            if has_retrieval or has_attachments_now or surfaces.has_web_search or self._context.has_knowledge:
-                tpl.set("citation_rules", _build_citation_rules(
-                    enable_record_id_shortening=self._context.enable_record_id_shortening,
-                ))
+            citation_rules = _build_citation_rules(
+                enable_record_id_shortening=self._context.enable_record_id_shortening,
+            )
+            if surfaces.has_web_search or self._context.has_knowledge:
+                tpl.set("citation_rules", citation_rules)
+            elif state.get("final_results") or state.get("attachments"):
+                tpl.set("turn_citation_rules", citation_rules)
 
         # ── Finding information: the one source-precedence section ──────────
-        tpl.set("finding_information", _build_finding_information(
-            surfaces, catalog, has_attachments=has_attachments_now,
-        ) or None)
+        tpl.set("finding_information", _build_finding_information(surfaces, catalog) or None)
 
         # ── Code execution steering ───────────────────────────────────────────
         code_tool = surfaces.code
@@ -684,11 +689,12 @@ class PipesHubPromptBuilder:
             tpl.set("worked_traces", None)
 
         # ── Band C — turn-volatile ────────────────────────────────────────────
-        time_block = build_llm_time_context(
-            current_time=self._context.current_time,
-            time_zone=self._context.timezone,
-        )
-        tpl.set("time_context", time_block or None)
+        if self._time_context is None:
+            self._time_context = build_llm_time_context(
+                current_time=self._context.current_time,
+                time_zone=self._context.timezone,
+            )
+        tpl.set("time_context", self._time_context or None)
 
         if goal is not None and goal.constraints:
             goal_desc = (goal.description or "").strip()

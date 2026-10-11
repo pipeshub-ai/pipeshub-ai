@@ -10,7 +10,7 @@ from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.agent import resume as agent_resume
 from app.agent_loop_lib.agent import streaming as agent_streaming
 from app.agent_loop_lib.agent.loops import StepOutcome
-from app.agent_loop_lib.agent.prompt import build_system_prompt
+from app.agent_loop_lib.agent.prompt import build_system_blocks, build_system_prompt
 from app.agent_loop_lib.agent.tool_loop import (
     ToolCallOutcome,
     compute_duplicate_flags,
@@ -680,19 +680,16 @@ class Agent:
         )
 
         tool_schemas = tool_schemas_for_turn(self, spec, runtime)
-        system_prompt = build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
-
-        # When the builder supports `build_blocks()` (i.e. `PipesHubPromptBuilder`),
-        # pass the stable and volatile blocks separately so the transport can place
-        # the Anthropic cache breakpoint on the stable block only.  Other transports
-        # receive a plain `system` string and join internally when needed.
-        system_blocks: list[str] | None = None
-        _builder = spec.system_prompt
-        if hasattr(_builder, "build_blocks"):
-            _stable, _volatile = _builder.build_blocks(
-                spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections
-            )
-            system_blocks = [_stable, _volatile]
+        # Stable and volatile blocks when the builder splits them, so the
+        # transport can end a cache breakpoint on the stable one; `system` is
+        # their join, for transports that take one string.
+        system_blocks = build_system_blocks(
+            spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections,
+        )
+        system_prompt = (
+            "\n\n".join(block for block in system_blocks if block) if system_blocks
+            else build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
+        )
 
         cut_off_parts = self._cut_off_reply_parts()
 
