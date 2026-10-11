@@ -14,6 +14,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import { createAuthRateLimiter } from '../../../libs/middlewares/rate-limit.middleware';
+import { clearLegacySamlTokenCookies } from '../utils/samlHandoffCookie';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
@@ -184,6 +185,7 @@ export function createUserAccountRouter(container: Container) {
         const userAccountController = container.get<UserAccountController>(
           'UserAccountController',
         );
+        clearLegacySamlTokenCookies(res);
         await userAccountController.logoutSession(req, res, next);
       } catch (error) {
         next(error);

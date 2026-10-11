@@ -18631,6 +18631,7 @@ paths:
         **Effects:**
 
         - Records a logout activity entry for the user
+        - Clears the `accessToken` / `refreshToken` cookies set by SAML sign-in in earlier releases
         - Client should clear stored tokens locally after calling this endpoint
 
         **Note:** This endpoint requires the access token, not the refresh token.
@@ -19059,9 +19060,14 @@ paths:
             and `code_challenge`; without both it is ignored. The callback then sends
             no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
             and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+
+            `web` for a sign-in started from the login page with a `code_challenge`; without
+            one it is ignored. The callback then sets no `saml_handoff` cookie, and
+            `/saml/exchange` takes the matching `codeVerifier` instead, so the exchange also
+            works when the frontend is on another site than the API.
           schema:
             type: string
-            enum: [desktop]
+            enum: [desktop, web]
         - name: state
           in: query
           required: false
@@ -19071,7 +19077,7 @@ paths:
         - name: code_challenge
           in: query
           required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          description: PKCE S256 challenge (43 base64url characters) for the desktop or web handoff code.
           schema:
             type: string
       responses:
@@ -19136,8 +19142,10 @@ paths:
           description: |
             Redirect to the frontend. All outcomes use this status code.
 
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
-            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
+            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success#code=<code>`
+            and sets the `saml_handoff` cookie. No token is sent in a cookie or the URL: the
+            success page redeems the single-use code at `/saml/exchange`. Desktop sign-ins
+            redirect with `?state=<state>&code=<code>` instead and set no cookie.
 
             **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
 
@@ -19156,7 +19164,7 @@ paths:
                 type: string
               examples:
                 success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                  value: "https://app.example.com/auth/sign-in/samlSso/success#code=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
                 error_sso_disabled:
                   value: "https://app.example.com/login?saml_error=saml_sso_disabled"
                 error_jit_disabled:
@@ -19165,9 +19173,9 @@ paths:
                   value: "https://app.example.com/login?saml_error=auth_failed"
             Set-Cookie:
               description: |
-                Set on successful authentication only.
-                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
-                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
+                Set on successful web sign-in only.
+                `saml_handoff`: secret that binds the code to this browser
+                (`HttpOnly; Secure; SameSite=Lax; Path=/api/v1/saml; Max-Age=120`).
               schema:
                 type: string
 
@@ -19198,6 +19206,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AuthError'
+
+  /saml/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a web SAML handoff code
+      description: |
+        Exchanges the single-use code from the `/saml/signIn/callback` success redirect for
+        PipesHub tokens. A sign-in started with `client=web` and a `code_challenge` is redeemed
+        with the matching `codeVerifier`. Any other, such as one started at the IdP, needs the
+        `saml_handoff` cookie that redirect set, which the browser sends only when the frontend
+        and the API are on the same site. The code expires after 2 minutes and is consumed by the
+        first attempt that reaches it, whether or not the verifier matches. A successful exchange
+        clears `saml_handoff` and the `accessToken` / `refreshToken` cookies set by earlier releases.
+      operationId: exchangeSamlWebCode
+      security: []
+      parameters:
+        - in: cookie
+          name: saml_handoff
+          required: false
+          schema:
+            type: string
+          description: Set by the `/saml/signIn/callback` redirect when the sign-in carried no `code_challenge`
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  pattern: '^[0-9a-f]{64}$'
+                  description: The `code` from the success page URL fragment
+                codeVerifier:
+                  type: string
+                  pattern: '^[A-Za-z0-9._~-]{43,128}$'
+                  description: PKCE verifier for a sign-in started with `client=web` and a `code_challenge`
+              required:
+                - code
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '400':
+          description: Malformed code
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unknown, expired or already used code, or missing or mismatched `saml_handoff` cookie
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many authentication requests from this client
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RateLimitErrorResponse'
 
   /saml/desktop/exchange:
     post:

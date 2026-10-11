@@ -209,6 +209,31 @@ describe('SamlController', () => {
       expect(authenticate.firstCall.args[1]).to.include({ session: false });
     });
 
+    const relayStateFor = async (query: Record<string, string>) => {
+      const req: any = { query: { email: 'user@example.com', ...query }, body: {}, headers: {} };
+      const mockQuery: any = {
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves({ orgId: 'o1', isDeleted: false }),
+      };
+      sinon.stub(OrgAuthConfig, 'findOne').returns(mockQuery);
+      sinon.stub(passport, 'authenticate').returns(sinon.stub());
+      await controller.signInViaSAML(req, res, next);
+      return JSON.parse(Buffer.from(req.query.RelayState, 'base64').toString('utf8'));
+    };
+    const CHALLENGE = 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM';
+
+    it('carries a web PKCE challenge in RelayState', async () => {
+      const relay = await relayStateFor({ client: 'web', code_challenge: CHALLENGE });
+
+      expect(relay).to.deep.equal({ orgId: 'o1', client: 'web', codeChallenge: CHALLENGE });
+    });
+
+    it('leaves a web sign-in on the cookie flow when its challenge is malformed', async () => {
+      const relay = await relayStateFor({ client: 'web', code_challenge: 'short' });
+
+      expect(relay).to.deep.equal({ orgId: 'o1' });
+    });
+
     it('should call next(NotFoundError) when certificate is missing in credentials', async () => {
       const req: any = {
         query: { email: 'user@example.com', sessionToken: 'token123' },

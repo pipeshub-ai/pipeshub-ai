@@ -33,7 +33,11 @@ describe('SamlDesktopHandoffService', () => {
       delete: sinon.stub().callsFake(async (k: string) => {
         store.delete(k);
       }),
-      increment: sinon.stub(),
+      increment: sinon.stub().callsFake(async (k: string) => {
+        const next = ((store.get(k) as number | undefined) ?? 0) + 1;
+        store.set(k, next);
+        return next;
+      }),
       disconnect: sinon.stub(),
       isConnected: () => true,
     });
@@ -62,7 +66,43 @@ describe('SamlDesktopHandoffService', () => {
     await expectRejected(service.redeem(code, VERIFIER));
   });
 
-  it('rejects an unknown or expired code', async () => {
+  it('redeems a concurrent pair only once', async () => {
+    const code = await service.issue({ accessToken: 'at', refreshToken: 'rt' }, CHALLENGE);
+
+    const results = await Promise.allSettled([service.redeem(code, VERIFIER), service.redeem(code, VERIFIER)]);
+
+    expect(results.filter((r) => r.status === 'fulfilled')).to.have.length(1);
+  });
+
+  it('redeems a browser code with its binder and nothing else', async () => {
+    const tokens = { accessToken: 'at', refreshToken: 'rt' };
+    const first = await service.issueForBrowser(tokens);
+    const second = await service.issueForBrowser(tokens);
+
+    expect(first.binder).to.match(/^[A-Za-z0-9_-]{43}$/);
+    expect(first.binder).to.not.equal(second.binder);
+    await expectRejected(service.redeem(first.code, second.binder));
+    expect(await service.redeem(second.code, second.binder)).to.deep.equal(tokens);
+  });
+
+  it('rejects an unknown or expired code without writing a claim key', async () => {
     await expectRejected(service.redeem('0'.repeat(64), VERIFIER));
+
+    expect([...store.keys()]).to.deep.equal([]);
+  });
+
+  it('redeems when any of several verifiers matches, and only once', async () => {
+    const tokens = { accessToken: 'at', refreshToken: 'rt' };
+    const code = await service.issue(tokens, CHALLENGE);
+
+    expect(await service.redeem(code, ['y'.repeat(43), VERIFIER])).to.deep.equal(tokens);
+    await expectRejected(service.redeem(code, [VERIFIER]));
+  });
+
+  it('rejects a list with no well-formed verifier before touching the store', async () => {
+    const code = await service.issue({ accessToken: 'at', refreshToken: 'rt' }, CHALLENGE);
+
+    await expectRejected(service.redeem(code, ['', 'short']));
+    expect(await service.redeem(code, VERIFIER)).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' });
   });
 });
