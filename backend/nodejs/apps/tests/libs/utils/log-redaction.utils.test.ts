@@ -1,3 +1,4 @@
+import querystring from 'querystring'
 import { expect } from 'chai'
 import {
   REDACTED,
@@ -152,6 +153,12 @@ describe('log-redaction.utils', () => {
       expect(out).to.not.contain('encoded-secret')
     })
 
+    it('redacts a pair whose `=` arrived encoded twice (code%253Dvalue)', () => {
+      const out = redactSensitiveQueryParams('/cb?code%253Dencoded-secret&page=1')
+      expect(out).to.not.contain('encoded-secret')
+      expect(out).to.contain('page=1')
+    })
+
     it('redacts a callback URL nested, encoded, inside another parameter', () => {
       const out = redactSensitiveQueryParams(
         `/login?returnTo=${encodeURIComponent(`/cb?code=${FAKE_CODE}&page=2`)}`,
@@ -197,6 +204,26 @@ describe('log-redaction.utils', () => {
         expect(out).to.contain('REDACTED')
       })
     }
+
+    it('redacts the password of a percent-encoded userinfo URL with no query', () => {
+      const url = 'https://alice:hunter2@db.example.com'
+      for (const logged of [encodeURIComponent(url), encodeURIComponent(encodeURIComponent(url))]) {
+        const out = redactSensitiveQueryParams(logged)
+        expect(out).to.not.contain('hunter2')
+        expect(out).to.contain('REDACTED')
+      }
+    })
+
+    it('redacts a userinfo URL nested, encoded, inside a parameter', () => {
+      const out = redactSensitiveQueryParams(
+        `/debug?db=${encodeURIComponent('postgres://app:hunter2@pg/db')}`,
+      )
+      expect(decodeURIComponent(out)).to.not.contain('hunter2')
+    })
+
+    it('leaves an encoded value with no secret as it was', () => {
+      expect(redactSensitiveQueryParams('alice%40example.com')).to.equal('alice%40example.com')
+    })
 
     it('keeps the user name and host of a userinfo URL', () => {
       expect(redactSensitiveQueryParams('mongodb://root:hunter2@mongo:27017/db')).to.equal(
@@ -287,6 +314,19 @@ describe('log-redaction.utils', () => {
       expect(logged).to.not.contain('nested-token')
       expect(out.page).to.equal('2')
       expect(out.ids).to.deep.equal(['a', 'b'])
+    })
+
+    it('drops the secret from a parameter name that holds it (code%3D<code>)', () => {
+      // Express parses `?code%3D<code>&page=1` as a parameter named "code=<code>".
+      for (const query of [
+        querystring.parse(`code%3D${FAKE_CODE}&page=1`),
+        querystring.parse(`code%253D${FAKE_CODE}&page=1`),
+      ]) {
+        const out = redactQueryForLog(query) as Record<string, unknown>
+        expect(JSON.stringify(out)).to.not.contain('FAKE-auth-code')
+        expect(out.code).to.equal(REDACTED)
+        expect(out.page).to.equal('1')
+      }
     })
   })
 

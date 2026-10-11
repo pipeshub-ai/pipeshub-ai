@@ -90,7 +90,8 @@ const MAX_METADATA_DEPTH = 8;
 const CIRCULAR = '[Circular]';
 const TRUNCATED = '[Truncated]';
 
-const ENCODED_URL_SYNTAX = /%(3d|3f|23|26)/i;
+// Encoded `=`, `?`, `#`, `&`, `@`, `://`, or a further layer of encoding (`%25`).
+const ENCODED_URL_SYNTAX = /%(3d|3f|23|26|40|25)|%3a%2f%2f/i;
 
 const keyWords = (key: string): string[] =>
   key
@@ -99,8 +100,31 @@ const keyWords = (key: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter((word) => word !== '');
 
-// A pair sent as `code%3Dvalue` decodes to the single name "code=value".
-const paramName = (key: string): string => key.split('=')[0] ?? key;
+const tryDecode = (value: string): string | null => {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+};
+
+// Decode each run of escapes on its own, so one malformed `%` elsewhere in
+// the text cannot stop the rest from being read.
+const decodeEscapes = (text: string): string =>
+  text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => tryDecode(run) ?? run);
+
+// A pair sent as `code%3Dvalue` decodes to the single name "code=value", and
+// sent as `code%253Dvalue` is still `code%3Dvalue` after the parser's decode,
+// so the name is decoded further before reading where it ends.
+const paramName = (key: string): string => {
+  let name = key;
+  for (let i = 0; i < MAX_NESTING && name.includes('%'); i += 1) {
+    const next = decodeEscapes(name);
+    if (next === name) break;
+    name = next;
+  }
+  return name.split('=')[0] ?? name;
+};
 
 /** Whether a query parameter (or header) name carries a credential. */
 export const isSensitiveQueryKey = (key: string): boolean => {
@@ -111,14 +135,6 @@ export const isSensitiveQueryKey = (key: string): boolean => {
     (word, i) =>
       CREDENTIAL_WORDS.has(word) || (word === 'api' && words[i + 1] === 'key'),
   );
-};
-
-const tryDecode = (value: string): string | null => {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
 };
 
 function redactParams(
@@ -148,18 +164,20 @@ function redactParams(
 function redactEmbedded(value: string, depth: number): string {
   if (depth > MAX_NESTING || value === '') return value;
   if (/[?#]/.test(value)) return redactUrl(value, depth);
-  if (value.includes('=')) {
-    const redacted = redactParams(new URLSearchParams(value), depth);
-    return redacted ? redacted.toString() : value;
+  // A decoded `scheme://user:password@host` may have no query of its own.
+  const text = redactUserinfo(value);
+  if (text.includes('=')) {
+    const redacted = redactParams(new URLSearchParams(text), depth);
+    return redacted ? redacted.toString() : text;
   }
-  if (ENCODED_URL_SYNTAX.test(value)) {
-    const decoded = tryDecode(value);
-    if (decoded !== null && decoded !== value) {
+  if (ENCODED_URL_SYNTAX.test(text)) {
+    const decoded = tryDecode(text);
+    if (decoded !== null && decoded !== text) {
       const inner = redactEmbedded(decoded, depth + 1);
       if (inner !== decoded) return inner;
     }
   }
-  return value;
+  return text;
 }
 
 // scheme://user:password@host — the authority runs to the first `/`, `?` or
@@ -286,9 +304,13 @@ export function redactQueryForLog(query: unknown, depth = 0): unknown {
   if (query === null || typeof query !== 'object') return query;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(query)) {
-    out[key] = isSensitiveQueryKey(key)
-      ? REDACTED
-      : redactQueryForLog(value, depth + 1);
+    // The name itself can hold the secret (`code%3D<code>` parses as a
+    // parameter named "code=<code>"), so a sensitive one is logged trimmed.
+    if (isSensitiveQueryKey(key)) {
+      out[paramName(key)] = REDACTED;
+    } else {
+      out[key] = redactQueryForLog(value, depth + 1);
+    }
   }
   return out;
 }
