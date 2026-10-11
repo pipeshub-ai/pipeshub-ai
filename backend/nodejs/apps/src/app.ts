@@ -68,6 +68,7 @@ import { MailConsumer } from './modules/mail/services/mail.consumer';
 import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
+import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -644,6 +645,17 @@ export class Application {
     this.app.use(
       '/api/v1/configurationManager',
       createConfigurationManagerRouter(this.configurationManagerContainer),
+    );
+
+    // OpenAI-compatible catalog of configured models. Clients use either
+    // ``{origin}/v1`` or ``{origin}/api/v1`` as the base URL.
+    this.app.use(
+      '/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+    this.app.use(
+      '/api/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
     );
 
     // toolsets routes

@@ -532,6 +532,7 @@ class CommentsHelper:
                 has_payload=bool(comments_res.data),
                 connector=c.display_name,
                 status=comments_res.status_code,
+                retry_after=comments_res.retry_after_seconds,
                 message=comments_res.error,
             )
 
@@ -606,6 +607,7 @@ class CommentsHelper:
                 has_payload=bool(conversation_res.data),
                 connector=c.display_name,
                 status=conversation_res.status_code,
+                retry_after=conversation_res.retry_after_seconds,
                 message=conversation_res.error,
             )
         reviews_res = await c.runtime.ds_call(c.data_source.get_pull_reviews, owner, repo, pr_number)
@@ -722,6 +724,7 @@ class CommentsHelper:
                 has_payload=bool(files_res.data),
                 connector=c.display_name,
                 status=files_res.status_code,
+                retry_after=files_res.retry_after_seconds,
                 message=files_res.error,
             )
 

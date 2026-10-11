@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import base64
-import datetime
 import difflib
 from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING
 
 import httpx
 from github import (
@@ -40,7 +40,10 @@ from github.Team import Team  # type: ignore
 from github.Workflow import Workflow  # type: ignore
 from github.WorkflowRun import WorkflowRun  # type: ignore
 
-from app.sources.client.github.github import GitHubResponse
+from app.sources.client.github.github import GitHubResponse, github_retry_after_seconds
+
+if TYPE_CHECKING:
+    import datetime
 
 # GitHub caps both REST and Search page sizes at 100. Requesting the maximum
 # cuts round trips for the many call sites that materialise a whole PaginatedList.
@@ -145,16 +148,7 @@ class GitHubDataSource:
     @staticmethod
     def _retry_after_seconds(headers: object) -> int | None:
         """Seconds GitHub asked us to wait: ``Retry-After``, else until ``X-RateLimit-Reset``."""
-        if not isinstance(headers, dict):
-            return None
-        lowered = {str(k).lower(): str(v) for k, v in headers.items()}
-        retry_after = lowered.get("retry-after", "").strip()
-        if retry_after.isdigit():
-            return int(retry_after)
-        reset = lowered.get("x-ratelimit-reset", "").strip()
-        if reset.isdigit() and lowered.get("x-ratelimit-remaining", "").strip() == "0":
-            return max(0, int(reset) - int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
-        return None
+        return github_retry_after_seconds(headers)
 
     @staticmethod
     def _not_none(**params: object) -> dict[str, object]:

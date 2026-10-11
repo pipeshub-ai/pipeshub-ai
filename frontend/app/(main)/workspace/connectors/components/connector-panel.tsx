@@ -1105,6 +1105,7 @@ export function ConnectorPanel() {
         connectorId={panelConnectorId}
         connectorName={connectorName || connectorTypeName}
         actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveConfig')}
+        disabledNoticeSource={connectorType}
         onProceed={performSaveConfig}
         container={connectorPanelNestedModalHost}
       />

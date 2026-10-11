@@ -178,7 +178,7 @@ cd integrations/omnigent
 | `pipeshub_agents` | list agents (may be empty) |
 | `pipeshub_search` | query with `limit: 3` |
 | `pipeshub_download_record` | download first search hit’s `recordId` (skipped if no hits) |
-| `pipeshub_chat` | short `internal_search` question |
+| `pipeshub_chat` | one short question |
 
 Optional flags: `--skip-chat`, `--skip-download`.
 

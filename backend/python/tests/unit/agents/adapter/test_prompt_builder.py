@@ -796,6 +796,28 @@ class TestComposedFindingInformation:
         assert "`web_search`" not in section
 
 
+class TestAttachmentsInFindingInformation:
+    """Finding Information is the same text with and without uploads (it sits
+    in the cached stable block), and says itself that uploads come first, so
+    "call proactively" never contradicts the Attachments section."""
+
+    @staticmethod
+    def _section(context) -> str:
+        result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
+        return result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+    def test_same_text_with_and_without_uploads_and_uploads_first(self) -> None:
+        plain = make_context(has_knowledge=True)
+        attached = make_context(has_knowledge=True)
+        attached.tool_state["attachments"] = [{"recordName": "q3.pdf", "mimeType": "application/pdf"}]
+
+        section = self._section(plain)
+
+        assert section == self._section(attached)
+        assert "Call proactively on your first turn" in section
+        assert "When a User Attachments section is present, those files come first" in section
+
+
 class TestFullRecordEscalation:
     """`dynamic_fetch_full_record` doesn't exist on turn 1 — mentioning it
     before `hooks/citations.py` has actually granted it would invite a

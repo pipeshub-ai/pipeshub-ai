@@ -16,7 +16,7 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import sharp from 'sharp';
+import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -359,6 +359,22 @@ export const compressImageIfNeeded = async (
     return passthrough;
   }
 
+  // Magic bytes reject SVG, but they also accept a bare PNG signature.
+  // Decode before the size shortcut: that shortcut returns the original
+  // bytes, and the catch below keeps the original when compression fails.
+  const invalidImageMessage =
+    `${file.originalname} is not a valid JPEG, PNG or WebP image`;
+  const format = assertRasterImage(
+    file.buffer,
+    ['jpeg', 'png', 'webp'],
+    invalidImageMessage,
+  );
+  try {
+    await sharp(file.buffer).raw().toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
+  }
+
   if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
     logger.info(
       `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
@@ -374,7 +390,7 @@ export const compressImageIfNeeded = async (
     const metadata = await sharp(file.buffer).metadata();
     const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
-    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+    const hasAlpha = format === 'png' && metadata.hasAlpha;
 
     const buildBase = () => {
       const base = sharp(file.buffer).rotate();

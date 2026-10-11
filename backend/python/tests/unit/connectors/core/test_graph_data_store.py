@@ -153,6 +153,18 @@ class TestGraphTransactionStore:
         assert mock_graph_provider.get_record_group_by_external_id.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_link_record_to_group_answers_the_inherit_edges_removed(
+        self, tx_store, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.link_record_to_group = AsyncMock(return_value=1)
+
+        assert await tx_store.link_record_to_group("r1", "g1", inherit=False) == 1
+
+        mock_graph_provider.link_record_to_group.assert_awaited_once_with(
+            "r1", "g1", inherit=False, leaving_group_id=None, transaction="txn-123"
+        )
+
+    @pytest.mark.asyncio
     async def test_deleting_a_record_drops_it_from_the_cache(
         self, tx_store, mock_graph_provider
     ) -> None:
@@ -777,8 +789,15 @@ class TestGraphTransactionStore:
         mock_graph_provider.get_edge = AsyncMock(return_value=None)
         await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll")
         mock_graph_provider.get_edge.assert_awaited_once_with(
-            "from1", "from_coll", "to1", "to_coll", "edge_coll", transaction="txn-123"
+            "from1", "from_coll", "to1", "to_coll", "edge_coll",
+            transaction="txn-123", raise_on_error=False,
         )
+
+    @pytest.mark.asyncio
+    async def test_get_edge_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        mock_graph_provider.get_edge = AsyncMock(return_value=None)
+        await tx_store.get_edge("from1", "from_coll", "to1", "to_coll", "edge_coll", raise_on_error=True)
+        assert mock_graph_provider.get_edge.await_args.kwargs["raise_on_error"] is True
 
     @pytest.mark.asyncio
     async def test_get_record_by_conversation_index(self, tx_store, mock_graph_provider) -> None:
@@ -1378,6 +1397,53 @@ class TestGraphDataStoreTransaction:
         mock_graph_provider.begin_transaction.assert_awaited_once()
         mock_graph_provider.commit_transaction.assert_not_awaited()
         mock_graph_provider.rollback_transaction.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_commit_aborts_and_raises_the_commit_error(self, mock_graph_provider) -> None:
+        """ArangoDB's commit only raises, leaving the stream transaction open
+        with its locks until the idle timeout, so the helper aborts it."""
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit refused"))
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(RuntimeError, match="commit refused"):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.commit_transaction.assert_awaited_once_with("txn-123")
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("abort_error", [
+        ValueError("Transaction txn-123 not found"),
+        RuntimeError("Failed to abort transaction: connection reset"),
+    ])
+    async def test_a_failing_abort_after_a_failed_commit_does_not_mask_it(
+        self, mock_graph_provider, abort_error: Exception
+    ) -> None:
+        """Neo4j forgets the transaction in commit's finally, so its abort
+        answers ValueError; either way the caller sees the commit failure."""
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=RuntimeError("commit refused"))
+        mock_graph_provider.rollback_transaction = AsyncMock(side_effect=abort_error)
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(RuntimeError, match="commit refused"):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
+
+    @pytest.mark.asyncio
+    async def test_a_cancellation_during_commit_aborts_and_stays_a_cancellation(
+        self, mock_graph_provider
+    ) -> None:
+        mock_graph_provider.commit_transaction = AsyncMock(side_effect=asyncio.CancelledError())
+        store = GraphDataStore(logging.getLogger("test"), mock_graph_provider)
+
+        with pytest.raises(asyncio.CancelledError):
+            async with store.transaction():
+                pass
+
+        mock_graph_provider.rollback_transaction.assert_awaited_once_with("txn-123")
 
 
 # ============================================================================

@@ -101,6 +101,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
     resolve_opik_gate,
     traced_transport_factory,
 )
+from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
@@ -163,6 +164,7 @@ from app.agents.agent_loop.output_cap_transport import (
     with_output_cap,
 )
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.router import select_loop_and_goal
@@ -335,22 +337,27 @@ class PipesHubAgentFactory:
         ).max_images_per_request
 
         output_cap = max_turn_output_chars()
+        cache_settings = PromptCacheSettings.from_env()
+        cache_key = routing_key(context.org_id, context.conversation_id, cache_settings.routing_shards)
+
+        def _langchain_transport() -> LangChainTransport:
+            return LangChainTransport(
+                llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                max_images_per_request=image_cap,
+                # Stop Generation (Phase 3b): per-chunk cancellation
+                # check inside `stream()`. `None` for requests that
+                # never registered a `runId` — the check is then a no-op.
+                cancellation_token=context.cancellation_token,
+                cache_strategy=cache_strategy_for(
+                    llm, model_name=model_name, settings=cache_settings, routing_key=cache_key,
+                ),
+            )
 
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
             traced_transport_factory(
-                lambda: with_output_cap(
-                    LangChainTransport(
-                        llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
-                        max_images_per_request=image_cap,
-                        # Stop Generation (Phase 3b): per-chunk cancellation
-                        # check inside `stream()`. `None` for requests that
-                        # never registered a `runId` — the check is then a no-op.
-                        cancellation_token=context.cancellation_token,
-                    ),
-                    output_cap,
-                ),
+                lambda: with_output_cap(_langchain_transport(), output_cap),
                 opik_active=opik_active,
                 project_name=opik_project_name,
             ),
@@ -375,6 +382,7 @@ class PipesHubAgentFactory:
         def _direct_or_langchain() -> "LLMTransport":
             direct = build_direct_transport(
                 llm, model_name=model_name, model_key=model_key,
+                cache_settings=cache_settings, cache_routing_key=cache_key,
             )
             if direct is not None:
                 # The direct SDK transports have no image cap and no
@@ -390,15 +398,7 @@ class PipesHubAgentFactory:
                     with_output_cap(with_image_cap(direct, image_cap), output_cap),
                     context.cancellation_token,
                 )
-            return with_output_cap(
-                LangChainTransport(
-                    llm, model_name=model_name,
-                    opik_project_name=opik_project_name, model_key=model_key,
-                    max_images_per_request=image_cap,
-                    cancellation_token=context.cancellation_token,
-                ),
-                output_cap,
-            )
+            return with_output_cap(_langchain_transport(), output_cap)
 
         transport_registry.register(
             DIRECT_TRANSPORT,

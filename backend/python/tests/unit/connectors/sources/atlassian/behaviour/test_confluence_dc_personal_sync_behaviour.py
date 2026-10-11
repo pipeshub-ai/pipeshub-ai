@@ -352,16 +352,58 @@ class TestIncrementalSync:
         search.add("page", "ENG", 0, listing([content("p1")]))
         connector = await make_connector(atlassian_api, records_db, checkpoints, filters=filters)
         await connector.run_sync()
-        assert any('lastModified > "2019-12-31' in c for c in search.cql), search.cql
+        assert any('lastModified > "2020-01-01 00:00"' in c for c in search.cql), "the filter date as set"
 
         search.cql.clear()
         await connector.run_sync()
 
         page_cql = next(c for c in search.cql if c.startswith("type=page"))
-        assert '"2019-12-31' not in page_cql, "the newer checkpoint wins over the older filter date"
+        assert '"2020-01-01' not in page_cql, "the newer checkpoint wins over the older filter date"
+
+    async def test_a_filter_date_inside_the_checkpoint_look_back_bounds_the_search(
+        self, atlassian_api, records_db, checkpoints, search
+    ) -> None:
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1")]))
+        connector = await make_connector(atlassian_api, records_db, checkpoints)
+        await connector.run_sync()
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        checkpoint_at = datetime.strptime(checkpoint, "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=timezone.utc)
+
+        inside_look_back = checkpoint_at - timedelta(hours=12)
+        connector.config_service.config["filters"] = {"sync": {"values": {
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": int(inside_look_back.timestamp() * 1000)}},
+        }}}
+        search.cql.clear()
+        await connector.run_sync()
+
+        cql = next(c for c in search.cql if c.startswith("type=page"))
+        assert f'lastModified > "{inside_look_back.strftime("%Y-%m-%d %H:%M")}"' in cql, "nothing from before the filter date"
+        assert cql.count("lastModified >") == 1
 
 
 class TestFilters:
+    async def test_date_filters_reach_the_search_as_set(self, atlassian_api, records_db, checkpoints, search) -> None:
+        def ms(*parts: int) -> int:
+            return int(datetime(*parts, tzinfo=timezone.utc).timestamp() * 1000)
+
+        filters = {"sync": {"values": {
+            "modified": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2024, 3, 1, 9, 30), "end": ms(2024, 6, 1, 18)}},
+            "created": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2023, 1, 1), "end": ms(2024, 2, 1, 12)}},
+        }}}
+        stub_spaces(atlassian_api, space_page([space("ENG", 10)]))
+        search.add("page", "ENG", 0, listing([content("p1")]))
+        connector = await make_connector(atlassian_api, records_db, checkpoints, filters=filters)
+
+        await connector.run_sync()
+
+        for ctype in ("page", "blogpost"):
+            cql = next(c for c in search.cql if c.startswith(f"type={ctype}"))
+            assert 'lastModified > "2024-03-01 09:30"' in cql
+            assert 'lastModified < "2024-06-01 18:00"' in cql, "not a day early"
+            assert 'created > "2023-01-01 00:00"' in cql
+            assert 'created < "2024-02-01 12:00"' in cql, "not a day early"
+
     async def test_included_spaces_are_requested_by_key(self, atlassian_api, records_db, checkpoints, search) -> None:
         filters = {"sync": {"values": {"space_keys": {"operator": "in", "type": "list", "value": ["ENG", "OPS"]}}}}
         stub_spaces(atlassian_api, space_page([space("ENG", 10), space("OPS", 20)]))

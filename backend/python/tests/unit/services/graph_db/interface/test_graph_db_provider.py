@@ -342,6 +342,7 @@ class TestAbstractMethodInventory:
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_virtual_record_ids_in_use",
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
@@ -664,6 +665,33 @@ class TestRecordLinkDefaults:
         instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
         instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
         instance.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_counts_only_the_inherit_edges_it_removed(self) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.side_effect = [1, 1, 1]
+
+        removed = await instance.link_record_to_group(
+            "r1", "new", inherit=False, leaving_group_id="old", transaction="tx"
+        )
+
+        assert [call.args[1] for call in instance.batch_delete_edges.await_args_list] == [
+            "belongsTo", "inheritPermissions", "inheritPermissions"
+        ]
+        assert removed == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("inherit", "deleted", "removed"), [(False, 1, 1), (False, 0, 0), (True, 0, 0), (None, 0, 0)]
+    )
+    async def test_joining_a_group_reports_the_inherit_edge_it_removed(
+        self, inherit: bool | None, deleted: int, removed: int
+    ) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.return_value = deleted
+
+        assert await instance.link_record_to_group("r1", "g1", inherit=inherit, transaction="tx") == removed
+        assert instance.batch_delete_edges.await_count == (1 if inherit is False else 0)
 
     @staticmethod
     def _recording(instance: IGraphDBProvider) -> list[tuple]:

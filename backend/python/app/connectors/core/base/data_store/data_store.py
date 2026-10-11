@@ -413,7 +413,16 @@ class BaseDataStore(ABC):
         pass
     
     @abstractmethod
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
+    async def get_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[dict]:
         pass
 
     @abstractmethod

@@ -68,6 +68,7 @@ class Neo4jClient:
         stale_session_max_age: float = DEFAULT_STALE_SESSION_MAX_AGE,
         rebuild_cooldown: float = DEFAULT_REBUILD_COOLDOWN,
         explicit_transactions: bool = False,
+        honour_explicit_requests: bool = True,
         transaction_timeout: float = DEFAULT_TRANSACTION_TIMEOUT,
     ) -> None:
         """
@@ -97,6 +98,10 @@ class Neo4jClient:
                 auto-commit, as it has always been, and an abort only closes
                 the session. Explicit transactions hold node locks until
                 commit, which changes contention on shared nodes.
+            honour_explicit_requests: let a caller ask for a real transaction
+                with ``begin_transaction(explicit=True)`` while
+                ``explicit_transactions`` is off. False is the kill switch:
+                such a request then follows ``explicit_transactions`` too.
             transaction_timeout: server-side timeout for an explicit transaction
         """
         # Assign logger first before using it
@@ -112,6 +117,7 @@ class Neo4jClient:
         self._stale_session_max_age = float(stale_session_max_age)
         self._rebuild_cooldown = float(rebuild_cooldown)
         self._explicit_transactions = bool(explicit_transactions)
+        self._honour_explicit_requests = bool(honour_explicit_requests)
         self._transaction_timeout = float(transaction_timeout)
         # Populated on the first successful connect. Rebuilding a driver must
         # not re-run SHOW/CREATE DATABASE against the system database: the
@@ -377,13 +383,16 @@ class Neo4jClient:
         except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a Neo4j transaction session.
 
         Args:
             read: Collections to read from (for compatibility, not used in Neo4j)
             write: Collections to write to (for compatibility, not used in Neo4j)
+            explicit: see ``opens_explicit_transaction``
 
         Returns:
             str: Transaction ID (session identifier)
@@ -404,7 +413,7 @@ class Neo4jClient:
         # Create a new session for this transaction
         session = self.driver.session(database=self.database)
         txn_id = str(uuid.uuid4())
-        if self._explicit_transactions:
+        if self.opens_explicit_transaction(explicit):
             try:
                 tx = await session.begin_transaction(timeout=self._transaction_timeout)
             except BaseException:
@@ -422,6 +431,17 @@ class Neo4jClient:
     @property
     def explicit_transactions(self) -> bool:
         return self._explicit_transactions
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        """Whether ``begin_transaction(explicit=...)`` opens a real transaction.
+
+        None follows ``explicit_transactions``. True opens one regardless,
+        unless ``honour_explicit_requests`` is off. False never does: each
+        query then commits on its own.
+        """
+        if explicit is None or (explicit and not self._honour_explicit_requests):
+            return self._explicit_transactions
+        return explicit
 
     def _forget_session(self, txn_id: str) -> None:
         self._active_sessions.pop(txn_id, None)

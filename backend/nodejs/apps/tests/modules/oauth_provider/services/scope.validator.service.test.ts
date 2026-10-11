@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
-import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
+import { ScopeValidatorService, parseScopeString } from '../../../../src/modules/oauth_provider/services/scope.validator.service'
 import { InvalidScopeError } from '../../../../src/libs/errors/oauth.errors'
 
 describe('ScopeValidatorService', () => {
@@ -63,6 +63,16 @@ describe('ScopeValidatorService', () => {
     it('should handle multiple spaces between scopes', () => {
       const result = service.parseScopes('org:read    org:write')
       expect(result).to.deep.equal(['org:read', 'org:write'])
+    })
+  })
+
+  describe('parseScopeString', () => {
+    it('drops empty entries from a claim', () => {
+      expect(parseScopeString('read  write')).to.deep.equal(['read', 'write'])
+      expect(parseScopeString('')).to.deep.equal([])
+      expect(parseScopeString('   ')).to.deep.equal([])
+      expect(parseScopeString(undefined)).to.deep.equal([])
+      expect(parseScopeString(null)).to.deep.equal([])
     })
   })
 

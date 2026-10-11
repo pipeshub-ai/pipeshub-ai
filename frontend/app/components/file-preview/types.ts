@@ -168,6 +168,13 @@ export interface FilePreviewProps {
   showDownload?: boolean;
 
   /**
+   * When set, the Download button calls this instead of saving the loaded
+   * preview bytes under `file.name`. Needed when those bytes were converted
+   * for display (PPTX streamed as PDF) and the saved file must stay the original.
+   */
+  onDownload?: () => void;
+
+  /**
    * Highest known version for `file` — enables the version-switcher header
    * control when greater than `file.version`. Omit (or equal to
    * `file.version`) to hide the dropdown affordance while still showing the

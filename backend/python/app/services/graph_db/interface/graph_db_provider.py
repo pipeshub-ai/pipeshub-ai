@@ -441,13 +441,18 @@ class IGraphDBProvider(ABC):
     # ==================== Transaction Management ====================
 
     @abstractmethod
-    def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         """
         Begin a database transaction.
 
         Args:
             read (List[str]): Collections/tables to read from
             write (List[str]): Collections/tables to write to
+            explicit (bool | None): True asks for a real, all-or-nothing
+                transaction where the backend can run statements outside one
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off). None leaves it to
+                the backend's own setting. Backends that are always
+                transactional ignore it.
 
         Returns:
             str: Transaction ID
@@ -464,10 +469,11 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply
         be re-run (a deadlock, a lock timeout). Backends whose transactions
-        cannot guarantee nothing landed answer False."""
+        cannot guarantee nothing landed answer False. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
         return False
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -588,11 +594,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
         total collection size.
+
+        ``after_key`` is a keyset cursor: only documents whose key sorts
+        strictly after it are returned. It needs ``sort_field="_key"``. Prefer
+        it over ``skip`` for a result set that changes while it is walked.
 
         Args:
             collection:   Collection / label name.
@@ -789,7 +800,9 @@ class IGraphDBProvider(ABC):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge/relationship between two nodes.
@@ -801,6 +814,8 @@ class IGraphDBProvider(ABC):
             to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: raise when the read fails, instead of answering None,
+                which a caller deciding whether the edge exists would read as "absent"
 
         Returns:
             Optional[Dict]: Edge data in generic format if found, None otherwise
@@ -991,7 +1006,7 @@ class IGraphDBProvider(ABC):
         inherit: bool | None,
         leaving_group_id: str | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         """Take the record out of *leaving_group_id*, then put it in *record_group_id*.
 
         Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group.
@@ -999,33 +1014,43 @@ class IGraphDBProvider(ABC):
         false removes that edge and None leaves it alone. Either group may be None.
         Neo4j overrides it with one statement: a record that left its group but
         kept the inherit edge stayed readable to the old group's members.
+
+        Returns the number of INHERIT_PERMISSIONS edges removed, counted by the
+        deletes themselves, so a caller learns the record lost inherited access
+        without reading the edge first.
         """
+        removed = 0
         if leaving_group_id:
             await self._delete_record_group_edge(
                 record_id, leaving_group_id, CollectionNames.BELONGS_TO.value, transaction
             )
-            await self._set_record_group_inheritance(record_id, leaving_group_id, transaction, inherit=False)
+            removed += await self._set_record_group_inheritance(
+                record_id, leaving_group_id, transaction, inherit=False
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id, transaction)
             if inherit is not None:
-                await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+                removed += await self._set_record_group_inheritance(
+                    record_id, record_group_id, transaction, inherit=inherit
+                )
+        return removed
 
     async def _set_record_group_inheritance(
         self, record_id: str, record_group_id: str, transaction: str | None, *, inherit: bool
-    ) -> None:
+    ) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
-        else:
-            await self._delete_record_group_edge(
-                record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
-            )
+            return 0
+        return await self._delete_record_group_edge(
+            record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
+        )
 
     async def _delete_record_group_edge(
         self, record_id: str, record_group_id: str, collection: str, transaction: str | None
-    ) -> None:
+    ) -> int:
         # Not delete_edge: ArangoDB's answers False when the delete fails, so the
         # transaction went on to commit the rest beside an edge that should have gone.
-        await self.batch_delete_edges(
+        return await self.batch_delete_edges(
             [{
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,
@@ -1914,10 +1939,19 @@ class IGraphDBProvider(ABC):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         """Set indexingStatus for every record on a connector in one query.
 
         ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
+        ``only_statuses``, when given, limits the write to records holding one
+        of them. ``reason``, when given, is written alongside the status.
+        ``visibility`` defaults to ``ALL`` (trashed records included, which is
+        what the vector-store rebuild has always done); ``LIVE`` leaves the
+        trash alone.
         """
         pass
 
@@ -3702,6 +3736,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[str]: Record keys, empty when nothing references it
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``virtual_record_ids`` that at least one record holds.
+
+        ``get_records_by_virtual_record_id`` answered for many VRIDs in one
+        round trip, with the same predicate per VRID: not scoped by connector or
+        org, and ``visibility`` choosing live or trashed records. A sweep over
+        many VRIDs asks this instead of one query each.
+
+        Raises on failure rather than answering an empty set, which would read
+        as "nothing references these" and let the caller delete their vectors.
         """
         raise NotImplementedError
 

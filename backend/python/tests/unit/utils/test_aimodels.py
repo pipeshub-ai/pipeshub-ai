@@ -224,6 +224,28 @@ class TestReasoningEffortKwargs:
         result = _reasoning_effort_kwargs("none", config, provider="gemini")
         assert result == {"reasoning_effort": "low"}
 
+    @pytest.mark.parametrize("provider", ["gemini", "vertexAI"])
+    @pytest.mark.parametrize(
+        "model_name", ["gemini-2.5-flash", "models/gemini-2.0-flash", "gemma-4-31b-it"]
+    )
+    def test_gemini_before_3_gets_no_thinking_level(
+        self, provider: str, model_name: str
+    ) -> None:
+        config = {"isReasoning": True}
+        assert (
+            _reasoning_effort_kwargs(
+                "high", config, provider=provider, model_name=model_name
+            )
+            == {}
+        )
+
+    def test_gemini_3_keeps_thinking_level(self) -> None:
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="gemini", model_name="gemini-3.1-pro-preview"
+        )
+        assert result == {"reasoning_effort": "high"}
+
     def test_max_mapped_to_high_for_vertex_ai(self):
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs("max", config, provider="vertexAI")
@@ -1213,6 +1235,7 @@ class TestGetGeneratorModel:
         Completions."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("gpt-5")
+        config["configuration"].pop("endpoint", None)
         config["isReasoning"] = True
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort="high")
         call_kwargs = mock_cls.call_args.kwargs
@@ -1238,6 +1261,7 @@ class TestGetGeneratorModel:
         deferring to the provider's own default."""
         mock_cls.return_value = MagicMock()
         config = self._base_config("gpt-5")
+        config["configuration"].pop("endpoint", None)
         config["isReasoning"] = True
         get_generator_model(LLMProvider.OPENAI.value, config, reasoning_effort=None)
         call_kwargs = mock_cls.call_args.kwargs
