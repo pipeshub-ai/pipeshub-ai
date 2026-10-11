@@ -42,6 +42,7 @@ from app.config.constants.ai_models import (
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
+from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.modules.agents.capability_summary import fetch_connector_configs
 from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
@@ -2028,273 +2029,247 @@ async def create_agent(request: Request) -> JSONResponse:
         linked_skills: list[str] = []
 
         try:
-            # Start transaction for ALL agent creation operations
             graph_provider = services["graph_provider"]
-            transaction_id = await graph_provider.begin_transaction(
-                read=[CollectionNames.AGENT_SKILLS.value],
-                write=[
-                    CollectionNames.AGENT_INSTANCES.value,
-                    CollectionNames.PERMISSION.value,
-                    CollectionNames.AGENT_TOOLSETS.value,
-                    CollectionNames.AGENT_TOOLS.value,
-                    CollectionNames.AGENT_HAS_TOOLSET.value,
-                    CollectionNames.TOOLSET_HAS_TOOL.value,
-                    CollectionNames.AGENT_MCP_SERVERS.value,
-                    CollectionNames.AGENT_HAS_MCP_SERVER.value,
-                    CollectionNames.MCP_SERVER_HAS_TOOL.value,
-                    CollectionNames.AGENT_KNOWLEDGE.value,
-                    CollectionNames.AGENT_HAS_KNOWLEDGE.value,
-                    CollectionNames.AGENT_HAS_SKILL.value,
-                ]
-            )
-            logger.debug(f"Started transaction for agent creation: {agent_key}")
+            # The helper rolls back on any BaseException, so a cancelled request
+            # does not leave the transaction holding its locks until it times out.
+            async with GraphDataStore(logger, graph_provider).transaction() as tx_store:
+                transaction_id = tx_store.txn
+                logger.debug(f"Started transaction for agent creation: {agent_key}")
 
-            # Step 1: Create agent node
-            await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
-            logger.debug(f"Created agent node: {agent_key}")
+                # Step 1: Create agent node
+                await graph_provider.batch_upsert_nodes([agent], CollectionNames.AGENT_INSTANCES.value, transaction=transaction_id)
+                logger.debug(f"Created agent node: {agent_key}")
 
-            # Step 2: Create permission edge(s)
-            # share_with_org already validated above before starting transaction
-            user_permission_edge = {
-                "_from": f"{CollectionNames.USERS.value}/{user_key}",
-                "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                "role": "OWNER",
-                "type": "USER",
-                "createdAtTimestamp": time,
-                "updatedAtTimestamp": time,
-            }
-            permission_edges = [user_permission_edge]
-
-            # Only create org permission edge if shareWithOrg is explicitly set to True
-            if share_with_org:
-                org_permission_edge = {
-                    "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                # Step 2: Create permission edge(s)
+                # share_with_org already validated above before starting transaction
+                user_permission_edge = {
+                    "_from": f"{CollectionNames.USERS.value}/{user_key}",
                     "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                    "role": "READER",
-                    "type": "ORG",
+                    "role": "OWNER",
+                    "type": "USER",
                     "createdAtTimestamp": time,
                     "updatedAtTimestamp": time,
                 }
-                permission_edges.append(org_permission_edge)
+                permission_edges = [user_permission_edge]
 
-            await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
-            logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
-
-            # Step 3: Create toolsets and tools (within same transaction)
-            if toolsets_with_tools:
-                toolset_mapping = {}
-                toolset_nodes = []
-
-                # Prepare toolset nodes
-                for toolset_name, toolset_data in toolsets_with_tools.items():
-                    from app.agents.constants.toolset_constants import (
-                        normalize_app_name,
-                    )
-
-                    toolset_key = str(uuid.uuid4())
-                    display_name = toolset_data["displayName"]
-                    toolset_type = toolset_data["type"]
-                    tools_list = toolset_data["tools"]
-                    instance_id = toolset_data.get("instanceId")
-                    instance_name = toolset_data.get("instanceName")
-
-                    toolset_node = {
-                        "_key": toolset_key,
-                        "name": normalize_app_name(toolset_name),
-                        "displayName": display_name,
-                        "type": toolset_type,
-                        "userId": user_context["userId"],
-                        "createdBy": user_key,
-                        "createdAtTimestamp": time,
-                        "updatedAtTimestamp": time
-                    }
-
-                    # Store instanceId in ArangoDB node when provided (admin-created instances)
-                    if instance_id:
-                        toolset_node["instanceId"] = instance_id
-                    if instance_name:
-                        toolset_node["instanceName"] = instance_name
-
-                    toolset_nodes.append(toolset_node)
-                    toolset_mapping[toolset_name] = {
-                        "key": toolset_key,
-                        "displayName": display_name,
-                        "tools": tools_list
-                    }
-
-                # Batch create toolset nodes
-                if toolset_nodes:
-                    await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
-
-                # Create agent -> toolset edges
-                agent_toolset_edges = [
-                    {
-                        "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                        "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
+                # Only create org permission edge if shareWithOrg is explicitly set to True
+                if share_with_org:
+                    org_permission_edge = {
+                        "_from": f"{CollectionNames.ORGS.value}/{org_key}",
+                        "_to": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                        "role": "READER",
+                        "type": "ORG",
                         "createdAtTimestamp": time,
                         "updatedAtTimestamp": time,
                     }
-                    for toolset_info in toolset_mapping.values()
-                ]
-                if agent_toolset_edges:
-                    await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
+                    permission_edges.append(org_permission_edge)
 
-                # Create tool nodes and edges
-                tool_mapping = {}
-                tool_nodes = []
-                toolset_tool_edges = []
+                await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value, transaction=transaction_id)
+                logger.debug(f"Created permission edge(s) for agent: {agent_key} (shareWithOrg={share_with_org})")
 
-                for toolset_name, toolset_info in toolset_mapping.items():
-                    for tool_data in toolset_info["tools"]:
-                        tool_name = tool_data["name"]
-                        full_name = tool_data["fullName"]
-                        description = tool_data.get("description", "")
-                        tool_key = str(uuid.uuid4())
+                # Step 3: Create toolsets and tools (within same transaction)
+                if toolsets_with_tools:
+                    toolset_mapping = {}
+                    toolset_nodes = []
 
-                        tool_node = {
-                            "_key": tool_key,
-                            "name": tool_name,
-                            "fullName": full_name,
-                            "toolsetName": toolset_name,
-                            "description": description,
+                    # Prepare toolset nodes
+                    for toolset_name, toolset_data in toolsets_with_tools.items():
+                        from app.agents.constants.toolset_constants import (
+                            normalize_app_name,
+                        )
+
+                        toolset_key = str(uuid.uuid4())
+                        display_name = toolset_data["displayName"]
+                        toolset_type = toolset_data["type"]
+                        tools_list = toolset_data["tools"]
+                        instance_id = toolset_data.get("instanceId")
+                        instance_name = toolset_data.get("instanceName")
+
+                        toolset_node = {
+                            "_key": toolset_key,
+                            "name": normalize_app_name(toolset_name),
+                            "displayName": display_name,
+                            "type": toolset_type,
+                            "userId": user_context["userId"],
                             "createdBy": user_key,
                             "createdAtTimestamp": time,
                             "updatedAtTimestamp": time
                         }
-                        tool_nodes.append(tool_node)
 
-                        tool_mapping[full_name] = {
-                            "key": tool_key,
-                            "name": tool_name,
-                            "toolset": toolset_name
+                        # Store instanceId in ArangoDB node when provided (admin-created instances)
+                        if instance_id:
+                            toolset_node["instanceId"] = instance_id
+                        if instance_name:
+                            toolset_node["instanceName"] = instance_name
+
+                        toolset_nodes.append(toolset_node)
+                        toolset_mapping[toolset_name] = {
+                            "key": toolset_key,
+                            "displayName": display_name,
+                            "tools": tools_list
                         }
 
-                        # Create toolset -> tool edge
-                        toolset_tool_edges.append({
-                            "_from": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
-                            "_to": f"{CollectionNames.AGENT_TOOLS.value}/{tool_key}",
+                    # Batch create toolset nodes
+                    if toolset_nodes:
+                        await graph_provider.batch_upsert_nodes(toolset_nodes, CollectionNames.AGENT_TOOLSETS.value, transaction=transaction_id)
+
+                    # Create agent -> toolset edges
+                    agent_toolset_edges = [
+                        {
+                            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                            "_to": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
                             "createdAtTimestamp": time,
                             "updatedAtTimestamp": time,
-                        })
+                        }
+                        for toolset_info in toolset_mapping.values()
+                    ]
+                    if agent_toolset_edges:
+                        await graph_provider.batch_create_edges(agent_toolset_edges, CollectionNames.AGENT_HAS_TOOLSET.value, transaction=transaction_id)
 
-                # Batch create tool nodes
-                if tool_nodes:
-                    await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id)
+                    # Create tool nodes and edges
+                    tool_mapping = {}
+                    tool_nodes = []
+                    toolset_tool_edges = []
 
-                # Batch create toolset -> tool edges
-                if toolset_tool_edges:
-                    await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
+                    for toolset_name, toolset_info in toolset_mapping.items():
+                        for tool_data in toolset_info["tools"]:
+                            tool_name = tool_data["name"]
+                            full_name = tool_data["fullName"]
+                            description = tool_data.get("description", "")
+                            tool_key = str(uuid.uuid4())
 
-                # Build response for created toolsets
-                for toolset_name, toolset_info in toolset_mapping.items():
-                    created_tools = []
-                    for tool_data in toolset_info["tools"]:
-                        full_name = tool_data["fullName"]
-                        if full_name in tool_mapping:
-                            created_tools.append({
-                                "name": tool_mapping[full_name]["name"],
+                            tool_node = {
+                                "_key": tool_key,
+                                "name": tool_name,
                                 "fullName": full_name,
-                                "key": tool_mapping[full_name]["key"]
+                                "toolsetName": toolset_name,
+                                "description": description,
+                                "createdBy": user_key,
+                                "createdAtTimestamp": time,
+                                "updatedAtTimestamp": time
+                            }
+                            tool_nodes.append(tool_node)
+
+                            tool_mapping[full_name] = {
+                                "key": tool_key,
+                                "name": tool_name,
+                                "toolset": toolset_name
+                            }
+
+                            # Create toolset -> tool edge
+                            toolset_tool_edges.append({
+                                "_from": f"{CollectionNames.AGENT_TOOLSETS.value}/{toolset_info['key']}",
+                                "_to": f"{CollectionNames.AGENT_TOOLS.value}/{tool_key}",
+                                "createdAtTimestamp": time,
+                                "updatedAtTimestamp": time,
                             })
 
-                    created_toolsets.append({
-                        "name": toolset_name,
-                        "displayName": toolset_info["displayName"],
-                        "key": toolset_info["key"],
-                        "tools": created_tools
-                    })
+                    # Batch create tool nodes
+                    if tool_nodes:
+                        await graph_provider.batch_upsert_nodes(tool_nodes, CollectionNames.AGENT_TOOLS.value, transaction=transaction_id)
 
-                logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
+                    # Batch create toolset -> tool edges
+                    if toolset_tool_edges:
+                        await graph_provider.batch_create_edges(toolset_tool_edges, CollectionNames.TOOLSET_HAS_TOOL.value, transaction=transaction_id)
 
-            # Step 3.5: Create attached MCP servers and their tools (within same transaction)
-            if mcp_servers_with_tools:
-                created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
-                    agent_key, mcp_servers_with_tools, user_context, user_key,
-                    graph_provider, logger, transaction=transaction_id,
-                )
-                logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
+                    # Build response for created toolsets
+                    for toolset_name, toolset_info in toolset_mapping.items():
+                        created_tools = []
+                        for tool_data in toolset_info["tools"]:
+                            full_name = tool_data["fullName"]
+                            if full_name in tool_mapping:
+                                created_tools.append({
+                                    "name": tool_mapping[full_name]["name"],
+                                    "fullName": full_name,
+                                    "key": tool_mapping[full_name]["key"]
+                                })
 
-            # Step 4: Create knowledge sources (within same transaction)
-            if knowledge_sources:
-                knowledge_mapping = {}
-                knowledge_nodes = []
+                        created_toolsets.append({
+                            "name": toolset_name,
+                            "displayName": toolset_info["displayName"],
+                            "key": toolset_info["key"],
+                            "tools": created_tools
+                        })
 
-                # Prepare knowledge nodes
-                for connector_id, knowledge_data in knowledge_sources.items():
-                    knowledge_key = str(uuid.uuid4())
-                    filters = knowledge_data["filters"]
+                    logger.debug(f"Created {len(created_toolsets)} toolset(s) for agent: {agent_key}")
 
-                    # Schema expects filters as stringified JSON
-                    filters_str = json.dumps(filters) if isinstance(filters, dict) else str(filters)
+                # Step 3.5: Create attached MCP servers and their tools (within same transaction)
+                if mcp_servers_with_tools:
+                    created_mcp_servers, failed_mcp_servers = await _create_mcp_server_edges(
+                        agent_key, mcp_servers_with_tools, user_context, user_key,
+                        graph_provider, logger, transaction=transaction_id,
+                    )
+                    logger.debug(f"Created {len(created_mcp_servers)} MCP server(s) for agent: {agent_key}")
 
-                    knowledge_node = {
-                        "_key": knowledge_key,
-                        "connectorId": connector_id,
-                        "filters": filters_str,
-                        "createdBy": user_key,
-                        "createdAtTimestamp": time,
-                        "updatedAtTimestamp": time
-                    }
-                    knowledge_nodes.append(knowledge_node)
+                # Step 4: Create knowledge sources (within same transaction)
+                if knowledge_sources:
+                    knowledge_mapping = {}
+                    knowledge_nodes = []
 
-                    knowledge_mapping[connector_id] = {
-                        "key": knowledge_key,
-                        "filters": filters
-                    }
+                    # Prepare knowledge nodes
+                    for connector_id, knowledge_data in knowledge_sources.items():
+                        knowledge_key = str(uuid.uuid4())
+                        filters = knowledge_data["filters"]
 
-                # Batch create knowledge nodes
-                if knowledge_nodes:
-                    await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
+                        # Schema expects filters as stringified JSON
+                        filters_str = json.dumps(filters) if isinstance(filters, dict) else str(filters)
 
-                # Create agent -> knowledge edges
-                agent_knowledge_edges = [
-                    {
-                        "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
-                        "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
-                        "createdAtTimestamp": time,
-                        "updatedAtTimestamp": time,
-                    }
-                    for knowledge_info in knowledge_mapping.values()
-                ]
-                if agent_knowledge_edges:
-                    await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
+                        knowledge_node = {
+                            "_key": knowledge_key,
+                            "connectorId": connector_id,
+                            "filters": filters_str,
+                            "createdBy": user_key,
+                            "createdAtTimestamp": time,
+                            "updatedAtTimestamp": time
+                        }
+                        knowledge_nodes.append(knowledge_node)
 
-                # Build response for created knowledge
-                created_knowledge.extend(
-                    {
-                        "connectorId": connector_id,
-                        "key": knowledge_info["key"],
-                        "filters": knowledge_info["filters"],
-                    }
-                    for knowledge_info in knowledge_mapping.values()
-                )
+                        knowledge_mapping[connector_id] = {
+                            "key": knowledge_key,
+                            "filters": filters
+                        }
 
-                logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
+                    # Batch create knowledge nodes
+                    if knowledge_nodes:
+                        await graph_provider.batch_upsert_nodes(knowledge_nodes, CollectionNames.AGENT_KNOWLEDGE.value, transaction=transaction_id)
 
-            # Step 5: Link assigned skills (within same transaction) — mirrors
-            # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
-            # skill node, only edges to skills that already exist.
-            if skill_names:
-                linked_skills = await _create_skill_edges(
-                    agent_key, skill_names, org_key, user_key, graph_provider, logger,
-                    transaction=transaction_id,
-                )
-                logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
+                    # Create agent -> knowledge edges
+                    agent_knowledge_edges = [
+                        {
+                            "_from": f"{CollectionNames.AGENT_INSTANCES.value}/{agent_key}",
+                            "_to": f"{CollectionNames.AGENT_KNOWLEDGE.value}/{knowledge_info['key']}",
+                            "createdAtTimestamp": time,
+                            "updatedAtTimestamp": time,
+                        }
+                        for knowledge_info in knowledge_mapping.values()
+                    ]
+                    if agent_knowledge_edges:
+                        await graph_provider.batch_create_edges(agent_knowledge_edges, CollectionNames.AGENT_HAS_KNOWLEDGE.value, transaction=transaction_id)
 
-            # Commit transaction - ALL or NOTHING
-            await graph_provider.commit_transaction(transaction_id)
-            transaction_id = None
+                    # Build response for created knowledge
+                    created_knowledge.extend(
+                        {
+                            "connectorId": connector_id,
+                            "key": knowledge_info["key"],
+                            "filters": knowledge_info["filters"],
+                        }
+                        for knowledge_info in knowledge_mapping.values()
+                    )
+
+                    logger.debug(f"Created {len(created_knowledge)} knowledge source(s) for agent: {agent_key}")
+
+                # Step 5: Link assigned skills (within same transaction) — mirrors
+                # AGENT_HAS_TOOLSET/AGENT_HAS_KNOWLEDGE above but never creates a
+                # skill node, only edges to skills that already exist.
+                if skill_names:
+                    linked_skills = await _create_skill_edges(
+                        agent_key, skill_names, org_key, user_key, graph_provider, logger,
+                        transaction=transaction_id,
+                    )
+                    logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
             logger.info(f"✅ Successfully created agent {agent_key} with all components")
 
         except Exception as e:
-            # Rollback on ANY error - ensures no partial state
-            if transaction_id:
-                try:
-                    await graph_provider.rollback_transaction(transaction_id)
-                    logger.warning(f"Rolled back agent creation transaction for {agent_key}")
-                except Exception as abort_error:
-                    logger.error(f"Failed to abort transaction: {abort_error}")
-
             logger.error(f"Failed to create agent {agent_key}: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,

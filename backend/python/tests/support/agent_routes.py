@@ -64,6 +64,7 @@ class InMemoryGraph:
         # every write made inside it.
         self._snapshots: dict[str, tuple[dict, dict]] = {}
         self._txn = itertools.count(1)
+        self.logger = logging.getLogger("test.agent_routes.graph")
         for name, user in USERS.items():
             self.add_node(USERS_COLL, {"_key": user_key(name), **user, "fullName": name.title()})
         for org in ("org-1", "org-2"):
@@ -305,6 +306,10 @@ class InMemoryGraph:
         return True
 
     # generic writes
+    def is_write_conflict(self, error: BaseException) -> bool:
+        # The configured failures stand in for outages, never for a collision.
+        return False
+
     async def begin_transaction(self, read: list[str], write: list[str]) -> str:
         self._enter("begin_transaction", read, write)
         txn = f"txn-{next(self._txn)}"
