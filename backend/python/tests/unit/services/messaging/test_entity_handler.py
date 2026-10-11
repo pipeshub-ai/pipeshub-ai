@@ -1,5 +1,6 @@
 """Unit tests for app.services.messaging.kafka.handlers.entity.EntityEventService."""
 
+import copy
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -840,10 +841,13 @@ class _Conflict(RuntimeError):
 
 
 class _KbGraph:
-    """The apps and edges of one org, on a graph where each statement lands as it
-    runs (Neo4j's default) and the write numbered *conflicts_on* hits another writer."""
+    """The apps and edges of one org on Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off: each
+    statement lands as it runs, except inside begin_transaction(explicit=True) while
+    *honours_explicit* (NEO4J_CREATE_TRANSACTIONS) is on. The write numbered
+    *conflicts_on* hits another writer; the one numbered *fails_on* hits an outage."""
 
-    def __init__(self, *, conflicts_on: int | None = None, lookup_fails: bool = False,
+    def __init__(self, *, conflicts_on: int | None = None, fails_on: int | None = None,
+                 honours_explicit: bool = True, lookup_fails: bool = False,
                  user_lookup_fails: bool = False) -> None:
         self.logger = MagicMock()
         self.apps: dict[str, dict] = {}
@@ -851,6 +855,10 @@ class _KbGraph:
         self.edges: dict[tuple[str, str, str], dict] = {}
         self.writes = 0
         self.conflicts_on = conflicts_on
+        self.fails_on = fails_on
+        self.honours_explicit = honours_explicit
+        self.explicit_requests: list[bool | None] = []
+        self._snapshots: dict[str, tuple[dict, dict, dict]] = {}
         self.lookup_fails = lookup_fails
         self.user_lookup_fails = user_lookup_fails
 
@@ -875,25 +883,35 @@ class _KbGraph:
             return []
         return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
 
-    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
-        return "txn"
+    async def begin_transaction(self, read: list | None = None, write: list | None = None,
+                                explicit: bool | None = None) -> str:
+        self.explicit_requests.append(explicit)
+        txn = f"txn-{len(self.explicit_requests)}"
+        if explicit and self.honours_explicit:
+            self._snapshots[txn] = copy.deepcopy((self.apps, self.users, self.edges))
+        return txn
 
     async def commit_transaction(self, txn: str) -> None:
-        pass
+        self._snapshots.pop(txn, None)
 
     async def rollback_transaction(self, txn: str) -> None:
-        pass  # Nothing to undo: every statement already committed.
+        # Without a real transaction there is nothing to undo: every statement committed.
+        snapshot = self._snapshots.pop(txn, None)
+        if snapshot is not None:
+            self.apps, self.users, self.edges = snapshot
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return isinstance(error, _Conflict)
 
-    def is_transient_error(self, error: BaseException) -> bool:
-        return False
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return isinstance(error, _Conflict) and bool(explicit) and self.honours_explicit
 
     def _statement(self) -> None:
         self.writes += 1
         if self.writes == self.conflicts_on:
             raise _Conflict("DeadlockDetected")
+        if self.writes == self.fails_on:
+            raise RuntimeError("connection reset")
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._statement()
@@ -954,8 +972,11 @@ class TestDefaultKbCreateConverges:
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
 
     @pytest.mark.asyncio
-    async def test_a_conflict_on_the_second_write_is_retried_into_one_complete_kb(self) -> None:
-        graph = _KbGraph(conflicts_on=2)
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_conflict_on_the_second_write_is_retried_into_one_complete_kb(
+        self, honours_explicit: bool,
+    ) -> None:
+        graph = _KbGraph(conflicts_on=2, honours_explicit=honours_explicit)
         svc = _service_on(graph)
         with patch(
             "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
@@ -966,6 +987,45 @@ class TestDefaultKbCreateConverges:
         assert result.get("success") is True, result
         assert list(graph.apps) == [result["kb_id"]]
         assert _kb_edges(graph, result["kb_id"]) == _ALL_KB_EDGES
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_failure_partway_leaves_nothing_unless_the_kill_switch_is_off(
+        self, honours_explicit: bool,
+    ) -> None:
+        graph = _KbGraph(fails_on=3, honours_explicit=honours_explicit)
+        svc = _service_on(graph)
+        with pytest.raises(RuntimeError, match="connection reset"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert graph.explicit_requests == [True]
+        if honours_explicit:
+            assert (graph.apps, graph.edges) == ({}, {})
+        else:
+            # Today's auto-commit: the App and its first edge stay, for the next call to finish.
+            (kb_id,) = graph.apps
+            assert _kb_edges(graph, kb_id) == {(CollectionNames.PERMISSION.value, "user-key")}
+
+        with patch(
+            "app.services.messaging.kafka.handlers.entity.ConnectorFactory.create_and_start_sync",
+            new_callable=AsyncMock, return_value=None,
+        ):
+            result = await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+        (kb_id,) = graph.apps
+        assert _kb_edges(graph, kb_id) == _ALL_KB_EDGES
+        assert result.get("kb_id", result.get("id")) == kb_id
+
+    @pytest.mark.asyncio
+    async def test_a_failed_repair_rolls_back_the_edges_it_had_added(self) -> None:
+        graph = _KbGraph(fails_on=2)
+        graph.apps["kb-1"] = {"id": "kb-1", "createdBy": "user-1", "orgId": "org-1", "type": "KB"}
+        svc = _service_on(graph)
+
+        with pytest.raises(RuntimeError, match="connection reset"):
+            await svc._get_or_create_knowledge_base("user-key", "user-1", "org-1")
+
+        assert graph.explicit_requests == [True]
+        assert graph.edges == {}
 
     @pytest.mark.asyncio
     async def test_a_half_built_kb_is_completed_on_the_next_call(self) -> None:

@@ -50,10 +50,14 @@ class GraphOutage(RuntimeError):
 
 
 class InMemoryGraph:
-    def __init__(self, *, rollback_undoes_writes: bool = True) -> None:
+    def __init__(self, *, rollback_undoes_writes: bool = True, honours_explicit: bool = True) -> None:
         # False behaves like Neo4j without explicit transactions: every write commits
         # at once and rollback only closes the session.
         self.rollback_undoes_writes = rollback_undoes_writes
+        # Neo4j still opens a real transaction for begin_transaction(explicit=True),
+        # unless NEO4J_CREATE_TRANSACTIONS=false (honours_explicit=False).
+        self.honours_explicit = honours_explicit
+        self.explicit_requests: list[bool | None] = []
         self.nodes: dict[str, dict[str, dict[str, Any]]] = {}
         self.edges: dict[str, list[dict[str, Any]]] = {}
         self.failures: dict[str, BaseException] = {}
@@ -310,10 +314,15 @@ class InMemoryGraph:
         # The configured failures stand in for outages, never for a collision.
         return False
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return False
+
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self._enter("begin_transaction", read, write)
+        self.explicit_requests.append(explicit)
         txn = f"txn-{next(self._txn)}"
-        self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
+        if self.rollback_undoes_writes or (explicit and self.honours_explicit):
+            self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
         return txn
 
     async def commit_transaction(self, transaction: str) -> None:
@@ -324,7 +333,7 @@ class InMemoryGraph:
     async def rollback_transaction(self, transaction: str) -> None:
         self._enter("rollback_transaction", transaction)
         snapshot = self._snapshots.pop(transaction, None)
-        if snapshot is not None and self.rollback_undoes_writes:
+        if snapshot is not None:
             self.nodes, self.edges = snapshot
         self.rolled_back.append(transaction)
 

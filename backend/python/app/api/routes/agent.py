@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -72,6 +72,9 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
 
 # ``services['logger']`` is bound inside each request, so a handler that failed
 # before that needs a module logger with a name it cannot shadow.
@@ -2030,9 +2033,12 @@ async def create_agent(request: Request) -> JSONResponse:
 
         try:
             graph_provider = services["graph_provider"]
-            # The helper rolls back on any BaseException, so a cancelled request
-            # does not leave the transaction holding its locks until it times out.
-            async with GraphDataStore(logger, graph_provider).transaction() as tx_store:
+
+            async def write_agent(tx_store: "TransactionStore") -> None:
+                nonlocal created_mcp_servers, failed_mcp_servers, linked_skills
+                # A re-run follows a rollback, so it starts from nothing written.
+                created_toolsets.clear()
+                created_knowledge.clear()
                 transaction_id = tx_store.txn
                 logger.debug(f"Started transaction for agent creation: {agent_key}")
 
@@ -2267,6 +2273,12 @@ async def create_agent(request: Request) -> JSONResponse:
                         transaction=transaction_id,
                     )
                     logger.debug(f"Linked {len(linked_skills)} skill(s) for agent: {agent_key}")
+
+            # explicit: all-or-nothing on Neo4j too, so a failure leaves no half-made
+            # agent and a deadlock on the user or org node re-runs from a clean slate.
+            # The helper rolls back on any BaseException, so a cancelled request
+            # does not leave the transaction holding its locks until it times out.
+            await GraphDataStore(logger, graph_provider).execute_in_transaction(write_agent, explicit=True)
             logger.info(f"✅ Successfully created agent {agent_key} with all components")
 
         except Exception as e:

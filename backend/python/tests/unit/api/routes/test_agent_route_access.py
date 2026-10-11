@@ -987,6 +987,20 @@ class TestCreateAgent:
         assert "write conflict" not in response.text
         assert graph.rolled_back and not graph.committed
 
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    def test_failure_mid_create_on_neo4j_auto_commit_leaves_no_agent(self, client, graph, honours_explicit) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = honours_explicit
+        before = set(graph.nodes[AGENTS])
+        graph.fail("batch_create_edges", RuntimeError("connection reset"))
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={"name": "x"})
+
+        assert response.status_code == 500
+        assert graph.explicit_requests == [True]
+        # With the kill switch off, today's auto-commit keeps the agent node without its owner.
+        assert len(set(graph.nodes[AGENTS]) - before) == (0 if honours_explicit else 1)
+
 
 class TestTemplates:
     @pytest.fixture

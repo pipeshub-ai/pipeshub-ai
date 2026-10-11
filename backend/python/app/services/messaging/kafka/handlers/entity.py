@@ -854,15 +854,16 @@ class EntityEventService(BaseEventService):
 
         if existing_kbs:
             self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-            # A create that failed partway on Neo4j (each statement commits on its
-            # own) left the App without some of its edges; finish it rather than
-            # hand it out unusable again. Create-only, so a complete one is untouched.
+            # A create that failed partway on Neo4j before creates ran in a real
+            # transaction (or with NEO4J_CREATE_TRANSACTIONS=false) left the App
+            # without some of its edges; finish it rather than hand it out unusable
+            # again. Create-only, so a complete one is untouched.
             # Every match, not the first: the lookup is unordered.
             for existing in existing_kbs:
                 existing_key = existing.get("id") or existing.get("_key")
                 if existing_key:
                     await self.graph_data_store.execute_idempotent_in_transaction(
-                        self._ensure_kb_edges, user_key, orgId, existing_key
+                        self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
                     )
             return existing_kbs[0]
 
@@ -892,10 +893,11 @@ class EntityEventService(BaseEventService):
             await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
             await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
 
+        # explicit: a failure leaves no App without its edges on Neo4j either.
         # Every write is keyed by kb_key, so a re-run after a write conflict
         # (the org node is shared by every onboarding message) completes the
         # same App rather than starting a second one.
-        await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+        await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
 
         # Register per-KB connector instance at runtime
         try:

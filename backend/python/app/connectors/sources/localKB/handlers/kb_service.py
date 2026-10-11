@@ -544,10 +544,12 @@ class KnowledgeBaseService:
                 await tx_store.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value)
 
             # Creates by one user collide on that user's node (a Neo4j deadlock,
-            # an ArangoDB write conflict). Every write is keyed by kb_key, so a
-            # re-run after a partial Neo4j auto-commit lands the same KB once.
+            # an ArangoDB write conflict). explicit: a failure leaves no half-made
+            # KB on Neo4j either. Every write is keyed by kb_key, so a re-run after
+            # a partial auto-commit (NEO4J_CREATE_TRANSACTIONS=false) lands the
+            # same KB once.
             self.logger.info("💾 Executing database operations...")
-            await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+            await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
             # After the commit, and outside the retry: the lane is keyed by
             # kb_key, so a second call returns the same lane. Best-effort; a
             # failure is logged and the first publish places the KB instead.
