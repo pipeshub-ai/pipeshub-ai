@@ -548,14 +548,14 @@ class EventProcessor:
                     with stage("entities.resolve"):
                         await self.sink_orchestrator.resolve_entities(ctx)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
-                    with stage("summary.index"):
-                        await self.sink_orchestrator.vector_store.index_record_summary(
-                            record_id,
-                            virtual_record_id,
-                            org_id,
-                            semantic_metadata,
-                            record,
-                        )
+                    # Not wrapped in a stage: it times its own steps.
+                    await self.sink_orchestrator.vector_store.index_record_summary(
+                        record_id,
+                        virtual_record_id,
+                        org_id,
+                        semantic_metadata,
+                        record,
+                    )
 
                 await self.sink_orchestrator.enrich(ctx)
                 self.logger.info(

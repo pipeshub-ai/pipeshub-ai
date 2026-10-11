@@ -2513,6 +2513,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         index_tier = concurrency.dispatch_tier(self, parsed_message)
         index_lease_pool = concurrency.index_lease_pool(index_tier)
         success = False
+        # Set where an exit is neither a success nor a failure; the
+        # timing summary falls back to success/shutting_down otherwise.
+        outcome: str | None = None
         timeline, timeline_token = timing.begin_record(
             parsed_message.payload.get("recordId"),
             parsed_message.eventType,
@@ -2543,6 +2546,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if not index_lease_held:
                     # Capacity leases only give up when self.running flips,
                     # so this is a clean shutdown: redeliver, do not commit.
+                    outcome = "stopped"
                     await self.__resolve_offset(in_flight, done=False)
                     return False
                 lease_handle, renewal_task = concurrency.start_lease_guard(
@@ -2558,6 +2562,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         leases=distributed_leases,
                     )
                 if not record_lease_held:
+                    outcome = "contended" if self.running else "stopped"
                     if self.running:
                         self.logger.debug(
                             f"Record lease contended for {message_id}; another "
@@ -2670,13 +2675,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     event.event == IndexingEvent.INDEXING_COMPLETE
                                     and indexing_held
                                 ):
-                                    timeline.mark(timing.RELEASED)
                                     distributed_leases.discard(index_lease_pool)
                                     await self._release_distributed_slot(
                                         index_lease_pool, lease_owner
                                     )
                                     concurrency.release_admission(index_admission)
                                     indexing_held = False
+                                    timeline.mark(timing.RELEASED)
                                     self.logger.debug(
                                         f"Released indexing gate for {message_id}"
                                     )
@@ -2767,6 +2772,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except concurrency.ParseAdmissionTimeout as e:
             # Queue time, not a failure: hand the record back with no attempt
             # counted, so a queue behind long parses cannot dead-letter it.
+            outcome = "requeued"
             self.logger.warning(
                 "%s waited %.0fs for a %s parse slot without being admitted; "
                 "re-queuing without counting an attempt",
@@ -2819,55 +2825,61 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return False
         finally:
-            # Before any await: a cancellation landing in one would skip it.
-            timeline.mark(timing.RELEASED)
-            timing.end_record(
-                timeline,
-                timeline_token,
-                outcome="ok" if success else ("stopped" if shutting_down else "failed"),
-                logger=self.logger,
-            )
-            # Ensure semaphores are released even on error
-            if renewal_task is not None:
-                renewal_task.cancel()
-                await asyncio.gather(renewal_task, return_exceptions=True)
+            try:
+                # Ensure semaphores are released even on error
+                if renewal_task is not None:
+                    renewal_task.cancel()
+                    await asyncio.gather(renewal_task, return_exceptions=True)
 
-            # Before the releases below, not after: every one of them awaits,
-            # so a cancellation landing in this block would skip the
-            # unregister and leave the renewer refreshing this owner's leases
-            # forever. Unregistering first means the worst case is a lease
-            # that outlives the record until its TTL expires, which is what
-            # the TTL is for.
-            if self.lease_renewer is not None:
-                self.lease_renewer.unregister(lease_owner)
-            # Leases lost to the renewal deadline are gone from Redis
-            # already; releasing them is doomed traffic against a Redis that
-            # is still failing, and it arrives from every record at once.
-            release_leases = not (
-                lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
-            )
-            if not release_leases:
-                self.logger.debug(
-                    "Skipping distributed lease release for %s: leases expired with the renewal deadline",
-                    lease_owner,
+                # Before the releases below, not after: every one of them awaits,
+                # so a cancellation landing in this block would skip the
+                # unregister and leave the renewer refreshing this owner's leases
+                # forever. Unregistering first means the worst case is a lease
+                # that outlives the record until its TTL expires, which is what
+                # the TTL is for.
+                if self.lease_renewer is not None:
+                    self.lease_renewer.unregister(lease_owner)
+                # Leases lost to the renewal deadline are gone from Redis
+                # already; releasing them is doomed traffic against a Redis that
+                # is still failing, and it arrives from every record at once.
+                release_leases = not (
+                    lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
                 )
+                if not release_leases:
+                    self.logger.debug(
+                        "Skipping distributed lease release for %s: leases expired with the renewal deadline",
+                        lease_owner,
+                    )
 
-            if parsing_held:
-                if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
-                    await self._release_distributed_slot(parse_lease_pool, lease_owner)
-                concurrency.release_admission(parsing_admission)
-                parsing_admission = None
-                self.logger.debug(f"Released parsing slot in finally for {message_id}")
+                if parsing_held:
+                    if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
+                        await self._release_distributed_slot(parse_lease_pool, lease_owner)
+                    concurrency.release_admission(parsing_admission)
+                    parsing_admission = None
+                    self.logger.debug(f"Released parsing slot in finally for {message_id}")
 
-            if indexing_held:
-                if distributed_leases.discard(index_lease_pool) is not None and release_leases:
-                    await self._release_distributed_slot(index_lease_pool, lease_owner)
-                concurrency.release_admission(index_admission)
-                self.logger.debug(f"Released indexing gate in finally for {message_id}")
+                if indexing_held:
+                    if distributed_leases.discard(index_lease_pool) is not None and release_leases:
+                        await self._release_distributed_slot(index_lease_pool, lease_owner)
+                    concurrency.release_admission(index_admission)
+                    self.logger.debug(f"Released indexing gate in finally for {message_id}")
 
-            for pool, owner in distributed_leases.snapshot():
-                distributed_leases.discard(pool)
-                if release_leases:
-                    await self._release_distributed_slot(pool, owner)
+                for pool, owner in distributed_leases.snapshot():
+                    distributed_leases.discard(pool)
+                    if release_leases:
+                        await self._release_distributed_slot(pool, owner)
+            finally:
+                # After the releases, so slow cleanup counts toward the hold;
+                # in a finally, so a release that raises or is cancelled
+                # still leaves a summary.
+                timeline.mark(timing.RELEASED)
+                timing.end_record(
+                    timeline,
+                    timeline_token,
+                    outcome=outcome or (
+                        "ok" if success else ("stopped" if shutting_down else "failed")
+                    ),
+                    logger=self.logger,
+                )
 
 

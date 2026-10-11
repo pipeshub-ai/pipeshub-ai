@@ -163,8 +163,8 @@ class RecordTimeline:
             phases["pre_parse"] = requested - admitted
             if parse_admitted is not None:
                 phases["parse_wait"] = parse_admitted - requested
-                if parsed is not None:
-                    phases["parse"] = parsed - parse_admitted
+                # No PARSED: the record timed out or was cancelled mid-parse.
+                phases["parse"] = (parsed or released) - parse_admitted
             else:
                 phases["parse_wait"] = (parsed or released) - requested
         if parsed is not None:

@@ -750,19 +750,21 @@ class VectorStore(Transformer):
         # self.dense_embeddings is still None and the first use surfaces as an
         # AttributeError far from its cause, after the delete below has already
         # dropped the old summary block.
-        if self.dense_embeddings is None:
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to get embedding model instance",
-                    details={"error": str(e)},
-                ) from e
+        with stage("embed.setup"):
+            if self.dense_embeddings is None:
+                try:
+                    await self.get_embedding_model_instance()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to get embedding model instance",
+                        details={"error": str(e)},
+                    ) from e
 
-        collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
         tokens = await self._bind_membership(virtual_record_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)

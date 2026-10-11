@@ -39,6 +39,23 @@ def test_phases_split_wait_from_hold_and_parse() -> None:
     }
 
 
+def test_a_parse_cut_short_still_reports_its_time_in_the_parser() -> None:
+    # Admitted to the parser, then timed out or cancelled before PARSED.
+    timeline = timing.RecordTimeline("r1", started=100.0)
+    timeline.mark(timing.ADMITTED, at=101.0)
+    timeline.mark(timing.PARSE_REQUESTED, at=102.0)
+    timeline.mark(timing.PARSE_ADMITTED, at=105.0)
+    timeline.mark(timing.RELEASED, at=165.0)
+
+    assert timeline.phases(now=166.0) == {
+        "wait_slot": 1.0,
+        "held": 64.0,
+        "pre_parse": 1.0,
+        "parse_wait": 3.0,
+        "parse": 60.0,
+    }
+
+
 def test_a_boundary_counts_only_its_first_crossing() -> None:
     timeline = timing.RecordTimeline("r1", started=0.0)
     timeline.mark(timing.ADMITTED, at=1.0)

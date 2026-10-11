@@ -222,14 +222,14 @@ class IndexingPipeline:
             with stage("blob.write"):
                 await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
-                with stage("summary.index"):
-                    await self.sink_orchestrator.vector_store.index_record_summary(
-                        record.id,
-                        record.virtual_record_id,
-                        record.org_id,
-                        record.semantic_metadata,
-                        record,
-                    )
+                # Not wrapped in a stage: it times its own steps.
+                await self.sink_orchestrator.vector_store.index_record_summary(
+                    record.id,
+                    record.virtual_record_id,
+                    record.org_id,
+                    record.semantic_metadata,
+                    record,
+                )
 
         await self.sink_orchestrator.enrich(ctx)
 
