@@ -573,7 +573,12 @@ class MariaDBConnector(BaseConnector):
             )
         max_rows = self._max_rows_per_table(sync_filters)
         try:
-            rows = await self.data_source.fetch_table_rows(database, table, limit=max_rows)
+            # Without a primary key the rows come back in storage order, which is
+            # stable while the table is unchanged; sorting by every column would
+            # cost a full sort, and a different order only means one extra reindex.
+            rows = await self.data_source.fetch_table_rows(
+                database, table, limit=max_rows, order_by=primary_keys
+            )
         except Exception as e:
             self.logger.error(f"❌ Failed to read rows for {database}.{table}: {e}")
             raise to_sql_stream_error(e, connector=self.display_name) from e

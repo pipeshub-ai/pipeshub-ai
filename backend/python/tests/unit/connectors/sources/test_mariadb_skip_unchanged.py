@@ -34,6 +34,7 @@ class FakeMariaDB:
     def __init__(self) -> None:
         self.tables: dict[str, dict[str, Any]] = {}
         self.broken: set[str] = set()
+        self.row_orders: dict[str, Any] = {}
 
     def add(self, name: str, rows: list[dict[str, Any]], columns: list[str] = ("id", "name")) -> None:
         self.tables[name] = {
@@ -57,7 +58,8 @@ class FakeMariaDB:
     async def get_primary_keys(self, table, database=None):
         return _ok([{"column_name": "id"}])
 
-    async def fetch_table_rows(self, database, table, limit=None):
+    async def fetch_table_rows(self, database, table, limit=None, order_by=None):
+        self.row_orders[table] = order_by
         if table in self.broken:
             raise RuntimeError("SELECT command denied")
         return [dict(r) for r in self.tables[table]["rows"][:limit]]
@@ -298,6 +300,13 @@ class TestTableFingerprint:
         first = await h.connector._table_fingerprint(DB, "orders")
         h.connector._max_rows_per_table = lambda _filters: 1
         assert await h.connector._table_fingerprint(DB, "orders") != first
+
+    @pytest.mark.asyncio
+    async def test_rows_are_read_in_primary_key_order(self):
+        h = Harness()
+        h.source.add("orders", [{"id": 1, "name": "a"}])
+        await h.connector._table_fingerprint(DB, "orders")
+        assert h.source.row_orders["orders"] == ["id"]
 
     @pytest.mark.asyncio
     async def test_none_when_a_part_cannot_be_read(self):
