@@ -7,3 +7,6 @@ paths:
   .github/workflows/release-publish.yml:
     ignore:
       - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/base-images.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'
