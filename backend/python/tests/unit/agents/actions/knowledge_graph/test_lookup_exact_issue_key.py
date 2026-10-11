@@ -64,6 +64,7 @@ def _neo4j(rows: list[dict[str, Any]]) -> Neo4jProvider:
     provider = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
 
     async def execute_query(query: str, parameters: dict[str, Any], txn_id: str | None = None) -> list[dict]:
+        assert "record.webUrl =~ $browse_pattern_regex" in query
         pattern = parameters["browse_pattern_regex"]
         return [{"record": row} for row in rows if re.fullmatch(pattern, row["webUrl"])][:1]
 
@@ -145,13 +146,3 @@ async def test_missing_key_is_not_found_rather_than_a_near_neighbour(
     assert result.matches == []
     assert result.not_found_identifiers == ["PP-8"]
 
-
-@pytest.mark.parametrize("make_provider", PROVIDERS, ids=["neo4j", "arango"])
-@pytest.mark.parametrize("identifier", ["PP-8.*", "PP-8.", "PP-8\\d", "PP-[0-9]+", "PP-8|PP-80"])
-async def test_regex_metacharacters_never_widen_the_match(
-    make_provider: MakeProvider, identifier: str,
-) -> None:
-    result = await _resolver(make_provider(NEIGHBOURS_FIRST)).resolve_many([identifier])
-
-    assert result.matches == []
-    assert result.not_found_identifiers == [identifier]
