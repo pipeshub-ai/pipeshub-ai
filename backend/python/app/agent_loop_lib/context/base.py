@@ -42,10 +42,12 @@ class ContextWindow(ABC):
 class ContextBudget(BaseModel):
     """Passed to every `pre_model` shaper hook alongside the message list.
 
-    `max_tokens` is what the shaper pipeline aims to fit under before the
-    call goes out — derived from the model's real context window (see
-    modules/providers/budget/pricing.py) minus headroom for the model's own output, not an
-    arbitrary flat number.
+    `max_tokens` is what the shaper pipeline aims to fit the conversation
+    messages under before the call goes out — derived from the model's real
+    context window (see modules/providers/budget/pricing.py) minus headroom for
+    the model's own output and minus `reserved_prompt_tokens`, the system
+    prompt and tool schemas sent beside the messages, not an arbitrary flat
+    number.
 
     `reserved_artifact_tokens` carves out a dedicated budget for artifact
     content that may be injected back into context on demand (via
@@ -58,6 +60,7 @@ class ContextBudget(BaseModel):
     model: str | None = None
     reserved_output_tokens: int = 8_000
     reserved_artifact_tokens: int = 0
+    reserved_prompt_tokens: int = 0
 
     @property
     def effective_max_tokens(self) -> int:
@@ -72,15 +75,18 @@ class ContextBudget(BaseModel):
         reserved_artifact_tokens: int = 0,
         *,
         context_window: int | None = None,
+        reserved_prompt_tokens: int = 0,
     ) -> "ContextBudget":
         window = context_window if context_window and context_window > 0 else get_context_window(model)
         # A small configured window (an 8k local model) cannot give 8k to the
         # reply: at least three quarters of it stays for the prompt.
         reserve = min(reserved_output_tokens, window // 4)
-        max_tokens = max(window - reserve, 1)
+        prompt = max(reserved_prompt_tokens, 0)
+        max_tokens = max(window - reserve - prompt, 1)
         return cls(
             max_tokens=max_tokens,
             model=model,
             reserved_output_tokens=reserve,
             reserved_artifact_tokens=reserved_artifact_tokens,
+            reserved_prompt_tokens=prompt,
         )

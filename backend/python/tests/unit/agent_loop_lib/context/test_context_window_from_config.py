@@ -21,6 +21,7 @@ from app.agent_loop_lib.core.messages import (
     ToolMessage,
     UserMessage,
 )
+from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.hooks.events import HookEvent
 from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
@@ -34,14 +35,15 @@ from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from tests.unit.agent_loop_lib.agent.test_agent_step_outcomes import _NoteTool
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from app.agent_loop_lib.core.messages import Message
-    from app.agent_loop_lib.core.types import AgentResult
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware
+    from app.agent_loop_lib.tools.base import Tool
 
 
 class TestBudget:
@@ -82,24 +84,37 @@ class TestSmallWindows:
         assert 0 < sized.effective_max_tokens <= window
         assert sized.max_tokens + sized.reserved_output_tokens == window
 
+    def test_the_system_prompt_and_tools_come_off_the_message_budget(self) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=1_800)
+
+        assert sized.max_tokens == 8_192 - 2_048 - 1_800
+        assert ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=9_000).max_tokens == 1
+
     def test_table_windows_keep_the_full_output_reserve(self) -> None:
         assert ContextBudget.for_model("claude-opus-5").reserved_output_tokens == 8_000
         assert ContextBudget.for_model(None).max_tokens == 120_000
 
 
-async def _run(spec_model: ModelSpec, *, seen: list[ContextBudget]) -> AgentResult:
+async def _run(
+    spec_model: ModelSpec, *, seen: list[ContextBudget], system_prompt: str = "You help.", tools: list[Tool] | None = None,
+) -> ScriptedTransport:
     async def _record(ctx: ModelCallContext, next_fn: Callable[[], Awaitable[None]]) -> None:
         seen.append(ctx.budget)
         await next_fn()
 
     hooks = HookRegistry()
     hooks.on(HookEvent.PRE_MODEL).use(_record)
+    transport = ScriptedTransport().add_text("done")
     transports = TransportRegistry()
-    transports.register("scripted", lambda: ScriptedTransport().add_text("done"))
-    runtime = AgentRuntime(transport_registry=transports, tool_registry=ToolRegistry(), hooks=hooks)
-    spec = AgentSpec(name="a", system_prompt="You help.", model=spec_model, loop=ReActLoop(), max_turns=2)
+    transports.register("scripted", lambda: transport)
+    registry = ToolRegistry()
+    for tool in tools or []:
+        registry.register_tool(tool)
+    runtime = AgentRuntime(transport_registry=transports, tool_registry=registry, hooks=hooks)
+    spec = AgentSpec(name="a", system_prompt=system_prompt, model=spec_model, loop=ReActLoop(), max_turns=2)
 
-    return await Agent(spec, runtime).run(Goal(description="hi"))
+    await Agent(spec, runtime).run(Goal(description="hi"))
+    return transport
 
 
 async def _budget_seen_by_the_shapers(spec_model: ModelSpec) -> ContextBudget:
@@ -115,12 +130,29 @@ class TestAgentTurn:
             ModelSpec(provider="scripted", model="claude-opus-5-5", context_window=1_000_000),
         )
 
-        assert budget.max_tokens == 1_000_000 - 8_000
+        assert budget.max_tokens == 1_000_000 - 8_000 - budget.reserved_prompt_tokens
 
     async def test_without_one_the_shapers_get_the_table_window(self) -> None:
         budget = await _budget_seen_by_the_shapers(ModelSpec(provider="scripted", model="claude-opus-5-5"))
 
-        assert budget.max_tokens == 300_000 - 8_000
+        assert budget.max_tokens == 300_000 - 8_000 - budget.reserved_prompt_tokens
+
+    async def test_the_whole_call_fits_an_8k_window(self) -> None:
+        """The system prompt and tool schemas go on the same call as the
+        messages, so the messages get only what they leave of the window."""
+        seen: list[ContextBudget] = []
+
+        transport = await _run(
+            ModelSpec(provider="scripted", model="local-model", context_window=8_192), seen=seen,
+            system_prompt="Answer from the user's documents. " * 180, tools=[_NoteTool()],
+        )
+
+        sent = transport.calls[0]
+        prompt = count_text_tokens(sent["system"]) + count_schema_tokens(sent["tools"])
+        budget = seen[0]
+        assert prompt > 1_500
+        assert budget.reserved_prompt_tokens == prompt
+        assert prompt + budget.max_tokens + budget.reserved_output_tokens <= 8_192
 
 
 async def _shape(shaper: Middleware[ModelCallContext], messages: list[Message], budget: ContextBudget) -> list[Message]:
