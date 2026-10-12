@@ -777,6 +777,16 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
       expect(next.firstCall.args[0].message).to.contain('no longer active')
+      // The lookup has to be the actor named in `act`, in this organisation,
+      // and restricted to live service accounts — otherwise the stub above
+      // would answer for any query at all and this would pass without the
+      // check being right.
+      expect(users.secondCall.args[0]).to.deep.equal({
+        _id: { $eq: 'the-service-account' },
+        orgId: { $eq: 'org1' },
+        kind: 'service',
+        isDeleted: false,
+      })
     })
 
     it('refuses a delegated token whose service account has been deleted', async () => {
@@ -812,6 +822,12 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
       expect(next.firstCall.args[0].message).to.contain('no longer active')
+      expect(users.secondCall.args[0]).to.deep.equal({
+        _id: { $eq: 'the-service-account' },
+        orgId: { $eq: 'org1' },
+        kind: 'service',
+        isDeleted: false,
+      })
     })
 
     it('refuses a token minted for an identity the app no longer acts as', async () => {

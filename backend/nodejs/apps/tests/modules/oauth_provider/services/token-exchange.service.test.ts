@@ -234,6 +234,80 @@ describe('TokenExchangeService', () => {
       );
     });
 
+    it('records the attempt when the service account is disabled', async () => {
+      // Worth having in the log: a disabled account whose credential is still
+      // being used is either automation nobody switched off or a token
+      // somebody kept.
+      const { service, delegations } = makeService({
+        account: { isDisabled: true },
+      });
+
+      await expectRefusal(
+        () =>
+          service.exchange({
+            subjectToken: 'phsvc_abc',
+            requestedSubject: 'person@example.com',
+          }),
+        { oauthError: 'invalid_grant' },
+      );
+
+      expect(delegations.recordEvent.calledOnce).to.equal(true);
+      expect(delegations.recordEvent.firstCall.args[0].refusedReason).to.equal(
+        'service_account_disabled',
+      );
+    });
+
+    it('records the attempt when the service account is gone', async () => {
+      const { service, delegations } = makeService({ account: null });
+
+      await expectRefusal(
+        () =>
+          service.exchange({
+            subjectToken: 'phsvc_abc',
+            requestedSubject: 'person@example.com',
+          }),
+        { oauthError: 'invalid_grant' },
+      );
+
+      expect(delegations.recordEvent.firstCall.args[0].refusedReason).to.equal(
+        'service_account_not_found',
+      );
+    });
+
+    it('writes nothing for a token that does not verify', async () => {
+      // There is nobody to write it about. A row here would let an
+      // unauthenticated caller put entries in an organisation's audit trail.
+      const { service, delegations } = makeService({ payload: null });
+
+      await expectRefusal(
+        () =>
+          service.exchange({
+            subjectToken: 'nonsense',
+            requestedSubject: 'person@example.com',
+          }),
+        { oauthError: 'invalid_grant' },
+      );
+
+      expect(delegations.recordEvent.called).to.equal(false);
+    });
+
+    it('writes nothing for a personal access token either', async () => {
+      const { service, delegations } = makeService({
+        payload: servicePayload({ client_id: `pat-system:${orgId}` }),
+      });
+
+      await expectRefusal(
+        () =>
+          service.exchange({
+            subjectToken: 'phpat_abc',
+            requestedSubject: 'person@example.com',
+          }),
+        { oauthError: 'invalid_grant' },
+      );
+
+      expect(delegations.recordEvent.called).to.equal(false);
+    });
+
     it('refuses an unverifiable token', async () => {
       const { service } = makeService({ payload: null });
 

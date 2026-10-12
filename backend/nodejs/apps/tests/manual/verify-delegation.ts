@@ -382,6 +382,22 @@ async function main(): Promise<void> {
     JSON.stringify(ttl?.key),
   );
 
+  console.log('\nattempts by an account that is no longer usable');
+  await service.recordEvent({
+    orgId: org,
+    serviceAccountId: accountId,
+    requestedSubject: 'person@example.com',
+    outcome: 'refused',
+    refusedReason: 'service_account_disabled',
+  });
+  const disabledAttempts = await service.listEvents(org);
+  check(
+    'a disabled account still using its token is recorded',
+    disabledAttempts.some(
+      (e) => e.refusedReason === 'service_account_disabled',
+    ),
+  );
+
   console.log('\nrevoking delegated tokens by their actor');
   const tokenService = new OAuthTokenService(
     logger as never,

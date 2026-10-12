@@ -15,6 +15,17 @@ import {
   DelegationOutcome,
 } from '../schema/delegation-event.schema';
 
+/** Mongo's duplicate-key code, which is what the unique index raises. */
+const DUPLICATE_KEY = 11000;
+
+function isDuplicateKeyError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === DUPLICATE_KEY
+  );
+}
+
 /**
  * The most people one service account may be allowed to act as.
  *
@@ -272,9 +283,15 @@ export class DelegationService {
         reason,
       });
     } catch (error) {
-      // The unique index refuses a duplicate pair. Granting a right the
-      // account already holds is not an error worth failing a script over, so
-      // return what is already there.
+      // Only a duplicate is forgiven, and only because the unique index is
+      // what raised it: granting a right the account already holds is not
+      // worth failing a script over. Anything else — a dropped connection, a
+      // validation failure — has to surface. Catching it here and then
+      // finding a row written by some earlier request would report a grant
+      // that this call did not make, and skip the audit record for it.
+      if (!isDuplicateKeyError(error)) {
+        throw error;
+      }
       const already = await ServiceAccountDelegation.findOne({
         orgId: { $eq: orgId },
         serviceAccountId: { $eq: serviceAccountId },

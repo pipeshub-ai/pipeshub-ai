@@ -1885,10 +1885,16 @@ components:
             - `unsupported_grant_type` - Grant type not supported
             - `invalid_scope` - Requested scope is invalid or exceeds allowed
             - `access_denied` - User denied authorization
+            - `invalid_target` - The requested subject cannot be acted as
+              (RFC 8693). Returned by the token-exchange grant for every
+              refusal about the person asked for, with one wording, so a
+              service token cannot tell "no such person" from "not on your
+              list". The real cause is in the delegation log.
           enum:
             - invalid_request
             - invalid_client
             - invalid_grant
+            - invalid_target
             - unauthorized_client
             - unsupported_grant_type
             - invalid_scope
@@ -17050,6 +17056,9 @@ paths:
         than hidden: the token exchange already refuses them, and a review
         screen should not disagree with what the system does.
       operationId: listServiceAccountDelegations
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: serviceAccountId
           in: query
@@ -17094,6 +17103,9 @@ paths:
         construction. Nor can another service account, which would chain
         machine identities together.
       operationId: grantServiceAccountDelegation
+      security:
+        - bearerAuth: []
+        - oauth2: [user:invite]
       requestBody:
         description: "Request payload"
         required: true
@@ -17156,6 +17168,9 @@ paths:
 
         Omit `serviceAccountId` to read across the whole organisation.
       operationId: listServiceAccountDelegationEvents
+      security:
+        - bearerAuth: []
+        - oauth2: [user:read]
       parameters:
         - name: serviceAccountId
           in: query
@@ -17200,6 +17215,9 @@ paths:
         is bounded by the lifetime rather than by anyone remembering to clean
         up.
       operationId: revokeServiceAccountDelegation
+      security:
+        - bearerAuth: []
+        - oauth2: [user:delete]
       parameters:
         - name: subjectUserId
           in: path
@@ -17280,11 +17298,15 @@ paths:
                 scope: "openid profile email"
                 id_token: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
         '400':
-          description: Invalid request (missing parameters, invalid code, etc.)
+          description: |
+            Invalid request (missing parameters, invalid code, a refusal from
+            the token-exchange grant, etc.). The body is the flat OAuth shape
+            `{ error, error_description }` that the controller builds for every
+            grant, which is what the 401 below already documents.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ErrorResponse'
+                $ref: '#/components/schemas/OAuthErrorResponse'
         '401':
           description: Client authentication failed
           content:

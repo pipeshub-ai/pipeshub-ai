@@ -227,6 +227,72 @@ describe('ServiceAccountDelegationsPanel', () => {
     await waitFor(() => expect(screen.queryByText('A Person')).toBeNull());
   });
 
+  it('still shows the allow-list when the activity log fails to load', async () => {
+    // The list is what an administrator revokes from. A failing log should
+    // not take it off the screen.
+    listDelegations.mockResolvedValue({
+      delegations: [
+        {
+          id: 'd1',
+          serviceAccountId: 'account-1',
+          subjectUserId: 'u1',
+          subjectEmail: 'person@example.com',
+          subjectFullName: 'A Person',
+          inactive: false,
+          grantedBy: 'admin-1',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+    listEvents.mockRejectedValue(new Error('log unavailable'));
+
+    renderPanel();
+
+    await waitFor(() => expect(screen.getByText('A Person')).toBeTruthy());
+  });
+
+  it('ignores a slower load that would undo a grant just made', async () => {
+    // Granting refreshes while the first load may still be pending. If the
+    // older one lands last it replaces the list with a snapshot taken before
+    // the grant, and the new entry vanishes.
+    let resolveFirst: ((v: unknown) => void) | undefined;
+    listDelegations.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirst = resolve;
+        })
+    );
+    listDelegations.mockResolvedValue({
+      delegations: [
+        {
+          id: 'd1',
+          serviceAccountId: 'account-1',
+          subjectUserId: 'u1',
+          subjectEmail: 'person@example.com',
+          subjectFullName: 'Newly Granted',
+          inactive: false,
+          grantedBy: 'admin-1',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    renderPanel();
+    await waitFor(() => expect(listDelegations).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(screen.getByPlaceholderText(copy.subjectPlaceholder), {
+      target: { value: 'person@example.com' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: copy.addConfirm }));
+    await waitFor(() => expect(screen.getByText('Newly Granted')).toBeTruthy());
+
+    // Now let the stale first load finish, with nothing in it.
+    resolveFirst?.({ delegations: [] });
+
+    await waitFor(() => expect(screen.getByText('Newly Granted')).toBeTruthy());
+    expect(screen.queryByText(copy.none)).toBeNull();
+  });
+
   it('will not grant until a person has been named', async () => {
     renderPanel();
     await waitFor(() => expect(listDelegations).toHaveBeenCalled());

@@ -201,9 +201,12 @@ describe('DelegationService', () => {
         role: 'member',
       });
       sinon.stub(ServiceAccountDelegation, 'countDocuments').resolves(0 as any);
-      sinon
-        .stub(ServiceAccountDelegation, 'create')
-        .rejects(new Error('E11000 duplicate key'));
+      // Mongo raises `code: 11000` for a unique-index collision, and only
+      // that code is forgiven — a bare Error now surfaces instead.
+      const duplicate = Object.assign(new Error('E11000 duplicate key'), {
+        code: 11000,
+      });
+      sinon.stub(ServiceAccountDelegation, 'create').rejects(duplicate);
       sinon.stub(ServiceAccountDelegation, 'findOne').returns({
         exec: async () => ({
           _id: new mongoose.Types.ObjectId(),
@@ -223,6 +226,31 @@ describe('DelegationService', () => {
       );
 
       expect(result.subjectUserId).to.equal(subjectId);
+    });
+
+    it('surfaces a failure that is not a duplicate, rather than inventing a grant', async () => {
+      // Reporting success here would claim a grant this call never made, and
+      // skip the audit record that is supposed to prove who made it.
+      stubUsers(SERVICE_ACCOUNT, {
+        _id: subjectId,
+        email: 'person@example.com',
+        kind: 'human',
+        role: 'member',
+      });
+      sinon.stub(ServiceAccountDelegation, 'countDocuments').resolves(0 as any);
+      sinon
+        .stub(ServiceAccountDelegation, 'create')
+        .rejects(new Error('connection reset'));
+      const findOne = sinon.stub(ServiceAccountDelegation, 'findOne');
+      const { service } = makeService();
+
+      try {
+        await service.grant(orgId, adminId, accountId, 'person@example.com');
+        expect.fail('expected the write failure to surface');
+      } catch (error) {
+        expect((error as Error).message).to.equal('connection reset');
+      }
+      expect(findOne.called).to.equal(false);
     });
 
     it('refuses a service account that is not in this organisation', async () => {

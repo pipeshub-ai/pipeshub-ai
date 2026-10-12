@@ -107,30 +107,57 @@ export function ServiceAccountDelegationsPanel({
    */
   const shownFor = useRef<string | null>(null);
 
+  /**
+   * Which load is the current one.
+   *
+   * The account check alone is not enough: two loads for the *same* account
+   * can overlap, because granting triggers a refresh while the first one may
+   * still be pending. If the first finishes last it replaces the new list
+   * with a snapshot taken before the grant, and the entry the administrator
+   * just added disappears.
+   */
+  const loadSeq = useRef(0);
+
   const refresh = useCallback(async () => {
     if (!accountId) return;
     const requestedFor = accountId;
+    loadSeq.current += 1;
+    const seq = loadSeq.current;
+    const isCurrent = (): boolean =>
+      shownFor.current === requestedFor && loadSeq.current === seq;
+
     setIsLoading(true);
-    try {
-      const [list, log] = await Promise.all([
-        DelegationsApi.list(requestedFor),
-        DelegationsApi.events(requestedFor, EVENT_LIMIT),
-      ]);
-      if (shownFor.current !== requestedFor) return;
-      setDelegations(list.delegations ?? []);
-      setEvents(log.events ?? []);
-    } catch (err: unknown) {
-      if (shownFor.current !== requestedFor) return;
+
+    // Settled rather than all: the allow-list is what an administrator
+    // revokes from, and a failing log should not take it off the screen.
+    const [list, log] = await Promise.allSettled([
+      DelegationsApi.list(requestedFor),
+      DelegationsApi.events(requestedFor, EVENT_LIMIT),
+    ]);
+
+    if (!isCurrent()) return;
+
+    if (list.status === 'fulfilled') {
+      setDelegations(list.value.delegations ?? []);
+    }
+    if (log.status === 'fulfilled') {
+      setEvents(log.value.events ?? []);
+    }
+    setIsLoading(false);
+
+    const failure =
+      list.status === 'rejected'
+        ? list.reason
+        : log.status === 'rejected'
+          ? log.reason
+          : null;
+    if (failure !== null) {
       addToast({
         variant: 'error',
         title: t('workspace.serviceAccounts.delegations.loadErrorTitle'),
-        description: err instanceof Error ? err.message : undefined,
+        description: failure instanceof Error ? failure.message : undefined,
         duration: 4000,
       });
-    } finally {
-      if (shownFor.current === requestedFor) {
-        setIsLoading(false);
-      }
     }
   }, [accountId, addToast, t]);
 

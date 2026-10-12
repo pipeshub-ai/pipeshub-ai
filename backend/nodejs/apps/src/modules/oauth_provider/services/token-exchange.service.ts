@@ -1,4 +1,5 @@
 import { injectable, inject } from 'inversify';
+import { Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenExchangeError } from '../../../libs/errors/oauth.errors';
 import { Users } from '../../user_management/schema/users.schema';
@@ -97,9 +98,12 @@ export class TokenExchangeService {
       );
     }
 
-    const actor = await this.resolveActor(request.subjectToken);
-
     const requestedSubject = (request.requestedSubject ?? '').trim();
+    const actor = await this.resolveActor(
+      request.subjectToken,
+      requestedSubject,
+    );
+
     if (requestedSubject === '') {
       throw new TokenExchangeError(
         'invalid_request',
@@ -206,7 +210,10 @@ export class TokenExchangeService {
    * client secret — so these checks are the door. Each one closes a different
    * way of turning some other credential into a delegated one.
    */
-  private async resolveActor(subjectToken: string): Promise<{
+  private async resolveActor(
+    subjectToken: string,
+    requestedSubject: string,
+  ): Promise<{
     serviceAccountId: string;
     orgId: string;
     clientId: string;
@@ -254,6 +261,19 @@ export class TokenExchangeService {
     // same way as the ones next door: the guarantee that a query compares
     // values should be visible at the query, not inferred from how far
     // upstream the data came from.
+    // Before the lookup, because `userId` on a client_credentials token is the
+    // client id rather than a user id, and Mongoose would throw a cast error
+    // on an ObjectId path — surfacing as a server error instead of a refusal.
+    // No such token can exist for this client today (the service-token app
+    // allows no grant types at all), which is exactly why this should fail
+    // the same way as everything else rather than differently.
+    if (!Types.ObjectId.isValid(payload.userId)) {
+      throw new TokenExchangeError(
+        'invalid_grant',
+        'Only a service token can be exchanged.',
+      );
+    }
+
     const account = await Users.findOne({
       _id: { $eq: payload.userId },
       orgId: { $eq: payload.orgId },
@@ -264,15 +284,40 @@ export class TokenExchangeService {
       .lean()
       .exec();
 
-    // Belt and braces with the clause above: a token whose `userId` names a
-    // human cannot reach here, so a delegated token is refused twice over.
+    // These two are recorded, unlike the refusals above them.
+    //
+    // The difference is whether there is anyone to record. A token that fails
+    // to verify, or that belongs to some other client, names nobody this log
+    // could be about — writing a row for it would let an unauthenticated
+    // caller put entries in an organisation's audit trail. By this point the
+    // token has verified and named a service account, so the attempt belongs
+    // to that account whether or not it is still allowed to make it.
+    //
+    // And these are worth having: a disabled or deleted service account whose
+    // credential is still being used is either automation nobody switched off
+    // or a token somebody kept, and an administrator reviewing the log should
+    // see which.
     if (!account) {
+      await this.delegationService.recordEvent({
+        orgId: payload.orgId,
+        serviceAccountId: payload.userId,
+        requestedSubject,
+        outcome: 'refused',
+        refusedReason: 'service_account_not_found',
+      });
       throw new TokenExchangeError(
         'invalid_grant',
         'Only a service token can be exchanged.',
       );
     }
     if (account.isDisabled === true) {
+      await this.delegationService.recordEvent({
+        orgId: payload.orgId,
+        serviceAccountId: payload.userId,
+        requestedSubject,
+        outcome: 'refused',
+        refusedReason: 'service_account_disabled',
+      });
       throw new TokenExchangeError(
         'invalid_grant',
         'This service account is disabled.',
