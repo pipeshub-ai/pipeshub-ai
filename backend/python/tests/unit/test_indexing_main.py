@@ -1490,7 +1490,10 @@ class TestIndexingHealthCheck:
             result = await health_check(_make_health_request(governor=mock_governor))
 
         assert result.status_code == 200
-        assert json.loads(result.body) == {
+        body = json.loads(result.body)
+        # Slot stats are counters only, so nothing an exception says can reach them.
+        assert all(isinstance(v, (int, float)) for v in body.pop("indexing_llm").values())
+        assert body == {
             "status": "healthy",
             "timestamp": 1234567890,
             "resource_governor": {"error": "unavailable"},

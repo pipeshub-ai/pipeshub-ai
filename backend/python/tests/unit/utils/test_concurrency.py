@@ -126,3 +126,52 @@ class TestIndexingLlmSlot:
     async def test_slot_acquires_and_releases(self):
         async with indexing_llm_slot():
             pass
+
+
+class TestIndexingLlmStats:
+    """Wait against hold time is what separates our slot budget from a provider limit."""
+
+    @pytest.mark.asyncio
+    async def test_waits_and_holds_are_counted_apart(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils import concurrency
+
+        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
+        sem = asyncio.Semaphore(1)
+        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
+        seen: list[dict] = []
+
+        async def call() -> None:
+            async with concurrency.indexing_llm_slot():
+                await asyncio.sleep(0.05)
+
+        async def watch() -> None:
+            await asyncio.sleep(0.02)
+            seen.append(concurrency.indexing_llm_stats())
+
+        await asyncio.gather(call(), call(), watch())
+        stats = concurrency.indexing_llm_stats()
+
+        assert seen[0]["in_use"] == 1 and seen[0]["waiting"] == 1
+        assert stats["in_use"] == 0 and stats["waiting"] == 0 and stats["acquired"] == 2
+        assert stats["hold_s_total"] >= 0.1
+        assert stats["wait_s_total"] >= 0.04  # the second call waited out the first
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_wait_leaves_no_phantom_waiter(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils import concurrency
+
+        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
+        sem = asyncio.Semaphore(0)
+        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
+
+        async def call() -> None:
+            async with concurrency.indexing_llm_slot():
+                pass
+
+        task = asyncio.create_task(call())
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        stats = concurrency.indexing_llm_stats()
+        assert stats["waiting"] == 0 and stats["in_use"] == 0 and stats["acquired"] == 0
