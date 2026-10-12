@@ -674,7 +674,7 @@ class Agent:
         # offload -> sliding window -> auto-compact) over what's about to be
         # sent, plus the deterministic deadline-warning guard. Stored
         # history in `context` is untouched — shaping is per-call.
-        budget = ContextBudget.for_model(spec.model.model)
+        budget = ContextBudget.for_model(spec.model.model, context_window=spec.model.context_window)
         messages = await hooks.dispatch_pre_model(
             self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )

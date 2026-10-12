@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 
 class AgentContext(BaseModel):
@@ -276,6 +276,10 @@ class AgentContext(BaseModel):
     # go through get_llm_for_chat.
     llm_provider: str = ""
     context_length: int | None = None
+    # The model's contextLength exactly as configured: None when unset, where
+    # `context_length` may hold a route's default. Sizes the agent's context
+    # budget, which otherwise comes from a table keyed by model name.
+    configured_context_window: int | None = None
     is_reasoning_model: bool = False
 
     # Record IDs for which dynamic_fetch_full_record was called this request.
@@ -290,6 +294,16 @@ class AgentContext(BaseModel):
     # through unchanged — see module docstring. Populated by
     # `model_post_init`.
     tool_state: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("configured_context_window", mode="before")
+    @classmethod
+    def _window_or_none(cls, value: Any) -> int | None:  # noqa: ANN401
+        # Model config is admin-entered JSON: a number, a numeric string, or junk.
+        try:
+            window = int(value)
+        except (TypeError, ValueError):
+            return None
+        return window if window > 0 else None
 
     @property
     def model_profile(self) -> Any:
@@ -346,6 +360,7 @@ class AgentContext(BaseModel):
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
         llm_provider: str = "", context_length: int | None = None,
+        configured_context_window: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
     ) -> "AgentContext":
@@ -409,6 +424,7 @@ class AgentContext(BaseModel):
             protocol=protocol,
             llm_provider=llm_provider,
             context_length=context_length,
+            configured_context_window=configured_context_window,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
             cancellation_token=cancellation_token,

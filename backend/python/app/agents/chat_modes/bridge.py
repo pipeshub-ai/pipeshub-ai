@@ -331,6 +331,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     model_key: str | None = None,
     is_multimodal_llm: bool = False,
     context_length: int = 128000,
+    configured_context_window: int | None = None,
     llm_provider: str = "",
     system_prompts_config: dict[str, Any] | None = None,
     supports_tool_calls: bool = True,
@@ -470,6 +471,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
+        configured_context_window=configured_context_window,
         run_id=run_id, cancellation_token=cancellation_token,
     )
 

@@ -70,8 +70,10 @@ class ContextBudget(BaseModel):
         model: str | None,
         reserved_output_tokens: int = 8_000,
         reserved_artifact_tokens: int = 0,
+        *,
+        context_window: int | None = None,
     ) -> "ContextBudget":
-        window = get_context_window(model)
+        window = context_window if context_window and context_window > 0 else get_context_window(model)
         max_tokens = max(window - reserved_output_tokens, 1_000)
         return cls(
             max_tokens=max_tokens,

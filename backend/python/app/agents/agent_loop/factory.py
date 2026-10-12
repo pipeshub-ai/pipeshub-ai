@@ -337,6 +337,7 @@ class PipesHubAgentFactory:
         ).max_images_per_request
 
         output_cap = max_turn_output_chars()
+        configured_window = context.configured_context_window
         cache_settings = PromptCacheSettings.from_env()
         cache_key = routing_key(context.org_id, context.conversation_id, cache_settings.routing_shards)
 
@@ -357,7 +358,7 @@ class PipesHubAgentFactory:
         transport_registry.register(
             "langchain",
             traced_transport_factory(
-                lambda: with_output_cap(_langchain_transport(), output_cap),
+                lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
             ),
@@ -395,10 +396,10 @@ class PipesHubAgentFactory:
                 # `context.cancellation_token` is `None` (no `runId`
                 # registered for this request).
                 return with_cancellation(
-                    with_output_cap(with_image_cap(direct, image_cap), output_cap),
+                    with_output_cap(with_image_cap(direct, image_cap), output_cap, context_window=configured_window),
                     context.cancellation_token,
                 )
-            return with_output_cap(_langchain_transport(), output_cap)
+            return with_output_cap(_langchain_transport(), output_cap, context_window=configured_window)
 
         transport_registry.register(
             DIRECT_TRANSPORT,
@@ -710,7 +711,10 @@ class PipesHubAgentFactory:
             # construction is equivalent to having registered it earlier;
             # it just needs `runtime` itself for `run_child()`, which
             # doesn't exist until this line.
-            register_skill_learning(hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name)
+            register_skill_learning(
+                hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name,
+                context_window=configured_window,
+            )
 
         # Domain-agent composition, registration half: now that the
         # AgentRuntime exists, actually build each claimed domain's child
@@ -756,7 +760,7 @@ class PipesHubAgentFactory:
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
-                provider=_transport_provider(), model_name=model_name,
+                provider=_transport_provider(), model_name=model_name, context_window=configured_window,
                 lazy_tools=domain_lazy_tools,
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
@@ -774,7 +778,7 @@ class PipesHubAgentFactory:
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
                     default_tool_names=_initial_entity_tool_grant(composed_names, context),
-                    context=context,
+                    context=context, context_window=configured_window,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -797,7 +801,7 @@ class PipesHubAgentFactory:
                     [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
                     context,
                 ),
-                context=context,
+                context=context, context_window=configured_window,
             )
 
         # `run_code`'s own description (see `CodingSandboxTool.description`)
@@ -893,7 +897,7 @@ class PipesHubAgentFactory:
             tool_names=tool_names,
             tool_disclosure=tool_disclosure,
             pinned_toolsets=pinned_toolsets,
-            model=ModelSpec(provider=_transport_provider(), model=model_name),
+            model=ModelSpec(provider=_transport_provider(), model=model_name, context_window=configured_window),
             loop=loop,
             max_turns=_MAX_TURNS,
         )
