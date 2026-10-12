@@ -888,7 +888,10 @@ describe('Application', () => {
       (app as any).notificationContainer = new Container();
       const order: string[] = [];
       (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
       const server = http.createServer((_req, res) => {
+        handlerStarted();
         setTimeout(() => { order.push('response'); res.end('ok'); }, 50);
       });
       (app as any).server = server;
@@ -901,7 +904,7 @@ describe('Application', () => {
           res.on('end', () => resolve(body));
         }).on('error', reject);
       });
-      await new Promise((r) => setTimeout(r, 10));
+      await requestReceived;
 
       await app.stop();
 
