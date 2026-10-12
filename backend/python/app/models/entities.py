@@ -1278,8 +1278,22 @@ class CommentRecord(Record):
             **Record.delete_state_from_arango(record_doc),
         )
 
+# How a ticket's source is named beside its own status name ("Status: NEW
+# (Jira: Backlog)"). Only the Jira connectors store `source_status` today.
+_SOURCE_STATUS_LABELS: dict[Connectors, str] = {
+    Connectors.JIRA: "Jira",
+    Connectors.JIRA_PERSONAL: "Jira",
+    Connectors.JIRA_CLOUD_PERSONAL: "Jira",
+    Connectors.JIRA_DATA_CENTER: "Jira",
+    Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+}
+
+
 class TicketRecord(Record):
     status: Status | str | None = None
+    # The status name as the source tool shows it (Jira's "Backlog"), kept
+    # beside `status`, which the value mapper normalises ("Backlog" -> NEW).
+    source_status: str | None = None
     priority: Priority | str | None = None
     type: ItemType | str | None = None
     delivery_status: DeliveryStatus | str | None = None
@@ -1306,7 +1320,7 @@ class TicketRecord(Record):
         specific_lines = []
         if self.status:
             status_val = self.status.value if isinstance(self.status, Enum) else self.status
-            specific_lines.append(f"* Status: {status_val}")
+            specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
@@ -1337,6 +1351,26 @@ class TicketRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def _source_status_suffix(self, status_val: str) -> str:
+        """`` (Jira: Backlog)`` when the source's own status name says more.
+
+        The normalised status alone misleads: Jira's "Backlog" and "To Do" are
+        both stored as NEW, and "In Review" and "Testing" both as QA, so a
+        reader asked for an issue's status would answer "NEW" where Jira says
+        "Backlog". Left out when the two differ only in case or spacing
+        ("In Progress" / IN_PROGRESS).
+        """
+        if not self.source_status:
+            return ""
+
+        def _norm(value: str) -> str:
+            return " ".join(value.replace("_", " ").replace("-", " ").lower().split())
+
+        if _norm(self.source_status) == _norm(status_val):
+            return ""
+        source = _SOURCE_STATUS_LABELS.get(self.connector_name, "source")
+        return f" ({source}: {self.source_status})"
 
     async def to_llm_context_with_live_fields(
         self,
@@ -1371,6 +1405,7 @@ class TicketRecord(Record):
             "_key": self.id,
             "orgId": self.org_id,
             "status": _get_value(self.status),
+            "sourceStatus": self.source_status,
             "priority": _get_value(self.priority),
             "type": _get_value(self.type),
             "deliveryStatus": _get_value(self.delivery_status),
@@ -1441,6 +1476,7 @@ class TicketRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
+            source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
             delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),

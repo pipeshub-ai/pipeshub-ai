@@ -4805,3 +4805,20 @@ class TestStreamRecordFile404DC:
                     assert exc.status_code == 404
                 except Exception:
                     pytest.fail("HTTPException was swallowed by the outer handler")
+
+
+def test_extract_issue_data_keeps_jira_own_status_name() -> None:
+    """Jira's "Backlog" is normalised to NEW; Jira's own name is kept beside it
+    so the model can be shown both."""
+    from app.models.entities import Status
+    conn = _make_connector()
+    row = conn._extract_issue_data(
+        {
+            "id": "1",
+            "key": "K-1",
+            "fields": {"summary": "S", "issuetype": {"name": "Bug"}, "status": {"name": "Backlog"}},
+        },
+        {},
+    )
+    assert row["status"] == Status.NEW
+    assert row["source_status"] == "Backlog"

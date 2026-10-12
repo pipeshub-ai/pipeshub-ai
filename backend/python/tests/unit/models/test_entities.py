@@ -1953,6 +1953,67 @@ class TestRecordToLlmContextEdgeCases:
 # ============================================================================
 
 
+class TestTicketRecordSourceStatus:
+    """Jira's own status name is shown beside the normalised one.
+
+    The value mapper stores Jira's "Backlog" and "To Do" both as NEW, and
+    "In Review" and "Testing" both as QA. With only the mapped value in its
+    context, the model answered "NEW" where Jira says "Backlog".
+    """
+
+    def _ticket(self, **overrides: object) -> TicketRecord:
+        from app.models.entities import Status
+        kwargs = {
+            "record_type": RecordType.TICKET,
+            "connector_name": Connectors.JIRA,
+            "status": Status.NEW,
+            **overrides,
+        }
+        return TicketRecord(**_record_kwargs(**kwargs))
+
+    def test_backlog_issue_shows_both_values(self) -> None:
+        ctx = self._ticket(source_status="Backlog").to_llm_context()
+        assert "* Status: NEW (Jira: Backlog)" in ctx
+
+    def test_in_review_issue_shows_both_values(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.QA, source_status="In Review").to_llm_context()
+        assert "* Status: QA (Jira: In Review)" in ctx
+
+    def test_same_name_is_not_repeated(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.IN_PROGRESS, source_status="In Progress").to_llm_context()
+        assert "* Status: IN_PROGRESS\n" in ctx + "\n"
+        assert "(Jira:" not in ctx
+
+    def test_unmapped_status_kept_as_is_is_not_repeated(self) -> None:
+        # map_status returns Jira's own name when it has no mapping for it.
+        ctx = self._ticket(status="Ready for Deploy", source_status="Ready for Deploy").to_llm_context()
+        assert "* Status: Ready for Deploy" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_record_stored_before_the_field_shows_status_alone(self) -> None:
+        ctx = self._ticket().to_llm_context()
+        assert "* Status: NEW" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_survives_the_graph_round_trip(self) -> None:
+        rec = self._ticket(id="t-1", org_id="org-1", source_status="Backlog")
+        ticket_doc = rec.to_arango_record()
+        assert ticket_doc["sourceStatus"] == "Backlog"
+        jsonschema.validate(instance=ticket_doc, schema=get_node_schema(CollectionNames.TICKETS.value))
+        record_doc = {
+            "_key": "t-1", "orgId": "org-1", "recordName": "[PROJ-1] Issue",
+            "recordType": "TICKET", "externalRecordId": "ext-123", "version": 1,
+            "origin": "CONNECTOR", "connectorName": Connectors.JIRA.value,
+            "webUrl": "https://example.atlassian.net/browse/PROJ-1", "connectorId": "conn-1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }
+        back = TicketRecord.from_arango_record(ticket_doc, record_doc)
+        assert back.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in back.to_llm_context()
+
+
 class TestTicketRecordToLlmContextEnum:
     def test_with_enum_status_and_priority(self):
         """Enum values should have .value extracted."""
