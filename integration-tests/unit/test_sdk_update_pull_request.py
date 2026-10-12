@@ -41,6 +41,7 @@ def run(
     labels: list[str],
     comments: list[dict] | None = None,
     events: list[dict] | None = None,
+    flag_cases: str = "",
 ) -> list[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -51,7 +52,10 @@ def run(
     (tmp_path / "labels.txt").write_text("".join(f"{label}\n" for label in labels))
     (tmp_path / "events.json").write_text(json.dumps(events or []))
     summary = tmp_path / "summary.md"
-    summary.write_text(f"{MARKER}\n## SDK tests: {verdict}\n", encoding="utf-8")
+    summary.write_text(
+        f"{MARKER}\n{flag_line(flag_cases)}\n## SDK tests: {verdict}\n",
+        encoding="utf-8",
+    )
     log = tmp_path / "gh.log"
     log.touch()
 
@@ -88,11 +92,22 @@ def test_flag_without_approval_labels_the_pr_and_fails_the_status(tmp_path: Path
     assert "add the label sdk-break-approved" in status
 
 
-def test_flag_with_approval_names_who_approved(tmp_path: Path):
+def flag_line(cases: str) -> str:
+    return f"<!-- sdk-flag-cases: {cases} -->"
+
+
+def report_comment(comment_id: int, cases: str) -> dict:
+    body = f"{MARKER}\n{flag_line(cases)}\n## SDK tests: FLAG\n"
+    return {"id": comment_id, "user": {"login": "github-actions[bot]"}, "body": body}
+
+
+def test_flag_with_approval_of_the_same_failures_names_who_approved(tmp_path: Path):
     calls = run(
         tmp_path,
         "FLAG",
         labels=["breaks-previous-sdk", "sdk-break-approved"],
+        comments=[report_comment(5, "go/searchlifecycle")],
+        flag_cases="go/searchlifecycle",
         events=[
             {
                 "event": "labeled",
@@ -106,6 +121,21 @@ def test_flag_with_approval_names_who_approved(tmp_path: Path):
     status = next(call for call in calls if "statuses/abc123" in call)
     assert "state=success" in status
     assert "description=Approved by @ana" in status
+    assert not any("DELETE" in call for call in calls)
+
+
+def test_an_approval_does_not_cover_new_failures(tmp_path: Path):
+    calls = run(
+        tmp_path,
+        "FLAG",
+        labels=["breaks-previous-sdk", "sdk-break-approved"],
+        comments=[report_comment(5, "go/searchlifecycle")],
+        flag_cases="go/searchlifecycle python/agentlifecycle",
+    )
+
+    assert "api -X DELETE repos/acme/app/issues/7/labels/sdk-break-approved" in calls
+    status = next(call for call in calls if "statuses/abc123" in call)
+    assert "state=failure" in status
 
 
 def test_a_later_run_edits_its_own_comment(tmp_path: Path):
@@ -135,10 +165,11 @@ def test_a_later_run_edits_its_own_comment(tmp_path: Path):
     assert not any("POST repos/acme/app/issues/7/comments" in call for call in calls)
 
 
-def test_ok_removes_the_flag_label_and_sets_no_status(tmp_path: Path):
-    calls = run(tmp_path, "OK", labels=["breaks-previous-sdk"])
+def test_ok_removes_both_labels_and_sets_no_status(tmp_path: Path):
+    calls = run(tmp_path, "OK", labels=["breaks-previous-sdk", "sdk-break-approved"])
 
     assert "api -X DELETE repos/acme/app/issues/7/labels/breaks-previous-sdk" in calls
+    assert "api -X DELETE repos/acme/app/issues/7/labels/sdk-break-approved" in calls
     assert not any("statuses/" in call for call in calls)
 
 

@@ -24,8 +24,10 @@ merge, but a person must accept it:
 3. Add the label `sdk-break-approved`. Anyone with triage access can. The status
    turns green and names you (`.github/workflows/sdk-break-approval.yml`).
 
-A later OK run removes `breaks-previous-sdk`. After an SDK release, change its tag
-in `.github/sdk-test-matrix.yaml`.
+An approval covers the failures it was given for. If a later run fails other cases,
+the job removes `sdk-break-approved` and the status fails again. A later OK run removes
+both labels. A previous run that writes no results (a failed checkout or install) is
+also a FLAG. After an SDK release, change its tag in `.github/sdk-test-matrix.yaml`.
 
 ## Where the tests live
 
