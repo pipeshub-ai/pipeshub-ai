@@ -283,10 +283,11 @@ class TestDeadlineWarningInARun:
 
         warned = [
             call for call in transport.calls
-            if "turns remaining" in str(getattr(call["messages"][-1], "content", ""))
+            if "last tool round" in getattr(call["messages"][-1], "step_footer", "")
         ]
         assert len(warned) == 1
-        warning = warned[0]["messages"][-1].content
         assert warned[0] is transport.calls[2]
+        assert isinstance(warned[0]["messages"][-1], ToolMessage)
+        warning = warned[0]["messages"][-1].step_footer
         assert "task_complete" not in warning
-        assert "Reply with your final answer" in warning
+        assert "reply with your final answer as plain text" in warning
