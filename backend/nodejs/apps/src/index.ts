@@ -5,29 +5,12 @@ import { Logger } from './libs/services/logger.service';
 // Loads environment variables
 config();
 import { Application } from './app';
+import { createGracefulShutdown } from './shutdown';
 
 const app = new Application();
 const logger = Logger.getInstance();
 
-let shuttingDown = false;
-
-const gracefulShutdown = async (signal: string) => {
-  // A second signal (or an error thrown while stopping) must not start a
-  // second, overlapping teardown of the same containers.
-  if (shuttingDown) {
-    logger.warn(`Received ${signal} while already shutting down; ignoring`);
-    return;
-  }
-  shuttingDown = true;
-  logger.info(`Received ${signal}. Starting graceful shutdown...`);
-  try {
-    await app.stop();
-    process.exit(0);
-  } catch (error) {
-    Logger.getInstance().error('Error during shutdown:', error);
-    process.exit(1);
-  }
-};
+const gracefulShutdown = createGracefulShutdown(app, logger);
 
 // Global error handlers to prevent app crashes
 process.on('uncaughtException', (error) => {
