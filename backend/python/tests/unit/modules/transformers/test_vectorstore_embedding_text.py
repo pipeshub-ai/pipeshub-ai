@@ -144,3 +144,25 @@ def test_image_alt_text_is_part_of_the_image_description() -> None:
         media_metadata=MediaMetadata(alt_text="Bar chart"),
     )
     assert VectorStore._image_block_description(block) == "Revenue by quarter Bar chart"
+
+
+def test_image_alt_text_is_added_to_a_generated_description() -> None:
+    block = Block(
+        index=0,
+        type=BlockType.IMAGE,
+        data={"uri": "data:image/png;base64,AAAA"},
+        image_metadata=ImageMetadata(description="A bar chart with four bars."),
+        media_metadata=MediaMetadata(alt_text="Revenue FY26"),
+    )
+    assert VectorStore._image_block_description(block) == "A bar chart with four bars. Revenue FY26"
+
+
+def test_alt_text_already_in_the_generated_description_is_not_repeated() -> None:
+    block = Block(
+        index=0,
+        type=BlockType.IMAGE,
+        data={"uri": "data:image/png;base64,AAAA"},
+        image_metadata=ImageMetadata(description="Revenue FY26 by quarter"),
+        media_metadata=MediaMetadata(alt_text="revenue fy26"),
+    )
+    assert VectorStore._image_block_description(block) == "Revenue FY26 by quarter"

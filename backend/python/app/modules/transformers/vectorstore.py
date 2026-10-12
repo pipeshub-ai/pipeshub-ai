@@ -746,23 +746,29 @@ class VectorStore(Transformer):
 
         Prefers the description `ImageDescriber` wrote before the record was
         stored, since parser-captured captions are empty for most PDFs; falls
-        back to caption/footnote/annotation metadata (e.g. markdown/HTML alt
-        text), then to an empty string.
+        back to caption/footnote/annotation metadata, then to an empty string.
+        The author's alt text (``media_metadata.alt_text``) is added to either.
         """
         image_metadata = getattr(block, "image_metadata", None)
         if image_metadata is None:
             return ""
+        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
+        alt_text = alt_text.strip() if isinstance(alt_text, str) else ""
         described = getattr(image_metadata, "description", None)
         if isinstance(described, str) and described.strip():
-            return described.strip()
+            described = described.strip()
+            # The author's alt names what a generated description can only
+            # depict ("Revenue FY26" vs "a bar chart").
+            if alt_text and alt_text.lower() not in described.lower():
+                return f"{described} {alt_text}"
+            return described
         parts: List[str] = []
         for field in ("captions", "footnotes", "annotations"):
             values = getattr(image_metadata, field, None)
             if values:
                 parts.extend(v for v in values if v)
-        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
-        if isinstance(alt_text, str) and alt_text.strip() and alt_text.strip() not in parts:
-            parts.append(alt_text.strip())
+        if alt_text and alt_text not in parts:
+            parts.append(alt_text)
         return " ".join(parts).strip()
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
