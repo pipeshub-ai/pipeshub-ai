@@ -410,14 +410,15 @@ def _chunk_oversized_text(
 
 
 def _bounded_documents(text: str, metadata: dict) -> list[Document]:
-    """Documents for one piece of table text, split to the model's token
-    ceiling. Table rows and summaries are otherwise unbounded, and an over-long
-    one is rejected by the embedding API only after the full retry budget."""
+    """Documents for one piece of table or SQL text, split to the model's token
+    ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
+    and an over-long one is rejected by the embedding API only after the full
+    retry budget."""
     ceiling = _embed_token_ceiling()
     if not _exceeds_token_ceiling(text, ceiling):
         return [Document(page_content=text, metadata=metadata)]
     return [
-        Document(page_content=piece, metadata=metadata)
+        Document(page_content=piece, metadata={**metadata})
         for piece in _split_to_token_ceiling(text, ceiling)
     ]
 
@@ -1813,12 +1814,9 @@ class VectorStore(Transformer):
                             if table_summary:
                                 parts.append(f"/* Table Description:\n{table_summary}\n*/")
                             parts.append(ddl)
-                            documents_to_embed.append(
-                                Document(
-                                    page_content="\n\n".join(parts),
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                "\n\n".join(parts), sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
@@ -1853,12 +1851,9 @@ class VectorStore(Transformer):
 
                         view_context = "\n".join(view_context_parts)
                         if len(view_context.strip()) > len(f"-- View: {fqn}"):
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=view_context,
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                view_context, sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL VIEW for embedding: {fqn}"
                             )
@@ -1872,20 +1867,18 @@ class VectorStore(Transformer):
                     if table_data:
                         table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block_group.id,
-                                        "blockGroupIndex": block_group.index,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block_group.id,
+                                    "blockGroupIndex": block_group.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    "isBlockGroup": True,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
 
             # ── SQL row blocks ──
             sql_rows_embedded = 0
@@ -1893,20 +1886,18 @@ class VectorStore(Transformer):
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
-                    documents_to_embed.append(
-                        Document(
-                            page_content=row_text,
-                            metadata={
-                                "virtualRecordId": virtual_record_id,
-                                "blockId": block.id,
-                                "blockIndex": block.index,
-                                "orgId": org_id,
-                                "isBlock": True,
-                                "isBlockGroup": False,
-                                "blockType": BlockType.TABLE_ROW.value,
-                            },
-                        )
-                    )
+                    documents_to_embed.extend(_bounded_documents(
+                        row_text,
+                        {
+                            "virtualRecordId": virtual_record_id,
+                            "blockId": block.id,
+                            "blockIndex": block.index,
+                            "orgId": org_id,
+                            "isBlock": True,
+                            "isBlockGroup": False,
+                            "blockType": BlockType.TABLE_ROW.value,
+                        },
+                    ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
                 self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
