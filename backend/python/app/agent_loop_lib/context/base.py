@@ -78,11 +78,15 @@ class ContextBudget(BaseModel):
         reserved_prompt_tokens: int = 0,
     ) -> "ContextBudget":
         window = context_window if context_window and context_window > 0 else get_context_window(model)
-        # A small configured window (an 8k local model) cannot give 8k to the
-        # reply: at least three quarters of it stays for the prompt.
-        reserve = min(reserved_output_tokens, window // 4)
         prompt = max(reserved_prompt_tokens, 0)
-        max_tokens = max(window - reserve - prompt, 1)
+        left = window - prompt
+        # A small window cannot give 8k to the reply: at most a quarter of it,
+        # and at most half of what the system prompt and tool schemas leave, so
+        # prompt + messages + reply fit whenever the prompt itself does. A prompt
+        # over the window leaves 1 token; the provider rejects that request with
+        # its own context-length error, which callers already explain.
+        reserve = max(min(reserved_output_tokens, window // 4, left // 2), 0)
+        max_tokens = max(left - reserve, 1)
         return cls(
             max_tokens=max_tokens,
             model=model,

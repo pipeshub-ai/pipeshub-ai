@@ -88,7 +88,28 @@ class TestSmallWindows:
         sized = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=1_800)
 
         assert sized.max_tokens == 8_192 - 2_048 - 1_800
-        assert ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=9_000).max_tokens == 1
+
+    @pytest.mark.parametrize("prompt", [0, 1_800, 6_144, 7_000, 8_000, 8_191])
+    def test_prompt_messages_and_reply_fit_whenever_the_prompt_does(self, prompt: int) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=prompt)
+
+        assert sized.max_tokens >= 1
+        assert prompt + sized.max_tokens + sized.reserved_output_tokens <= 8_192
+
+    def test_a_large_prompt_shares_what_it_leaves_between_messages_and_reply(self) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=7_000)
+
+        assert (sized.max_tokens, sized.reserved_output_tokens) == (596, 596)
+
+    def test_a_prompt_over_the_window_leaves_one_token(self) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=9_000)
+
+        assert (sized.max_tokens, sized.reserved_output_tokens) == (1, 0)
+
+    def test_large_windows_keep_the_full_reply_reserve_beside_a_large_prompt(self) -> None:
+        sized = ContextBudget.for_model("claude-opus-5", reserved_prompt_tokens=20_000)
+
+        assert (sized.max_tokens, sized.reserved_output_tokens) == (300_000 - 20_000 - 8_000, 8_000)
 
     def test_table_windows_keep_the_full_output_reserve(self) -> None:
         assert ContextBudget.for_model("claude-opus-5").reserved_output_tokens == 8_000
@@ -183,6 +204,16 @@ class TestShapersOnAnEightKWindow:
         ]
 
         shaped = await _shape(shape_sliding_window(), messages, _8K)
+
+        assert shaped == messages
+
+    async def test_a_short_question_fits_beside_a_7000_token_prompt(self) -> None:
+        """About 1,200 tokens of the window are left; a 1-token budget dropped
+        the question that fits in them."""
+        budget = ContextBudget.for_model("local-model", context_window=8_192, reserved_prompt_tokens=7_000)
+        messages: list[Message] = [UserMessage(content="What changed in the Q3 plan, and who approved it?")]
+
+        shaped = await _shape(shape_synthesis_guard(), messages, budget)
 
         assert shaped == messages
 
