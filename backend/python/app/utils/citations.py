@@ -104,13 +104,22 @@ _REF_TOKEN = r'(?:ref\d+|https?://ref\d+\.xyz/?)'
 # Only the opening is matched here; closers are counted off in code so a
 # paren that belongs to the surrounding sentence is not eaten.
 _WRAPPED_REF_LINK_RE = re.compile(
-    r'(\[?)\[([^\[\]\n]*)\]\('
-    r'\s*([\[(<`"\']*)\s*'
-    r'(?:[^\[\]()\n]*\]\()?'
-    rf'({_REF_TOKEN}(?:[\s,;\[\]]+{_REF_TOKEN})*)'
+    r'(?P<outer>\[?)\[(?P<label>[^\[\]\n]*)\]\('
+    r'\s*(?P<openers>[\[(<`"\']*)\s*'
+    r'(?P<nested>[^\[\]()\n]*\]\()?'
+    rf'(?P<refs>{_REF_TOKEN}(?:[\s,;\[\]]+{_REF_TOKEN})*)'
     r'\s*[.,;:]?'
 )
-_WRAPPED_REF_CLOSERS = ')]>`"\''
+# Further links in a nested list target: [source]([source](ref1), [source](ref2)).
+_NESTED_SIBLING_LINK_RE = re.compile(
+    rf'[ \t]*[,;]?[ \t]*\[[^\[\]\n]*\]\((?P<ref>{_REF_TOKEN})\)'
+)
+# `)` and `]` close any wrapper (LLMs mismatch them); the rest only close
+# their own opener, so [notes](ref2's-page) is not split at the apostrophe.
+_ALWAYS_CLOSERS = ')]'
+_PAIRED_CLOSERS = {'<': '>', '`': '`', '"': '"', "'": "'"}
+_CLOSER_GAP = ' \t.,;:'
+_MAX_UNWRAP_PASSES = 4
 _REF_TOKEN_RE = re.compile(_REF_TOKEN)
 
 
@@ -143,40 +152,63 @@ def _expand_multi_ref_links(text: str) -> str:
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
 
 
-def _unwrap_ref_link_targets(text: str) -> str:
-    """Rewrite ``[label](<wrapped refs>)`` into plain ``[label](refN)`` links.
+def _consume_closers(text: str, end: int, allowed: str, count: int) -> tuple[int, int]:
+    closed = 0
+    while closed < count:
+        probe = end
+        while probe < len(text) and text[probe] in _CLOSER_GAP:
+            probe += 1
+        if probe >= len(text) or text[probe] not in allowed:
+            break
+        end = probe + 1
+        closed += 1
+    return end, closed
 
-    Without this the bare-ref passes would turn the ref inside the target into
-    its own link, leaving ``[source]([2](url))`` in the final answer.
-    """
+
+def _unwrap_ref_link_targets_once(text: str) -> str:
     out: list[str] = []
     pos = 0
     for m in _WRAPPED_REF_LINK_RE.finditer(text):
-        end = m.end()
-        closed = 0
-        refs = m.group(4)
-        expected = len(m.group(3)) + 1 + max(0, refs.count('[') - refs.count(']'))
-        for _ in range(expected):
-            probe = end
-            while probe < len(text) and text[probe] in ' \t':
-                probe += 1
-            if probe < len(text) and text[probe] in _WRAPPED_REF_CLOSERS:
-                end = probe + 1
-                closed += 1
-            else:
-                break
+        if m.start() < pos:
+            continue
+        openers, refs_text = m['openers'], m['refs']
+        allowed = _ALWAYS_CLOSERS + ''.join(c for o, c in _PAIRED_CLOSERS.items() if o in openers)
+        expected = len(openers) + 1 + max(0, refs_text.count('[') - refs_text.count(']'))
+        end, closed = _consume_closers(text, m.end(), allowed, expected)
         if not closed:
             continue
-        outer_bracket = m.group(1)
+        refs = _REF_TOKEN_RE.findall(refs_text)
+        while m['nested'] and closed < expected:
+            sibling = _NESTED_SIBLING_LINK_RE.match(text, end)
+            if not sibling:
+                break
+            refs.append(sibling['ref'])
+            end, more = _consume_closers(text, sibling.end(), allowed, expected - closed)
+            closed += more
+        outer_bracket = m['outer']
         if outer_bracket and end < len(text) and text[end] == ']':
             end += 1
             outer_bracket = ''
-        label = m.group(2)
-        links = ' '.join(f'[{label}]({ref})' for ref in _REF_TOKEN_RE.findall(refs))
+        links = ' '.join(f'[{m["label"]}]({ref})' for ref in refs)
         out.append(text[pos:m.start()] + outer_bracket + links)
         pos = end
     out.append(text[pos:])
     return ''.join(out)
+
+
+def _unwrap_ref_link_targets(text: str) -> str:
+    """Rewrite ``[label](<wrapped refs>)`` into plain ``[label](refN)`` links.
+
+    Without this the bare-ref passes would turn the ref inside the target into
+    its own link, leaving ``[source]([2](url))`` in the final answer. One pass
+    peels one layer, so repeat until a pass changes nothing.
+    """
+    for _ in range(_MAX_UNWRAP_PASSES):
+        unwrapped = _unwrap_ref_link_targets_once(text)
+        if unwrapped == text:
+            break
+        text = unwrapped
+    return text
 
 
 def _normalize_bracket_refs(text: str) -> str:

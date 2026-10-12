@@ -980,6 +980,29 @@ class TestRefWrappedInsideLinkTarget:
         normalized, _ = self._normalize("Tall (see [source]([ref2])).")
         assert normalized == f"Tall (see [1]({self.URL2}))."
 
+    def test_punctuation_between_closers_keeps_one_paren(self) -> None:
+        for answer, expected in (
+            ("Tall [source]([ref2].).", f"Tall [1]({self.URL2})."),
+            ("Tall (see [source]([ref2].)).", f"Tall (see [1]({self.URL2}))."),
+            ("Tall [source](<ref2>.).", f"Tall [1]({self.URL2})."),
+        ):
+            normalized, _ = self._normalize(answer)
+            assert normalized == expected, answer
+
+    def test_target_that_only_starts_with_a_ref_is_untouched(self) -> None:
+        for text in ("See [notes](ref2's-page).", 'See [source](ref2 "title").'):
+            assert normalize_malformed_citations(text) == text
+
+    def test_doubly_wrapped_targets_are_fully_unwrapped(self) -> None:
+        for answer in ("Tall [source]([source]([ref2])).", "Tall [[[source](ref2)]]."):
+            normalized, _ = self._normalize(answer)
+            assert normalized == f"Tall [1]({self.URL2}).", answer
+
+    def test_list_of_links_nested_as_target(self) -> None:
+        normalized, cites = self._normalize("Tall [source]([source](ref1), [source](ref2)).")
+        assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2})."
+        assert len(cites) == 2
+
     def test_ref_inside_ordinary_link_url_is_not_rewritten(self) -> None:
         text = "Read [the notes](/docs/ref2/intro) and [ref2 spec](https://example.com/ref2)."
         assert normalize_malformed_citations(text) == text
