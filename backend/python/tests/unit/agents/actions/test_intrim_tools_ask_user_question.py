@@ -129,3 +129,19 @@ async def test_asking_nothing_is_refused_not_answered(questions: list) -> None:
     assert isinstance(result, ToolOutput)
     assert result.success is False
     assert "without a question" in result.error
+
+
+@pytest.mark.asyncio
+async def test_blank_questions_beside_a_real_one_are_dropped() -> None:
+    """Only the real question becomes a card; a blank one would render empty."""
+    result_json = await InternalTools().ask_user_question(
+        user_intent="User wants to pick a channel.",
+        questions=[
+            {"question": "Which channel?", "options": [{"label": "#general"}, {"label": "#dev"}]},
+            {"question": "   ", "options": [{"label": "a"}]},
+            {"options": [{"label": "b"}]},
+        ],
+    )
+
+    payload = json.loads(result_json)
+    assert [q["question"] for q in payload["questions"]] == ["Which channel?"]

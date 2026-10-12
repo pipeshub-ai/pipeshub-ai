@@ -342,6 +342,9 @@ class InternalTools:
         tool is terminal, and with nothing to ask it would hand whatever the
         model wrote alongside it ("I'll verify ...") back as the final answer.
         """
-        if not any(_question_text(item).strip() for item in questions or []):
+        # Argument validation checks only names, so a blank item can sit
+        # beside a real one and would render as an empty question card.
+        questions = [item for item in questions or [] if _question_text(item).strip()]
+        if not questions:
             return ToolOutput(success=False, error=_NO_QUESTIONS_ERROR)
         return json.dumps(question_payload(user_intent, questions), ensure_ascii=False)
