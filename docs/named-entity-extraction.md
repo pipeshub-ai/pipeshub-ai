@@ -63,10 +63,20 @@ this order:
 1. A short read-only agent (`app/agent_loop_lib`) with per-record tools:
    read blocks, search the document, normalize a value, submit entities,
    and finish. The run is capped at 8 turns, 24 tool calls, and 120 seconds.
-   Accepted entities are kept when a budget trips.
-2. One structured call, when the model cannot call tools, the index LLM
-   pool is full, or the agent fails before it accepts anything.
-   It asks for a strict schema, then a non-strict tool call, then prompted
+   Accepted entities are kept when a budget trips. A block longer than 3,000
+   characters is shown in parts, each ending with the `read_blocks` offset that
+   continues it, and `finish` is refused while any block is unread or read only
+   in part.
+2. Structured single calls, when the model cannot call tools, the index LLM
+   pool is full, or the agent fails before it accepts anything. Blocks are
+   packed in reading order into windows of up to `max_window_chars` (4,000
+   characters), and a longer block is read in pieces of that size, cut after a
+   space; up to `max_llm_windows` (5) windows are sent. Grounding searches the
+   whole block, so a name found in a later piece keeps its real offsets.
+   Larger windows mean fewer calls but fewer entities per call; 4,000 kept
+   recall within run-to-run noise of five-block windows on a 160-document
+   sample, where 8,000 lost more. Each call asks for a strict schema, then a
+   non-strict tool call, then prompted
    JSON. A model starts at a lower mode only after that mode answered a prompt
    a higher one failed on, and only for an hour: an error every mode shares (a
    content filter, an outage, a 429) changes nothing.
@@ -126,6 +136,34 @@ one transaction. Where the claim commits on its own (Neo4j without explicit
 transactions), a retry that claimed its marker and then hit a deadlock keeps
 its claim for the next attempt rather than reading the missing marker as a
 newer write, and a retry that fails again carries its failure count.
+
+An extraction that left text unread (windows past `max_llm_windows`, or an
+agent that stopped with blocks unread; failed calls are not a reason) is
+written as it is, and the record is queued to be extracted again: a job on the
+same retry marker with `reextract` set, due at once. Nothing is added to the
+record. A background loop (`app/modules/indexing/named_entity_completion.py`,
+one replica under a Redis lease, every `NAMED_ENTITY_COMPLETION_INTERVAL_SECONDS`)
+works these jobs only while at least half of the indexing LLM slots are free. It
+reads the record's stored blocks from its blob and extracts in single calls with
+up to 50 windows, without the record lease; the write then takes the lease and,
+like a retry, lands only while its job is still the one it read, so a record
+indexed meanwhile keeps its newer entities. Nothing is parsed or embedded again.
+A re-extraction that used all 50 windows is not queued again, so a very long
+record settles; a failure backs off like a retry and stays a re-extraction. The
+persist-retry pass reads only the write retries. The blob keeps the extraction
+indexing stored: a retry that later writes it again queues the record once more.
+
+Records indexed before extraction read long blocks whole are queued by an
+operator, because it spends model calls on a whole org:
+
+```bash
+python -m app.scripts.named_entity_reextract --org ORG            # dry run
+python -m app.scripts.named_entity_reextract --org ORG --apply    # queue those that left text unread
+python -m app.scripts.named_entity_reextract --org ORG --all --apply  # queue every record with an extraction
+```
+
+It reads each indexed record's stored extraction, prints one JSON line per page
+with the last key, and can be repeated or resumed with `--after-key`.
 
 A `FAILED` run keeps the record's existing mention edges, because a transient
 model error must not erase the last good extraction. So does a run ended by a
@@ -214,8 +252,8 @@ the agent's tool result, says why and how to narrow it.
 ## Configuration
 
 `/services/namedEntities` overrides the timezone (default UTC), enabled
-kinds, and budgets. Phone numbers and IP addresses are off unless enabled
-there.
+kinds, and budgets (among them `max_window_chars` and `max_llm_windows` for the
+single calls). Phone numbers and IP addresses are off unless enabled there.
 
 ## Evaluation
 
