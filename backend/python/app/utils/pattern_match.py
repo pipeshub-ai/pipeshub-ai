@@ -6,7 +6,8 @@ import logging
 import os
 import re
 import shlex
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +39,9 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record,
 )
+
+if TYPE_CHECKING:
+    from app.utils.stage_timer import RunTimer
 
 _PATTERN_MATCH_TIMEOUT = 30
 _LLM_GREP_TIMEOUT = 15.0
@@ -1187,6 +1191,7 @@ async def run_pattern_match(
 
 async def await_pattern_match(
     task: asyncio.Task, logger_instance: logging.Logger,
+    run_timer: "RunTimer | None" = None,
 ) -> list[dict[str, Any]]:
     """Result of a pattern-match task started beside semantic search; any
     failure is ``[]`` so semantic results are always returned.
@@ -1194,7 +1199,11 @@ async def await_pattern_match(
     A CancelledError from inside the task is a pattern-match failure too
     (``except Exception`` misses it); only cancellation of the caller itself
     is re-raised.
+
+    When ``run_timer`` is given, the time spent waiting here (semantic
+    results already in hand) is recorded as ``pattern_match_wait``.
     """
+    wait_started = time.perf_counter()
     try:
         return await task or []
     except asyncio.CancelledError:
@@ -1206,6 +1215,9 @@ async def await_pattern_match(
         logger_instance.warning(
             "Pattern match failed, continuing with semantic results only: %s", exc,
         )
+    finally:
+        if run_timer is not None:
+            run_timer.record("pattern_match_wait", (time.perf_counter() - wait_started) * 1000.0)
     return []
 
 

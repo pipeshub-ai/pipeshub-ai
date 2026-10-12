@@ -33,6 +33,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agent_loop_lib.events.base import EventType
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
@@ -48,12 +49,14 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.utils.stage_timer import RunTimer
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from langchain_core.language_models.chat_models import BaseChatModel
 
+    from app.agent_loop_lib.events.base import AgentEvent
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
     from app.utils.stage_timer import StageTimer
 
@@ -63,6 +66,48 @@ logger = logging.getLogger(__name__)
 # dict — a private object identity check, not a value any real event could
 # collide with.
 _DONE = object()
+
+
+class _AgentRunTiming:
+    """Turns the top-level agent's events into `RunTimer` spans.
+
+    A model turn runs from TURN_START until its reply has finished streaming
+    (TEXT_MESSAGE_END), so it excludes the tool calls that follow; a turn
+    that never streams falls back to TURN_COMPLETE. Turns are numbered
+    from 1 in the order they start (``llm_turn_1``, ``llm_turn_2``, ...).
+    A tool span runs from TOOL_CALL to TOOL_RESULT or TOOL_BLOCKED, matched
+    on ``tool_call_id`` and named ``tool:<name>``. A sub-agent's events are
+    skipped: its whole run already sits inside the parent's ``spawn_agent``
+    tool span. Logging only — nothing here changes what the agent does.
+    """
+
+    __slots__ = ("_timer", "turns", "tool_calls")
+
+    def __init__(self, timer: RunTimer) -> None:
+        self._timer = timer
+        self.turns = 0
+        self.tool_calls = 0
+
+    def on_event(self, event: AgentEvent) -> None:
+        if not self._timer.enabled:
+            return
+        run_context = getattr(event, "run_context", None)
+        if run_context is not None and run_context.parent_run_id is not None:
+            return
+        event_type = getattr(event, "event_type", None)
+        payload = getattr(event, "payload", None) or {}
+        if event_type == EventType.TURN_START:
+            self.turns += 1
+            self._timer.start(("turn", payload.get("turn_index")))
+        elif event_type in (EventType.TEXT_MESSAGE_END, EventType.TURN_COMPLETE):
+            self._timer.stop(("turn", payload.get("turn_index")), f"llm_turn_{self.turns}")
+        elif event_type == EventType.TOOL_CALL:
+            self.tool_calls += 1
+            self._timer.start(("tool", payload.get("tool_call_id")))
+        elif event_type in (EventType.TOOL_RESULT, EventType.TOOL_BLOCKED):
+            self._timer.stop(
+                ("tool", payload.get("tool_call_id")), f"tool:{payload.get('tool') or 'unknown'}",
+            )
 
 
 def _pre_stream_error_frame(protocol: str, message: str, code: str) -> str:
@@ -351,6 +396,11 @@ async def run_agent_loop_stream(
     chat_state["sse_protocol"] = protocol
     # Picked up by PipesHubAgentFactory.create() for its own sub-stage marks.
     chat_state["_stage_timer"] = stage_timer
+    # `stage_timer` stops at the first agent event; this one times the rest
+    # of the run (turns, tools, pattern-match wait, finish) and logs it as a
+    # second line when the run ends. Same flag, so off together.
+    run_timer = RunTimer(enabled=bool(stage_timer is not None and stage_timer.enabled))
+    chat_state["_run_timer"] = run_timer
     # Model profile fields from etcd llm_config go in at construction, not
     # after: `model_post_init` resolves this request's image policy from
     # `llm_provider`, and a later assignment would leave it on the
@@ -364,6 +414,8 @@ async def run_agent_loop_stream(
 
     async def _produce() -> None:
         agent: Any = None
+        run_timing = _AgentRunTiming(run_timer)
+        run_finished = False
         try:
             factory = PipesHubAgentFactory()
             agent, _runtime, goal, clarifying_questions = await factory.create(
@@ -384,6 +436,7 @@ async def run_agent_loop_stream(
                     context, goal.description, clarifying_questions,
                     event_sink=context.event_sink,
                 )
+                run_finished = True
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
@@ -391,6 +444,7 @@ async def run_agent_loop_stream(
                     goal,
                     _skip_start=bool(context.tool_state.get("ask_user_question_resume")),
                 ):
+                    run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
 
@@ -401,6 +455,7 @@ async def run_agent_loop_stream(
                 structured_confidence = normalize_confidence(
                     result.confidence.value if result.confidence is not None else None
                 )
+                run_timer.start("finish")
                 await finalizer.run(
                     agent_success=result.success, agent_error=result.error,
                     agent_output=result.output, event_sink=context.event_sink,
@@ -421,6 +476,8 @@ async def run_agent_loop_stream(
                     agent_cancelled=result.cancelled,
                     agent_needs_input=result.needs_input,
                 )
+                run_timer.stop("finish", "finish")
+                run_finished = True
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
             error_code, user_message = classify_exception(exc)
@@ -430,6 +487,13 @@ async def run_agent_loop_stream(
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            # Logged before _DONE so the line is written even when the
+            # consumer stops waiting on this task after the last event.
+            run_timer.emit(
+                log, "agent chat run" if run_finished else "agent chat run (incomplete)",
+                mode=query_info.get("chatMode"), model=model_name,
+                turns=run_timing.turns, tool_calls=run_timing.tool_calls,
+            )
             # Flush any pending coalesced events and signal the SSE
             # consumer loop FIRST, so the HTTP response closes promptly
             # after the last real event.  Cleanup (orphan cancellation,

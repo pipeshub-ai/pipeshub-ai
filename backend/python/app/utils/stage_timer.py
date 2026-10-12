@@ -6,6 +6,10 @@ single log line. Deltas are between marks, so the numbers sum to the total.
 
 Overhead is a `perf_counter()` call and a tuple append per stage. Enabled by
 default; set ``PIPESHUB_CHAT_TIMING=false`` to compile it down to no-ops.
+
+`StageTimer` stops at the first agent event. `RunTimer` covers the rest of an
+agent run — each model turn, each tool call, the pattern-match wait inside a
+search, and the finish step — under the same flag.
 """
 
 from __future__ import annotations
@@ -17,8 +21,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Hashable
 
-__all__ = ["StageTimer", "timing_enabled"]
+__all__ = ["RunTimer", "StageTimer", "timing_enabled"]
 
 
 def timing_enabled() -> bool:
@@ -43,6 +48,10 @@ class StageTimer:
         self._marks: list[tuple[str, float]] = []
         self._emitted = False
 
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
     def mark(self, stage: str) -> None:
         if not self._enabled:
             return
@@ -64,4 +73,68 @@ class StageTimer:
             logger.info(
                 "⏱ %s total=%.0fms | %s%s",
                 label, self.total_ms, parts, f" | {suffix}" if suffix else "",
+            )
+
+
+class RunTimer:
+    """Span timings for one agent run, written as one line when the run ends.
+
+    Unlike `StageTimer`'s marks, spans are measured independently: tool calls
+    can run in parallel and the pattern-match wait happens inside a tool call,
+    so spans may overlap and do not sum to the total. Each span is logged
+    under its name, in the order it finished; a name can repeat (two
+    ``tool:retrieval`` spans, say).
+
+    `start(key)` / `stop(key, name)` time a span between two events that share
+    a key (a turn number, a tool-call id); `stop` without a matching `start` is
+    ignored. `record(name, ms)` adds a span measured elsewhere. `emit()` is
+    safe to call more than once; only the first call logs.
+    """
+
+    __slots__ = ("_enabled", "_t0", "_open", "_spans", "_emitted")
+
+    def __init__(self, *, enabled: bool | None = None) -> None:
+        self._enabled = timing_enabled() if enabled is None else enabled
+        self._t0 = time.perf_counter()
+        self._open: dict[Hashable, float] = {}
+        self._spans: list[tuple[str, float]] = []
+        self._emitted = False
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def spans(self) -> list[tuple[str, float]]:
+        """Finished spans as ``(name, ms)``, in the order they finished."""
+        return list(self._spans)
+
+    def start(self, key: Hashable) -> None:
+        if not self._enabled:
+            return
+        self._open[key] = time.perf_counter()
+
+    def stop(self, key: Hashable, name: str) -> None:
+        if not self._enabled:
+            return
+        started = self._open.pop(key, None)
+        if started is not None:
+            self._spans.append((name, (time.perf_counter() - started) * 1000.0))
+
+    def record(self, name: str, ms: float) -> None:
+        if not self._enabled:
+            return
+        self._spans.append((name, ms))
+
+    def emit(self, logger: "logging.Logger", label: str, **extra: object) -> None:
+        if not self._enabled or self._emitted:
+            return
+        self._emitted = True
+        total_ms = (time.perf_counter() - self._t0) * 1000.0
+        parts = " ".join(f"{name}={ms:.0f}ms" for name, ms in self._spans)
+        suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
+        with contextlib.suppress(Exception):
+            logger.info(
+                "⏱ %s total=%.0fms | %s%s",
+                label, total_ms, parts, f" | {suffix}" if suffix else "",
             )
