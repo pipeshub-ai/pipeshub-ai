@@ -252,7 +252,7 @@ _FIVE_BLOCKS = 125
 
 async def test_windows_past_the_budget_make_single_call_partial():
     extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply()))
-    result = await extractor.extract(_people_request(30, max_window_chars=_FIVE_BLOCKS))
+    result = await extractor.extract(_people_request(30, max_window_chars=_FIVE_BLOCKS, max_llm_windows=3))
     assert (result.termination_reason, result.status) == ("single_call", "PARTIAL")
     assert (result.stats.windows_total, result.stats.windows_run, result.stats.windows_failed) == (6, 3, 0)
     assert len(result.entities) == 15

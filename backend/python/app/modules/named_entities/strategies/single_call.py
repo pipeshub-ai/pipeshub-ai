@@ -30,8 +30,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_WINDOW_CHARS = 8_000
-# A window is at most 8k characters; a reply with more items than this is not reading them.
+_WINDOW_CHARS = 4_000
+# A window is at most 4k characters; a reply with more items than this is not reading them.
 _MAX_ITEMS_PER_WINDOW = 200
 _CALL_TIMEOUT = 30.0
 _WIRE_ADAPTER = TypeAdapter(WireEntity)
@@ -166,7 +166,7 @@ class SingleCallExtractionStrategy:
     ) -> StrategyResult:
         del seed
         budgets = ctx.budgets
-        limit = getattr(budgets, "max_llm_windows", 3)
+        limit = getattr(budgets, "max_llm_windows", 5)
         all_windows = pack_windows(doc.units, getattr(budgets, "max_window_chars", _WINDOW_CHARS))
         windows = all_windows[:limit]
         session = ExtractionSession(doc.units, enabled=ctx.enabled, norm_ctx=ctx.norm, seed_count=0)

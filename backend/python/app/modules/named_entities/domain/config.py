@@ -27,10 +27,13 @@ class NamedEntityBudgets(BaseModel):
     max_input_tokens: int = 60_000
     max_output_tokens: int = 8_000
     wall_clock_seconds: float = 120.0
-    max_llm_windows: int = 3
+    max_llm_windows: int = 5
     # Characters of record text per single-call window. Blocks are packed up to
     # this many, and a longer block is read in pieces of at most this size.
-    max_window_chars: int = 8_000
+    # Larger windows mean fewer calls but fewer entities per call: on a 100k
+    # corpus sample 4k windows kept recall within run-to-run noise of the old
+    # five-block windows, where 8k lost more; five 4k calls cover 99.9% of records.
+    max_window_chars: int = 4_000
     max_entities: int = 300
     max_per_block: int = 40
     max_mentions_per_entity: int = 25
