@@ -555,8 +555,10 @@ def _recover_raw_grep_commands(message: object) -> list[str]:
         for block in (content if isinstance(content, list) else [])
         if isinstance(block, dict) and block.get("type") == "tool_use"
     ]
-    tool_args += [call.get("args") for call in getattr(message, "tool_calls", None) or []]
-    tool_args += [call.get("args") for call in getattr(message, "invalid_tool_calls", None) or []]
+    for attr in ("tool_calls", "invalid_tool_calls"):
+        calls = getattr(message, attr, None)
+        if isinstance(calls, list):
+            tool_args += [call.get("args") for call in calls if isinstance(call, dict)]
     for args in tool_args:
         recovered = _commands_in_args(args)
         if recovered:

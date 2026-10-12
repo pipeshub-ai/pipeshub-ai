@@ -2191,6 +2191,22 @@ class TestGenerateGrepCommandViaLlm:
         assert structured_llm.ainvoke.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_malformed_tool_call_entries_are_skipped(self) -> None:
+        raw = MagicMock()
+        raw.content = ""
+        raw.tool_calls = ["not-a-dict", {"args": None}, {"args": {"grep_commands": ['grep -rci "ttl" .']}}]
+        raw.invalid_tool_calls = [None]
+        envelope = {"raw": raw, "parsed": None, "parsing_error": ValueError("truncated")}
+        structured_llm = _mock_structured_llm(return_value=envelope)
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
+
+    @pytest.mark.asyncio
     async def test_parsed_envelope_is_used(self) -> None:
         parsed = GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .'])
         structured_llm = _mock_structured_llm(
