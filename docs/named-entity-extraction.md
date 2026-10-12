@@ -144,7 +144,10 @@ same retry marker with `reextract` set, due at once. Nothing is added to the
 record. A background loop (`app/modules/indexing/named_entity_completion.py`,
 one replica under a Redis lease, every `NAMED_ENTITY_COMPLETION_INTERVAL_SECONDS`)
 works these jobs only while at least half of the indexing LLM slots are free. It
-reads the record's stored blocks from its blob and extracts in single calls with
+runs on the event loop records are indexed on, on every graph store, because the
+slots are counted per loop; its calls take those same slots. The lease is
+refreshed while a pass runs, and a run is cut off only after every window could
+have used all of its calls. It reads the record's stored blocks from its blob and extracts in single calls with
 up to 50 windows, without the record lease; the write then takes the lease and,
 like a retry, lands only while its job is still the one it read, so a record
 indexed meanwhile keeps its newer entities. Nothing is parsed or embedded again.

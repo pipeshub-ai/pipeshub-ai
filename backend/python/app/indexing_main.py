@@ -30,7 +30,10 @@ from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_l
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.rate_limit_deferral import deferral_due
-from app.modules.indexing.named_entity_completion import run_named_entity_completion_loop
+from app.modules.indexing.named_entity_completion import (
+    record_consumer_loop,
+    run_named_entity_completion_loop,
+)
 from app.modules.indexing.named_entity_persist_retry import retry_pending_named_entity_persists
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
@@ -1806,11 +1809,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_named_entity_sweep_loop(app_container, graph_provider),
             worker_loop,
         )
-        # On the worker loop: it measures and uses that loop's indexing LLM slots.
-        app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
-            run_named_entity_completion_loop(app_container, graph_provider),
-            worker_loop,
-        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1827,6 +1825,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app.state.named_entity_sweep_task = asyncio.create_task(
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
+
+    # On every store, not only Neo4j: the indexing LLM slots are per event loop,
+    # and only on the loop records are indexed on does the pass see and share them.
+    completion_loop = record_consumer_loop(consumers)
+    if completion_loop is not None:
+        app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_completion_loop(app_container, graph_provider),
+            completion_loop,
+        )
+    else:
         app.state.named_entity_completion_task = asyncio.create_task(
             run_named_entity_completion_loop(app_container, graph_provider)
         )

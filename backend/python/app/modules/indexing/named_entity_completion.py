@@ -39,6 +39,8 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
+from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.messaging.utils import MessagingUtils
 from app.utils.concurrency import (
@@ -48,13 +50,15 @@ from app.utils.concurrency import (
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.modules.transformers.sink_orchestrator import SinkOrchestrator
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 MAX_REEXTRACT_ATTEMPTS = 5
-EXTRACT_TIMEOUT_SECONDS = 600.0
+# A ceiling for a hung run, not a budget: every window may use all of its calls.
+EXTRACT_TIMEOUT_SECONDS = REEXTRACT_MAX_WINDOWS * WINDOW_TIMEOUT_SECONDS
 # Records per pass: each is up to REEXTRACT_MAX_WINDOWS model calls.
 PAGE_SIZE = 4
 STARTUP_GRACE_SECONDS = 300.0
@@ -75,13 +79,18 @@ async def complete_named_entities(
     logger: Logger,
     page_size: int = PAGE_SIZE,
     concurrency_manager=None,  # noqa: ANN001 - the indexing concurrency manager, when distributed
+    still_leader: Callable[[], bool] | None = None,
 ) -> int:
-    """Work the due re-extraction jobs. Returns how many records were written."""
+    """Work the due re-extraction jobs. Returns how many records were written.
+    ``still_leader``: checked before each record; the pass stops once it is false."""
     if sink is None or not llm_mostly_free():
         return 0
     rows = await graph_provider.get_due_named_entity_persist_retries(page_size, reextract=True)
     written = 0
     for row in rows:
+        if still_leader is not None and not still_leader():
+            logger.warning("named_entity_completion: lost the leader lease; stopping this pass")
+            break
         record_id, org_id, due = row.get("recordId"), row.get("orgId"), row.get("dueAt")
         if not record_id or due is None:
             continue
@@ -166,6 +175,45 @@ def _record_lease_manager(app_container: Any) -> Any:  # noqa: ANN401
     return getattr(consumers[0][1], "concurrency_manager", None)
 
 
+async def _keep_lease(lock: VectorMembershipBackfillLeaderLock, lost: asyncio.Event, every: float) -> None:
+    """Refresh the leader lease while a pass runs: one record can take longer
+    than the lease, and a second replica would start the same jobs."""
+    while True:
+        await asyncio.sleep(every)
+        if not await lock.refresh():
+            lost.set()
+            return
+
+
+async def _pass_as_leader(
+    lock: VectorMembershipBackfillLeaderLock, app_container: Any, graph_provider: IGraphDBProvider, logger: Logger,  # noqa: ANN401
+) -> None:
+    event_processor = app_container.event_processor()
+    if inspect.isawaitable(event_processor):
+        event_processor = await event_processor
+    lost = asyncio.Event()
+    keeper = asyncio.create_task(_keep_lease(lock, lost, max(1.0, lock.ttl_seconds / 3)))
+    try:
+        await complete_named_entities(
+            graph_provider=graph_provider,
+            sink=getattr(event_processor, "sink_orchestrator", None),
+            logger=logger,
+            concurrency_manager=_record_lease_manager(app_container),
+            still_leader=lambda: not lost.is_set(),
+        )
+    finally:
+        keeper.cancel()
+        await asyncio.gather(keeper, return_exceptions=True)
+
+
+def record_consumer_loop(consumers: list[Any] | None) -> asyncio.AbstractEventLoop | None:
+    """The record consumer's running worker loop, where indexing holds its LLM slots."""
+    if not consumers or len(consumers[0]) < 2:
+        return None
+    loop = getattr(consumers[0][1], "worker_loop", None)
+    return loop if loop is not None and loop.is_running() else None
+
+
 def _env_float(name: str, default: float) -> float:
     try:
         value = float(os.getenv(name, default))
@@ -193,15 +241,7 @@ async def run_named_entity_completion_loop(
                         logger, redis_config, owner, ttl_seconds=int(interval) + _LEASE_MARGIN_SECONDS, key=LEADER_KEY,
                     )
                 if await lock.try_acquire():
-                    event_processor = app_container.event_processor()
-                    if inspect.isawaitable(event_processor):
-                        event_processor = await event_processor
-                    await complete_named_entities(
-                        graph_provider=graph_provider,
-                        sink=getattr(event_processor, "sink_orchestrator", None),
-                        logger=logger,
-                        concurrency_manager=_record_lease_manager(app_container),
-                    )
+                    await _pass_as_leader(lock, app_container, graph_provider, logger)
                 else:
                     logger.debug("named_entity_completion: another replica holds the lease")
             except asyncio.CancelledError:

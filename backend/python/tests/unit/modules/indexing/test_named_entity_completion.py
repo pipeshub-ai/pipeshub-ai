@@ -3,6 +3,8 @@ stored blocks, in the background, without blocking indexing."""
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -153,3 +155,98 @@ async def test_the_sink_queues_a_reextraction_after_writing_unread_text(
             patch("app.modules.named_entities.stage.persist_named_entities", AsyncMock(return_value=outcome)):
         assert await sink.persist_named_entities(ctx, extraction) == outcome
     assert sink.graph_provider.schedule_named_entity_reextract.await_count == (1 if queued else 0)
+
+
+def test_the_deadline_covers_every_window_using_all_of_its_calls() -> None:
+    from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
+    from app.modules.named_entities.strategies import single_call
+    from app.utils.streaming import MAX_REFLECTION_RETRIES_DEFAULT
+
+    # Strict with its reflection retries, then each lower mode once.
+    calls = 1 + MAX_REFLECTION_RETRIES_DEFAULT + len(single_call._MODES) - 1
+    assert single_call.WINDOW_TIMEOUT_SECONDS >= calls * single_call._CALL_TIMEOUT
+    assert completion.EXTRACT_TIMEOUT_SECONDS >= REEXTRACT_MAX_WINDOWS * single_call.WINDOW_TIMEOUT_SECONDS
+
+
+async def test_a_pass_stops_before_the_next_record_once_the_lease_is_lost() -> None:
+    graph = _graph([_row(), {**_row(), "recordId": "r2"}])
+    leader = iter([True, False])
+    one = AsyncMock(return_value="written")
+    with patch.object(completion, "llm_mostly_free", return_value=True), patch.object(completion, "_complete_one", one):
+        written = await completion.complete_named_entities(
+            graph_provider=graph, sink=MagicMock(), logger=LOG, still_leader=lambda: next(leader),
+        )
+    assert written == 1
+    assert [c.args[3] for c in one.await_args_list] == ["r1"]
+
+
+async def test_the_lease_is_refreshed_while_a_pass_runs_and_a_lost_one_is_reported() -> None:
+    lock = SimpleNamespace(refresh=AsyncMock(side_effect=[True, True, False]))
+    lost = asyncio.Event()
+    await asyncio.wait_for(completion._keep_lease(lock, lost, 0.001), 5)
+    assert lost.is_set()
+    assert lock.refresh.await_count == 3
+
+
+async def test_a_leader_pass_tells_the_records_when_the_lease_is_lost() -> None:
+    seen: list[bool] = []
+
+    async def drain(**kwargs: Any) -> int:  # noqa: ANN401
+        await asyncio.sleep(0.01)
+        seen.append(kwargs["still_leader"]())
+        return 0
+
+    async def lose(lock: Any, lost: asyncio.Event, every: float) -> None:  # noqa: ANN401
+        lost.set()
+
+    container = SimpleNamespace(event_processor=lambda: SimpleNamespace(sink_orchestrator=MagicMock()))
+    with patch.object(completion, "complete_named_entities", drain), patch.object(completion, "_keep_lease", lose):
+        await completion._pass_as_leader(SimpleNamespace(ttl_seconds=60), container, MagicMock(), LOG)
+    assert seen == [False]
+
+
+def test_the_pass_runs_on_the_loop_records_are_indexed_on() -> None:
+    """Indexing LLM slots are per event loop: a pass on another loop always sees
+    them free and adds its calls on top of indexing's."""
+    import threading
+
+    from app.utils.concurrency import (
+        MAX_CONCURRENT_INDEXING_LLM_CALLS,
+        indexing_llm_slot,
+    )
+    from app.utils.worker_scaling import scaled
+
+    worker = asyncio.new_event_loop()
+    thread = threading.Thread(target=worker.run_forever, daemon=True)
+    thread.start()
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def hold_slots() -> None:
+        async with contextlib.AsyncExitStack() as stack:
+            for _ in range(scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)):
+                await stack.enter_async_context(indexing_llm_slot())
+            held.set()
+            await release.wait()
+
+    try:
+        holder = asyncio.run_coroutine_threadsafe(hold_slots(), worker)
+        asyncio.run_coroutine_threadsafe(held.wait(), worker).result(5)
+        consumers = [("record", SimpleNamespace(worker_loop=worker), None)]
+        loop = completion.record_consumer_loop(consumers)
+        assert loop is worker
+        graph = _graph([_row()])
+        written = asyncio.run_coroutine_threadsafe(_drain(graph, MagicMock()), loop).result(5)
+        assert written == 0
+        graph.get_due_named_entity_persist_retries.assert_not_awaited()
+        worker.call_soon_threadsafe(release.set)
+        holder.result(5)
+    finally:
+        worker.call_soon_threadsafe(worker.stop)
+        thread.join(5)
+        worker.close()
+
+
+def test_no_running_consumer_loop_means_the_pass_runs_where_it_is_started() -> None:
+    assert completion.record_consumer_loop([]) is None
+    assert completion.record_consumer_loop([("record", SimpleNamespace(worker_loop=None), None)]) is None

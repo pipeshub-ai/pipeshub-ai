@@ -34,6 +34,9 @@ _WINDOW_CHARS = 4_000
 # A window is at most 4k characters; a reply with more items than this is not reading them.
 _MAX_ITEMS_PER_WINDOW = 200
 _CALL_TIMEOUT = 30.0
+# The calls one window may make: strict with its two reflection retries, then tool,
+# then prompted JSON. Waiting for an indexing LLM slot is not counted.
+WINDOW_TIMEOUT_SECONDS = 5 * _CALL_TIMEOUT
 _WIRE_ADAPTER = TypeAdapter(WireEntity)
 # Strict schema, then a non-strict tool, then prompted JSON. A model starts lower
 # only after a lower mode answered a prompt a higher one failed on: an error every
