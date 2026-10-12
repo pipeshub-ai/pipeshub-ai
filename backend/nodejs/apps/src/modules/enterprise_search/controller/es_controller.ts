@@ -4612,20 +4612,20 @@ export const search =
       const results = aiResponse.data.searchResults;
       let citationIds;
       if (results) {
-        // save the citations to the citations collection
-        citationIds = await Promise.all(
-          results.map(async (result: ICitation) => {
-            const citationDoc = new Citation({
-              content: result.content,
-              chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
-              citationType: result.citationType,
-              metadata: result.metadata,
-            });
-
-            const savedCitation = await citationDoc.save();
-            return savedCitation._id;
-          }),
+        // Save the citations to the citations collection in one ordered insert.
+        // A search can return hundreds of hits, and saving each one on its own
+        // cost a database round trip per hit. `ordered: true` returns the saved
+        // documents in hit order, so citationIds lines up with searchResults.
+        const savedCitations = await Citation.insertMany(
+          results.map((result: ICitation) => ({
+            content: result.content,
+            chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
+            citationType: result.citationType,
+            metadata: result.metadata,
+          })),
+          { ordered: true },
         );
+        citationIds = savedCitations.map((citation) => citation._id);
       }
 
       const recordsArray = aiResponse.data?.records || {};
