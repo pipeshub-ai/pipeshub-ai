@@ -53,6 +53,16 @@ class TestCompletionGate:
         assert ctx.recovery_message.injected is True
         assert context.completion_gate_nudges == 1
 
+    async def test_nudge_is_a_request_not_a_bracketed_system_command(self) -> None:
+        # A bracketed "[System: ...]" note mid-run is what the provider content
+        # filter rejects; the nudge must read as an ordinary request.
+        ctx = await run_post_model(
+            completion_gate(_make_context()), AssistantMessage(content=""), scope=_turn_scope([]),
+        )
+        text = ctx.recovery_message.content
+        assert "[System" not in text and not text.startswith("[")
+        assert "please" in text.lower()
+
     async def test_no_nudge_when_text_present(self) -> None:
         context = _make_context()
         gate = completion_gate(context)
