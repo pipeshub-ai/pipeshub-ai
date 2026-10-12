@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass, field
 
 from app.agent_loop_lib.core.finish_moves import finish_move
-from app.agent_loop_lib.core.messages import ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import add_loop_note
 from app.agent_loop_lib.core.scope import StateSlot
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext, TurnContext
 
@@ -76,20 +76,6 @@ def _warning_note(state: _StallState, scope: object) -> str:
         "loop. Options: a fundamentally different approach, working with the "
         f"partial results already gathered, or {finish_move(scope, answer='answer so far')}.]"
     )
-
-
-def _deliver(ctx: ModelCallContext, note: str) -> str:
-    """Put `note` on the latest tool result's loop footer (this call's copy
-    only), the channel `warn_before_deadline` uses: an instruction posing as
-    a user message right after tool output reads as a prompt attack to
-    provider content filters, which reject the whole request. With no tool
-    result to carry it, it falls back to an injected user message."""
-    if ctx.messages and isinstance(ctx.messages[-1], ToolMessage):
-        last = ctx.messages[-1]
-        ctx.messages[-1] = last.model_copy(update={"step_footer": last.step_footer + "\n" + note})
-        return "step_footer"
-    ctx.messages.append(UserMessage(content=note, injected=True))
-    return "user_message"
 
 
 def _is_error_heavy(turn, error_ratio: float) -> bool:
@@ -148,7 +134,7 @@ def stall_detection(
                     state.warned = True
                     note, level = _warning_note(state, ctx.scope), "warning"
                 if note is not None:
-                    channel = _deliver(ctx, note)
+                    channel = add_loop_note(ctx.messages, note)
                     logger.warning(
                         "stall_detection: note delivered level=%s channel=%s "
                         "consecutive_error_turns=%d session_id=%s",
