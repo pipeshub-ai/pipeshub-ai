@@ -346,3 +346,36 @@ class TestRenamedDefaultBranch:
         assert raised.value.status_code == 429
         assert raised.value.headers == {"Retry-After": "600"}
         assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
+
+    async def test_a_lookup_in_flight_cannot_restore_the_old_branch(self) -> None:
+        # A lookup that began before the rename can finish after another
+        # stream's 404. Forgetting waits for it, so its stale answer is
+        # dropped and the re-lookup reaches GitHub.
+        import asyncio
+
+        gh = CountingGitHub(files=0)
+        c = _connector(gh)
+        release = asyncio.Event()
+        stale = gh.repo
+
+        async def slow_stale_lookup(repo_id: int) -> GitHubResponse:
+            gh.calls["get_repo_by_id"] += 1
+            await release.wait()
+            return GitHubResponse(success=True, data=stale)
+
+        gh.get_repo_by_id = slow_stale_lookup  # type: ignore[method-assign]
+        in_flight = asyncio.create_task(c.runtime.get_repo_by_id(10))
+        await asyncio.sleep(0)
+
+        forgetting = asyncio.create_task(c.runtime.forget_repo_lookup(10))
+        await asyncio.sleep(0)
+        release.set()
+        await in_flight
+        await forgetting
+
+        gh.repo = make_repo(repo_id=10, default_branch="develop")
+        gh.get_repo_by_id = CountingGitHub.get_repo_by_id.__get__(gh)  # type: ignore[method-assign]
+        fresh = await c.runtime.get_repo_by_id(10)
+
+        assert fresh.data.default_branch == "develop"
+        assert gh.calls["get_repo_by_id"] == 2

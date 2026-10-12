@@ -290,13 +290,17 @@ class RuntimeHelper:
                 self._repo_lookups[repo_id] = (time.monotonic(), response.data)
             return response
 
-    def forget_repo_lookup(self, repo_id: int) -> None:
+    async def forget_repo_lookup(self, repo_id: int) -> None:
         """Drop the remembered lookup so the next ``get_repo_by_id`` asks GitHub.
 
         For a caller whose request 404'd on what the lookup said, such as a
-        default branch renamed since it was fetched.
+        default branch renamed since it was fetched. Takes the lookup lock so a
+        lookup already in flight, which may predate the rename, finishes first
+        and is dropped rather than stored after this returns.
         """
-        self._repo_lookups.pop(repo_id, None)
+        lock = self._repo_lookup_locks.setdefault(repo_id, asyncio.Lock())
+        async with lock:
+            self._repo_lookups.pop(repo_id, None)
 
     def _fresh_repo_lookup(self, repo_id: int) -> object | None:
         entry = self._repo_lookups.get(repo_id)
