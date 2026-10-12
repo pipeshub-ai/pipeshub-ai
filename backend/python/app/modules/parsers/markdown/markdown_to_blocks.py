@@ -24,6 +24,7 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.link_text import link_destination_end
 from app.modules.parsers.text_splitting import split_long_text
 
 _MD_IMAGE_RE = re.compile(
@@ -35,7 +36,6 @@ _HTML_IMG_ALT_RE = re.compile(
     r'<img\s[^>]*alt=["\']([^"\']*)["\'][^>]*>', re.IGNORECASE
 )
 _LIST_MARKER_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+")
-_LINK_WRAPPER_CLOSE_RE = re.compile(r'\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)')
 
 
 def _strip_list_marker(raw: str) -> str:
@@ -98,9 +98,9 @@ def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
         start, end = match.start(), match.end()
         # A linked image `[![alt](src)](href)`: without taking the wrapper
         # along, its brackets are left behind as stray "[" and "](href)" text.
-        link_close = _LINK_WRAPPER_CLOSE_RE.match(raw, end)
-        if link_close and start > pos and raw[start - 1] == "[" and raw[start - 2 : start - 1] != "\\":
-            start, end = start - 1, link_close.end()
+        link_close = link_destination_end(raw, end + 1) if raw.startswith("](", end) else None
+        if link_close is not None and start > pos and raw[start - 1] == "[" and raw[start - 2 : start - 1] != "\\":
+            start, end = start - 1, link_close + 1
 
         before = raw[pos:start]
         if before.strip():

@@ -176,3 +176,10 @@ def test_linked_image_leaves_no_bracket_fragments() -> None:
         ("image", "Profile"),
         ("text", "joined"),
     ]
+
+
+def test_linked_image_with_a_space_in_its_href_leaves_no_bracket_fragments() -> None:
+    container = _convert(
+        f'<p>Carol <a href="https://example.com/a b"><img alt="Profile" src="{PNG}"></a> joined</p>'
+    )
+    assert _texts(container) == ["Carol", "joined"]

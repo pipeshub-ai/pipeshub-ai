@@ -90,3 +90,15 @@ def test_multiline_reference_definitions_are_removed() -> None:
 
 def test_hostless_autolink_keeps_its_uri() -> None:
     assert anchor_text_only("Call <tel:+15551234567>") == "Call tel:+15551234567"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[New York](https://en.wikipedia.org/wiki/New York) is big", "New York is big"),
+        ('[Acme Corp](https://example.com/docs/Acme Corp "Acme") ok', "Acme Corp ok"),
+        ("See [this](a quick note) here", "See [this](a quick note) here"),
+    ],
+)
+def test_unencoded_space_in_a_url_destination(text, expected) -> None:
+    assert anchor_text_only(text) == expected

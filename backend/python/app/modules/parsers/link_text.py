@@ -102,7 +102,7 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
         label = text[open_at + 1 : close_at]
         after = close_at + 1
         if after < length and text[after] == "(":
-            end = _link_destination_end(text, after)
+            end = link_destination_end(text, after)
             if end is not None:
                 out.append(_strip_bracket_links(label, reference_labels).strip())
                 i = end + 1
@@ -149,11 +149,12 @@ def _matching(text: str, start: int, opener: str, closer: str) -> int | None:
     return None
 
 
-def _link_destination_end(text: str, start: int) -> int | None:
+def link_destination_end(text: str, start: int) -> int | None:
     """Index of the ``)`` closing an inline link destination opened at ``start``.
 
-    Handles ``<...>`` destinations, balanced parentheses inside a URL, and a
-    quoted title. Returns ``None`` when this is not a link destination.
+    Handles ``<...>`` destinations, balanced parentheses inside a URL, a
+    quoted title, and a raw space inside the URL. Returns ``None`` when this
+    is not a link destination.
     """
     i = start + 1
     length = len(text)
@@ -166,13 +167,29 @@ def _link_destination_end(text: str, start: int) -> int | None:
         i = close + 1
     else:
         depth = 0
+        destination_start = i
         while i < length:
             char = text[i]
             if char == "\\":
                 i += 2
                 continue
-            if char in " \t\n":
+            if char == "\n":
                 break
+            if char in " \t":
+                # markdownify copies an href verbatim, so `(https://x/New York)`
+                # is one destination. A space ends it before a title, or when
+                # what precedes it is prose rather than a URL or path.
+                following = i
+                while following < length and text[following] in " \t":
+                    following += 1
+                if (
+                    following >= length
+                    or text[following] in "\"'()\n"
+                    or "/" not in text[destination_start:i]
+                ):
+                    break
+                i = following
+                continue
             if char == "(":
                 depth += 1
             elif char == ")":
