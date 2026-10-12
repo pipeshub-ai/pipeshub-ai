@@ -2,10 +2,11 @@ import base64
 import io
 import json
 import logging
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field
+from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
@@ -39,6 +40,67 @@ _MIME_TO_PIL_FORMAT = {
 }
 
 logger = logging.getLogger(__name__)
+
+# The block types _prepare_content reads; it skips every other type.
+CLASSIFIED_BLOCK_TYPES = frozenset({"text", "image", "table_row", "code"})
+
+# The longest cl100k_base token is 128 bytes and a character is at least one
+# UTF-8 byte, so n characters are never fewer than ceil(n / 128) tokens. The
+# len // 4 fallback in _prepare_content never counts fewer either.
+_MAX_CHARS_PER_TOKEN = 128
+
+
+def _token_floor(block_type: str, data: Any) -> int:  # noqa: ANN401 - Block.data is free-form
+    """A lower bound on what _prepare_content counts for this block."""
+    if isinstance(data, dict):
+        if block_type == "table_row":
+            data = data.get("row_natural_language_text")
+        elif block_type == "code":
+            data = data.get("text")
+    if block_type == "image" or not isinstance(data, str):
+        return 0
+    return -(-len(data) // _MAX_CHARS_PER_TOKEN)
+
+
+def classify_request_blocks(
+    blocks: list[Block], context_length_ceiling: int | float | None
+) -> list[dict]:
+    """The blocks the classify endpoint will read, already JSON-ready.
+
+    _prepare_content reads only ``type``, ``format`` and ``data``, skips
+    other block types and empty blocks, and stops at the first text block
+    that would take it past ``int(context_length * CONTENT_TOKEN_RATIO)``
+    tokens. Serialising the rest of a large container was a measurable share
+    of the indexing loop's CPU.
+
+    With *context_length_ceiling* at or above the service's context length,
+    a block after the one where the token floor alone passes the budget can
+    never be reached, so it is left out; the service's own truncation still
+    decides where the content ends. ``None`` keeps every block.
+    """
+    budget = (
+        int(context_length_ceiling * CONTENT_TOKEN_RATIO)
+        if context_length_ceiling
+        else None
+    )
+    floor_total = 0
+    request_blocks: list[dict] = []
+    for block in blocks:
+        block_type = getattr(block.type, "value", block.type)
+        if block_type not in CLASSIFIED_BLOCK_TYPES or not block.data:
+            continue
+        data = block.data
+        request_blocks.append({
+            "type": block_type,
+            "format": getattr(block.format, "value", block.format),
+            "data": data if type(data) is str else to_jsonable_python(data),
+        })
+        # Only a text block can end the service's loop, so only one can end this one.
+        if budget is not None and block_type != "image":
+            floor_total += _token_floor(block_type, data)
+            if floor_total > budget:
+                break
+    return request_blocks
 
 
 def _downscale_base64_image(

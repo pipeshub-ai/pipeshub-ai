@@ -681,6 +681,36 @@ describe('Knowledge base page — failures the user must be able to recover from
     );
   });
 
+  it('does not restore collections when a list request finishes after the last one is gone', async () => {
+    const pending: { resolve: (value: unknown) => void; signal?: AbortSignal }[] = [];
+    api.hub.getNavigationNodes.mockImplementation((params?: { nodeTypes?: string }, options?: { signal?: AbortSignal }) => {
+      if (params?.nodeTypes === 'app') {
+        return new Promise((resolve) => {
+          pending.push({ resolve, signal: options?.signal });
+        });
+      }
+      return Promise.resolve(hubResponse([ENGINEERING]));
+    });
+    openAt('/knowledge-base');
+
+    await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    const listRequest = pending[pending.length - 1];
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setCategorizedNodes({ shared: [], private: [] });
+    });
+
+    expect(listRequest.signal?.aborted).toBe(true);
+    expect(useKnowledgeBaseStore.getState().isLoadingTableData).toBe(false);
+
+    await act(async () => {
+      listRequest.resolve(hubResponse([ENGINEERING]));
+    });
+
+    expect(useKnowledgeBaseStore.getState().tableData).toBeNull();
+    expect(screen.queryByRole('row', { name: 'Engineering' })).toBeNull();
+  });
+
   it('after the last collection is deleted, says there are no collections left', async () => {
     api.hub.getNavigationNodes.mockResolvedValue(hubResponse([ENGINEERING]));
     api.kb.deleteNode.mockImplementation(async () => {
@@ -1361,7 +1391,12 @@ describe('Knowledge base page — All Records', () => {
     fireEvent.click(await screen.findByRole('row', { name: 'Shared Drive' }));
 
     expect(await screen.findByRole('row', { name: 'Budget.xlsx' })).toBeTruthy();
-    expect(api.hub.loadFolderData).toHaveBeenCalledWith('recordGroup', 'rg-drive', expect.any(Object));
+    expect(api.hub.loadFolderData).toHaveBeenCalledWith(
+      'recordGroup',
+      'rg-drive',
+      expect.any(Object),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(currentUrl()).toContain('view=all-records');
   });
 
@@ -1375,12 +1410,65 @@ describe('Knowledge base page — All Records', () => {
     typeInto(screen.getByPlaceholderText('eg: Sales Docs'), 'budget');
 
     await waitFor(() =>
-      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'budget' })),
+      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+        expect.objectContaining({ q: 'budget' }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
 
     const searchButtons = within(screen.getByPlaceholderText('eg: Sales Docs').parentElement!.parentElement!).getAllByRole('button');
     fireEvent.click(searchButtons[searchButtons.length - 1]);
-    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(expect.not.objectContaining({ q: 'budget' })));
+    await waitFor(() =>
+      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ q: 'budget' }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it('shows the latest filter results when an earlier request finishes last', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    const pending: { resolve: (value: unknown) => void; signal?: AbortSignal }[] = [];
+    api.hub.getAllRootItems.mockImplementation((_params, options?: { signal?: AbortSignal }) =>
+      new Promise((resolve) => {
+        pending.push({ resolve, signal: options?.signal });
+      }),
+    );
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setAllRecordsFilter({ indexingStatus: ['QUEUED'] });
+    });
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setAllRecordsFilter({ indexingStatus: ['IN_PROGRESS'] });
+    });
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    expect(pending[0].signal?.aborted).toBe(true);
+    expect(pending[1].signal?.aborted).toBe(false);
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    const newer = hubNode({ id: 'rec-new', name: 'Newer.pdf', origin: 'CONNECTOR' });
+    const stale = hubNode({ id: 'rec-stale', name: 'Stale.pdf', origin: 'CONNECTOR' });
+
+    await act(async () => {
+      pending[1].resolve(hubResponse([newer]));
+    });
+
+    expect(await screen.findByRole('row', { name: 'Newer.pdf' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+
+    await act(async () => {
+      pending[0].resolve(hubResponse([stale]));
+    });
+
+    expect(screen.queryByRole('row', { name: 'Stale.pdf' })).toBeNull();
+    expect(screen.getByRole('row', { name: 'Newer.pdf' })).toBeTruthy();
   });
 });
 

@@ -6601,6 +6601,51 @@ class TestBuildMessageContentArraySummaryCitation:
         assert "Citation ID for summary:" in text
 
 
+class TestBuildMessageContentArrayCodeLabel:
+    """GroupType.CODE and BlockType.CODE are both "code"; only the content's shape
+    tells a code group from a code block."""
+
+    @staticmethod
+    def _render(flat: list[dict]) -> str:
+        contents, _ = build_message_content_array(
+            flat, {"vr-1": _make_record_blob()}, is_multimodal_llm=False, from_tool=True
+        )
+        return " ".join(
+            item["text"] for group in contents for item in group if item.get("type") == "text"
+        )
+
+    def test_code_group_renders_its_members_not_the_tuple(self) -> None:
+        child = {
+            "content": "def run(self):\n    pass",
+            "block_type": BlockType.CODE.value,
+            "block_index": 9,
+            "virtual_record_id": "vr-1",
+            "metadata": {},
+        }
+        text = self._render([
+            _make_flattened_result(
+                block_index=9,
+                block_type=GroupType.CODE.value,
+                content=("", [child]),
+                block_group_index=2,
+            )
+        ])
+        assert "('', [" not in text
+        assert "[code #2]" in text
+        assert "def run(self):" in text
+
+    def test_code_block_still_renders_as_a_leaf(self) -> None:
+        text = self._render([
+            _make_flattened_result(
+                block_index=3,
+                block_type=BlockType.CODE.value,
+                content="def main():\n    return 1",
+            )
+        ])
+        assert "def main():\n    return 1" in text
+        assert "[code #" not in text
+
+
 # ===================================================================
 # get_message_content — SQL_TABLE only in vr map (missing from flattened)
 # ===================================================================
