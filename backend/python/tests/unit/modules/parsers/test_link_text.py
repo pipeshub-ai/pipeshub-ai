@@ -139,8 +139,15 @@ def test_unicode_space_inside_a_bare_destination_does_not_end_it() -> None:
     [
         ("[https://example.org/wiki/New York](https://example.org/wiki/New%20York) is big",
          "example.org is big"),
-        ("Read [https://docs.example.com/a guide][g] now.\n\n[g]: https://docs.example.com/a",
+        ("Read [https://docs.example.com/a guide][g] now.\n\n[g]: https://docs.example.com/a%20guide",
          "Read docs.example.com now."),
+        # Text that only starts with the URL keeps the words after it.
+        ("Read [https://docs.example.com/a guide][g] now.\n\n[g]: https://docs.example.com/a",
+         "Read docs.example.com guide now."),
+        ("[https://example.com/guide for details](https://example.com/guide)",
+         "example.com for details"),
+        ("![https://cdn.example.com/photo of the office](https://cdn.example.com/x.png)",
+         "cdn.example.com of the office"),
         # Prose: the word after a bare URL's space is not part of it.
         ("See https://en.wikipedia.org/wiki/New York today", "See en.wikipedia.org York today"),
     ],

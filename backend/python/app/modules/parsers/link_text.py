@@ -11,7 +11,7 @@ Code spans and fenced code keep their text untouched: a URL there is content.
 from __future__ import annotations
 
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 # A closing fence may be longer than the opener (CommonMark 4.5).
 _FENCE_RE = re.compile(
@@ -21,7 +21,7 @@ _FENCE_RE = re.compile(
 )
 _CODE_SPAN_RE = re.compile(r"(?<!\\)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 _REFERENCE_DEFINITION_RE = re.compile(
-    r"^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*\n?[ \t]*\S+"
+    r"^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*\n?[ \t]*(\S+)"
     r"(?:(?:[ \t]+|[ \t]*\n[ \t]*)(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$\n?",
     re.MULTILINE,
 )
@@ -35,7 +35,7 @@ _PLACEHOLDER = "\x00{}\x00"
 # Python's ``\s`` adds Unicode spaces (``&nbsp;``, em space), which split a
 # destination for a reader and for most markdown renderers alike.
 _UNSAFE_DESTINATION_CHAR_RE = re.compile(r"[\x00-\x20()<>\x7f]|\s")
-_URL_LABEL_RE = re.compile(r"(?:https?|ftp)://\S", re.IGNORECASE)
+_ESCAPED_CHAR_RE = re.compile(r"\\(.)")
 _PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
 
 
@@ -70,9 +70,12 @@ def anchor_text_only(text: str) -> str:
     working = _FENCE_RE.sub(protect, text)
     working = _CODE_SPAN_RE.sub(protect, working)
 
-    labels = {m.group(1).strip().lower() for m in _REFERENCE_DEFINITION_RE.finditer(working)}
+    references = {
+        m.group(1).strip().lower(): m.group(2).strip("<>")
+        for m in _REFERENCE_DEFINITION_RE.finditer(working)
+    }
     working = _REFERENCE_DEFINITION_RE.sub("", working)
-    working = _strip_bracket_links(working, labels)
+    working = _strip_bracket_links(working, references)
     working = _AUTOLINK_RE.sub(lambda m: _url_label(m.group(1)), working)
     working = _HTML_ANCHOR_TAG_RE.sub("", working)
     working = _BARE_URL_RE.sub(lambda m: _bare_url_label(m.group(0)), working)
@@ -94,7 +97,8 @@ def _may_contain_link(text: str) -> bool:
     )
 
 
-def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
+def _strip_bracket_links(text: str, reference_labels: dict[str, str]) -> str:
+    """Reduce bracket links to their text; ``reference_labels`` maps label → URL."""
     out: list[str] = []
     i = 0
     length = len(text)
@@ -120,7 +124,8 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
         if after < length and text[after] == "(":
             end = link_destination_end(text, after)
             if end is not None:
-                out.append(_visible_label(label, reference_labels))
+                destination = None if is_image else _inline_destination(text[after + 1 : end])
+                out.append(_visible_label(label, reference_labels, destination))
                 i = end + 1
                 continue
         # A block rarely holds the definitions its references point at, so an
@@ -132,11 +137,13 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
             if ref_end is not None:
                 ref = text[after + 1 : ref_end].strip().lower() or label.strip().lower()
                 if ref in reference_labels or not reference_labels:
-                    out.append(_visible_label(label, reference_labels))
+                    destination = None if is_image else reference_labels.get(ref)
+                    out.append(_visible_label(label, reference_labels, destination))
                     i = ref_end + 1
                     continue
         if label.strip().lower() in reference_labels:
-            out.append(_visible_label(label, reference_labels))
+            destination = None if is_image else reference_labels[label.strip().lower()]
+            out.append(_visible_label(label, reference_labels, destination))
             i = after
             continue
         out.append(char)
@@ -144,14 +151,27 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
     return "".join(out)
 
 
-def _visible_label(label: str, reference_labels: set[str]) -> str:
-    """A link's text, or its host when the text is itself a URL.
+def _visible_label(
+    label: str, reference_labels: dict[str, str], destination: str | None
+) -> str:
+    """A link's text, or its host when the text is the link's own URL.
 
-    The bare-URL pass stops at whitespace, so a URL label with a space
-    (``[https://x/New York](...)``) would keep the words after it.
+    The bare-URL pass stops at whitespace, so ``[https://x/New York](...)``
+    would keep "York". Text that only starts with a URL ("https://x/guide
+    for details") is prose and is left to that pass.
     """
     text = _strip_bracket_links(label, reference_labels).strip()
-    return _url_label(text) if _URL_LABEL_RE.match(text) else text
+    if destination and _ESCAPED_CHAR_RE.sub(r"\1", text) in {destination, unquote(destination)}:
+        return _url_label(text)
+    return text
+
+
+def _inline_destination(inside: str) -> str:
+    """The URL of an inline link, from the text between its parentheses."""
+    inside = inside.strip()
+    if inside.startswith("<"):
+        return inside[1 : inside.find(">")]
+    return re.split(r"[ \t\n]", inside, maxsplit=1)[0]
 
 
 def _matching(text: str, start: int, opener: str, closer: str) -> int | None:

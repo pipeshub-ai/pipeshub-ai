@@ -825,6 +825,7 @@ def _inline_icons_as_text(root: LexborNode) -> int:
 
 
 _FIGURE_IMAGE_KEY = "ph-figure-image-{}"
+_FIGURE_TAGS = frozenset({"figure"})
 
 
 def _figure_captions(root: LexborNode) -> dict[str, str]:
@@ -837,11 +838,17 @@ def _figure_captions(root: LexborNode) -> dict[str, str]:
     """
     captions: dict[str, str] = {}
     for figure in root.css("figure"):
-        caption_node = figure.css_first("figcaption")
+        # A nested figure's caption and images are its own, not this one's.
+        caption_node = next(
+            (child for child in _direct_children(figure) if _tag_name(child) == "figcaption"),
+            None,
+        )
         caption = _node_text(caption_node) if caption_node is not None else ""
         if not caption:
             continue
         for img in figure.css("img"):
+            if _nearest_ancestor(img, _FIGURE_TAGS) != figure:
+                continue
             attrs = img.attributes or {}
             if ORIGINAL_ALT_ATTR not in attrs and _img_data_uri(img, {}):
                 img.attrs[ORIGINAL_ALT_ATTR] = (attrs.get("alt") or "").strip()

@@ -79,6 +79,16 @@ def _texts(container: BlocksContainer) -> list[str]:
             "example.com",
         ),
         (
+            '<a href="https://example.com/guide">https://example.com/guide for details</a>',
+            "https://example.com/guide",
+            "example.com for details",
+        ),
+        (
+            '<a href="https://example.com/docs">https://example.com/docs (opens in a new tab)</a>',
+            "https://example.com/docs",
+            "example.com (opens in a new tab)",
+        ),
+        (
             '<a href="https://example.com/docs/Acme Corp" title="Acme">Acme Corp</a> ok',
             '(https://example.com/docs/Acme%20Corp "Acme")',
             "Acme Corp ok",

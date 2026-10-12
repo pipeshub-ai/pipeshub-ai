@@ -160,6 +160,27 @@ class TestImageAltText:
             "Chart", "Chart", None,
         ]
 
+    def test_nested_figures_keep_their_own_captions(self) -> None:
+        outer = f'<img alt="Outer chart" src="{PNG}"><figcaption>Outer caption</figcaption>'
+        inner = (
+            f'<figure><img alt="Inner chart" src="{PNG}"><figcaption>Inner caption</figcaption></figure>'
+        )
+        for body in (f"<figure>{outer}{inner}</figure>", f"<figure>{inner}{outer}</figure>"):
+            images = [b for b in _convert(body).blocks if b.type == BlockType.IMAGE]
+            captions = {b.media_metadata.alt_text: b.image_metadata.captions for b in images}
+            assert captions == {
+                "Outer chart": ["Outer caption"],
+                "Inner chart": ["Inner caption"],
+            }, body
+
+    def test_linked_image_in_a_figure_takes_its_caption(self) -> None:
+        container = _convert(
+            f'<figure><a href="https://example.com/x"><picture><img alt="Chart" src="{PNG}">'
+            "</picture></a><figcaption>Revenue</figcaption></figure>"
+        )
+        image = next(b for b in container.blocks if b.type == BlockType.IMAGE)
+        assert image.image_metadata.captions == ["Revenue"]
+
     def test_image_without_alt_gets_no_key_as_caption(self) -> None:
         container = _parse_like_indexing('<p><img src="https://cdn.example.com/a.png"></p>')
         image = next(b for b in container.blocks if b.type == BlockType.IMAGE)
