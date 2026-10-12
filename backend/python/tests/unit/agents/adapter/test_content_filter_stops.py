@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -271,6 +271,34 @@ class TestDirectGeminiTransport:
             await _drain(transport)
 
         assert "prompt_feedback.block_reason=PROHIBITED_CONTENT" in str(info.value)
+        assert classify_error(str(info.value))[0] == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_a_safety_finish_on_complete_raises_a_content_filter_error(self) -> None:
+        transport = gemini_fakes._transport()
+        transport._client = MagicMock()
+        transport._client.aio.models.generate_content = AsyncMock(
+            return_value=gemini_fakes._chunk([], finish="SAFETY"),
+        )
+
+        with pytest.raises(TransportError) as info:
+            await transport.complete([UserMessage(content=_SECRET)])
+
+        assert classify_error(str(info.value))[0] == "content_filter"
+
+    @pytest.mark.asyncio
+    async def test_a_blocked_prompt_on_complete_raises_a_content_filter_error(self) -> None:
+        transport = gemini_fakes._transport()
+        transport._client = MagicMock()
+        transport._client.aio.models.generate_content = AsyncMock(return_value=SimpleNamespace(
+            candidates=[], usage_metadata=None,
+            prompt_feedback=SimpleNamespace(block_reason=SimpleNamespace(name="SAFETY")),
+        ))
+
+        with pytest.raises(TransportError) as info:
+            await transport.complete([UserMessage(content=_SECRET)])
+
+        assert "prompt_feedback.block_reason=SAFETY" in str(info.value)
         assert classify_error(str(info.value))[0] == "content_filter"
 
     @pytest.mark.asyncio
