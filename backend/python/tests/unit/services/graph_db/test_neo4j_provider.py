@@ -3612,6 +3612,29 @@ class TestKnowledgeHubSearchThreePhase:
         assert neo4j_provider.client.execute_query.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_search_raises_when_the_app_lookup_fails(self, neo4j_provider: Neo4jProvider) -> None:
+        # An empty result here is a successful search with no hits, which the
+        # Knowledge Hub reports as "No items found" for files that exist.
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1", user_key="user1", skip=0, limit=10, sort_field="name", sort_dir="ASC",
+                search_query="budget",
+            )
+
+    @pytest.mark.asyncio
+    async def test_search_raises_when_a_query_fails(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 5}], RuntimeError("timeout")])
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1", user_key="user1", skip=0, limit=10, sort_field="name", sort_dir="ASC",
+            )
+
+    @pytest.mark.asyncio
     async def test_three_phase_empty_count(self, neo4j_provider: Neo4jProvider):
         """Test early return when count is 0."""
         # Mock Phase 1a: Count query returns 0
@@ -3787,25 +3810,25 @@ class TestKnowledgeHubSearchThreePhase:
             side_effect=RuntimeError("Neo4j connection lost")
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
-        result = await neo4j_provider.get_knowledge_hub_search(
-            org_id="org1",
-            user_key="user1",
-            skip=0,
-            limit=10,
-            sort_field="name",
-            sort_dir="ASC",
-        )
-
-        # Should return empty result on error, not raise
-        assert result["total"] == 0
-        assert result["nodes"] == []
+        # An empty result would read as "no items" to the Knowledge Hub; Arango raises too.
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1",
+                user_key="user1",
+                skip=0,
+                limit=10,
+                sort_field="name",
+                sort_dir="ASC",
+            )
 
     @pytest.mark.asyncio
     async def test_three_phase_pagination_consistency(self, neo4j_provider: Neo4jProvider):
         """Test that pagination returns non-overlapping results across pages."""
         # Simulate fetching page 1 and page 2
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         # Page 1 (skip=0, limit=10)
         neo4j_provider.client.execute_query = AsyncMock(
@@ -3836,8 +3859,9 @@ class TestKnowledgeHubSearchThreePhase:
         # Verify no overlapping IDs
         page1_ids = {node["id"] for node in page1["nodes"]}
         page2_ids = {node["id"] for node in page2["nodes"]}
+        assert len(page1_ids) == len(page2_ids) == 10
         assert len(page1_ids.intersection(page2_ids)) == 0
-        assert page1["total"] == page2["total"]  # Total should be consistent
+        assert page1["total"] == page2["total"] == 25
 
     @pytest.mark.asyncio
     async def test_three_phase_with_search_query(self, neo4j_provider: Neo4jProvider):

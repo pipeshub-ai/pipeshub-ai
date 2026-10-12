@@ -17307,7 +17307,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_knowledge_hub_search: {str(e)}")
             self.logger.error(f"Query execution time: {elapsed * 1000:.2f} ms")
             self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
+            raise
 
     async def get_knowledge_hub_breadcrumbs(
         self,
