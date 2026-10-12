@@ -25,6 +25,20 @@ if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
 
 
+def _parent_when_synced(full_path: str, group_paths: list[str]) -> str | None:
+    """Parent path only when that ancestor is in this sync.
+
+    A parent that is not being written becomes an empty placeholder. Children
+    that inherit from it never reach the app, so the project is invisible.
+    """
+    if "/" not in str(full_path):
+        return None
+    parent_path = str(full_path).rsplit("/", 1)[0]
+    if parent_path not in {str(path) for path in group_paths}:
+        return None
+    return parent_path
+
+
 def _filter_op_val(f: Any) -> str:
     """Lower-cased string value of a Filter's operator."""
     op = f.operator
@@ -246,7 +260,7 @@ class ProjectsSync:
         if not c.data_source:
             return
         self.logger.info("Ensuring GitLab group record groups for %s", group_paths)
-        for group_path in group_paths:
+        for group_path in sorted(group_paths, key=lambda path: str(path).count("/")):
             group_res = await c.runtime.ds_call(c.data_source.get_group, group_path)
             if not group_res.success or not group_res.data:
                 creator_permission = c.creator_user_permission()
@@ -287,7 +301,8 @@ class ProjectsSync:
                 )
             else:
                 for member in members_res.data or []:
-                    if getattr(member, "access_level", 0) == 0:
+                    # Minimal Access (5) cannot see the group's projects. Guest is 10.
+                    if (getattr(member, "access_level", 0) or 0) < 10:
                         continue
                     permission = await self._transform_restrictions_to_permissions(member)
                     if permission:
@@ -313,7 +328,7 @@ class ProjectsSync:
                     )
                 group_permissions.append(creator_permission)
 
-            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
+            parent_path = _parent_when_synced(full_path, group_paths)
             group_rg = RecordGroup(
                 org_id=c.data_entities_processor.org_id,
                 name=getattr(group, "name", full_path) or full_path,
@@ -334,8 +349,8 @@ class ProjectsSync:
     ) -> list[Permission]:
         """Union child-project members into group-level USER permissions.
 
-        Used as a fallback when ``list_group_members_all`` returns nothing usable
-        (403, empty, or EE-Auditor token without group membership).
+        Used only when the direct group-member listing fails. An empty success
+        means the group has no direct members and must not inherit its children.
         """
         c = self.c
         child_projects = [
@@ -370,7 +385,7 @@ class ProjectsSync:
                 if uid is None:
                     continue
                 m_level = getattr(m, "access_level", 0) or 0
-                if m_level == 0:
+                if m_level < 10:
                     continue
                 existing = member_map.get(uid)
                 existing_level = getattr(existing, "access_level", 0) or 0
@@ -449,17 +464,12 @@ class ProjectsSync:
             if new_level > old_level:
                 dict_member[member.id] = member
 
-        # Inject creator so Admin/Auditor personas (no membership row) get access
-        member_ids_before_creator = set(dict_member)
+        # Inject creator so Admin/Auditor personas (no membership row) get access.
+        # The project folder is granted to every member at Guest or above. Restricting
+        # it to direct members drops people who arrive through the group, a filter
+        # that omitted an ancestor, or a project/group share. Work items inherit the
+        # project, so a duplicate grant is harmless and a missing one hides the folder.
         c.users._inject_creator_member_into(dict_member)
-        injected_creator_ids = set(dict_member) - member_ids_before_creator
-        direct_res = await c.runtime.ds_call(
-            c.data_source.list_project_members, project_id=project_id, get_all=True,
-        )
-        direct_member_ids = (
-            {member.id for member in (direct_res.data or []) if getattr(member, "id", None) is not None}
-            if direct_res.success else None
-        )
 
         permission_project_level: list[Permission] = []
         permission_work_items_level: list[Permission] = []
@@ -471,12 +481,11 @@ class ProjectsSync:
             permission = await self._transform_restrictions_to_permissions(member)
             if not permission:
                 continue
-            if direct_member_ids is None or member.id in direct_member_ids or member.id in injected_creator_ids:
-                permission_project_level.append(permission)
-            level: int = getattr(member, "access_level", 0)
-            if level == 0:
-                self.logger.info("Member %s has no access level, skipping", member.name)
-            elif level == 10:
+            level: int = getattr(member, "access_level", 0) or 0
+            if level < 10:
+                continue
+            permission_project_level.append(permission)
+            if level == 10:
                 permission_work_items_level.append(permission)
             elif level >= 20:
                 permission_work_items_level.append(permission)

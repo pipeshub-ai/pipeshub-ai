@@ -251,6 +251,9 @@ class GitLabConnector(BaseConnector):
         )
         self.connector_name = Connectors.GITLAB.value
         self.connector_id = connector_id
+        # ScopeHelper replaces self.scope below. Keep the install scope for callers
+        # that need personal vs team; do not read it back off self.scope.
+        self.connector_scope = scope
         self.data_source: GitLabDataSource | None = None
         self.external_client: GitLabClient | None = None
         self.batch_size = 5

@@ -424,7 +424,7 @@ class TestEnsureGitlabGroupRecordGroups:
         async def ds_call_side(fn, *args, **kwargs):
             if "get_group" in str(fn):
                 return group_res
-            if "list_group_members_all" in str(fn):
+            if "list_group_members" in str(fn) and "list_group_members_all" not in str(fn):
                 return members_res
             return MagicMock(success=True, data=[], error=None)
 
@@ -456,6 +456,92 @@ class TestEnsureGitlabGroupRecordGroups:
 
         c.data_entities_processor.on_new_record_groups.assert_called_once()
 
+    async def test_unsynced_ancestor_is_not_a_parent(self) -> None:
+        """A subgroup whose parent is outside this sync hangs off the app, not an empty placeholder."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        group = MagicMock()
+        group.full_path = "a/b"
+        group.name = "b"
+        group.web_url = None
+
+        async def ds_call_side(fn, *args, **kwargs) -> MagicMock:
+            if "get_group" in str(fn):
+                return MagicMock(success=True, data=group, error=None)
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.creator_user_permission = MagicMock(return_value=None)
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=None)
+
+        await projects_sync._ensure_gitlab_group_record_groups(["a/b"])
+
+        payload = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        rg, _perms = payload[0]
+        assert rg.parent_external_group_id is None
+        assert rg.inherit_permissions is False
+
+    async def test_synced_ancestor_is_the_parent(self) -> None:
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+
+        def group_for(path: str) -> MagicMock:
+            group = MagicMock()
+            group.full_path = path
+            group.name = path.split("/")[-1]
+            group.web_url = None
+            return group
+
+        async def ds_call_side(fn, *args, **kwargs) -> MagicMock:
+            if "get_group" in str(fn):
+                path = args[0] if args else kwargs.get("group_id")
+                return MagicMock(success=True, data=group_for(path), error=None)
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.creator_user_permission = MagicMock(return_value=None)
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=None)
+
+        await projects_sync._ensure_gitlab_group_record_groups(["a/b", "a"])
+
+        written = {
+            rg.external_group_id: rg
+            for call in c.data_entities_processor.on_new_record_groups.call_args_list
+            for rg, _perms in call[0][0]
+        }
+        assert written["a"].parent_external_group_id is None
+        assert written["a/b"].parent_external_group_id == "a"
+        assert written["a/b"].inherit_permissions is True
+
+    async def test_minimal_access_member_is_not_granted_on_the_group(self) -> None:
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        group = MagicMock()
+        group.full_path = "eng"
+        group.name = "Engineering"
+        group.web_url = None
+        member = _member(uid=1, access_level=5)
+        member.id = 1
+
+        async def ds_call_side(fn, *args, **kwargs) -> MagicMock:
+            if "get_group" in str(fn):
+                return MagicMock(success=True, data=group, error=None)
+            if "list_group_members" in str(fn) and "list_group_members_all" not in str(fn):
+                return MagicMock(success=True, data=[member], error=None)
+            return MagicMock(success=True, data=[], error=None)
+
+        c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
+        c.creator_user_permission = MagicMock(return_value=None)
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=MagicMock())
+
+        await projects_sync._ensure_gitlab_group_record_groups(["eng"])
+
+        _rg, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert perms == []
+
     async def test_member_list_failure_triggers_child_project_union(self) -> None:
         """Group found but member listing fails → child-project union attempted."""
         c = make_mock_connector()
@@ -471,7 +557,7 @@ class TestEnsureGitlabGroupRecordGroups:
         async def ds_call_side(fn, *args, **kwargs):
             if "get_group" in str(fn):
                 return group_res
-            if "list_group_members_all" in str(fn):
+            if "list_group_members" in str(fn) and "list_group_members_all" not in str(fn):
                 return members_fail_res
             return MagicMock(success=True, data=[], error=None)
 
@@ -560,6 +646,7 @@ class TestSyncProjectMembersAsPseudo:
         await projects_sync._sync_project_members_as_pseudo(project)
 
         c.data_entities_processor.on_new_record_groups.assert_called_once()
+        assert c.runtime.ds_call.await_count == 1
         call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
         acl = {group.external_group_id: perms for group, perms in call_args}
         assert set(acl) == {
@@ -569,7 +656,7 @@ class TestSyncProjectMembersAsPseudo:
             "1-merge-requests",
             "1-code-repository",
         }
-        # Developer (30) clears the >= 15 bar, so every group grants them.
+        # Reporter and above keep the project folder and every child group.
         assert all(len(perms) == 1 for perms in acl.values())
 
     async def test_guest_is_excluded_from_confidential_work_items(self) -> None:
@@ -601,10 +688,72 @@ class TestSyncProjectMembersAsPseudo:
 
         call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
         acl = {group.external_group_id: perms for group, perms in call_args}
+        assert acl["1"] == [perm]
         assert acl["1-work-items"] == [perm]
         assert acl["1-confidential-work-items"] == []
         assert acl["1-merge-requests"] == []
         assert acl["1-code-repository"] == []
+
+    async def test_planner_sees_issues_not_code_or_merge_requests(self) -> None:
+        """Planner (15) can read issues, including confidential, but not the repository or MRs."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        member = _member(uid=1, access_level=15)
+        member.id = 1
+        c.runtime.ds_call = AsyncMock(
+            return_value=MagicMock(success=True, data=[member], error=None)
+        )
+
+        from app.models.permission import EntityType, Permission, PermissionType
+        perm = Permission(
+            email="planner@example.com",
+            type=PermissionType.OWNER.value,
+            entity_type=EntityType.USER,
+        )
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
+        await projects_sync._sync_project_members_as_pseudo(project)
+
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert acl["1"] == [perm]
+        assert acl["1-work-items"] == [perm]
+        assert acl["1-confidential-work-items"] == [perm]
+        assert acl["1-merge-requests"] == []
+        assert acl["1-code-repository"] == []
+
+    async def test_minimal_access_gets_no_project_grant(self) -> None:
+        """Minimal Access (5) cannot see the project. A project grant would open inherited issues."""
+        c = make_mock_connector()
+        c.data_source = MagicMock()
+        c._gitlab_included_group_paths = None
+
+        project = _project(1, "eng/proj")
+        project.name = "proj"
+        member = _member(uid=1, access_level=5)
+        member.id = 1
+        c.runtime.ds_call = AsyncMock(
+            return_value=MagicMock(success=True, data=[member], error=None)
+        )
+        c.users = MagicMock()
+        c.users._inject_creator_member_into = MagicMock()
+
+        projects_sync = ProjectsSync(c)
+        projects_sync._transform_restrictions_to_permissions = AsyncMock(
+            return_value=MagicMock()
+        )
+        await projects_sync._sync_project_members_as_pseudo(project)
+
+        call_args = c.data_entities_processor.on_new_record_groups.call_args[0][0]
+        acl = {group.external_group_id: perms for group, perms in call_args}
+        assert all(perms == [] for perms in acl.values())
 class TestBuildProjectRecordGroupsParentPath:
     def test_sets_parent_for_group_namespace(self) -> None:
         """Project under a group namespace gets parent_external_group_id set."""
