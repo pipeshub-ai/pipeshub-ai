@@ -31,7 +31,10 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+)
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -404,6 +407,30 @@ class RecordResolver:
         m = _record_to_match(rec, raw, self._frontend_url)
         return [m] if m and m.id else []
 
+    async def _typed(self, rec: Record) -> Record:
+        """Swap a base ``Record`` for its typed subclass when it has one.
+
+        ``get_record_by_weburl`` and ``get_record_by_external_id`` return a
+        base ``Record`` on both graph providers, so its ``to_llm_context()``
+        carries no type-specific fields: a pull request looked up by URL showed
+        no merge state, a ticket no status. ``get_record_by_id`` joins the type
+        document. Same id, so the caller's ACL gate is unchanged; on any miss
+        the base record is kept, as before.
+        """
+        if type(rec) is not Record or not rec.id:
+            return rec
+        record_type = rec.record_type.value if rec.record_type else None
+        # Types with no type collection have nothing to add, and
+        # get_record_by_id answers None for them.
+        if record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            return rec
+        try:
+            typed = await self._graph.get_record_by_id(rec.id)
+        except Exception as exc:
+            logger.debug("_typed(%r): %s", rec.id, exc)
+            return rec
+        return typed if isinstance(typed, Record) and typed.id == rec.id else rec
+
     async def _by_issue_key(
         self, key: str, connectors: list[ConnectorInfo], raw: str
     ) -> list[LookupMatch]:
@@ -434,7 +461,7 @@ class RecordResolver:
         for rec in results:
             if isinstance(rec, Exception) or rec is None:
                 continue
-            m = _record_to_match(rec, raw, self._frontend_url)
+            m = _record_to_match(await self._typed(rec), raw, self._frontend_url)
             if m and m.id:
                 matches.append(m)
         return matches
@@ -453,7 +480,7 @@ class RecordResolver:
                 logger.debug("_by_weburl(%r): %s", url, exc)
                 continue
             if rec:
-                m = _record_to_match(rec, weburl, self._frontend_url)
+                m = _record_to_match(await self._typed(rec), weburl, self._frontend_url)
                 if m and m.id:
                     return [m]
         return []

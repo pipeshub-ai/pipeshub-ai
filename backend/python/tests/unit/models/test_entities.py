@@ -1518,13 +1518,14 @@ class TestPullRequestRecordToLlmContext:
 
     def _pr(self, **overrides):
         from app.models.entities import PullRequestRecord
-        return PullRequestRecord(**_record_kwargs(
-            record_name="Fix login redirect",
-            record_type=RecordType.PULL_REQUEST,
-            connector_name=Connectors.GITHUB,
-            external_record_id="123/pull/42",
+        kwargs = {
+            "record_name": "Fix login redirect",
+            "record_type": RecordType.PULL_REQUEST,
+            "connector_name": Connectors.GITHUB,
+            "external_record_id": "123/pull/42",
             **overrides,
-        ))
+        }
+        return PullRequestRecord(**_record_kwargs(**kwargs))
 
     @pytest.mark.parametrize("stored, shown", [
         # The three values `_status_from_pr` in the GitHub connector writes.
@@ -1557,6 +1558,19 @@ class TestPullRequestRecordToLlmContext:
         assert "* Assignees: alice" in ctx
         assert "* Requested Reviewers: bob, carol" in ctx
         assert "* Labels: bug, backend" in ctx
+
+    @pytest.mark.parametrize("connector", [Connectors.GITHUB, Connectors.GITHUB_TEAMS])
+    def test_github_reviewers_are_requested_reviewers(self, connector):
+        """GitHub's `requested_reviewers` only lists people yet to review."""
+        ctx = self._pr(connector_name=connector, review_name=["bob"]).to_llm_context()
+        assert "* Requested Reviewers: bob" in ctx
+
+    def test_gitlab_reviewers_are_plain_reviewers(self):
+        """GitLab's `reviewers` keeps people after they review, so calling
+        them "requested" would be wrong."""
+        ctx = self._pr(connector_name=Connectors.GITLAB, review_name=["bob"]).to_llm_context()
+        assert "* Reviewers: bob" in ctx
+        assert "Requested" not in ctx
 
     def test_base_header_is_kept(self):
         ctx = self._pr(status="OPEN").to_llm_context()

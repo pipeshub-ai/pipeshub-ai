@@ -9,7 +9,7 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _lookup_result_summary,
 )
 from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.entities import Record, RecordType, Status, TicketRecord
+from app.models.entities import PullRequestRecord, Record, RecordType, Status, TicketRecord
 
 
 # ---------------------------------------------------------------------------
@@ -762,3 +762,122 @@ class TestRecordIdLookup:
         await KnowledgeGraph(state=_record_id_state(gp)).lookup_record(identifiers=[_RECORD_UUID])
 
         gp.get_record_by_external_id.assert_awaited_with("conn-kb", _RECORD_UUID)
+
+
+# ---------------------------------------------------------------------------
+# Typed records for URL and external-id lookups
+# ---------------------------------------------------------------------------
+
+
+def _base_pr_record(id: str = "pr1") -> Record:
+    """What `get_record_by_weburl`/`get_record_by_external_id` return on both
+    graph providers: a base `Record`, without the prs document's fields."""
+    return Record(
+        id=id,
+        record_name="Fix login redirect",
+        record_type=RecordType.PULL_REQUEST,
+        external_record_id="123/pull/42",
+        version=1,
+        origin=OriginTypes.CONNECTOR,
+        connector_name=Connectors.GITHUB_TEAMS,
+        connector_id="conn-gh",
+        weburl="https://github.com/acme/app/pull/42",
+        indexing_status="COMPLETED",
+    )
+
+
+def _typed_pr_record(id: str = "pr1") -> PullRequestRecord:
+    """What `get_record_by_id` returns: the same record, joined with prs."""
+    return PullRequestRecord(
+        **_base_pr_record(id).model_dump(include={
+            "id", "record_name", "record_type", "external_record_id", "version",
+            "origin", "connector_name", "connector_id", "weburl", "indexing_status",
+        }),
+        status="DONE",
+        merged_by="hubot",
+    )
+
+
+class TestLookupShowsTypedFields:
+    """A URL or external-id lookup used to render the base `Record` the
+    provider returned, so a pull request showed no merge state."""
+
+    def _state(self, base, typed):
+        state = _make_state(agent_knowledge=[
+            {"connectorId": "conn-gh", "type": "GITHUB TEAMS", "name": "GitHub"},
+        ])
+        gp = state["graph_provider"]
+        gp.get_record_by_issue_key = AsyncMock(return_value=None)
+        gp.get_record_by_external_id = AsyncMock(return_value=None)
+        gp.get_record_by_weburl = AsyncMock(return_value=base)
+        gp.get_record_by_id = AsyncMock(return_value=typed)
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value=_access_node(
+            "pr1", "Fix login redirect", record_type="PULL_REQUEST",
+        ))
+        return state
+
+    @pytest.mark.asyncio
+    async def test_pull_request_by_url_shows_merge_state(self):
+        state = self._state(_base_pr_record(), _typed_pr_record())
+
+        success, text = await KnowledgeGraph(state=state).lookup_record(
+            identifiers=["https://github.com/acme/app/pull/42"],
+        )
+
+        assert success
+        state["graph_provider"].get_record_by_id.assert_awaited_with("pr1")
+        assert "* Status: Merged" in text
+        assert "* Merged By: hubot" in text
+
+    @pytest.mark.asyncio
+    async def test_pull_request_by_external_id_shows_merge_state(self):
+        state = self._state(None, _typed_pr_record())
+        gp = state["graph_provider"]
+        gp.get_record_by_external_id = AsyncMock(return_value=_base_pr_record())
+
+        success, text = await KnowledgeGraph(state=state).lookup_record(
+            identifiers=["123/pull/42"],
+        )
+
+        assert success
+        gp.get_record_by_external_id.assert_awaited()
+        assert "* Status: Merged" in text
+        assert "* Merged By: hubot" in text
+
+    @pytest.mark.asyncio
+    async def test_typed_read_miss_keeps_the_base_record(self):
+        """get_record_by_id answers None when the type document is missing;
+        the lookup must still resolve, with the base header."""
+        state = self._state(_base_pr_record(), None)
+
+        success, text = await KnowledgeGraph(state=state).lookup_record(
+            identifiers=["https://github.com/acme/app/pull/42"],
+        )
+
+        assert success
+        assert "Fix login redirect" in text
+        assert "* Status" not in text
+
+    @pytest.mark.asyncio
+    async def test_typed_record_with_another_id_is_ignored(self):
+        """Only a read of the same record may replace it: the ACL gate ran on
+        that id."""
+        state = self._state(_base_pr_record(), _typed_pr_record(id="other"))
+
+        success, text = await KnowledgeGraph(state=state).lookup_record(
+            identifiers=["https://github.com/acme/app/pull/42"],
+        )
+
+        assert success
+        assert "* Status" not in text
+
+    @pytest.mark.asyncio
+    async def test_already_typed_record_is_not_read_again(self):
+        state = self._state(_typed_pr_record(), _typed_pr_record())
+
+        _success, text = await KnowledgeGraph(state=state).lookup_record(
+            identifiers=["https://github.com/acme/app/pull/42"],
+        )
+
+        state["graph_provider"].get_record_by_id.assert_not_awaited()
+        assert "* Status: Merged" in text

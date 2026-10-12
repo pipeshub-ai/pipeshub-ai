@@ -2291,6 +2291,14 @@ _PULL_REQUEST_STATUS_LABELS: dict[str, str] = {
     Status.OPEN.value: "Open",
 }
 
+# GitHub's `requested_reviewers` drops a person once they submit a review, so
+# the list the GitHub connector stores is only who is still being asked.
+# GitLab's `reviewers` keeps them after they review, so plain "Reviewers" fits.
+_REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
+    Connectors.GITHUB,
+    Connectors.GITHUB_TEAMS,
+})
+
 
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
@@ -2331,11 +2339,14 @@ class PullRequestRecord(Record):
         if assignees:
             specific_lines.append(f"* Assignees: {', '.join(assignees)}")
 
-        # GitHub fills these from `requested_reviewers`: people asked to review
-        # who have not reviewed yet. "Reviewers" alone would claim a review.
         reviewers = self.review_name or self.review_email
         if reviewers:
-            specific_lines.append(f"* Requested Reviewers: {', '.join(reviewers)}")
+            label = (
+                "Requested Reviewers"
+                if self.connector_name in _REQUESTED_REVIEWER_CONNECTORS
+                else "Reviewers"
+            )
+            specific_lines.append(f"* {label}: {', '.join(reviewers)}")
 
         if self.labels:
             specific_lines.append(f"* Labels: {', '.join(self.labels)}")
