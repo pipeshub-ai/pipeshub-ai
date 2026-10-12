@@ -19623,15 +19623,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         here rather than threading an extra flag through every caller.
         """
         try:
-            apps = await self.get_user_apps(user_key, transaction)
+            apps = await self.get_user_apps(user_key, transaction, raise_on_error=True)
             return [
                 a.get("_key") or a.get("id")
-                for a in apps
+                for a in apps or []
                 if a and (a.get("_key") or a.get("id")) and not a.get("isHidden")
             ]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            return []
+            raise
 
     async def get_user_permission_app_ids(
         self,
@@ -19690,7 +19690,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return list(results[0]) if results and results[0] else []
         except Exception as e:
             self.logger.error("❌ Failed to get user permission app ids: %s", str(e))
-            return []
+            raise
 
     async def get_knowledge_hub_context_permissions(
         self,

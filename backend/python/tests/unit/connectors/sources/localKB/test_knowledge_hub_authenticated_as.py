@@ -87,3 +87,16 @@ class TestSearch:
 
         call = provider.get_knowledge_hub_search.await_args.kwargs
         assert (call["skip"], call["limit"]) == (2, 2)
+
+
+class TestAppLookupFailure:
+    async def test_browse_reports_an_error_not_an_empty_listing(self, service, provider) -> None:
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": USER_KEY})
+        provider.get_user_app_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        provider.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
+
+        response = await service.get_nodes(user_id="user-1", org_id=ORG)
+
+        assert response.success is False
+        assert response.items == []
+        provider.get_knowledge_hub_root_nodes.assert_not_awaited()

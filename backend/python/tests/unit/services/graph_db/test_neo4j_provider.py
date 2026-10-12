@@ -2926,6 +2926,18 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider._get_user_app_ids("user-1") == ["a1", "a2"]
 
     @pytest.mark.asyncio
+    async def test_knowledge_hub_app_lookups_raise_instead_of_returning_no_apps(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        # An empty list here reads as "this user can reach nothing", which the
+        # Knowledge Hub then reports as "No items found" for files that exist.
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_app_ids("user-1")
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_permission_app_ids("user-1", "org-1")
+
+    @pytest.mark.asyncio
     async def test_sync_point_get_upsert_and_remove(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"sp": {"syncPointKey": "k1"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "k1"})  # type: ignore[method-assign]
