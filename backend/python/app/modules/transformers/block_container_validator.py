@@ -63,6 +63,31 @@ _RAW_B64_RE = re.compile(
 )
  
  
+# Docs, tickets and chats quote truncated examples
+# ("data:image/png;base64,iVBORw0KGgo...") whose prefix decodes to a valid PNG
+# signature; rejecting them failed whole records over a few harmless characters.
+# 64 bytes is under the smallest real PNG (67) and over the header of every
+# supported format; a smaller image left in a text block costs only a few dozen
+# characters, which is all this check exists to prevent.
+_MIN_IMAGE_PAYLOAD_BYTES = 64
+_MIN_IMAGE_PAYLOAD_CHARS = (_MIN_IMAGE_PAYLOAD_BYTES * 4 + 2) // 3
+# Wrapped base64 breaks lines at 64 (PEM) or 76 (MIME) characters. A shorter
+# segment ends the payload, so prose after a quoted fragment is not counted.
+_MIN_WRAPPED_LINE_CHARS = 60
+
+
+def _long_enough_for_an_image(raw: str) -> bool:
+    length = 0
+    for segment in raw.split():
+        chars = len(segment.rstrip("="))
+        length += chars
+        if length >= _MIN_IMAGE_PAYLOAD_CHARS:
+            return True
+        if chars < _MIN_WRAPPED_LINE_CHARS:
+            return False
+    return False
+
+
 def _decode_b64_prefix(raw: str, decoded_bytes_needed: int = 32) -> Optional[bytes]:
     """Decode just enough of a base64 string to check magic bytes.
  
@@ -128,6 +153,8 @@ def contains_base64_image(text: str) -> bool:
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
+        if not _long_enough_for_an_image(m.group(1)):
+            continue
         decoded = _decode_b64_prefix(m.group(1))
         if decoded and _is_image_data(decoded):
             return True
@@ -137,6 +164,8 @@ def contains_base64_image(text: str) -> bool:
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
+        if not _long_enough_for_an_image(m.group()):
+            continue
         decoded = _decode_b64_prefix(m.group())
         if decoded and _is_image_data(decoded):
             return True
