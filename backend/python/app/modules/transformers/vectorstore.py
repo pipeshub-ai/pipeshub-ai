@@ -409,6 +409,19 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _bounded_documents(text: str, metadata: dict) -> list[Document]:
+    """Documents for one piece of table text, split to the model's token
+    ceiling. Table rows and summaries are otherwise unbounded, and an over-long
+    one is rejected by the embedding API only after the full retry budget."""
+    ceiling = _embed_token_ceiling()
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [Document(page_content=text, metadata=metadata)]
+    return [
+        Document(page_content=piece, metadata=metadata)
+        for piece in _split_to_token_ceiling(text, ceiling)
+    ]
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
@@ -1910,22 +1923,20 @@ class VectorStore(Transformer):
                     if table_data:
                         table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "blockIndex": block.index,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        # A block, not a group: readers index
-                                        # block_groups with a group point's index.
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    # A block, not a group: readers index
+                                    # block_groups with a group point's index.
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
@@ -1933,20 +1944,18 @@ class VectorStore(Transformer):
                             table_data.get("row_natural_language_text", "")
                         )
                         if row_text:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=row_text,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "blockIndex": block.index,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE_ROW.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                row_text,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": True,
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE_ROW.value,
+                                },
+                            ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):

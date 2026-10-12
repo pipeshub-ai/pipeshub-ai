@@ -883,6 +883,65 @@ class TestIndexDocumentsTableBlocks:
         chunks = vs._create_embeddings.call_args[0][0]
         assert any("Summary of sales" in getattr(c, "page_content", "") for c in chunks)
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("block_type", "field"),
+        [("TABLE_ROW", "row_natural_language_text"), ("TABLE", "table_summary")],
+    )
+    async def test_oversized_table_text_is_split_to_the_token_ceiling(
+        self, block_type: str, field: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Table rows and summaries went to the embedder whole. One over the
+        model's token limit is rejected only after the full retry budget, which
+        stalls the record."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+        from app.modules.transformers.vectorstore import _exceeds_token_ceiling
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        text = "Header: value, " * 2_000
+        block = Block(
+            type=getattr(BlockType, block_type),
+            format=DataFormat.JSON,
+            data={field: text},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert len(docs) > 1
+        assert not any(_exceeds_token_ceiling(d.page_content, 512) for d in docs)
+        assert "".join(d.page_content for d in docs) == text
+        assert {d.metadata["blockId"] for d in docs} == {block.id}
+
+    @pytest.mark.asyncio
+    async def test_table_row_under_the_ceiling_stays_one_document(self) -> None:
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        block = Block(
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"row_natural_language_text": "Name: Alice, Age: 30"},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert [d.page_content for d in docs] == ["Name: Alice, Age: 30"]
+
 
 # ===================================================================
 # split_into_sentences error resilience (replaces the removed
