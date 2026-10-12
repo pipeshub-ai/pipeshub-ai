@@ -1072,6 +1072,28 @@ class TestQuotedBase64IsNotAnImage:
         assert contains_base64_image("data:image/png;base64," + "\r\n".join(textwrap.wrap(png_b64, 64)))
 
 
+    def test_column_wrapped_data_uri_is_still_an_image(self) -> None:
+        import base64
+        import textwrap
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        wrapped = "\n".join(textwrap.wrap("data:image/png;base64," + png_b64, 76, break_long_words=True))
+        assert contains_base64_image(f"Attached screenshot:\n{wrapped}\n")
+
+    def test_prose_word_after_a_quoted_fragment_passes(self) -> None:
+        fragment = self._ONE_PIXEL_PNG[:80]
+        assert contains_base64_image(f"the payload {fragment} example") is False
+        assert contains_base64_image(f"data:image/png;base64,{fragment} example") is False
+
+    def test_image_after_a_quoted_fragment_in_the_same_run_is_found(self) -> None:
+        import base64
+        import textwrap
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        text = "PNG payloads start iVBORw0KGgoAAAANSUhEUg and look like\n" + "\n".join(textwrap.wrap(png_b64, 76))
+        assert contains_base64_image(text)
+
+
 class TestParentChainOutOfRangeBreak:
     def test_walk_breaks_on_out_of_range_ancestor(self):
         """Line 320: chain walk stops when an ancestor parent_index is OOB."""
