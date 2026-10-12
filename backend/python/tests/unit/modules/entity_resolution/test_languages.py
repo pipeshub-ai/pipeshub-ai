@@ -34,12 +34,18 @@ def test_unknown_values_return_none(raw) -> None:
 
 
 @pytest.mark.parametrize(
-    ("raw", "expected"), [("Welsh", "Welsh"), ("cy", "Welsh"), ("isl", "Icelandic"), ("Slovene", "Slovenian")],
+    ("raw", "expected"),
+    [("Welsh", "Welsh"), ("cym", "Welsh"), ("isl", "Icelandic"), ("Slovene", "Slovenian"), ("Bokmal", "Norwegian")],
 )
 def test_natural_languages_outside_the_table_resolve_through_lingua(raw, expected) -> None:
     assert canonical_language(raw) == expected
 
 
-@pytest.mark.parametrize("raw", ["Python", "Go", "TypeScript", "JSON", "YAML", "Bash", "American Sign Language"])
+@pytest.mark.parametrize("raw", ["tl", "tgl", "Tagalog", "Filipino"])
+def test_a_language_lingua_also_knows_keeps_the_table_name(raw) -> None:
+    assert canonical_language(raw) == "Filipino"
+
+
+@pytest.mark.parametrize("raw", ["Python", "Go", "TypeScript", "ts", "JSON", "YAML", "Bash", "American Sign Language"])
 def test_code_and_data_formats_are_not_languages(raw) -> None:
     assert canonical_language(raw) is None

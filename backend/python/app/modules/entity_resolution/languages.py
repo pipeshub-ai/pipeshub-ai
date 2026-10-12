@@ -73,17 +73,27 @@ for _canonical, _aliases in _LANGUAGES.items():
         _LOOKUP[normalize_name(_alias)] = _canonical
 
 
-# lingua's enum names that are not the name people use.
-_LINGUA_DISPLAY = {Language.BOKMAL: "Norwegian", Language.NYNORSK: "Norwegian", Language.SLOVENE: "Slovenian"}
+_LINGUA_DISPLAY = {Language.SLOVENE: "Slovenian"}
+
+
+def _lingua_name(language: Language) -> str:
+    # The table's name wins so "tl", "tgl" and "Tagalog" are one language.
+    return (
+        _LOOKUP.get(normalize_name(language.iso_code_639_1.name))
+        or _LINGUA_DISPLAY.get(language)
+        or language.name.replace("_", " ").title()
+    )
 
 
 @cache
 def _lingua_lookup() -> dict[str, str]:
+    # Two-letter codes are left out: outside the table they collide with
+    # tokens that are not languages ("ts" is TypeScript before it is Tsonga).
     lookup: dict[str, str] = {}
     for language in Language.all():
-        display = _LINGUA_DISPLAY.get(language, language.name.replace("_", " ").title())
-        for key in (display, language.name.replace("_", " "), language.iso_code_639_1.name, language.iso_code_639_3.name):
-            lookup[normalize_name(key)] = display
+        name = _lingua_name(language)
+        for key in (name, language.name.replace("_", " "), language.iso_code_639_3.name):
+            lookup[normalize_name(key)] = name
     return lookup
 
 
