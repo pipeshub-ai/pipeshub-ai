@@ -26,6 +26,7 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
@@ -258,6 +259,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        app.state.entity_store_warmup_task = asyncio.create_task(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
         # Collections created before keyword scoring was fixed (Qdrant IDF,
         # OpenSearch stemming) are updated in place. A deployment that only
         # serves search never reaches the indexing write path that would
@@ -357,7 +362,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "entity_store_warmup_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

@@ -5,12 +5,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.api.routes.chatbot import load_entity_vector_store
+from app.api.routes.chatbot import load_entity_vector_store, warm_up_entity_vector_store
 
 
 def _store(*, collection: bool = True) -> MagicMock:
     store = MagicMock()
     store.collection_exists = AsyncMock(return_value=collection)
+    store.embedding_fingerprint = AsyncMock(return_value="azureOpenAI:model:1536")
     return store
 
 
@@ -66,3 +67,27 @@ class TestLoadEntityVectorStore:
         assert "entity_vector_store" not in services
         loader.assert_not_awaited()
         assert "await load_entity_vector_store(" in inspect.getsource(agent_routes.chat_stream)
+
+
+class TestWarmUpEntityVectorStore:
+    @pytest.mark.asyncio
+    async def test_loads_the_models(self) -> None:
+        store = _store()
+        await warm_up_entity_vector_store(MagicMock(entity_vector_store=AsyncMock(return_value=store)), MagicMock())
+        store.embedding_fingerprint.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_entities_collection_is_not_initialised(self) -> None:
+        """Initialising creates a missing collection, which would turn on
+        tools that can only come back empty."""
+        store = _store(collection=False)
+        await warm_up_entity_vector_store(MagicMock(entity_vector_store=AsyncMock(return_value=store)), MagicMock())
+        store.embedding_fingerprint.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_load_is_logged_not_raised(self) -> None:
+        store = _store()
+        store.embedding_fingerprint.side_effect = RuntimeError("embedding API down")
+        logger = MagicMock()
+        await warm_up_entity_vector_store(MagicMock(entity_vector_store=AsyncMock(return_value=store)), logger)
+        logger.warning.assert_called_once()
