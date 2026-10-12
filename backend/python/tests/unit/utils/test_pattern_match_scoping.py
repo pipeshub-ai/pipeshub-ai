@@ -395,6 +395,18 @@ class TestMergeAdjudication:
         ] is None
 
     @pytest.mark.asyncio
+    async def test_empty_strict_scope_keeps_no_hit(self) -> None:
+        graph = self._graph()
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"v1": "r1"})
+
+        results = await self._merge(
+            graph, [{"virtual_record_id": "v1"}], filters={"apps": [], "kb": [], "strictScope": True},
+        )
+
+        assert results == []
+        graph.filter_accessible_virtual_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_container_lookup_failure_means_full_adjudication(self):
         graph = self._graph()
         graph.get_accessible_containers = AsyncMock(side_effect=RuntimeError("db"))

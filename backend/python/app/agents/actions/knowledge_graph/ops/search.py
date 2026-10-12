@@ -382,6 +382,13 @@ async def execute_search(
                 "result_count": 0,
             })
 
+        # Retrieval treats this key as a control flag, not a filter: with it, an
+        # empty scope searches nothing instead of everything the user can reach.
+        strict_scope = bool(agent_filters.get(STRICT_SCOPE_FILTER_KEY))
+        grep_filters: dict[str, Any] = (
+            {**filter_groups, STRICT_SCOPE_FILTER_KEY: True} if strict_scope else filter_groups
+        )
+
         # Grep knows nothing of entity scope, so an entity-scoped search would
         # be widened by its hits; it runs only for unscoped-by-entity searches.
         entity_scoped = bool(entity_filter_groups or record_scoped_entities)
@@ -393,7 +400,7 @@ async def execute_search(
                     org_id=org_id,
                     user_id=user_id,
                     graph_provider=graph_provider,
-                    filters=filter_groups,
+                    filters=grep_filters,
                     logger_instance=logger_instance,
                     llm=state.get("llm"),
                     user_query=state.get("query"),
@@ -404,10 +411,6 @@ async def execute_search(
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
         per_source_fan_out = fan_out_sources
         failed_sources = 0
-
-        # Retrieval treats this key as a control flag, not a filter: with it, an
-        # empty scope searches nothing instead of everything the user can reach.
-        strict_scope = bool(agent_filters.get(STRICT_SCOPE_FILTER_KEY))
 
         async def _search_one(
             fg: dict[str, list[str]],
@@ -599,7 +602,7 @@ async def execute_search(
                     is_multimodal_llm=is_multimodal_llm,
                     logger_instance=logger_instance,
                     time_range=time_range,
-                    filters=filter_groups,
+                    filters=grep_filters,
                     config_service=config_service,
                 )
                 if pm_record_entries:

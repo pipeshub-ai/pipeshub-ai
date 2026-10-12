@@ -1297,6 +1297,10 @@ async def merge_pattern_match_results(
     When *time_range* is set, graph records are fetched first (lightweight)
     and filtered before the expensive blob fetch.
     """
+    scope = requested_scope_ids(filters)
+    if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
+        return []
+
     seen: set[str] = set()
     unique: list[dict] = []
     for r in raw_records:
@@ -1330,7 +1334,6 @@ async def merge_pattern_match_results(
     except Exception:
         logger_instance.debug("Pattern match: container lookup failed", exc_info=True)
 
-    scope = requested_scope_ids(filters)
     try:
         accessible_vrids = await graph_provider.filter_accessible_virtual_record_ids(
             [r["virtual_record_id"] for r in new_records],
