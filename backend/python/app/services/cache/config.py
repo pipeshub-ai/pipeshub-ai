@@ -84,10 +84,19 @@ async def get_semantic_cache_config(
     """
     default_off = SemanticCacheConfig(mode="off")
 
-    # 1. Platform feature flag gate
+    # 1. Check in-process cache
+    now = time.monotonic()
+    cached = _config_cache.get(org_id)
+    if cached is not None:
+        cfg, timestamp = cached
+        if now - timestamp < CONFIG_CACHE_TTL_SECONDS:
+            return cfg
+
+    # 2. Platform feature flag gate (result is cached below together with the org config)
     try:
         flag_enabled = await is_semantic_cache_enabled(config_service)
         if not flag_enabled:
+            _config_cache[org_id] = (default_off, now)
             return default_off
     except Exception as exc:
         logger.warning(
@@ -95,15 +104,8 @@ async def get_semantic_cache_config(
             org_id,
             type(exc).__name__,
         )
+        _config_cache[org_id] = (default_off, now)
         return default_off
-
-    # 2. Check in-process cache
-    now = time.monotonic()
-    cached = _config_cache.get(org_id)
-    if cached is not None:
-        cfg, timestamp = cached
-        if now - timestamp < CONFIG_CACHE_TTL_SECONDS:
-            return cfg
 
     if config_service is None:
         return default_off

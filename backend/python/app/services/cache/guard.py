@@ -452,7 +452,7 @@ def extract_guard_tokens(raw_text: str) -> dict[str, Any]:
             clean_t
             and any(c.isalpha() for c in clean_t)
             and clean_t not in excluded_from_content
-            and not clean_t.endswith("nt")
+            and not t.endswith("n't")
         ):
             stemmed = light_stem(clean_t)
             content_tokens.add(stemmed)

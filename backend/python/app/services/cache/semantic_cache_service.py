@@ -412,14 +412,17 @@ class SemanticCacheService:
         query_embedding: list[float] | None,
         context_digest: str,
         config_hash: str,
+        *,
+        config: SemanticCacheConfig | None = None,
     ) -> CacheLookupResult:
         """Look up cached response for query under authorized context."""
         self.metrics.lookups += 1
 
         # 1. Resolve organization config
-        config: SemanticCacheConfig = await get_semantic_cache_config(
-            self._config_service, org_id
-        )
+        if config is None:
+            config = await get_semantic_cache_config(
+                self._config_service, org_id
+            )
         if config.mode == "off":
             self.metrics.bypasses += 1
             return CacheLookupResult(hit=False, kind="none", reasons=["mode_off"])
@@ -785,15 +788,18 @@ class SemanticCacheService:
         completion_data: dict[str, object],
         context_digest: str,
         config_hash: str,
+        *,
+        config: SemanticCacheConfig | None = None,
     ) -> bool:
         """Store completion in semantic cache via atomic Lua script."""
         if query_embedding is None:
             self.metrics.write_skipped += 1
             return False
 
-        config: SemanticCacheConfig = await get_semantic_cache_config(
-            self._config_service, org_id
-        )
+        if config is None:
+            config = await get_semantic_cache_config(
+                self._config_service, org_id
+            )
         if config.mode == "off":
             self.metrics.write_skipped += 1
             return False

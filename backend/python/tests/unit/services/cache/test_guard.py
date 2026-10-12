@@ -482,7 +482,23 @@ GUARD_TEST_CASES = [
         "lexical_steering",
         id="add_miss_05_steering_guidance_injection",
     ),
+    pytest.param(
+        "payment approval schedule",
+        "deployment approval schedule",
+        "MISS",
+        "jaccard_below_threshold",
+        id="add_miss_06_words_ending_in_nt_not_dropped_as_contractions",
+    ),
 ]
+
+
+def test_words_ending_in_nt_retained_in_content_tokens_miss() -> None:
+    """Verify words ending in 'nt' (payment vs deployment) are retained as content tokens and trigger a MISS."""
+    query_a = "payment approval schedule"
+    query_b = "deployment approval schedule"
+    passed, reasons = compare(query_a, query_b)
+    assert not passed
+    assert any("jaccard_below_threshold" in r or "content_tokens_mismatch" in r for r in reasons)
 
 
 @pytest.mark.parametrize("query_a,query_b,expected_decision,expected_reason_substr", GUARD_TEST_CASES)

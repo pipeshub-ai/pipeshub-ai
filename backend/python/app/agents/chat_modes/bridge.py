@@ -608,6 +608,7 @@ async def run_chat_stream(
                                             query_embedding=prefetch_result.query_embedding,
                                             context_digest=cached_context_digest,
                                             config_hash=cached_config_hash,
+                                            config=cache_config,
                                         ),
                                         timeout=0.050,
                                     )
@@ -663,6 +664,7 @@ async def run_chat_stream(
                                         query_embedding=prefetch_result.query_embedding,
                                         context_digest=cached_context_digest,
                                         config_hash=cached_config_hash,
+                                        config=cache_config,
                                     )
                                 )
             except Exception as exc:
@@ -878,6 +880,7 @@ async def run_chat_stream(
                                         context_digest=cdigest,
                                         config_hash=chash,
                                         completion_data=cdata,
+                                        config=cache_config,
                                     )
                                     if stored:
                                         record_event(
