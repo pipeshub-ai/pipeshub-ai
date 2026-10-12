@@ -96,7 +96,9 @@ _BARE_CITATION_NORMALIZE_RE = re.compile(
     r'|\b(ref\d+)\b'                               # Grp 3: bare refN token
 )
 
-_REF_TOKEN = r'(?:ref\d+|https?://ref\d+\.xyz/?)'
+# Includes dead ids like ref444d5fad-… so a wrapped one is unwrapped and then
+# removed by _strip_unresolved_ref_citations instead of left half-stripped.
+_REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
 
 # A citation link written with extra wrapping: brackets/quotes around the
 # ref, a link (or list of links) as the target, or brackets around the link,

@@ -2463,3 +2463,27 @@ class TestDeadRefLinksWithNonNumericIds:
         )
         assert "[Refund policy](refund-policy)" in normalized
         assert f"[1]({url})" in normalized
+
+    def test_wrapped_dead_uuid_ref_is_unwrapped_then_stripped(self) -> None:
+        for answer in (
+            f"Fixed later [source]([{self.DEAD}]).",
+            f"Fixed later [source](<{self.DEAD}>).",
+            f"Fixed later [source]([source]({self.DEAD})).",
+            f"Fixed later [[source]({self.DEAD})].",
+            f"Fixed later [source]([{self.DEAD_DIGIT_PREFIX}]).",
+        ):
+            normalized, _ = normalize_citations_and_chunks(answer, [], records=[], ref_to_url={})
+            assert normalized == "Fixed later .", answer
+
+    def test_dead_uuid_ref_in_a_list_with_a_real_ref(self) -> None:
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "release notes", block_web_url=url)]
+        for answer in (
+            f"Shipped [source](ref1, {self.DEAD}).",
+            f"Shipped [source]([source](ref1), [source]({self.DEAD})).",
+        ):
+            normalized, cites = normalize_citations_and_chunks(
+                answer, docs, records=[], ref_to_url={"ref1": url},
+            )
+            assert normalized == f"Shipped [1]({url}) .", answer
+            assert len(cites) == 1
