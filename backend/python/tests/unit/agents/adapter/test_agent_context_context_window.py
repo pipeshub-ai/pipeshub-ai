@@ -39,7 +39,10 @@ def _state() -> dict[str, Any]:
 
 class TestConfiguredWindow:
     @pytest.mark.parametrize(("configured", "expected"), [
-        (400_000, 400_000), ("400000", 400_000), (None, None), (0, None), (-5, None), ("", None), ("lots", None),
+        (400_000, 400_000), ("400000", 400_000), (" 32768 ", 32_768), (128_000.0, 128_000),
+        (None, None), (0, None), (-5, None), ("", None), ("lots", None), ("-5", None),
+        # Not a 1-token window, and not a truncated one.
+        (True, None), (False, None), (1.5, None), ("4.5", None), ("1e5", None), ("²", None),
     ])
     def test_admin_entered_values_become_a_window_or_none(self, configured: object, expected: int | None) -> None:
         context = AgentContext.from_chat_state(_state(), context_length=128_000, configured_context_window=configured)

@@ -15,8 +15,21 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.context.base import ContextBudget
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.hooks.events import HookEvent
+from app.agent_loop_lib.hooks.middleware.builtin.sliding_window import (
+    shape_sliding_window,
+)
+from app.agent_loop_lib.hooks.middleware.builtin.synthesis_guard import (
+    shape_synthesis_guard,
+)
+from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
@@ -26,7 +39,9 @@ from tests.unit.agents.adapter.support.scripted_transport import ScriptedTranspo
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+    from app.agent_loop_lib.core.messages import Message
+    from app.agent_loop_lib.core.types import AgentResult
+    from app.agent_loop_lib.hooks.middleware.pipeline import Middleware
 
 
 class TestBudget:
@@ -48,9 +63,31 @@ class TestBudget:
         assert ModelSpec(model="m").context_window is None
 
 
-async def _budget_seen_by_the_shapers(spec_model: ModelSpec) -> ContextBudget:
-    seen: list[ContextBudget] = []
+class TestSmallWindows:
+    """A local model's window is too small to give 8k of it to the reply."""
 
+    @pytest.mark.parametrize(("window", "budget"), [
+        (8_192, 6_144), (9_000, 6_750), (16_384, 12_288), (32_768, 24_768), (128_000, 120_000),
+    ])
+    def test_at_least_three_quarters_of_a_window_stays_for_the_prompt(self, window: int, budget: int) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=window)
+
+        assert sized.max_tokens == budget
+        assert sized.max_tokens + sized.reserved_output_tokens == window
+
+    @pytest.mark.parametrize("window", [1, 512, 1_000, 4_096])
+    def test_no_floor_lifts_the_budget_past_the_window(self, window: int) -> None:
+        sized = ContextBudget.for_model("local-model", context_window=window)
+
+        assert 0 < sized.effective_max_tokens <= window
+        assert sized.max_tokens + sized.reserved_output_tokens == window
+
+    def test_table_windows_keep_the_full_output_reserve(self) -> None:
+        assert ContextBudget.for_model("claude-opus-5").reserved_output_tokens == 8_000
+        assert ContextBudget.for_model(None).max_tokens == 120_000
+
+
+async def _run(spec_model: ModelSpec, *, seen: list[ContextBudget]) -> AgentResult:
     async def _record(ctx: ModelCallContext, next_fn: Callable[[], Awaitable[None]]) -> None:
         seen.append(ctx.budget)
         await next_fn()
@@ -62,8 +99,12 @@ async def _budget_seen_by_the_shapers(spec_model: ModelSpec) -> ContextBudget:
     runtime = AgentRuntime(transport_registry=transports, tool_registry=ToolRegistry(), hooks=hooks)
     spec = AgentSpec(name="a", system_prompt="You help.", model=spec_model, loop=ReActLoop(), max_turns=2)
 
-    await Agent(spec, runtime).run(Goal(description="hi"))
+    return await Agent(spec, runtime).run(Goal(description="hi"))
 
+
+async def _budget_seen_by_the_shapers(spec_model: ModelSpec) -> ContextBudget:
+    seen: list[ContextBudget] = []
+    await _run(spec_model, seen=seen)
     assert seen
     return seen[0]
 
@@ -80,3 +121,42 @@ class TestAgentTurn:
         budget = await _budget_seen_by_the_shapers(ModelSpec(provider="scripted", model="claude-opus-5-5"))
 
         assert budget.max_tokens == 300_000 - 8_000
+
+
+async def _shape(shaper: Middleware[ModelCallContext], messages: list[Message], budget: ContextBudget) -> list[Message]:
+    ctx = ModelCallContext(messages=list(messages), budget=budget)
+
+    async def _next() -> None:
+        return None
+
+    await shaper(ctx, _next)
+    return ctx.messages
+
+
+_8K = ContextBudget.for_model("local-model", context_window=8_192)
+# About 2,000 tokens at the shapers' four characters a token: fits an 8k window.
+_LONG = "word " * 1_600
+
+
+class TestShapersOnAnEightKWindow:
+    """With the whole 8k given to the reply, the budget floored at 1,000 tokens:
+    the shapers dropped what the model had just read, and the last-resort guard
+    could not fit a single long question."""
+
+    async def test_the_sliding_window_keeps_a_search_result_that_fits(self) -> None:
+        messages: list[Message] = [
+            UserMessage(content="What changed in the Q3 plan?"),
+            AssistantMessage(content="", tool_calls=[ToolCall(id="c1", name="search", arguments={"query": "Q3"})]),
+            ToolMessage(content=_LONG, tool_call_id="c1"),
+        ]
+
+        shaped = await _shape(shape_sliding_window(), messages, _8K)
+
+        assert shaped == messages
+
+    async def test_the_last_resort_guard_lets_a_long_question_through(self) -> None:
+        messages: list[Message] = [UserMessage(content=_LONG)]
+
+        shaped = await _shape(shape_synthesis_guard(), messages, _8K)
+
+        assert shaped == messages

@@ -298,12 +298,16 @@ class AgentContext(BaseModel):
     @field_validator("configured_context_window", mode="before")
     @classmethod
     def _window_or_none(cls, value: Any) -> int | None:  # noqa: ANN401
-        # Model config is admin-entered JSON: a number, a numeric string, or junk.
-        try:
-            window = int(value)
-        except (TypeError, ValueError):
+        # Model config is admin-entered JSON. Only a whole number, or one written
+        # as digits, is a window: `true` or 1.5 means "not configured", never 1.
+        if isinstance(value, bool):
             return None
-        return window if window > 0 else None
+        if isinstance(value, float):
+            value = int(value) if value.is_integer() else None
+        elif isinstance(value, str):
+            text = value.strip()
+            value = int(text) if text.isascii() and text.isdigit() else None
+        return value if isinstance(value, int) and value > 0 else None
 
     @property
     def model_profile(self) -> Any:

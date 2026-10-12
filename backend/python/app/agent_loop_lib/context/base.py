@@ -62,7 +62,7 @@ class ContextBudget(BaseModel):
     @property
     def effective_max_tokens(self) -> int:
         """Budget available to the shaping pipeline after all reserves."""
-        return max(self.max_tokens - self.reserved_artifact_tokens, 1_000)
+        return max(self.max_tokens - self.reserved_artifact_tokens, min(1_000, self.max_tokens))
 
     @classmethod
     def for_model(
@@ -74,10 +74,13 @@ class ContextBudget(BaseModel):
         context_window: int | None = None,
     ) -> "ContextBudget":
         window = context_window if context_window and context_window > 0 else get_context_window(model)
-        max_tokens = max(window - reserved_output_tokens, 1_000)
+        # A small configured window (an 8k local model) cannot give 8k to the
+        # reply: at least three quarters of it stays for the prompt.
+        reserve = min(reserved_output_tokens, window // 4)
+        max_tokens = max(window - reserve, 1)
         return cls(
             max_tokens=max_tokens,
             model=model,
-            reserved_output_tokens=reserved_output_tokens,
+            reserved_output_tokens=reserve,
             reserved_artifact_tokens=reserved_artifact_tokens,
         )
