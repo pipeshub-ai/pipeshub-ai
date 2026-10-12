@@ -3,7 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
-import { AddressInfo } from 'net';
+import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -892,7 +892,8 @@ describe('Application', () => {
       const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
       const server = http.createServer((_req, res) => {
         handlerStarted();
-        setTimeout(() => { order.push('response'); res.end('ok'); }, 50);
+        res.on('finish', () => { order.push('response'); });
+        setTimeout(() => { res.end('ok'); }, 50);
       });
       (app as any).server = server;
       await new Promise<void>((resolve) => server.listen(0, resolve));
@@ -910,6 +911,39 @@ describe('Application', () => {
 
       expect(await inFlight).to.equal('ok');
       expect(order).to.deep.equal(['response', 'dispose']);
+      expect(server.listening).to.be.false;
+    });
+
+    it('should not let an idle keep-alive socket hold the drain open', async () => {
+      (app as any).notificationContainer = new Container();
+      let respondedAt = 0;
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
+      });
+      server.keepAliveTimeout = 65_000;
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      // A raw socket, because nock (loaded by other specs) rewrites http.get
+      // requests to Connection: close and would hide the keep-alive case.
+      const socket = net.connect(port, '127.0.0.1');
+      let received = '';
+      socket.on('data', (c) => { received += c; });
+      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      await requestReceived;
+
+      try {
+        await Promise.all([app.stop(), socketClosed]);
+      } finally {
+        socket.destroy();
+      }
+
+      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
+      expect(Date.now() - respondedAt).to.be.below(1000);
       expect(server.listening).to.be.false;
     });
 

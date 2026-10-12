@@ -120,10 +120,11 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
-// Under the container stop grace period (Docker's default is 10s) so
-// in-flight requests finish before dependencies close, without the process
-// being SIGKILLed mid-drain.
+// Well under the stop grace period (30s in docker-compose.yml, 300s in Helm),
+// leaving time to close Mongo, Redis and the brokers after a drain that runs
+// the full time.
 const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const loggerConfig = {
   service: 'Application',
@@ -837,25 +838,34 @@ export class Application {
         resolve();
       });
     });
-    this.server.closeIdleConnections();
+    // close() drops only the sockets idle at this moment. A keep-alive socket
+    // whose response finishes later stays open for keepAliveTimeout (65s) and
+    // would hold close() until the drain timeout, so keep sweeping.
+    const sweep = setInterval(() => {
+      this.server.closeIdleConnections();
+    }, SHUTDOWN_IDLE_SWEEP_MS);
     let timer: NodeJS.Timeout | undefined;
     const timedOut = new Promise<'timeout'>((resolve) => {
       timer = setTimeout(() => {
         resolve('timeout');
       }, SHUTDOWN_DRAIN_TIMEOUT_MS);
     });
-    const outcome = await Promise.race([
-      closed.then(() => 'drained' as const),
-      timedOut,
-    ]);
-    clearTimeout(timer);
-    if (outcome === 'timeout') {
-      this.logger.warn(
-        'Requests still open after the shutdown drain timeout; closing them',
-        { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
-      );
-      this.server.closeAllConnections();
-      await closed;
+    try {
+      const outcome = await Promise.race([
+        closed.then(() => 'drained' as const),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          'Requests still open after the shutdown drain timeout; closing them',
+          { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        );
+        this.server.closeAllConnections();
+        await closed;
+      }
+    } finally {
+      clearInterval(sweep);
+      clearTimeout(timer);
     }
   }
 
