@@ -36,6 +36,9 @@ services:
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     restart: always
+    # Node drains in-flight requests for up to 8s before closing Mongo, Redis
+    # and the brokers; Docker's 10s default would leave too little for that.
+    stop_grace_period: 30s
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
     build:
