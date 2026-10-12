@@ -14,9 +14,10 @@ strong signal it guessed a timezone rather than took one from the user.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import MINYEAR, datetime, timedelta, timezone
 
 __all__ = ["parse_time_range", "time_range_to_kh_filters"]
 
@@ -53,10 +54,10 @@ def _calendar_date(value: str, *, is_upper_bound: bool) -> datetime | None:
     month's last day for an upper bound and rolls over to the next month for a
     lower one; anything else that is not a real date is None."""
     year, month, day = (int(part) for part in value.split("-"))
-    if not 1 <= month <= 12 or not 1 <= day <= 31:
+    if year < MINYEAR or not 1 <= month <= 12 or not 1 <= day <= 31:
         return None
     first = datetime(year, month, 1, tzinfo=timezone.utc)
-    last_day = ((first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)).day
+    last_day = calendar.monthrange(year, month)[1]
     if day <= last_day:
         return first.replace(day=day)
     if is_upper_bound:
@@ -84,7 +85,8 @@ def _parse_iso_to_epoch_ms(
         if dt is None:
             return None, _error(f"{field_label}: invalid calendar date {value!r}.")
         if is_upper_bound:
-            dt = dt + timedelta(days=1) - timedelta(milliseconds=1)
+            # Not "+1 day -1 ms": that overflows datetime on 9999-12-31.
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999_000)
         return int(dt.timestamp() * 1000), None
 
     normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value

@@ -81,6 +81,19 @@ class TestParseTimeRange:
             "source_created_before_ms": _epoch_ms(datetime(2028, 2, 29, 23, 59, 59, 999000, tzinfo=timezone.utc)),
         }
 
+    @pytest.mark.parametrize("field", ["created_after", "created_before", "modified_after", "modified_before"])
+    def test_year_zero_is_an_invalid_date_not_an_exception(self, field: str) -> None:
+        time_range, error = parse_time_range(**{field: "0000-01-01"})
+        assert time_range is None
+        assert "invalid calendar date" in json.loads(error)["message"]
+
+    def test_the_last_representable_day_is_an_upper_bound(self) -> None:
+        time_range, error = parse_time_range(created_before="9999-12-31")
+        assert error is None
+        assert time_range == {
+            "source_created_before_ms": _epoch_ms(datetime(9999, 12, 31, 23, 59, 59, 999000, tzinfo=timezone.utc)),
+        }
+
     def test_inverted_created_range_rejected(self) -> None:
         time_range, error = parse_time_range(
             created_after="2026-12-31", created_before="2026-01-01"
