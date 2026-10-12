@@ -105,6 +105,11 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
     RefKind.SLACK_TS: [
         LookupStrategy("slack_ts", _SLACK_TYPES),
     ],
+    RefKind.RECORD_ID: [
+        LookupStrategy("record_id", None),
+        # A UUID can also be a connector's own id (Notion pages, for one)
+        LookupStrategy("external_id", None),
+    ],
 }
 
 
@@ -385,7 +390,19 @@ class RecordResolver:
             return await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
         if method == "slack_ts":
             return await self._by_slack_ts(ref, connectors)
+        if method == "record_id":
+            return await self._by_record_id(ref.value, raw)
         return []
+
+    async def _by_record_id(self, record_id: str, raw: str) -> list[LookupMatch]:
+        """``get_record_by_id``; the caller's ACL gate still decides access."""
+        try:
+            rec = await self._graph.get_record_by_id(record_id)
+        except Exception as exc:
+            logger.debug("_by_record_id(%r): %s", record_id, exc)
+            return []
+        m = _record_to_match(rec, raw, self._frontend_url)
+        return [m] if m and m.id else []
 
     async def _by_issue_key(
         self, key: str, connectors: list[ConnectorInfo], raw: str

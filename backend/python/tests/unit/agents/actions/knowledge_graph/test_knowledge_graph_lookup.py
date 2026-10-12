@@ -706,3 +706,59 @@ class TestLookupEdgePaths:
             success, text = await tool.lookup_record(identifiers=["PA-1787"])
         assert not success
         assert "Not found" in text or "no access" in text.lower()
+
+
+# ---------------------------------------------------------------------------
+# A Record ID that search/navigate printed resolves directly
+# ---------------------------------------------------------------------------
+
+_RECORD_UUID = "62636daf-bfeb-4052-8222-71e72993810e"
+
+
+def _record_id_state(gp: AsyncMock) -> dict:
+    return {"org_id": "org-1", "user_id": "user-1", "graph_provider": gp, "has_knowledge": True}
+
+
+def _gp_for_record_id(record: Record | None, access: dict | None) -> AsyncMock:
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+    gp.get_knowledge_hub_filter_options = AsyncMock(return_value={
+        "apps": [{"id": "conn-kb", "name": "KB", "type": "KB"}],
+    })
+    gp.get_record_by_id = AsyncMock(return_value=record)
+    gp.get_record_by_external_id = AsyncMock(return_value=None)
+    gp.get_record_by_weburl = AsyncMock(return_value=None)
+    gp.get_knowledge_hub_node_access = AsyncMock(return_value=access)
+    return gp
+
+
+class TestRecordIdLookup:
+    @pytest.mark.asyncio
+    async def test_record_id_resolves_through_the_acl_gate(self) -> None:
+        rec = _mock_record(_RECORD_UUID, "kv-prefetch-thread", record_type="FILE", connector="KB")
+        gp = _gp_for_record_id(rec, _access_node(_RECORD_UUID, "kv-prefetch-thread", "FILE"))
+
+        success, text = await KnowledgeGraph(state=_record_id_state(gp)).lookup_record(identifiers=[_RECORD_UUID])
+
+        assert success
+        assert "kv-prefetch-thread" in text
+        gp.get_record_by_id.assert_awaited_once_with(_RECORD_UUID)
+        gp.get_knowledge_hub_node_access.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_id_the_user_cannot_read_is_not_found(self) -> None:
+        rec = _mock_record(_RECORD_UUID, "private-thread", record_type="FILE", connector="KB")
+        gp = _gp_for_record_id(rec, None)
+
+        _, text = await KnowledgeGraph(state=_record_id_state(gp)).lookup_record(identifiers=[_RECORD_UUID])
+
+        assert "Not found" in text
+        assert "private-thread" not in text
+
+    @pytest.mark.asyncio
+    async def test_unknown_record_id_still_tries_connector_external_ids(self) -> None:
+        gp = _gp_for_record_id(None, None)
+
+        await KnowledgeGraph(state=_record_id_state(gp)).lookup_record(identifiers=[_RECORD_UUID])
+
+        gp.get_record_by_external_id.assert_awaited_with("conn-kb", _RECORD_UUID)
