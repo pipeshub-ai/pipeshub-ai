@@ -231,7 +231,6 @@ def parse_drive_attachment_record_id(external_id: str | None) -> tuple[str, str]
         .with_agent_support(True)
     )\
     .build_decorator()
-
 class GoogleGmailTeamConnector(BaseConnector):
     def __init__(
         self,
@@ -2337,9 +2336,8 @@ class GoogleGmailTeamConnector(BaseConnector):
                         inherit_permissions=False,
                         source_created_at=user.source_created_at,
                     )
-                    labels: list[RecordGroup] = []
-                    for label_name in ["INBOX", "SENT", "OTHERS"]:
-                        labels.append(RecordGroup(
+                    labels = [
+                        RecordGroup(
                             name=f"{user.full_name} - {label_name}",
                             org_id=self.data_entities_processor.org_id,
                             external_group_id=f"{user.email}:{label_name}",
@@ -2350,7 +2348,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                             group_type=RecordGroupType.MAILBOX,
                             inherit_permissions=True,
                             source_created_at=user.source_created_at,
-                        ))
+                        )
+                        for label_name in ["INBOX", "SENT", "OTHERS"]
+                    ]
 
                     await self.data_entities_processor.on_new_record_groups(
                         [(mailbox, [self._create_owner_permission(user.email)])]
