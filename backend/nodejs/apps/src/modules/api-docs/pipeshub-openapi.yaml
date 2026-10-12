@@ -26696,8 +26696,10 @@ paths:
         '400':
           description: >-
             Invalid request body or parameters, or the record belongs to a
-            GitHub/GitLab repository-wide code graph and must be refreshed
-            through connector sync
+            GitHub/GitLab repository-wide code graph and cannot be reindexed
+            on its own. Reindex the whole repository with
+            `POST /knowledgeBase/reindex/record-group/{recordGroupId}`, or run
+            a connector sync to pick up changes from the repository.
           content:
             application/json:
               schema:

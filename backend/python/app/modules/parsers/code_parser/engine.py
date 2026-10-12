@@ -917,6 +917,10 @@ class _Walker:
         actually runs them.
         """
         cfg = self.cfg
+        # An expression-bodied arrow (`(id) => fetchUser(id)`) has the call as
+        # its body, and the loop below only sees the call's children.
+        if body.type in cfg.call_types:
+            self._emit_call(body, enclosing)
         for child in body.named_children:
             span = self._classify(child, in_container=in_type, in_type=in_type)
             if span is not None and span.kind == "definition":
@@ -937,6 +941,10 @@ class _Walker:
         for fact in self.out.pending[before:]:
             fact.byte_offset = node.start_byte
             fact.from_symbol = idx
+        # `export const store = createStore(reducer)` carries calls; only a
+        # re-export (`export ... from`) has none.
+        if node.type in cfg.export_types and _field(node, "source") is None:
+            self._walk_facts(node, idx)
 
     def _walk_facts(self, node: Node, enclosing: int) -> None:
         """Collect references inside *node*, all owned by *enclosing*.
@@ -964,7 +972,8 @@ class _Walker:
 
     def _emit_call(self, node, enclosing: int) -> None:
         name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
-        if not name or name in self.builtins:
+        # Builtin globals only shadow bare calls; `this.fetch()` is a method.
+        if not name or (not is_member and name in self.builtins):
             return
         self.out.pending.append(PendingEdgeFact(
             relation=Relation.CALLS,

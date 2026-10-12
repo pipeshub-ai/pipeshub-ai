@@ -3015,7 +3015,9 @@ class TestDedupHookBeforeReusedStatus:
             result = await ep._check_duplicate_by_md5(b"x", self._doc(), before_reusing_status=_hook)
 
         assert result.skip_indexing is True
-        assert calls == ["hook", "status"]
+        # The attach writes IN_PROGRESS and then the twin's status; both after the hook.
+        assert calls[0] == "hook"
+        assert calls.count("status") >= 1
 
     @pytest.mark.asyncio
     async def test_a_raising_hook_leaves_the_status_alone(self) -> None:
@@ -3039,12 +3041,13 @@ class TestDedupHookBeforeReusedStatus:
         """A QUEUED record still blocks the edge build; it is projected when the
         primary finishes and it is reprocessed as a finished duplicate."""
         ep, _, _, gp = _make_event_processor()
-        gp.find_duplicate_records.return_value = [{
-            "_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-        }]
+        twin = {"_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records.return_value = [twin]
+        doc = self._doc()
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
         hook = AsyncMock()
 
-        result = await ep._check_duplicate_by_md5(b"x", self._doc(), before_reusing_status=hook)
+        result = await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=hook)
 
         assert result.skip_indexing is True
         hook.assert_not_awaited()

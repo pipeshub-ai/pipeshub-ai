@@ -551,26 +551,28 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         consumers.append(("sync", sync_consumer))
         logger.info("✅ Sync consumer started")
 
-        # 3. Create Code Graph Consumer
-        logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
-        code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
-            app_container
-        )
-        code_graph_consumer = MessagingFactory.create_consumer(
-            broker_type=broker_type,
-            logger=logger,
-            config=code_graph_config,
-            retry_manager=retry_manager,
-        )
-        code_graph_message_handler = (
-            await KafkaUtils.create_code_graph_message_handler(
+        # 3. Code Graph Consumer. Optional: its failure must not stop the
+        # entity and sync consumers already running.
+        try:
+            logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
+            code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
+                app_container
+            )
+            code_graph_consumer = MessagingFactory.create_consumer(
+                broker_type=broker_type,
+                logger=logger,
+                config=code_graph_config,
+                retry_manager=retry_manager,
+            )
+            code_graph_message_handler = await KafkaUtils.create_code_graph_message_handler(
                 app_container,
                 graph_provider,
             )
-        )
-        await code_graph_consumer.start(code_graph_message_handler)
-        consumers.append(("code_graph", code_graph_consumer))
-        logger.info("✅ Code graph consumer started")
+            await code_graph_consumer.start(code_graph_message_handler)
+            consumers.append(("code_graph", code_graph_consumer))
+            logger.info("✅ Code graph consumer started")
+        except Exception as e:
+            logger.error(f"❌ Code graph consumer failed to start: {e}", exc_info=True)
 
         logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers

@@ -469,7 +469,9 @@ class _Builder:
         if family:
             candidates = [
                 cid for cid in candidates
-                if self.index.family_by_block.get(cid) in (None, family)
+                # Exact: Go/Java/... blocks carry no family, and a Python call
+                # must not bind to a same-named Java method either.
+                if self._family_of(cid) == family
             ]
         # A type relation must land on a type; a call must land on something callable.
         if relation in _TYPE_RELATIONS:
@@ -555,9 +557,11 @@ class _Builder:
         if not receiver_type:
             return self._resolve_module_qualified_call(fact, record_id)
 
+        family = self._family_of(block_id)
         type_candidates = [
             cid for cid in self.index.candidates(receiver_type)
             if cid in self.index.type_blocks
+            and (family is None or self._family_of(cid) == family)
         ]
         if len(type_candidates) != 1:  # god-node guard
             if type_candidates:
@@ -682,7 +686,7 @@ class _Builder:
         if family:
             candidates = [
                 cid for cid in candidates
-                if self.index.family_by_block.get(cid) in (None, family)
+                if self._family_of(cid) == family
             ]
         pinned = self._prefix_candidates(candidates, qualified_prefix, from_file, family)
         if pinned:

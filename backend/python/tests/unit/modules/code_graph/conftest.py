@@ -50,6 +50,11 @@ class FakeGraphProvider:
             if record_id in wanted
         }
 
+    async def get_document(self, key, collection, transaction=None, *, raise_on_error=False):
+        if collection == CollectionNames.CODE_FILES.value and key in self.code_files:
+            return {"_key": key, "filePath": self.code_files[key]}
+        return None
+
     async def update_node(self, key, collection, updates, transaction=None):
         if collection == CollectionNames.CODE_FILES.value:
             if "referencedNames" in updates:

@@ -3772,7 +3772,7 @@ class TestProcessCodeDocumentProjection:
             recordName="a.py", recordGroupId="repo-1", mimeType="text/x-python",
         ))
         parsed = MagicMock(blocks=[MagicMock()], block_groups=[])
-        proc.parsers["code"] = MagicMock(parse_to_blocks=MagicMock(return_value=parsed))
+        proc.parsers["code"] = MagicMock(parse_to_blocks_off_loop=AsyncMock(return_value=parsed))
         proc.project_code_blocks_to_graph = create_autospec(
             Processor, instance=True
         ).project_code_blocks_to_graph

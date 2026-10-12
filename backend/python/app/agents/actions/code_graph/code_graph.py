@@ -39,6 +39,8 @@ from .ops import (
     DEFAULT_MAX_LINES,
     DEFAULT_NEIGHBOR_LIMIT,
     MAX_NEIGHBOUR_DEPTH,
+    _record_in_connector,
+    _user_can_read,
     find_symbol_path_impl,
     get_neighbour_impl,
     path_for_record,
@@ -205,12 +207,28 @@ class CodeGraph:
                 "Give either `file_path` (repo-relative) or `record_id` (the "
                 "`Record ID` from a knowledge-search result)."
             )}
+        not_code = {"error": (
+            f"record_id {record_id!r} is not an indexed code file. Code files "
+            "show `Type: CODE_FILE` and a `Path:` in search results."
+        )}
+        # One answer for unreadable, other-connector and unknown records: the
+        # path of a record the caller cannot read is itself a leak.
+        if not await _user_can_read(
+            self._graph_provider, self._user_id, self._org_id, record_id
+        ):
+            return None, not_code
+        try:
+            in_connector = await _record_in_connector(
+                self._graph_provider, self._org_id, [record_id], connector_id
+            )
+        except Exception:
+            self._log.warning("codegraph record connector check failed", exc_info=True)
+            return None, not_code
+        if in_connector is None:
+            return None, not_code
         resolved = await path_for_record(self._graph_provider, self._org_id, record_id)
         if not resolved:
-            return None, {"error": (
-                f"record_id {record_id!r} is not an indexed code file. Code files "
-                "show `Type: CODE_FILE` and a `Path:` in search results."
-            )}
+            return None, not_code
         return resolved, None
 
     def _in_scope(self, connector_id: str) -> dict[str, Any] | None:

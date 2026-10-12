@@ -142,10 +142,11 @@ class RecordEventHandler(BaseEventService):
 
         self.event_processor : EventProcessor = event_processor
         self.producer = producer
-        # Shared by every code record this handler finishes; all uses run on the
-        # consumer's worker loop (process_event), which is the loop the client
-        # binds to on first use.
-        self._redis: Redis | None = None
+        # One client per event loop: process_event runs on the consumer's
+        # worker loop, and a consumer restart brings a new one. A client used
+        # from a loop other than the one that opened its connections fails with
+        # "attached to a different loop".
+        self._redis_by_loop: dict[asyncio.AbstractEventLoop, Redis] = {}
         # The producer's client is bound to the loop that created it — the main
         # loop this handler is constructed on (indexing_main.start_kafka_consumers).
         # process_event runs on the indexing consumer's worker-thread loop, so
@@ -159,21 +160,38 @@ class RecordEventHandler(BaseEventService):
             self._producer_loop = None
 
     async def _redis_client(self) -> "Redis":
-        if self._redis is None:
-            self._redis = await redis_from_config_service(self.config_service)
-        return self._redis
+        loop = asyncio.get_running_loop()
+        # A closed loop's client cannot be closed any more; dropping it is all
+        # that is left to do.
+        for stale in [lp for lp in self._redis_by_loop if lp.is_closed()]:
+            del self._redis_by_loop[stale]
+        redis = self._redis_by_loop.get(loop)
+        if redis is None:
+            redis = await redis_from_config_service(self.config_service)
+            self._redis_by_loop[loop] = redis
+        return redis
 
     async def _discard_redis(self) -> None:
-        redis, self._redis = self._redis, None
-        if redis is None:
-            return
+        redis = self._redis_by_loop.pop(asyncio.get_running_loop(), None)
+        if redis is not None:
+            await self._close_redis(redis)
+
+    async def _close_redis(self, redis: "Redis") -> None:
         try:
             await redis.aclose()
         except Exception:
             self.logger.exception("Failed to close the record handler's Redis client")
 
     async def aclose(self) -> None:
-        await self._discard_redis()
+        """Close every client on the loop that owns it."""
+        clients, self._redis_by_loop = self._redis_by_loop, {}
+        for loop, redis in clients.items():
+            if loop.is_closed():
+                continue
+            try:
+                await run_on_loop(loop, self._close_redis(redis), timeout=5.0)
+            except Exception:
+                self.logger.warning("Could not close a record handler Redis client", exc_info=True)
 
     @staticmethod
     def _is_redis_connection_error(exc: BaseException) -> bool:

@@ -16,6 +16,11 @@ __all__ = ["ImportResolution", "resolve_import_specifier"]
 _JS_EXTENSIONS = (".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
 _JS_INDEX_FILES = tuple(f"index{ext}" for ext in _JS_EXTENSIONS)
 _PY_EXTENSIONS = (".py", ".pyi")
+# TypeScript ESM (node16/nodenext/bundler) imports a source by its emitted name:
+# `./foo.js` while the repo holds `foo.ts`.
+_TS_SOURCE_FOR_EMITTED = {
+    ".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",),
+}
 
 # Bounded so a cycle of barrel files cannot spin forever.
 _MAX_BARREL_HOPS = 8
@@ -76,6 +81,10 @@ class ImportResolution:
         base = posixpath.normpath(posixpath.join(posixpath.dirname(from_file), specifier))
         if base in self._files:
             return base
+        stem, emitted_ext = posixpath.splitext(base)
+        for ext in _TS_SOURCE_FOR_EMITTED.get(emitted_ext, ()):
+            if f"{stem}{ext}" in self._files:
+                return f"{stem}{ext}"
         for ext in _JS_EXTENSIONS:
             candidate = f"{base}{ext}"
             if candidate in self._files:

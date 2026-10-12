@@ -1696,10 +1696,12 @@ class Neo4jProvider(IGraphDBProvider):
         concurrent overwrite cannot sneak in between the check and the write."""
         try:
             label = collection_to_label(collection)
+            # Before conversion, which JSON-serializes nested values the schema
+            # expects as objects or arrays.
+            self.validator.validate_node_update(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 neo4j_node["id"] = key
-            self.validator.validate_node_update(collection, neo4j_node)
             query = f"""
             MATCH (n:{label} {{id: $key}})
             WHERE n[$field] = $expected

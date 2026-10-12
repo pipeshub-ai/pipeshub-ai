@@ -555,7 +555,7 @@ def _build_code_navigation_section() -> str:
         "**1. A set (what / which / all X) walks a factory, registry, or base type — "
         "never a directory crawl.** One search hit that names a member is enough: walk that "
         "member outbound to its base (or resolve the base by bare `qualified_name` and "
-        "`filePath`), then `codegraph__get_neighbour` inbound on that base — those inbound "
+        "`file_path`), then `codegraph__get_neighbour` inbound on that base — those inbound "
         "neighbours are the population. Do not glob `sources/`, list folders, or page "
         "`codegraph__query_code_graph` to finish a catalog; folder names and capped listings "
         "are samples, not the set. Claim completeness only on `truncated: false`.\n\n"
