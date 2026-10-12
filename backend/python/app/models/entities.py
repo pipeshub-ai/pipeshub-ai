@@ -2280,6 +2280,18 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+# What the GitHub connector stores as a pull request's status, spelled out.
+# `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
+# DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
+# the rest. "DONE" alone does not tell a reader the PR was merged. Any other
+# value (GitLab stores its own state words, such as "merged") is shown as stored.
+_PULL_REQUEST_STATUS_LABELS: dict[str, str] = {
+    Status.DONE.value: "Merged",
+    Status.CANCELLED.value: "Closed without merging",
+    Status.OPEN.value: "Open",
+}
+
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -2293,6 +2305,46 @@ class PullRequestRecord(Record):
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
     last_commit_sha: str | None = Field(default=None)
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Returns formatted pull-request-specific metadata for LLM context.
+
+        Without this the model sees only the base header (name, type, dates,
+        URL) and has to guess whether a PR was merged.
+        """
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
+        lines = [base]
+
+        specific_lines = []
+        if self.status:
+            specific_lines.append(f"* Status: {_PULL_REQUEST_STATUS_LABELS.get(self.status, self.status)}")
+
+        if self.creator_name or self.creator_email:
+            specific_lines.append(f"* Author: {self._format_person(self.creator_name, self.creator_email)}")
+
+        if self.merged_by:
+            specific_lines.append(f"* Merged By: {self.merged_by}")
+
+        # Names and emails are separate lists, and the email list only holds
+        # the people whose address is known, so the two cannot be paired up.
+        assignees = self.assignee or self.assignee_email
+        if assignees:
+            specific_lines.append(f"* Assignees: {', '.join(assignees)}")
+
+        # GitHub fills these from `requested_reviewers`: people asked to review
+        # who have not reviewed yet. "Reviewers" alone would claim a review.
+        reviewers = self.review_name or self.review_email
+        if reviewers:
+            specific_lines.append(f"* Requested Reviewers: {', '.join(reviewers)}")
+
+        if self.labels:
+            specific_lines.append(f"* Labels: {', '.join(self.labels)}")
+
+        if specific_lines:
+            lines.append("Pull Request Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_kafka_record(self) -> dict:
         return {

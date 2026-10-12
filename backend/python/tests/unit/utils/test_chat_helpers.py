@@ -356,6 +356,34 @@ class TestCreateRecordInstanceFromDict:
         assert result.url == "https://example.com"
         assert result.is_public == LinkPublicStatus.TRUE
 
+    def test_pull_request_record(self):
+        """PRs used to fall through to `None` here, so chat dropped their
+        merge state even when the prs node was loaded."""
+        from app.models.entities import PullRequestRecord
+        d = _base_record_dict(record_type="PULL_REQUEST", connector_name="GITHUB")
+        graph_doc = {
+            "status": "DONE",
+            "creatorName": "octocat",
+            "creatorEmail": "octo@example.com",
+            "mergedBy": "hubot",
+            "mergeable": None,
+            "assignee": ["alice"],
+            "assigneeEmail": [],
+            "reviewName": ["bob"],
+            "reviewEmail": [],
+            "labels": ["bug"],
+            "lastCommitSha": "abc123",
+        }
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, PullRequestRecord)
+        assert result.record_type == RecordType.PULL_REQUEST
+        assert result.status == "DONE"
+        assert result.merged_by == "hubot"
+        assert result.review_name == ["bob"]
+        ctx = result.to_llm_context()
+        assert "* Status: Merged" in ctx
+        assert "* Merged By: hubot" in ctx
+
     def test_unknown_record_type_returns_none(self):
         d = _base_record_dict(record_type="WEBPAGE")
         graph_doc = {"some": "data"}
@@ -2325,6 +2353,51 @@ class TestGetRecord:
         )
         assert vr_map["vr-1"] is not None
         assert vr_map["vr-1"].get("context_metadata") is not None
+
+    @pytest.mark.asyncio
+    async def test_pull_request_context_shows_merge_state(self):
+        """End to end through chat's record loading: a PR's header carries
+        the status stored on its prs node."""
+        record_blob = _make_record_blob(
+            record_type="PULL_REQUEST", connector_name="GITHUB", record_name="Fix login redirect",
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "labels": ["wontfix"]}
+
+        async def _get_document(document_key, collection):
+            return pr_doc if collection == "prs" else None
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(side_effect=_get_document)
+
+        virtual_to_record_map = {
+            "vr-1": {
+                "_key": "rec-1",
+                "recordType": "PULL_REQUEST",
+                "recordName": "Fix login redirect",
+                "version": 1,
+                "origin": "CONNECTOR",
+                "connectorName": "GITHUB",
+                "connectorId": "conn-1",
+                "webUrl": "https://github.com/org/repo/pull/42",
+                "mimeType": "application/blocks",
+            },
+        }
+        vr_map = {}
+        await get_record(
+            "vr-1", vr_map, blob_store, "org-1",
+            virtual_to_record_map, graph_provider
+        )
+        ctx = vr_map["vr-1"]["context_metadata"]
+        graph_provider.get_document.assert_any_await(document_key="rec-1", collection="prs")
+        # The base header must survive too: with the prs doc loaded but no PR
+        # branch in the factory, the whole header would come back empty.
+        assert "Name: Fix login redirect" in ctx
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "* Labels: wontfix" in ctx
 
     @pytest.mark.asyncio
     async def test_with_graph_provider_error_graceful(self):
@@ -6893,6 +6966,13 @@ class TestCollectionMapMessage:
         from app.utils.chat_helpers import collection_map
         assert collection_map[RecordType.FILE.value] == "files"
         assert collection_map[RecordType.MAIL.value] == "mails"
+
+    def test_pull_request_maps_to_prs(self):
+        """The graph keeps PR fields in the `prs` collection; without this
+        entry chat never loads them."""
+        from app.config.constants.arangodb import CollectionNames
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.PULL_REQUEST.value] == CollectionNames.PULLREQUESTS.value == "prs"
 
 
 class TestValidGroupLabelsConversation:

@@ -27,6 +27,7 @@ from app.models.entities import (
     MessageRecord,
     OriginTypes,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordType,
     TicketRecord,
@@ -836,6 +837,9 @@ collection_map = {
                     # is built from a plain Record, which has no such field. Without
                     # this entry every code file renders with no path at all.
                     RecordType.CODE_FILE.value: "codeFiles",
+                    # Merge state, author and reviewers live only on the prs
+                    # node. Without this entry chat shows a PR with no status.
+                    RecordType.PULL_REQUEST.value: CollectionNames.PULLREQUESTS.value,
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -1013,6 +1017,23 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "record_group_type": graph_doc.get("recordGroupType"),
             }
             return MessageRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.PULL_REQUEST.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.PULL_REQUEST,
+                "status": graph_doc.get("status"),
+                "creator_name": graph_doc.get("creatorName"),
+                "creator_email": graph_doc.get("creatorEmail"),
+                "merged_by": graph_doc.get("mergedBy"),
+                "mergeable": graph_doc.get("mergeable"),
+                "assignee": graph_doc.get("assignee"),
+                "assignee_email": graph_doc.get("assigneeEmail"),
+                "review_name": graph_doc.get("reviewName"),
+                "review_email": graph_doc.get("reviewEmail"),
+                "labels": graph_doc.get("labels"),
+                "last_commit_sha": graph_doc.get("lastCommitSha"),
+            }
+            return PullRequestRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:

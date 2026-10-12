@@ -1511,6 +1511,85 @@ class TestPullRequestRecord:
         assert isinstance(rec.updated_at, int)
 
 
+class TestPullRequestRecordToLlmContext:
+    """A PR's merge state, author and reviewers are stored on the record but
+    used to be left out of the model's context, so it guessed whether a PR
+    was merged. Tickets already show their status the same way."""
+
+    def _pr(self, **overrides):
+        from app.models.entities import PullRequestRecord
+        return PullRequestRecord(**_record_kwargs(
+            record_name="Fix login redirect",
+            record_type=RecordType.PULL_REQUEST,
+            connector_name=Connectors.GITHUB,
+            external_record_id="123/pull/42",
+            **overrides,
+        ))
+
+    @pytest.mark.parametrize("stored, shown", [
+        # The three values `_status_from_pr` in the GitHub connector writes.
+        ("DONE", "Merged"),
+        ("CANCELLED", "Closed without merging"),
+        ("OPEN", "Open"),
+    ])
+    def test_github_status_is_spelled_out(self, stored, shown):
+        ctx = self._pr(status=stored).to_llm_context()
+        assert "Pull Request Information:" in ctx
+        assert f"* Status: {shown}" in ctx
+
+    def test_unknown_status_is_shown_as_stored(self):
+        """GitLab stores its own state words; they pass through unchanged."""
+        ctx = self._pr(status="opened").to_llm_context()
+        assert "* Status: opened" in ctx
+
+    def test_people_and_labels_are_shown(self):
+        ctx = self._pr(
+            status="DONE",
+            creator_name="octocat",
+            creator_email="octo@example.com",
+            merged_by="hubot",
+            assignee=["alice"],
+            review_name=["bob", "carol"],
+            labels=["bug", "backend"],
+        ).to_llm_context()
+        assert "* Author: octocat (octo@example.com)" in ctx
+        assert "* Merged By: hubot" in ctx
+        assert "* Assignees: alice" in ctx
+        assert "* Requested Reviewers: bob, carol" in ctx
+        assert "* Labels: bug, backend" in ctx
+
+    def test_base_header_is_kept(self):
+        ctx = self._pr(status="OPEN").to_llm_context()
+        assert "Name: Fix login redirect" in ctx
+        assert "Type: PULL_REQUEST" in ctx
+        assert "External ID: 123/pull/42" in ctx
+
+    def test_no_section_when_nothing_is_stored(self):
+        """A placeholder PR (no fields yet) gets no empty section."""
+        ctx = self._pr().to_llm_context()
+        assert "Pull Request Information:" not in ctx
+
+    def test_from_arango_record_round_trips_into_context(self):
+        """The navigate/lookup header loads PRs through `from_arango_record`."""
+        from app.models.entities import PullRequestRecord
+        record_doc = {
+            "_key": "pr-1",
+            "orgId": "org-1",
+            "recordName": "Fix login redirect",
+            "recordType": "PULL_REQUEST",
+            "externalRecordId": "123/pull/42",
+            "version": 0,
+            "origin": "CONNECTOR",
+            "connectorName": "GITHUB",
+            "connectorId": "conn-1",
+        }
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "mergedBy": None}
+        ctx = PullRequestRecord.from_arango_record(pr_doc, record_doc).to_llm_context()
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "Merged By" not in ctx
+
+
 # ============================================================================
 # RecordGroup tests (lines 1265, 1286)
 # ============================================================================
