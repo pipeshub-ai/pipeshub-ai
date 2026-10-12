@@ -360,6 +360,7 @@ class TestAbstractMethodInventory:
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
+        "unlink_nodes_missed_by_full_sync",
         # Batch operations
         "batch_upsert_app_users",
         "batch_upsert_user_groups",

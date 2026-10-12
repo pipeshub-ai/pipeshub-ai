@@ -1,4 +1,5 @@
 import contextlib
+import contextvars
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -22,6 +23,7 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
+from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -77,6 +79,13 @@ if TYPE_CHECKING:
 PendingMove = tuple[str, str, str, str | tuple[str, ...] | None]
 
 _NO_OLD_PATH = object()  # sentinel: "no pre-computed old_path supplied"
+
+# The nodes the writes inside one _sync_transaction touched, as
+# (connector_id, collection, node_id). Moved into the full sync's seen set only
+# once that transaction commits: a write that rolled back did not happen.
+_PENDING_FULL_SYNC_SEEN: contextvars.ContextVar[set[tuple[str, str, str]] | None] = (
+    contextvars.ContextVar("pending_full_sync_seen", default=None)
+)
 
 
 class RestoreRefused(Exception):
@@ -179,6 +188,67 @@ class DataSourceEntitiesProcessor:
         self.org_id = ""
         # StorageCleanupHelper is initialized lazily the first time it is needed
         self._storage_cleanup: StorageCleanupHelper | None = None
+        # Per connector, the nodes its running full sync has written so far.
+        self._full_sync_runs: dict[str, FullSyncSeen] = {}
+
+    # ==================== Full sync: what the sync saw ====================
+    #
+    # A full sync no longer deletes the connector's links before it starts. The
+    # processor notes each record, record group, user group and role the sync
+    # writes; once the sync has run to the end, the links of the nodes it did not
+    # write are removed (IGraphDBProvider.unlink_nodes_missed_by_full_sync). A sync
+    # cut off partway removes nothing.
+
+    def begin_full_sync_run(self, connector_id: str) -> FullSyncSeen:
+        """Start noting what a full sync of this connector writes."""
+        runs = self.__dict__.setdefault("_full_sync_runs", {})
+        run = FullSyncSeen()
+        runs[connector_id] = run
+        return run
+
+    def end_full_sync_run(self, connector_id: str, run: FullSyncSeen) -> None:
+        runs = getattr(self, "_full_sync_runs", None)
+        if runs and runs.get(connector_id) is run:
+            del runs[connector_id]
+
+    def _full_sync_run(self, connector_id: str | None) -> FullSyncSeen | None:
+        runs = getattr(self, "_full_sync_runs", None)
+        return runs.get(connector_id) if runs and connector_id else None
+
+    def _note_full_sync_seen(self, connector_id: str | None, collection: str, node_id: str | None) -> None:
+        """Note that the running full sync of this connector wrote this node."""
+        run = self._full_sync_run(connector_id)
+        if run is None or not node_id:
+            return
+        pending = _PENDING_FULL_SYNC_SEEN.get()
+        if pending is None:
+            run.add(collection, node_id)
+        else:
+            pending.add((connector_id, collection, node_id))
+
+    def _first_full_sync_visit(self, connector_id: str | None, collection: str, node_id: str) -> bool:
+        """Whether a full sync is running and has not written this node yet."""
+        run = self._full_sync_run(connector_id)
+        if run is None or run.has(collection, node_id):
+            return False
+        pending = _PENDING_FULL_SYNC_SEEN.get()
+        return pending is None or (connector_id, collection, node_id) not in pending
+
+    @contextlib.asynccontextmanager
+    async def _sync_transaction(self) -> AsyncIterator[TransactionStore]:
+        """``data_store_provider.transaction()``, noting what it wrote for a running
+        full sync only once it has committed."""
+        pending: set[tuple[str, str, str]] = set()
+        token = _PENDING_FULL_SYNC_SEEN.set(pending)
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                yield tx_store
+        finally:
+            _PENDING_FULL_SYNC_SEEN.reset(token)
+        for connector_id, collection, node_id in pending:
+            run = self._full_sync_run(connector_id)
+            if run is not None:
+                run.add(collection, node_id)
 
     def _get_storage_cleanup(self) -> StorageCleanupHelper | None:
         """Return (or lazily create) the StorageCleanupHelper if graph_provider is available."""
@@ -519,6 +589,14 @@ class DataSourceEntitiesProcessor:
                         parent_record, record_group_id, tx_store, parent_record
                     )
 
+            if parent_record is not None and parent_record.is_placeholder:
+                # Never re-read as a real record, so a full sync sees a placeholder
+                # only through its children; left unseen it would be unlinked.
+                self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, parent_record.id)
+                self._note_full_sync_seen(
+                    record.connector_id, CollectionNames.RECORD_GROUPS.value, parent_record.record_group_id
+                )
+
             if parent_record and isinstance(parent_record, Record):
                 if (record.record_type == RecordType.FILE and record.parent_external_record_id and
                     record.parent_record_type in self.ATTACHMENT_CONTAINER_TYPES
@@ -807,6 +885,9 @@ class DataSourceEntitiesProcessor:
                 if shared_with_me_record_group:
                     await tx_store.create_record_group_relation(
                         record.id, shared_with_me_record_group.id
+                    )
+                    self._note_full_sync_seen(
+                        record.connector_id, CollectionNames.RECORD_GROUPS.value, shared_with_me_record_group.id
                     )
                     if shared_with_me_record_group.id not in attached_group_ids:
                         moved = True
@@ -1222,14 +1303,20 @@ class DataSourceEntitiesProcessor:
             return vrid or None
         return tuple(owned)
 
-    async def _handle_record_permissions(self, record: Record, permissions: list[Permission], tx_store: TransactionStore) -> None:
+    async def _handle_record_permissions(
+        self,
+        record: Record,
+        permissions: list[Permission],
+        tx_store: TransactionStore,
+        *,
+        replace: bool = False,
+    ) -> None:
         # A failure is raised, not logged: caught here, the surrounding write went on
         # to commit the record with no permissions and nothing ever retried it.
         record_permissions = await self._record_permission_edges(record, permissions, tx_store)
-        if record_permissions:
-            await tx_store.batch_create_edges(
-                record_permissions, collection=CollectionNames.PERMISSION.value
-            )
+        await self._write_permission_edges(
+            tx_store, record.id, CollectionNames.RECORDS.value, record_permissions, replace=replace
+        )
 
     async def _record_permission_edges(
         self, record: Record, permissions: list[Permission], tx_store: TransactionStore
@@ -1375,7 +1462,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         stored_record: Record | None = None
         try:
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._sync_transaction() as tx_store:
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
                 # edges only; permissions are still applied in this method below.
                 record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
@@ -1459,6 +1546,11 @@ class DataSourceEntitiesProcessor:
                     record_group.id if record_group else None,
                     inherit=bool(record.inherit_permissions),
                 )
+                self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, record.id)
+                if record_group:
+                    self._note_full_sync_seen(
+                        record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group.id
+                    )
 
                 self.logger.debug(f"Successfully updated permissions for record: {record.id}")
 
@@ -1735,7 +1827,17 @@ class DataSourceEntitiesProcessor:
             await self._handle_message_entity_edges(record, tx_store)
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
-        await self._handle_record_permissions(record, permissions, tx_store)
+        # A full sync no longer deletes permission edges before it starts, so the
+        # first time it re-reads a record its permissions are replaced, not added
+        # to: a principal that lost access at the source loses it here. Later
+        # visits in the same sync add, as before, since some connectors see one
+        # record more than once and list part of its permissions each time.
+        replace_permissions = existing_record is not None and self._first_full_sync_visit(
+            record.connector_id, CollectionNames.RECORDS.value, record.id
+        )
+        await self._handle_record_permissions(record, permissions, tx_store, replace=replace_permissions)
+        self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, record.id)
+        self._note_full_sync_seen(record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group_id)
         #Todo: Check if record is updated, permissions are updated or content is updated
         #if existing_record:
 
@@ -1852,7 +1954,7 @@ class DataSourceEntitiesProcessor:
             narrowed_connectors: set[str] = set()
             all_pending_moves: list[PendingMove] = []
 
-            async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
                 old_path_map = await self._snapshot_old_paths(
                     records_with_permissions, tx_store,
                 )
@@ -1947,7 +2049,7 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
-        async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
                 record, [], tx_store, moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
@@ -2023,7 +2125,7 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
         pending_moves: list[PendingMove] = []
-        async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
             processed_record, process_moves = await self._process_record(
@@ -2082,7 +2184,7 @@ class DataSourceEntitiesProcessor:
             )
 
         try:
-            async with self._drop_access_after(narrowed_connectors), self.data_store_provider.transaction() as tx_store:
+            async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
                 # Snapshot old paths BEFORE any mutations in the loop.
                 # Sequential: an ArangoDB stream transaction does not support
                 # overlapping requests on the same transaction id.
@@ -2949,7 +3051,7 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_record_groups received an empty list; skipping processing.")
                 return
 
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._sync_transaction() as tx_store:
                 # Snapshot old hierarchical prefixes for renamed groups
                 # BEFORE any upserts mutate ancestor group names.
                 # Sequential: an ArangoDB stream transaction does not support
@@ -3004,6 +3106,9 @@ class DataSourceEntitiesProcessor:
 
                     # 1. Upsert the record group document
                     await tx_store.batch_upsert_record_groups([record_group])
+                    self._note_full_sync_seen(
+                        record_group.connector_id, CollectionNames.RECORD_GROUPS.value, record_group.id
+                    )
 
                     if old_group_name is not None and old_group_name != record_group.name:
                         if storage_cleanup:
@@ -3083,6 +3188,11 @@ class DataSourceEntitiesProcessor:
                             await tx_store.batch_upsert_record_groups([parent_record_group])
 
                         if parent_record_group:
+                            # The child's edges to its parent are written now; the
+                            # parent must not be unlinked as unseen, taking them along.
+                            self._note_full_sync_seen(
+                                record_group.connector_id, CollectionNames.RECORD_GROUPS.value, parent_record_group.id
+                            )
                             self.logger.debug(f"Creating BELONGS_TO edge for RecordGroup '{record_group.name}' to parent '{parent_record_group.name}'")
 
                             # Define the edge document from child to parent RecordGroup
@@ -3420,7 +3530,7 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_user_groups received an empty list; skipping processing.")
                 return
 
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._sync_transaction() as tx_store:
                 for user_group, members in user_groups:
                     # Set the org_id on the object, as it's needed for the doc
                     user_group.org_id = self.org_id
@@ -3486,6 +3596,7 @@ class DataSourceEntitiesProcessor:
                         tx_store, to_id, to_collection, user_group_permissions,
                         replace=existing_user_group is not None,
                     )
+                    self._note_full_sync_seen(user_group.connector_id, CollectionNames.GROUPS.value, user_group.id)
                     if existing_user_group is not None:
                         rewritten.add(user_group.connector_id)
 
@@ -3507,7 +3618,7 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning("on_new_app_roles received an empty list; skipping processing.")
                 return
 
-            async with self.data_store_provider.transaction() as tx_store:
+            async with self._sync_transaction() as tx_store:
                 for role, members in roles:
                     # Set the org_id on the object, as it's needed for the doc
                     role.org_id = self.org_id
@@ -3572,6 +3683,7 @@ class DataSourceEntitiesProcessor:
                         tx_store, to_id, to_collection, role_permissions,
                         replace=existing_app_role is not None,
                     )
+                    self._note_full_sync_seen(role.connector_id, CollectionNames.ROLES.value, role.id)
                     if existing_app_role is not None:
                         rewritten.add(role.connector_id)
 

@@ -9742,3 +9742,51 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
         c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+
+
+class TestFullSyncCoverage:
+    """What a full sync tells the runner it read, so that only what it did not
+    read for a reason other than the window loses its links afterwards."""
+
+    def test_the_window_and_the_thread_groups_it_applies_to(self) -> None:
+        import time
+
+        from app.models.entities import RecordGroupType
+
+        c = _make_connector()
+        coverage = c.full_sync_coverage()
+
+        assert coverage.complete is True
+        assert abs(coverage.window_start_ms - (time.time() - 30 * 86400) * 1000) < 60_000
+        assert coverage.windowed_group_types == frozenset({RecordGroupType.SLACK_THREAD.value})
+
+    @pytest.mark.asyncio
+    async def test_a_channel_whose_history_failed_part_way_makes_it_incomplete(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache["C1"] = "rg"
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_failure("ratelimited"),
+        )
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c.sync_channel_messages("C1")
+
+        assert c.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_channel_read_to_the_end_leaves_it_complete(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache["C1"] = "rg"
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}]))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c.sync_channel_messages("C1")
+
+        assert c.full_sync_coverage().complete is True
