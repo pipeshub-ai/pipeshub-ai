@@ -1,7 +1,8 @@
 """Tests for app.utils.url_redaction."""
 
-import pytest
+from urllib.parse import unquote
 
+import pytest
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
 
@@ -78,6 +79,49 @@ class TestRedactSensitiveQueryParams:
 
     def test_percent_encoded_equals_in_the_name_is_redacted(self) -> None:
         assert "encoded-secret" not in redact_sensitive_query_params("/cb?page=1&code%3Dencoded-secret")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/cb?code%253DSECRET&page=1",
+            "/cb?token%253Dya29.SECRET",
+            "/cb?page%3D1%26code%3DSECRET",
+            "/cb?foo%26code%3DSECRET",
+            "/cb?scope%3Dopenid%26code%3DSECRET%26state%3DSECRET",
+            "/login?returnTo%3D%2Fcb%3Fcode%3DSECRET",
+        ],
+    )
+    def test_secrets_hidden_in_an_encoded_name_are_redacted(self, url: str) -> None:
+        out = redact_sensitive_query_params(url)
+        assert "SECRET" not in out
+        assert "SECRET" not in unquote(unquote(out))
+
+    def test_an_encoded_sensitive_name_is_logged_trimmed(self) -> None:
+        assert redact_sensitive_query_params("/cb?code%253DSECRET&page=1") == "/cb?code=[REDACTED]&page=1"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://user:hunter2@host.example/x?page=2",
+            "https://user:hunter2@host.example/x",
+            "mongodb://root:hunter2@mongo1:27017,mongo2:27017/db?replicaSet=rs0",
+            "https%3A%2F%2Falice%3Ahunter2%40db.example.com",
+            "/debug?db=postgres%3A%2F%2Fapp%3Ahunter2%40pg%2Fdb",
+        ],
+    )
+    def test_userinfo_passwords_are_redacted(self, url: str) -> None:
+        out = redact_sensitive_query_params(url)
+        assert "hunter2" not in out
+        assert "hunter2" not in unquote(out)
+
+    def test_userinfo_keeps_user_and_host(self) -> None:
+        assert redact_sensitive_query_params("https://user:hunter2@host.example/x?page=2") == (
+            "https://user:REDACTED@host.example/x?page=2"
+        )
+
+    def test_userinfo_without_a_password_is_unchanged(self) -> None:
+        url = "ssh://git@github.com/org/repo"
+        assert redact_sensitive_query_params(url) == url
 
     @pytest.mark.parametrize(
         "url",

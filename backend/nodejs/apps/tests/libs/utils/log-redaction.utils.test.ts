@@ -159,6 +159,20 @@ describe('log-redaction.utils', () => {
       expect(out).to.contain('page=1')
     })
 
+    for (const url of [
+      `/cb?page%3D1%26code%3D${FAKE_CODE}`,
+      `/cb?foo%26code%3D${FAKE_CODE}`,
+      `/cb?scope%3Dopenid%26code%3D${FAKE_CODE}%26state%3D${FAKE_STATE}`,
+      `/login?returnTo%3D%2Fcb%3Fcode%3D${FAKE_CODE}`,
+    ]) {
+      it(`redacts a secret in a later pair of an encoded name: ${url.slice(0, 22)}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(out).to.not.contain('FAKE-auth-code')
+        expect(decodeURIComponent(out)).to.not.contain('FAKE-auth-code')
+        expect(decodeURIComponent(out)).to.not.contain(FAKE_STATE)
+      })
+    }
+
     it('redacts a callback URL nested, encoded, inside another parameter', () => {
       const out = redactSensitiveQueryParams(
         `/login?returnTo=${encodeURIComponent(`/cb?code=${FAKE_CODE}&page=2`)}`,
@@ -314,6 +328,25 @@ describe('log-redaction.utils', () => {
       expect(logged).to.not.contain('nested-token')
       expect(out.page).to.equal('2')
       expect(out.ids).to.deep.equal(['a', 'b'])
+    })
+
+    it('redacts a secret in a later pair of a parameter name', () => {
+      for (const raw of [
+        `page%3D1%26code%3D${FAKE_CODE}`,
+        `scope%3Dopenid%26code%3D${FAKE_CODE}%26state%3D${FAKE_STATE}`,
+        `foo%26code%3D${FAKE_CODE}&page=2`,
+      ]) {
+        const logged = JSON.stringify(redactQueryForLog(querystring.parse(raw)))
+        expect(logged).to.not.contain('FAKE-auth-code')
+        expect(logged).to.not.contain(FAKE_STATE)
+      }
+    })
+
+    it('keeps an ordinary parameter name as it was', () => {
+      expect(redactQueryForLog(querystring.parse('a%3Db=1&page=2'))).to.deep.equal({
+        'a=b': '1',
+        page: '2',
+      })
     })
 
     it('drops the secret from a parameter name that holds it (code%3D<code>)', () => {

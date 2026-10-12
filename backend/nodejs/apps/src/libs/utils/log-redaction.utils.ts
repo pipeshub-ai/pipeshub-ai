@@ -113,16 +113,21 @@ const tryDecode = (value: string): string | null => {
 const decodeEscapes = (text: string): string =>
   text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => tryDecode(run) ?? run);
 
-// A pair sent as `code%3Dvalue` decodes to the single name "code=value", and
-// sent as `code%253Dvalue` is still `code%3Dvalue` after the parser's decode,
-// so the name is decoded further before reading where it ends.
-const paramName = (key: string): string => {
+// Parsers split on a raw `&` or `=` before decoding, so a pair sent as
+// `code%3Dvalue` arrives as the single name "code=value", and one sent as
+// `code%253Dvalue` is still `code%3Dvalue` after the parser's decode.
+const decodeName = (key: string): string => {
   let name = key;
   for (let i = 0; i < MAX_NESTING && name.includes('%'); i += 1) {
     const next = decodeEscapes(name);
     if (next === name) break;
     name = next;
   }
+  return name;
+};
+
+const paramName = (key: string): string => {
+  const name = decodeName(key);
   return name.split('=')[0] ?? name;
 };
 
@@ -137,6 +142,18 @@ export const isSensitiveQueryKey = (key: string): boolean => {
   );
 };
 
+/**
+ * A name that decodes to more than one pair (`page%3D1%26code%3D<code>` is
+ * the single name "page=1&code=<code>") is read as those pairs and logged
+ * redacted. Returns the name unchanged when nothing in it was secret.
+ */
+function redactParamName(key: string, depth: number): string {
+  const name = decodeName(key);
+  if (depth > MAX_NESTING || !/[=&]/.test(name)) return key;
+  const redacted = redactParams(new URLSearchParams(name), depth + 1);
+  return redacted ? redacted.toString() : key;
+}
+
 function redactParams(
   params: URLSearchParams,
   depth: number,
@@ -149,9 +166,10 @@ function redactParams(
       changed = true;
       continue;
     }
+    const name = redactParamName(key, depth);
     const inner = redactEmbedded(value, depth + 1);
-    if (inner !== value) changed = true;
-    out.append(key, inner);
+    if (name !== key || inner !== value) changed = true;
+    out.append(name, inner);
   }
   return changed ? out : null;
 }
@@ -305,11 +323,12 @@ export function redactQueryForLog(query: unknown, depth = 0): unknown {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(query)) {
     // The name itself can hold the secret (`code%3D<code>` parses as a
-    // parameter named "code=<code>"), so a sensitive one is logged trimmed.
+    // parameter named "code=<code>"), so a sensitive one is logged trimmed,
+    // and one holding several pairs is logged with those pairs redacted.
     if (isSensitiveQueryKey(key)) {
       out[paramName(key)] = REDACTED;
     } else {
-      out[key] = redactQueryForLog(value, depth + 1);
+      out[redactParamName(key, 1)] = redactQueryForLog(value, depth + 1);
     }
   }
   return out;
