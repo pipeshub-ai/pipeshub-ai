@@ -1,6 +1,6 @@
 import pytest
 
-from app.modules.parsers.link_text import anchor_text_only
+from app.modules.parsers.link_text import anchor_text_only, markdown_link_destination
 
 
 @pytest.mark.parametrize(
@@ -95,16 +95,35 @@ def test_hostless_autolink_keeps_its_uri() -> None:
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        ("[New York](https://en.wikipedia.org/wiki/New York) is big", "New York is big"),
-        ('[Acme Corp](https://example.com/docs/Acme Corp "Acme") ok', "Acme Corp ok"),
-        ("See [this](a quick note) here", "See [this](a quick note) here"),
-        (
-            "[History](https://en.wikipedia.org/wiki/New York (state)#History) next",
-            "History next",
-        ),
-        ("[Report](https://example.com/docs/Report (final).pdf) ok", "Report ok"),
         ("[docs](https://example.com/docs (the guide)) ok", "docs ok"),
+        ('[Acme Corp](https://example.com/docs/Acme%20Corp "Acme") ok', "Acme Corp ok"),
+        ("[Report](https://example.com/Report_(Q3_(final)).pdf) ok", "Report ok"),
+        ("[Report](https://example.com/Report%20%28final%29.pdf) ok", "Report ok"),
+        ("See [this](a quick note) here", "See [this](a quick note) here"),
     ],
 )
-def test_unencoded_space_in_a_url_destination(text, expected) -> None:
+def test_commonmark_destinations_and_titles(text, expected) -> None:
     assert anchor_text_only(text) == expected
+
+
+def test_raw_space_in_a_markdown_destination_is_not_a_link() -> None:
+    # CommonMark: a bare destination cannot hold a space. HTML hrefs are
+    # encoded before they become markdown, so only hand-written markdown has one.
+    assert anchor_text_only("[x](https://example.com/a b) c").startswith("[x](")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://en.wikipedia.org/wiki/New York", "https://en.wikipedia.org/wiki/New%20York"),
+        (
+            "https://example.com/docs/Report (Q3 (final)).pdf",
+            "https://example.com/docs/Report%20%28Q3%20%28final%29%29.pdf",
+        ),
+        ("https://example.com/a%20b <c>", "https://example.com/a%20b%20%3Cc%3E"),
+        ("https://example.com/café?q=1#top", "https://example.com/café?q=1#top"),
+        ("  https://example.com/tab\there  ", "https://example.com/tab%09here"),
+    ],
+)
+def test_markdown_link_destination_encodes_only_unsafe_characters(url, expected) -> None:
+    assert markdown_link_destination(url) == expected

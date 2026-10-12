@@ -31,7 +31,20 @@ _BARE_URL_RE = re.compile(r"(?<![\w/@.])(?:https?|ftp)://[^\s<>\"'`\[\]]+", re.I
 _TRAILING_URL_PUNCTUATION = ".,;:!?'\""
 _INLINE_SPACES_RE = re.compile(r"[ \t]{2,}")
 _PLACEHOLDER = "\x00{}\x00"
+# Characters a bare CommonMark link destination cannot hold raw.
+_UNSAFE_DESTINATION_CHAR_RE = re.compile(r"[\x00-\x20()<>\x7f]")
 _PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
+
+
+def markdown_link_destination(url: str) -> str:
+    """``url`` percent-encoded so it reads as one bare markdown link destination.
+
+    HTML allows spaces and parentheses in an ``href``; markdownify copies them
+    through, and ``[a](https://x/New York (state))`` is not a markdown link.
+    Only those characters are encoded, so existing ``%XX`` escapes and
+    non-ASCII text are untouched and the URL names the same resource.
+    """
+    return _UNSAFE_DESTINATION_CHAR_RE.sub(lambda m: f"%{ord(m.group(0)):02X}", url.strip())
 
 
 def anchor_text_only(text: str) -> str:
@@ -150,47 +163,32 @@ def _matching(text: str, start: int, opener: str, closer: str) -> int | None:
 
 
 def link_destination_end(text: str, start: int) -> int | None:
-    """Index of the ``)`` closing an inline link destination opened at ``start``.
+    """Index of the ``)`` closing an inline link whose ``(`` is at ``start``.
 
-    Handles ``<...>`` destinations, balanced parentheses inside a URL, a
-    quoted title, and a raw space inside the URL. Returns ``None`` when this
-    is not a link destination.
+    Follows CommonMark: the destination is ``<...>`` or a run without spaces
+    whose parentheses balance, optionally followed by whitespace and a title
+    in ``"..."``, ``'...'`` or ``(...)``. Returns ``None`` otherwise, so prose
+    such as ``[this](a quick note)`` is not taken for a link. HTML hrefs are
+    made to fit by ``markdown_link_destination`` before they become markdown.
     """
-    i = start + 1
     length = len(text)
-    while i < length and text[i] in " \t":
-        i += 1
+    i = _skip_link_whitespace(text, start + 1)
     if i < length and text[i] == "<":
-        close = text.find(">", i)
-        if close == -1 or "\n" in text[i:close]:
+        close = i + 1
+        while close < length and text[close] not in ">\n<":
+            close += 2 if text[close] == "\\" else 1
+        if close >= length or text[close] != ">":
             return None
         i = close + 1
     else:
         depth = 0
-        destination_start = i
         while i < length:
             char = text[i]
             if char == "\\":
                 i += 2
                 continue
-            if char == "\n":
+            if char.isspace() or ord(char) < 0x20:
                 break
-            if char in " \t":
-                # markdownify copies an href verbatim, so `(https://x/New York)`
-                # is one destination. A space ends it before a title, or when
-                # what precedes it is prose rather than a URL or path.
-                following = i
-                while following < length and text[following] in " \t":
-                    following += 1
-                if (
-                    following >= length
-                    or text[following] in "\"')\n"
-                    or "/" not in text[destination_start:i]
-                    or (text[following] == "(" and _is_parenthesized_title(text, following))
-                ):
-                    break
-                i = following
-                continue
             if char == "(":
                 depth += 1
             elif char == ")":
@@ -198,34 +196,35 @@ def link_destination_end(text: str, start: int) -> int | None:
                     return i
                 depth -= 1
             i += 1
-    while i < length and text[i] in " \t\n":
-        i += 1
-    if i < length and text[i] in "\"'(":
-        closing = ")" if text[i] == "(" else text[i]
-        title_end = text.find(closing, i + 1)
-        if title_end == -1:
+        if depth:
             return None
-        i = title_end + 1
-        while i < length and text[i] in " \t\n":
-            i += 1
-    if i < length and text[i] == ")":
-        return i
-    return None
+    title_start = _skip_link_whitespace(text, i)
+    if title_start < length and text[title_start] == ")":
+        return title_start
+    if title_start == i or title_start >= length or text[title_start] not in "\"'(":
+        return None
+    closer = ")" if text[title_start] == "(" else text[title_start]
+    j = title_start + 1
+    while j < length and text[j] != closer:
+        if text[j] == "(" and closer == ")":
+            return None
+        j += 2 if text[j] == "\\" else 1
+    if j >= length:
+        return None
+    end = _skip_link_whitespace(text, j + 1)
+    return end if end < length and text[end] == ")" else None
 
 
-def _is_parenthesized_title(text: str, start: int) -> bool:
-    """Whether the ``(...)`` group at ``start`` is a link title, not part of the URL.
-
-    A title closes the link, so only whitespace and ``)`` may follow it;
-    ``(state)#History`` or ``(final).pdf`` continue the destination.
-    """
-    close = _matching(text, start, "(", ")")
-    if close is None:
-        return False
-    after = close + 1
-    while after < len(text) and text[after] in " \t":
-        after += 1
-    return after < len(text) and text[after] == ")"
+def _skip_link_whitespace(text: str, i: int) -> int:
+    """Skip spaces, tabs and at most one line ending."""
+    newline_seen = False
+    while i < len(text) and text[i] in " \t\n":
+        if text[i] == "\n":
+            if newline_seen:
+                break
+            newline_seen = True
+        i += 1
+    return i
 
 
 def _url_label(url: str) -> str:

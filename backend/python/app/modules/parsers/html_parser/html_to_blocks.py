@@ -103,6 +103,7 @@ from app.models.blocks import (
     MediaMetadata,
     TableMetadata,
 )
+from app.modules.parsers.link_text import markdown_link_destination
 from app.modules.parsers.text_splitting import split_long_text
 
 logger = logging.getLogger(__name__)
@@ -587,6 +588,24 @@ def _resolve_relative_links_on_tree(root: LexborNode, base_url: str) -> None:
         if href.startswith(("http://", "https://", "mailto:", "#", "data:")):
             continue
         anchor.attrs["href"] = urljoin(base_url, href)
+
+
+def _encode_link_destinations_on_tree(root: LexborNode) -> None:
+    """Percent-encode ``<a href>`` and ``<img src>`` for use as markdown destinations.
+
+    Every block's markdown comes from markdownify over this tree, which copies
+    URLs verbatim; a raw space or parenthesis would end the destination early
+    and leave ``[`` / ``](...)`` fragments in stored and embedded text. Inline
+    ``data:`` sources are left alone: they are the image bytes the walker stores.
+    """
+    for tag, attr in (("a", "href"), ("img", "src")):
+        for node in root.css(f"{tag}[{attr}]"):
+            value = (node.attributes or {}).get(attr) or ""
+            if not value or value.lstrip().startswith("data:"):
+                continue
+            encoded = markdown_link_destination(value)
+            if encoded != value:
+                node.attrs[attr] = encoded
 
 
 # Set by ``SelectolaxHtmlParser.extract_and_replace_images``, which rewrites
@@ -1434,6 +1453,7 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
+        _encode_link_destinations_on_tree(root)
         labelled = _label_icon_only_links(root, caption_map or {})
         inlined = _inline_icons_as_text(root)
         if labelled or inlined:
