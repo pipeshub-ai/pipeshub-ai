@@ -20,6 +20,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
+from app.utils.not_indexed import is_not_indexed, not_indexed_note
+
 from .models import LookupMatch, LookupResult, NavigationView, NodeRef, NodeRow
 
 if TYPE_CHECKING:
@@ -200,8 +202,8 @@ def render_navigation_view_with_ids(
                 block_lines = context_block.split("\n")
                 owners.append((len(lines) + _name_line(block_lines), cur.id))
                 lines.extend(block_lines)
-                if view.indexing_status and view.indexing_status != "COMPLETED":
-                    lines.append(f"Indexed: {view.indexing_status}")
+                if is_not_indexed(view.indexing_status):
+                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
             else:
                 lines.append(f"Node: {_trunc(cur.name)}")
                 type_str = f"{cur.node_type}/{cur.sub_type}" if cur.sub_type else cur.node_type
@@ -250,7 +252,11 @@ def render_navigation_view_with_ids(
     # is page 1 only (same record on every page); rows go on every page, since
     # each page shows different ones.
     readable: list[str] = []
-    if page == 1 and view.current and view.current.is_record and view.current.id:
+    if (
+        page == 1 and view.current and view.current.is_record and view.current.id
+        # Nothing to read yet; the header already says why.
+        and not is_not_indexed(view.indexing_status)
+    ):
         readable.append(view.current.id)
     for row in view.rows:
         if row.is_record and row.id and row.id not in readable:
@@ -313,12 +319,15 @@ def _render_match(m: LookupMatch, shortener: "RecordIdShortener | None" = None) 
             lines.append(f"External ID: {m.external_id}")
         if m.web_url:
             lines.append(f"URL: {m.web_url}")
-    if m.indexing_status and m.indexing_status != "COMPLETED":
-        lines.append(f"Indexed: {m.indexing_status}")
-    lines.append(
-        f'Next: navigate(node_id="{_short(m.id, shortener)}") to list children and linked records'
-        f" | {_read_hint([m.id], shortener)}"
-    )
+    next_hint = f'Next: navigate(node_id="{_short(m.id, shortener)}") to list children and linked records'
+    if is_not_indexed(m.indexing_status):
+        # The record exists; only its content is missing. Pointing at a read
+        # that cannot succeed sends the model to search instead, which cannot
+        # find it either, and "not found" then reads as "does not exist".
+        lines.append(not_indexed_note(m.indexing_status))
+        lines.append(next_hint)
+    else:
+        lines.append(f"{next_hint} | {_read_hint([m.id], shortener)}")
     return lines
 
 
