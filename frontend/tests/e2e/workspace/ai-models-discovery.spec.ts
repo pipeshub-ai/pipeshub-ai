@@ -131,7 +131,8 @@ test('an admin picks models, sets a flag per model, and retries the one that fai
   await pickThreeModels(page);
 
   await expect(page.getByTestId('ai-picked-models')).toBeVisible();
-  await page.getByRole('switch', { name: 'Multimodal for gpt-4o-mini' }).click();
+  // gpt-4o-mini reports no flags, so its row starts from the form; Reasoning is still off there.
+  await page.getByRole('switch', { name: 'Reasoning for gpt-4o-mini' }).click();
   await page.getByRole('button', { name: 'Add Model' }).click();
 
   await expect(page.getByTestId('ai-batch-progress').getByText('rejected')).toBeVisible();
@@ -139,7 +140,7 @@ test('an admin picks models, sets a flag per model, and retries the one that fai
   expect(first.configuration).toEqual({ apiKey: 'sk-test' });
   const sent = new Map(first.models.map((item) => [item.model, item]));
   expect(sent.get('gpt-4o')).toMatchObject({ isMultimodal: true, contextLength: 128000 });
-  expect(sent.get('gpt-4o-mini')).toMatchObject({ isMultimodal: true, isReasoning: false });
+  expect(sent.get('gpt-4o-mini')).toMatchObject({ isReasoning: true });
   expect(sent.get('o3')).toMatchObject({ isReasoning: true });
 
   await expect(page.getByRole('switch', { name: 'Reasoning for gpt-4o' })).toHaveCount(0);
@@ -161,7 +162,9 @@ test('a provider without a model list still adds several typed models', async ({
     await modelField(page).fill(id);
     await modelField(page).press('Enter');
   }
-  await expect(page.getByRole('button', { name: 'Remove my-other-deployment' })).toBeVisible();
+  await expect(
+    page.getByTestId('ai-picked-models').getByRole('button', { name: 'Remove my-other-deployment' }),
+  ).toBeVisible();
 
   await page.getByRole('switch', { name: 'Reasoning for my-other-deployment' }).click();
   await page.getByRole('button', { name: 'Add Model' }).click();
