@@ -1,7 +1,8 @@
 /**
  * Multi-model add with a mocked discovery list and a partial batch failure.
  * The provider catalog, discover call, and batch stream are intercepted so the
- * test does not need a live model provider.
+ * test does not need a live model provider. Models are picked from the Model
+ * dropdown, which loads the list once the API key is filled.
  */
 import type { Page } from '@playwright/test';
 import { test, expect } from '../fixtures/api-context.fixture';
@@ -67,14 +68,21 @@ function batchStream(models: string[], failModel: string | null): string {
   return `${lines.join('\n')}\n`;
 }
 
-async function mockAiModels(page: Page, mode: DiscoveryMode = 'list'): Promise<BatchBody[]> {
+interface Mocked {
+  batchBodies: BatchBody[];
+  discoverCalls: () => number;
+}
+
+async function mockAiModels(page: Page, mode: DiscoveryMode = 'list'): Promise<Mocked> {
   const batchBodies: BatchBody[] = [];
+  let discoverCalls = 0;
   await page.route('**/api/v1/configurationManager/ai-models/registry**', (route) =>
     route.fulfill({ json: registry(mode) }),
   );
-  await page.route('**/api/v1/configurationManager/ai-models/discover', (route) =>
-    route.fulfill({ json: DISCOVERED }),
-  );
+  await page.route('**/api/v1/configurationManager/ai-models/discover', (route) => {
+    discoverCalls += 1;
+    return route.fulfill({ json: DISCOVERED });
+  });
   await page.route('**/api/v1/configurationManager/ai-models/providers/batch', (route) => {
     const body = route.request().postDataJSON() as BatchBody;
     batchBodies.push(body);
@@ -96,7 +104,11 @@ async function mockAiModels(page: Page, mode: DiscoveryMode = 'list'): Promise<B
   await page.route('**/api/v1/configurationManager/ai-models/roles', (route) =>
     route.fulfill({ json: { status: 'success', roles: {} } }),
   );
-  return batchBodies;
+  return { batchBodies, discoverCalls: () => discoverCalls };
+}
+
+function modelField(page: Page) {
+  return page.getByTestId('ai-model-combobox').getByRole('combobox');
 }
 
 async function openOpenAI(page: Page) {
@@ -106,19 +118,19 @@ async function openOpenAI(page: Page) {
 
 async function pickThreeModels(page: Page) {
   await openOpenAI(page);
-  await page.getByTestId('ai-fetch-models').click();
-  for (const label of ['GPT-4o', 'GPT-4o mini', 'o3']) {
-    await page.getByLabel(label, { exact: true }).click();
+  await modelField(page).click();
+  const options = page.getByTestId('ai-model-options');
+  for (const id of ['gpt-4o', 'gpt-4o-mini', 'o3']) {
+    await options.getByRole('option').filter({ has: page.getByText(id, { exact: true }) }).click();
   }
 }
 
 test('an admin picks models, sets a flag per model, and retries the one that failed', async ({ page }) => {
-  const batchBodies = await mockAiModels(page);
+  const { batchBodies } = await mockAiModels(page);
   await page.goto('/workspace/ai-models/');
   await pickThreeModels(page);
 
   await expect(page.getByTestId('ai-picked-models')).toBeVisible();
-  await expect(page.getByPlaceholder('Discovery model id')).toHaveCount(0);
   await page.getByRole('switch', { name: 'Multimodal for gpt-4o-mini' }).click();
   await page.getByRole('button', { name: 'Add Model' }).click();
 
@@ -140,20 +152,22 @@ test('an admin picks models, sets a flag per model, and retries the one that fai
 });
 
 test('a provider without a model list still adds several typed models', async ({ page }) => {
-  const batchBodies = await mockAiModels(page, 'manual');
+  const { batchBodies, discoverCalls } = await mockAiModels(page, 'manual');
   await page.goto('/workspace/ai-models/');
   await openOpenAI(page);
 
-  await expect(page.getByTestId('ai-manual-models-hint')).toBeVisible();
-  await expect(page.getByTestId('ai-fetch-models')).toHaveCount(0);
-  await page.getByPlaceholder('Discovery model id').fill('my-deployment');
-  await page.getByLabel('Custom model id').fill('my-other-deployment');
-  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(page.getByText('Type a model name and press Enter.', { exact: false })).toBeVisible();
+  for (const id of ['my-deployment', 'my-other-deployment']) {
+    await modelField(page).fill(id);
+    await modelField(page).press('Enter');
+  }
+  await expect(page.getByRole('button', { name: 'Remove my-other-deployment' })).toBeVisible();
 
   await page.getByRole('switch', { name: 'Reasoning for my-other-deployment' }).click();
   await page.getByRole('button', { name: 'Add Model' }).click();
 
   await expect.poll(() => batchBodies.length).toBe(1);
+  expect(discoverCalls()).toBe(0);
   expect(batchBodies[0].models).toEqual([
     expect.objectContaining({ model: 'my-deployment', isReasoning: false }),
     expect.objectContaining({ model: 'my-other-deployment', isReasoning: true }),
