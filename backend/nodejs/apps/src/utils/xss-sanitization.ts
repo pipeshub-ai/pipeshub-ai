@@ -38,6 +38,20 @@ const SVG_TAG_PATTERN = /<[\s]*svg[^>]{0,10000}>/gi;
 // Max width: 10 digits, max precision: 10 digits to prevent exponential backtracking
 const FORMAT_SPECIFIER_PATTERN = /(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]/;
 
+/** Inputs longer than this are rejected unread by containsXSSPattern. */
+export const XSS_CHECK_MAX_LENGTH = 100000;
+
+/**
+ * True when the string contains something shaped like an HTML tag: any text
+ * between `<` and `>`, such as `<b>` or `<id>`. Used to explain a rejection,
+ * not to decide one.
+ */
+export function containsHTMLTag(value: string): boolean {
+  return (
+    value.includes('<') && HTML_TAG_PATTERN.test(value.substring(0, 10000))
+  );
+}
+
 /**
  * Checks if a string contains potentially dangerous XSS patterns
  * @param value - The string to check
@@ -50,7 +64,7 @@ export function containsXSSPattern(value: string | undefined | null): boolean {
 
   // Input length limit to prevent ReDoS attacks
   // Reject extremely long inputs before regex matching
-  if (value.length > 100000) {
+  if (value.length > XSS_CHECK_MAX_LENGTH) {
     return true; // Treat as potentially dangerous if too long
   }
 

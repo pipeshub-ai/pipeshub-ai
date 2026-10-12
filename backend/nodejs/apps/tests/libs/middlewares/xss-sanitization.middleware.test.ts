@@ -869,6 +869,38 @@ describe('XSS Sanitization Middleware', () => {
       expect(error.message).to.include('URL parameter "id"')
     })
 
+    it('names the field but gives no <id> hint when nothing is tag-shaped', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        url: 'javascript:alert(1)',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"url"')
+      expect(body.error.message).not.to.include('<id>')
+      expect(body.error.message).to.include('javascript:')
+    })
+
+    it('gives no <id> hint for an event handler without a tag', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        note: 'click onclick=alert(1)',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"note"')
+      expect(body.error.message).not.to.include('<id>')
+    })
+
+    it('says an over-long value is too long rather than that it holds HTML', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        text: 'a'.repeat(100001),
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"text"')
+      expect(body.error.message).to.include('too long')
+      expect(body.error.message).not.to.include('<id>')
+    })
+
     it('does not repeat a field name that is itself markup', async () => {
       const { status, body } = await post('/api/v1/search', {
         '<img src=x onerror=alert(1)>': '<b>bold</b>',

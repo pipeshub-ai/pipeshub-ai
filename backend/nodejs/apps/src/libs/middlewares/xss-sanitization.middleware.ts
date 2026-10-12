@@ -2,7 +2,11 @@ import { Request, Response, NextFunction } from 'express';
 import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
-import { containsXSSPattern } from '../../utils/xss-sanitization';
+import {
+  containsHTMLTag,
+  containsXSSPattern,
+  XSS_CHECK_MAX_LENGTH,
+} from '../../utils/xss-sanitization';
 
 /**
  * XSS Sanitization Middleware
@@ -75,6 +79,33 @@ function describeField(path: string): string {
 }
 
 /**
+ * Says what was refused and what to change. The angle-bracket hint is only
+ * given when the value has something tag-shaped in it; a value refused for
+ * `javascript:` or `onclick=` gets no tag hint, and an over-long value is
+ * told it is too long rather than that it contains HTML.
+ */
+function xssRejectionMessage(value: string, field: string): string {
+  if (value.length > XSS_CHECK_MAX_LENGTH) {
+    return (
+      `The value of ${field} is longer than ${XSS_CHECK_MAX_LENGTH.toLocaleString('en-US')} characters, ` +
+      `which is too long to check for HTML tags and scripts. Please shorten it and try again.`
+    );
+  }
+  if (containsHTMLTag(value)) {
+    return (
+      `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+      `Text in angle brackets, such as <id>, counts as an HTML tag. ` +
+      `Please remove any HTML tags and try again.`
+    );
+  }
+  return (
+    `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+    `Script content such as an onclick= handler, a javascript: link or a data:text/html URL counts. ` +
+    `Please remove it and try again.`
+  );
+}
+
+/**
  * Recursively checks for HTML/XSS content in an object or array
  * Throws an error if HTML is detected
  * 
@@ -92,9 +123,7 @@ function validateNoXSS(value: any, path: string = ''): void {
   if (typeof value === 'string') {
     if (containsXSSPattern(value)) {
       throw new BadRequestError(
-        `HTML tags, scripts, and XSS content are not allowed in ${describeField(path)}. ` +
-          `Text in angle brackets, such as <id>, counts as an HTML tag. ` +
-          `Please remove any HTML tags and try again.`,
+        xssRejectionMessage(value, describeField(path)),
       );
     }
     return;
