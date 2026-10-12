@@ -13,11 +13,23 @@ export interface OAuthTokenPayload {
   fullName?: string
   accountType?: string
   createdBy?: string
+  /**
+   * RFC 8693 section 4.1: the party acting on behalf of `userId`.
+   *
+   * Present only on a delegated token, where it names the service account
+   * that obtained it. Nothing authorises on this claim — the token speaks as
+   * `userId` and is checked as that person throughout — but it is what lets a
+   * log, an introspection response or an incident review say who was really
+   * calling.
+   */
+  act?: { sub: string }
 }
 
 // Generated Tokens Response
 export interface GeneratedTokens {
   accessToken: string
+  /** The access token's `jti`, which is what identifies it in later logs. */
+  jti: string
   /** OAuthAccessToken document id, e.g. for a PAT list/revoke UI to
    * reference this token without ever seeing it again. */
   accessTokenId: string
@@ -37,6 +49,12 @@ export interface GenerateTokensOptions {
   // User grants only: PAT and service pseudo-apps store allowedScopes once
   // and validate against MCP_SCOPES instead.
   recheckAppScopes?: boolean
+  /**
+   * Mint this as a delegated token: `userId` keeps speaking as the person,
+   * while this names the service account acting as them. See the `act` claim
+   * on {@link OAuthTokenPayload}.
+   */
+  actorUserId?: string
 }
 
 // Token Response (RFC 6749 compliant)
@@ -47,6 +65,8 @@ export interface TokenResponse {
   refresh_token?: string
   scope: string
   id_token?: string
+  /** RFC 8693 section 2.2.1: required on a token-exchange response. */
+  issued_token_type?: string
 }
 
 // Authorization Request Parameters
@@ -68,6 +88,7 @@ export interface TokenRequest {
     | 'client_credentials'
     | 'refresh_token'
     | 'urn:ietf:params:oauth:grant-type:device_code'
+    | 'urn:ietf:params:oauth:grant-type:token-exchange'
   code?: string
   redirect_uri?: string
   client_id: string
@@ -76,6 +97,11 @@ export interface TokenRequest {
   scope?: string
   code_verifier?: string
   device_code?: string
+  /** RFC 8693: the credential being exchanged — here, a service token. */
+  subject_token?: string
+  subject_token_type?: string
+  /** The person the caller wants to act as, by user id or email address. */
+  requested_subject?: string
 }
 
 // Revoke Request

@@ -60,6 +60,11 @@ describe('OIDCProviderController', () => {
       expect(config.userinfo_endpoint).to.include('/userinfo')
       expect(config.response_types_supported).to.deep.equal(['code'])
       expect(config.grant_types_supported).to.include('authorization_code')
+      // Delegation is discoverable without configuration: it grants nothing
+      // until an administrator puts someone on a service account's allow-list.
+      expect(config.grant_types_supported).to.include(
+        'urn:ietf:params:oauth:grant-type:token-exchange',
+      )
       expect(config.grant_types_supported).to.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )

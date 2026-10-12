@@ -648,6 +648,53 @@ describe('AuthMiddleware', () => {
       expect(req.user.userId).to.equal('real-owner-id')
     })
 
+    it('authenticates a delegated token as the person, not the service account', async () => {
+      // The keystone of delegation. The issued token names the person in
+      // `userId`, so it travels this path as an ordinary user token and every
+      // check downstream — here and in the Python services, which read the
+      // same claim — treats it as that person without knowing delegation
+      // exists. The `act` claim records who was really calling and is
+      // deliberately not read for authorisation.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+        createdBy: 'the-service-account',
+      })
+
+      const appLookup = sinon.stub(OAuthApp, 'findOne')
+      sinon.stub(Users, 'findOne').returns(
+        createMockQuery({
+          email: 'person@example.com',
+          fullName: 'A Person',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('the-person')
+      // `createdBy` names the service account on a delegated token, and must
+      // not be substituted the way a client_credentials token's is. That
+      // substitution happens only when userId === client_id, which is the
+      // reason this works — so the app lookup is never even reached.
+      expect(appLookup.called).to.equal(false)
+      expect(req.user.email).to.equal('person@example.com')
+    })
+
     it('refuses a token minted for an identity the app no longer acts as', async () => {
       // Substituting the live identity would leave Node authorising as the
       // new one while the Python services, which read the claim rather than

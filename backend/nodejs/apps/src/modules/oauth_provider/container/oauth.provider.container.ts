@@ -13,6 +13,9 @@ import { AuthorizationCodeService } from '../services/authorization_code.service
 import { ScopeValidatorService } from '../services/scope.validator.service'
 import { PatService } from '../services/pat.service'
 import { ServiceTokenService } from '../services/service-token.service'
+import { DelegationService } from '../services/delegation.service'
+import { TokenExchangeService } from '../services/token-exchange.service'
+import { DelegationController } from '../controller/delegation.controller'
 import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { OAuthDeviceService } from '../services/oauth.device.service'
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service'
@@ -160,12 +163,24 @@ export class OAuthProviderContainer {
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
 
+      // Delegation: the allow-list an administrator maintains, and the
+      // exchange that turns a service token into a short-lived token for one
+      // named person.
+      const delegationService = new DelegationService(logger)
+      container
+        .bind<DelegationService>('DelegationService')
+        .toConstantValue(delegationService)
+      container
+        .bind<DelegationController>('DelegationController')
+        .toConstantValue(new DelegationController(delegationService))
+
       const serviceTokenService = new ServiceTokenService(
         logger,
         encryptionService,
         configService,
         oauthTokenService,
         scopeValidatorService,
+        delegationService,
       )
       container
         .bind<ServiceTokenService>('ServiceTokenService')
@@ -178,6 +193,15 @@ export class OAuthProviderContainer {
             scopeValidatorService,
           ),
         )
+
+      const tokenExchangeService = new TokenExchangeService(
+        logger,
+        oauthTokenService,
+        delegationService,
+      )
+      container
+        .bind<TokenExchangeService>('TokenExchangeService')
+        .toConstantValue(tokenExchangeService)
 
       const oauthDcrService = new OAuthDcrService(
         logger,
@@ -237,6 +261,7 @@ export class OAuthProviderContainer {
             scopeValidatorService,
             oauthDcrService,
             oauthDeviceService,
+            tokenExchangeService,
           )
         })
 

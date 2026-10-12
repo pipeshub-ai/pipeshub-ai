@@ -51,6 +51,7 @@ export const tokenSchema = z.object({
       OAuthGrantType.CLIENT_CREDENTIALS,
       OAuthGrantType.REFRESH_TOKEN,
       OAuthGrantType.DEVICE_CODE,
+      OAuthGrantType.TOKEN_EXCHANGE,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().url().optional(),
@@ -62,6 +63,12 @@ export const tokenSchema = z.object({
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z.string().regex(codeVerifierPattern, 'Invalid code_verifier format').optional(),
     device_code: z.string().min(1).optional(),
+    // RFC 8693 token exchange. Bounded here so an oversized body is refused
+    // before any of it is parsed as a token; `requested_subject` holds a user
+    // id or an email address, so it is capped at the schema's email length.
+    subject_token: z.string().min(1).max(8192).optional(),
+    subject_token_type: z.string().max(128).optional(),
+    requested_subject: z.string().min(1).max(320).optional(),
   }),
 })
 

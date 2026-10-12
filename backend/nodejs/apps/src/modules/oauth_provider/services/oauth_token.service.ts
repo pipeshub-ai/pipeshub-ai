@@ -125,6 +125,23 @@ export class OAuthTokenService {
       createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
     }
 
+    // A delegated token speaks as the person named in `userId`, so every
+    // claim that answers "who is this" has to agree on that person. Only
+    // `act` dissents, and it is the one claim nothing authorises on.
+    //
+    // `createdBy` is overwritten rather than left as the app's identity
+    // because what it carries by default — whichever administrator first
+    // minted a service token for this org — is both wrong and dangerous here.
+    // Today it is inert: Python substitutes it into `userId` only when
+    // `userId === client_id` (`app/api/middlewares/auth.py:129`), which a
+    // delegated token never satisfies. Leaving an administrator's id on a
+    // token that acts as a member would make that guard the only thing
+    // standing between delegation and silent privilege escalation.
+    if (opts?.actorUserId !== undefined) {
+      accessTokenPayload.act = { sub: opts.actorUserId }
+      accessTokenPayload.createdBy = opts.actorUserId
+    }
+
     const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
     if (this.keyId) {
       signOptions.keyid = this.keyId
@@ -141,18 +158,34 @@ export class OAuthTokenService {
       scopes,
       expiresAt: new Date((now + accessTokenLifetime) * 1000),
       name: opts?.name,
+      actorUserId:
+        opts?.actorUserId === undefined
+          ? undefined
+          : new Types.ObjectId(opts.actorUserId),
     })
 
     const result: GeneratedTokens = {
       accessToken,
+      jti,
       accessTokenId: (storedAccessToken._id as Types.ObjectId).toString(),
       tokenType: 'Bearer',
       expiresIn: accessTokenLifetime,
       scope: scopes.join(' '),
     }
 
-    // Generate refresh token if requested and user is present
-    if (includeRefreshToken && userId && scopes.includes('offline_access')) {
+    // Generate refresh token if requested and user is present.
+    //
+    // Never for a delegated token, whatever the caller asked for. Its whole
+    // safety argument is that it lasts minutes, and a refresh token would
+    // turn it into a standing right to be that person — renewable long after
+    // the allow-list entry behind it was withdrawn. The check belongs here
+    // rather than at the call site so no future caller can opt back into it.
+    if (
+      includeRefreshToken &&
+      userId &&
+      opts?.actorUserId === undefined &&
+      scopes.includes('offline_access')
+    ) {
       const refreshJti = randomUUID()
       const refreshTokenPayload: OAuthTokenPayload = {
         userId: userId,
@@ -246,6 +279,36 @@ export class OAuthTokenService {
   /**
    * Verify access token
    */
+  /**
+   * Revoke every live delegated token obtained by one service account.
+   *
+   * Delegated tokens are stored against the person they speak as, so the
+   * ordinary "revoke everything this user holds" sweep cannot see them. They
+   * expire in minutes on their own, but disabling or deleting a service
+   * account is a decision that should take effect at once rather than after a
+   * final few minutes of it still acting as people.
+   */
+  async revokeDelegatedTokensForActor(
+    actorUserId: string,
+    revokedBy?: string,
+    reason = 'The service account behind this token was switched off',
+  ): Promise<number> {
+    const result = await OAuthAccessToken.updateMany(
+      { actorUserId: new Types.ObjectId(actorUserId), isRevoked: false },
+      {
+        $set: {
+          isRevoked: true,
+          revokedAt: new Date(),
+          revokedReason: reason,
+          ...(revokedBy === undefined
+            ? {}
+            : { revokedBy: new Types.ObjectId(revokedBy) }),
+        },
+      },
+    )
+    return result.modifiedCount
+  }
+
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
     try {
       // Personal access tokens and service tokens carry a display-only

@@ -63,6 +63,7 @@ import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes'
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
 
@@ -188,6 +189,7 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
   sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
   sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -248,7 +250,9 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
   } as any);
   containers.oauth!.bind('ServiceTokenService').toConstantValue({
     revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
   } as any);
+
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {

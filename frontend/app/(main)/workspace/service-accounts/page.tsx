@@ -12,6 +12,7 @@ import { ServiceAccountsApi } from './api';
 import type { ServiceAccount } from './types';
 import { CreateServiceAccountPanel } from './components/create-service-account-panel';
 import { ServiceAccountTokensPanel } from './components/service-account-tokens-panel';
+import { ServiceAccountDelegationsPanel } from './components/service-account-delegations-panel';
 
 function ServiceAccountsPageContent() {
   const { t } = useTranslation();
@@ -23,6 +24,9 @@ function ServiceAccountsPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [tokensFor, setTokensFor] = useState<ServiceAccount | null>(null);
+  const [delegationsFor, setDelegationsFor] = useState<ServiceAccount | null>(
+    null
+  );
   const [deleteTarget, setDeleteTarget] = useState<ServiceAccount | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   // Disabling is asked about first, because it stops every token the account
@@ -221,7 +225,7 @@ function ServiceAccountsPageContent() {
                 <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', flex: 1 }}>
                   {t('workspace.serviceAccounts.columnStatus')}
                 </Text>
-                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', width: 120, textAlign: 'right' }}>
+                <Text size="1" weight="medium" style={{ color: 'var(--slate-11)', width: 156, textAlign: 'right' }}>
                   {' '}
                 </Text>
               </Flex>
@@ -259,7 +263,7 @@ function ServiceAccountsPageContent() {
                         : t('workspace.serviceAccounts.statusActive')}
                     </Badge>
                   </Flex>
-                  <Flex gap="1" justify="end" style={{ width: 120 }}>
+                  <Flex gap="1" justify="end" style={{ width: 156 }}>
                     <IconButton
                       size="2"
                       variant="ghost"
@@ -268,6 +272,17 @@ function ServiceAccountsPageContent() {
                       onClick={() => setTokensFor(account)}
                     >
                       <MaterialIcon name="key" size={16} />
+                    </IconButton>
+                    <IconButton
+                      size="2"
+                      variant="ghost"
+                      style={{ cursor: 'pointer' }}
+                      aria-label={t(
+                        'workspace.serviceAccounts.manageDelegations'
+                      )}
+                      onClick={() => setDelegationsFor(account)}
+                    >
+                      <MaterialIcon name="switch_account" size={16} />
                     </IconButton>
                     <IconButton
                       size="2"
@@ -313,6 +328,14 @@ function ServiceAccountsPageContent() {
         open={createPanelOpen}
         onOpenChange={setCreatePanelOpen}
         onCreated={() => void fetchAccounts()}
+      />
+
+      <ServiceAccountDelegationsPanel
+        open={delegationsFor !== null}
+        onOpenChange={(open) => {
+          if (!open) setDelegationsFor(null);
+        }}
+        account={delegationsFor}
       />
 
       <ServiceAccountTokensPanel

@@ -6,6 +6,7 @@ import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ConfigService } from '../../tokens_manager/services/cm.service';
 import { OAuthTokenService } from './oauth_token.service';
 import { ScopeValidatorService } from './scope.validator.service';
+import { DelegationService } from './delegation.service';
 import {
   OAuthApp,
   IOAuthApp,
@@ -111,6 +112,8 @@ export class ServiceTokenService {
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
+    @inject('DelegationService')
+    private delegationService: DelegationService,
   ) {}
 
   /**
@@ -422,11 +425,58 @@ export class ServiceTokenService {
       await this.oauthTokenService.revokeAllTokensForApp(actingApp.clientId);
     }
 
+    // Tokens this account obtained to act as other people. They are stored
+    // against the person they speak as, not against this account, so the
+    // sweep above cannot see them — and the middleware cannot stop them
+    // either, because the identity it checks is a live colleague's.
+    const delegated =
+      await this.oauthTokenService.revokeDelegatedTokensForActor(
+        serviceAccountId,
+      );
+
+    // And the allow-list itself. Same reasoning as the tokens: restoring
+    // reuses the original record, so a list of people this account could
+    // become would otherwise come back to life under whoever reused the name.
+    await this.delegationService.revokeAllForServiceAccount(
+      orgId,
+      serviceAccountId,
+    );
+
     this.logger.info('Revoked every token held by a service account', {
       orgId,
       serviceAccountId,
       actingApps: actingApps.length,
+      delegatedTokensRevoked: delegated,
     });
+  }
+
+  /**
+   * Stop a service account acting as anyone, without forgetting who it may
+   * act as.
+   *
+   * This is the disable path, and the difference from
+   * {@link revokeAllForServiceAccount} is deliberate: disabling is meant to be
+   * reversible, so the allow-list an administrator built is left alone while
+   * every token minted from it is killed. Those tokens would otherwise keep
+   * working for their last few minutes, because what the auth middleware
+   * checks is whether the *person* is disabled, and that person is a
+   * colleague in good standing.
+   */
+  async revokeDelegatedTokensForServiceAccount(
+    orgId: string,
+    serviceAccountId: string,
+  ): Promise<void> {
+    const revoked =
+      await this.oauthTokenService.revokeDelegatedTokensForActor(
+        serviceAccountId,
+      );
+    if (revoked > 0) {
+      this.logger.info('Revoked a service account’s delegated tokens', {
+        orgId,
+        serviceAccountId,
+        revoked,
+      });
+    }
   }
 
   /** Revoke one token belonging to a service account. */

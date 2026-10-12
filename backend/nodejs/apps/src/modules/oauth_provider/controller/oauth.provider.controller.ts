@@ -9,6 +9,7 @@ import {
   InvalidGrantError,
   InvalidClientError,
   UnsupportedGrantTypeError,
+  TokenExchangeError,
   InvalidScopeError,
   AccessDeniedError,
   InvalidRedirectUriError,
@@ -26,6 +27,7 @@ import { Users } from '../../user_management/schema/users.schema'
 import { Org } from '../../user_management/schema/org.schema'
 import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { OAuthDeviceService } from '../services/oauth.device.service'
+import { TokenExchangeService } from '../services/token-exchange.service'
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -49,6 +51,8 @@ export class OAuthProviderController {
     private scopeValidatorService: ScopeValidatorService,
     @inject('OAuthDcrService') private oauthDcrService: OAuthDcrService,
     @inject('OAuthDeviceService') private oauthDeviceService: OAuthDeviceService,
+    @inject('TokenExchangeService')
+    private tokenExchangeService: TokenExchangeService,
   ) {}
 
   /**
@@ -286,6 +290,29 @@ export class OAuthProviderController {
           clientId = credentials.substring(0, colonIndex)
           clientSecret = credentials.substring(colonIndex + 1)
         }
+      }
+
+      // Token exchange is handled before the client_id requirement, and that
+      // is not an oversight. Every other grant here is a registered client
+      // proving who it is; this one authenticates with the service token it
+      // presents, which already carries a verified identity and the scopes
+      // that bound it. Demanding a client_id as well would mean handing the
+      // service-token app's secret to every integration, which would be a
+      // second credential with more reach than the first.
+      if (
+        tokenRequest.grant_type ===
+        'urn:ietf:params:oauth:grant-type:token-exchange'
+      ) {
+        const exchanged = await this.tokenExchangeService.exchange({
+          subjectToken: tokenRequest.subject_token ?? '',
+          subjectTokenType: tokenRequest.subject_token_type,
+          requestedSubject: tokenRequest.requested_subject,
+          scope: tokenRequest.scope,
+        })
+        res.setHeader('Cache-Control', 'no-store')
+        res.setHeader('Pragma', 'no-cache')
+        res.json(exchanged)
+        return
       }
 
       if (!clientId) {
@@ -807,6 +834,8 @@ export class OAuthProviderController {
     if (error instanceof InvalidGrantError) {
       errorCode = 'invalid_grant'
     } else if (error instanceof DeviceGrantError) {
+      errorCode = error.oauthError
+    } else if (error instanceof TokenExchangeError) {
       errorCode = error.oauthError
     } else if (error instanceof InvalidClientError) {
       errorCode = 'invalid_client'

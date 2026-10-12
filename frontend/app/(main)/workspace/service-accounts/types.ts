@@ -85,3 +85,67 @@ export interface CreateServiceTokenApiResponse {
   message?: string;
   token: ServiceToken & { accessToken: string };
 }
+
+/**
+ * One entry on a service account's allow-list: permission for it to act as
+ * one named person for a few minutes at a time.
+ *
+ * Delegation is how an integration answers "what can *this person* see"
+ * instead of reading with its own access. It is granted one person at a time
+ * on purpose — an account allowed to act as anyone would be a master key.
+ */
+export interface Delegation {
+  id: string;
+  serviceAccountId: string;
+  subjectUserId: string;
+  subjectEmail?: string;
+  subjectFullName?: string;
+  /**
+   * True when the person can no longer be acted as — they left, were
+   * disabled, or became an administrator. The entry is still shown, because
+   * hiding it would leave this list disagreeing with what the system does.
+   */
+  inactive: boolean;
+  inactiveReason?: string;
+  grantedBy: string;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface DelegationListApiResponse {
+  delegations: Delegation[];
+}
+
+/** POST /api/v1/service-account-delegations */
+export interface GrantDelegationPayload {
+  serviceAccountId: string;
+  /** A user id or an email address. */
+  subject: string;
+  reason?: string;
+}
+
+/**
+ * One attempt by a service account to act as someone, successful or not.
+ *
+ * Refusals are recorded as deliberately as successes: an account repeatedly
+ * asking for people it may not act as is the clearest sign a credential has
+ * been taken.
+ */
+export interface DelegationEvent {
+  id: string;
+  serviceAccountId: string;
+  serviceAccountEmail?: string;
+  subjectUserId?: string;
+  subjectEmail?: string;
+  requestedSubject: string;
+  outcome: 'issued' | 'refused';
+  refusedReason?: string;
+  scopes: string[];
+  jti?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+export interface DelegationEventListApiResponse {
+  events: DelegationEvent[];
+}
