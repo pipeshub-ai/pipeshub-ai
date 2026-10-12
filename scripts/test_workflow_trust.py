@@ -116,6 +116,16 @@ def _builds_a_string(text: str) -> bool:
     return any(_BUILDS_A_STRING.search(e) for e in _expressions(text))
 
 
+def _splices_an_expression(text: str) -> bool:
+    """A value that is anything but one whole `${{ }}`, e.g. `refs/${{ 'pull' }}/1/merge`.
+
+    The runner pastes each result into the text around it, and `''`, a null, `&&`, `||`,
+    case() or an unmatched hashFiles() can supply or split any piece, so this fails closed.
+    """
+    bodies = _expressions(text)
+    return bool(bodies) and not (len(bodies) == 1 and text.strip() == f"${{{{{bodies[0]}}}}}")
+
+
 def _reads_a_head_holding_object(text: str) -> bool:
     return any(_HEAD_HOLDING_OBJECT.search(_dotted(e)) for e in _expressions(text))
 
@@ -123,7 +133,11 @@ def _reads_a_head_holding_object(text: str) -> bool:
 def _conditions(value: Any) -> list[str]:
     """Every `if:` value as an expression; a job or step condition needs no `${{ }}`."""
     if isinstance(value, dict):
-        found = [f"${{{{ {v} }}}}" for k, v in value.items() if k == "if" and isinstance(v, str)]
+        found = [
+            v if v.lstrip().startswith("${{") else f"${{{{ {v} }}}}"
+            for k, v in value.items()
+            if k == "if" and isinstance(v, str)
+        ]
         return found + [c for v in value.values() for c in _conditions(v)]
     if isinstance(value, list):
         return [c for v in value for c in _conditions(v)]
@@ -143,6 +157,7 @@ def _references_pr_head(text: str) -> bool:
         _PR_HEAD_REF.search(_dotted(s))
         or _computes_an_index(s)
         or _builds_a_string(s)
+        or _splices_an_expression(s)
         or _reads_a_head_holding_object(s)
         for s in strings
     )
@@ -623,6 +638,16 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ FORMAT ( 'refs/{0}/{1}/merge', 'pull', github.event.number) }}\n",
             "ref: ${{ join(fromJSON('[\"refs\", \"pull\", \"1\", \"merge\"]'), '/') }}\n",
             "ref: ${{ fromJSON('\"refs\\/pull\\/1\\/merge\"') }}\n",
+            "ref: refs/${{ 'pull' }}/${{ github.event.pull_request.number }}/merge\n",
+            "ref: refs/${{ 'pull' }}/1/merge\n",
+            "ref: ${{ 'refs' }}${{ '/pull/' }}${{ github.event.workflow_run.pull_requests[0].number }}/head\n",
+            "ref: refs/pull${{ '' }}/${{ github.event.pull_request.number }}/merge\n",
+            "ref: refs/pull${{ null }}/${{ github.event.pull_request.number }}/merge\n",
+            "ref: ${{ 'refs/pull' }}/${{ github.event.pull_request.number }}/merge\n",
+            "ref: ${{ true && 'refs/' }}${{ true && 'pull/' }}${{ github.event.pull_request.number }}/merge\n",
+            "ref: ${{ 'refs/' || 'x' }}${{ 'pull/' || 'x' }}${{ github.event.pull_request.number }}/merge\n",
+            "ref: ${{ case(true, 'refs/', '') }}${{ case(true, 'pull/', '') }}${{ github.event.workflow_run.pull_requests[0].number }}/merge\n",
+            "ref: refs/pull${{ hashFiles('no-such') }}/${{ github.event.pull_request.number }}/merge\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
@@ -634,6 +659,7 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - {condition}"))
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    {condition}"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    if: github.event_name == 'push'\n"))
+        self.assertFalse(_references_pr_head("jobs:\n  a:\n    if: ${{ github.event_name == 'push' }}\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: main\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ (github.event.pull_request.base).sha }}\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ github.event.inputs['tag'] }}\n"))
@@ -649,7 +675,13 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 self.assertFalse(
                     _references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{{{ {unflagged} }}}}\n")
                 )
-        self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - run: echo ${{ steps.probe.outputs.summary }} [ok]\n"))
+        self.assertFalse(
+            _references_pr_head(
+                "jobs:\n  a:\n    steps:\n      - run: echo \"$SUMMARY\" [ok]\n"
+                "        env:\n          SUMMARY: ${{ steps.probe.outputs.summary }}\n"
+            )
+        )
+        self.assertTrue(_references_pr_head("jobs:\n  a:\n    steps:\n      - run: echo ${{ steps.probe.outputs.summary }} [ok]\n"))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
