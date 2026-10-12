@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -26,7 +27,6 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
-from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
