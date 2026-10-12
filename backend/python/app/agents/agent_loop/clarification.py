@@ -64,8 +64,12 @@ async def emit_pre_run_clarification(
     Returns the `completion_data` dict, matching `RespondPipeline.run()`'s
     return contract so `stream_bridge.py` can treat both paths uniformly.
     """
-    from app.agents.actions.internal_tools.intrim_tools import question_payload
+    from app.agents.actions.internal_tools.intrim_tools import (
+        asked_questions,
+        question_payload,
+    )
 
+    questions = asked_questions(questions)
     # With no question there is no card to show, and the event would make
     # the client drop the clarifying text that follows.
     if context.has_ui_client and questions:

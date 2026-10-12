@@ -133,3 +133,15 @@ class TestNoQuestionEmitsNoCard:
 
         assert result["answer"] == "fallback text"
         assert not any("ask_user_question" in str(evt) for evt in sink.events)
+
+    async def test_a_blank_question_gets_no_card_and_is_not_the_answer(self) -> None:
+        context = make_context(has_ui_client=True)
+        sink = _FakeEventSink()
+
+        result = await emit_pre_run_clarification(
+            context, "fallback text", [_question("   "), _question("Which channel?")], event_sink=sink,
+        )
+
+        assert result["answer"] == "Which channel?"
+        tool_data = next(e for e in sink.events if e["event"] == "ask_user_question")["data"]["toolData"]
+        assert [q["question"] for q in tool_data["questions"]] == ["Which channel?"]

@@ -163,6 +163,11 @@ def _question_text(item: AskUserQuestionItemInput | dict[str, Any] | str) -> str
     return str(item)
 
 
+def asked_questions(questions: list[Any] | None) -> list[Any]:
+    """The questions with text to show; a blank one would render as an empty card."""
+    return [item for item in questions or [] if _question_text(item).strip()]
+
+
 def question_payload(
     user_intent: str, questions: list[AskUserQuestionItemInput] | list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -345,8 +350,8 @@ class InternalTools:
         model wrote alongside it ("I'll verify ...") back as the final answer.
         """
         # Argument validation checks only names, so a blank item can sit
-        # beside a real one and would render as an empty question card.
-        questions = [item for item in questions or [] if _question_text(item).strip()]
+        # beside a real one.
+        questions = asked_questions(questions)
         if not questions:
             return ToolOutput(success=False, error=_NO_QUESTIONS_ERROR)
         return json.dumps(question_payload(user_intent, questions), ensure_ascii=False)
