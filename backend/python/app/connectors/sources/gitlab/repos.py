@@ -35,11 +35,13 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
+from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
 from app.connectors.core.constants import (
     IconPaths,
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.file_role import (
+    FileRole,
     classify_file_role,
     should_index_code_file,
 )
@@ -556,6 +558,7 @@ class ReposSync:
 
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         moves: list[tuple[str, Any, list[Any]]] = []
         for old_path, new_path in renames:
@@ -584,6 +587,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
@@ -803,6 +807,7 @@ class ReposSync:
         external_group_id: str,
         parent_external_record_id: str | None,
         code_files_enabled: bool,
+        test_files_enabled: bool,
         source_created_at: int | None = None,
         source_updated_at: int | None = None,
     ) -> CodeFileRecord:
@@ -820,6 +825,8 @@ class ReposSync:
         ``version`` is always 0 here; ``_process_record`` carries the stored
         version forward, where the existing record is already loaded.
         """
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
         c = self.c
         extension = _blob_extension(file_name)
         file_role = classify_file_role(file_path, file_name)
@@ -849,9 +856,16 @@ class ReposSync:
             weburl=weburl,
             source_created_at=source_created_at,
             source_updated_at=source_updated_at,
+            # Must be passed: the model's default is evaluated once at import,
+            # so every blob would share one frozen time and a content change
+            # would never pass the code edge build's `updatedAtTimestamp`
+            # watermark, leaving the file's old edges in place.
+            updated_at=get_epoch_timestamp_in_ms(),
         )
 
         if not code_files_enabled:
+            record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+        elif file_role is FileRole.TEST and not test_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
         return record
 
@@ -863,6 +877,7 @@ class ReposSync:
         files_skipped = 0
         external_group_id = f"{project_id}-code-repository"
         code_files_enabled = self._code_files_indexing_enabled()
+        test_files_enabled = self._test_files_indexing_enabled()
 
         for file in code_file_list:
             file_path = file.get("path") or ""
@@ -895,6 +910,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
+                test_files_enabled=test_files_enabled,
             )
             list_records_new.append(RecordUpdate(
                 record=blob_record, is_new=True, is_updated=False, is_deleted=False,
@@ -1106,11 +1122,10 @@ class ReposSync:
     # ------------------------------------------------------------------
 
     def _code_files_indexing_enabled(self) -> bool:
-        c = self.c
-        if not c.indexing_filters:
-            return True
-        from app.connectors.core.registry.filters import IndexingFilterKey
-        return c.indexing_filters.is_enabled(IndexingFilterKey.CODE_FILES)
+        return code_indexing_flags(self.c.indexing_filters)[0]
+
+    def _test_files_indexing_enabled(self) -> bool:
+        return code_indexing_flags(self.c.indexing_filters)[1]
 
     # ------------------------------------------------------------------
     # Record persistence helper

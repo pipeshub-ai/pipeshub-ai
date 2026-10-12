@@ -42,6 +42,7 @@ def _repository_event(name: str, mime_type: str, content: bytes) -> dict[str, An
 def _legacy_processor() -> MagicMock:
     processor = MagicMock()
     processor.indexing_pipeline = AsyncMock()
+    processor.project_code_blocks_to_graph = AsyncMock()
     for method in (
         "process_code_document", "process_txt_document", "process_structured_document",
         "process_delimited_document", "process_md_document",

@@ -1,7 +1,10 @@
 
 
-agent_block_group_prompt = """[{{label}} #{{block_group_index}}]{% for block in blocks %}
-- {{block.content}}
+# `file_path` and `block.qualified_name` are only set for code, and render as
+# `path#qualified_name` — the address the codegraph tools take, so the model can
+# look up a symbol it has just read.
+agent_block_group_prompt = """[{{label}} #{{block_group_index}}{% if file_path %} {{file_path}}{% endif %}]{% for block in blocks %}
+- {% if block.qualified_name %}[{{block.qualified_name}}] {% endif %}{{block.content}}
 {% endfor %}
 """
 
@@ -10,8 +13,8 @@ table_prompt = """[Table #{{block_group_index}}: {{ table_summary }}]{% for row 
 {% endfor %}
 """
 
-block_group_prompt = """[{{label}} #{{block_group_index}}]{% for block in blocks %}
-[{{block.block_index}}|{{block.citation_ref}}] {{block.content}}
+block_group_prompt = """[{{label}} #{{block_group_index}}{% if file_path %} {{file_path}}{% endif %}]{% for block in blocks %}
+[{{block.block_index}}|{{block.citation_ref}}]{% if block.qualified_name %} {{block.qualified_name}}{% endif %} {{block.content}}
 {% endfor %}
 """
 

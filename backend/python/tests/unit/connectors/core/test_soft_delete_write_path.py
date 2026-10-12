@@ -125,6 +125,10 @@ class _AutoCommitGraph:
         self._statement()
         self.record, self.parent_edge = None, False
 
+    async def delete_blocks_for_records(self, record_ids: list[str], transaction: str | None = None) -> int:
+        self._statement()
+        return 0
+
 
 def _stored(record_id: str = "r1", **overrides) -> Record:
     fields = {

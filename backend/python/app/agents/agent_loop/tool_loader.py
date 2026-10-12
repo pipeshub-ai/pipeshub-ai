@@ -55,6 +55,10 @@ logger = logging.getLogger(__name__)
 # below, so they need their own gate on `context.has_knowledge` instead.
 _KNOWLEDGE_TOOLSETS = frozenset({"knowledgegraph", "retrieval", "knowledgehub"})
 
+# Code graph is a view over files a repo connector ingested. Without both
+# a configured code connector (org-wide) and attached code knowledge
+# (agent-scoped), the tools serve no purpose.
+_CODE_GRAPH_TOOLSETS = frozenset({"codegraph"})
 # Group names of the legacy internal toolsets that execute model-generated
 # code through `app.sandbox.manager.get_executor()`. `.as_internal()` exempts
 # them from the "configured on this agent" check, so without this gate they
@@ -316,6 +320,13 @@ class PipesHubToolLoader:
                         "Skipping knowledge toolset %s: no knowledge sources attached "
                         "(conversation=%s)", ts_name, context.conversation_id,
                     )
+                continue
+
+            if ts_name in _CODE_GRAPH_TOOLSETS and not (
+                context.has_code_connector and context.has_code_knowledge
+            ):
+                if state_logger:
+                    state_logger.debug("Skipping code graph toolset: no code connector/knowledge: %s", ts_name)
                 continue
 
             try:
