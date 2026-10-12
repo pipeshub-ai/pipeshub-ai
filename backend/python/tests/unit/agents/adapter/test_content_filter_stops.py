@@ -17,6 +17,7 @@ from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.exceptions import TransportError
 from app.agent_loop_lib.core.messages import UserMessage
+from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
@@ -144,6 +145,28 @@ class TestDirectOpenAITransport:
         assert "response_id=resp_2" in caplog.text
         assert "incomplete_reason=content_filter" in caplog.text
         assert _SECRET not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_responses_text_the_filter_let_through_ends_the_turn(self) -> None:
+        """Read as a cutoff, the kept text would be continued with a recovery
+        note the same filter rejects."""
+        events = [
+            {"type": "response.output_text.delta", "delta": "partial answer", "output_index": 0},
+            {"type": "response.incomplete", "response": {
+                "id": "resp_3", "status": "incomplete",
+                "output": [{"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "partial answer"}]}],
+                "incomplete_details": {"reason": "content_filter"},
+                "usage": {"input_tokens": 10, "output_tokens": 3},
+            }},
+        ]
+
+        drained = await _drain(_responses_transport(_sse(events)))
+
+        final = drained[-1].response
+        assert final.message.text == "partial answer"
+        assert final.stop_reason == StopReason.END_TURN
+        assert not final.message.truncated
 
     @pytest.mark.asyncio
     async def test_chat_stream_finish_reason_content_filter_raises(self) -> None:
