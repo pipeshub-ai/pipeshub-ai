@@ -51,3 +51,12 @@ def test_sync_window_default_operator_matches_the_fallback(connector_cls: type) 
     days = _fallback_days(connector_cls)
 
     assert _sync_window_field(connector_cls)["defaultOperator"] == f"last_{days}_days"
+
+
+@pytest.mark.parametrize("connector_cls", [SlackIndividualConnector, SlackConnector])
+def test_sync_window_fallback_operator_matches_the_fallback(connector_cls: type) -> None:
+    """The panel shows ``fallbackOperator`` while the filter is cleared, so it must
+    name the window the backend really uses when the filter is not set."""
+    days = _fallback_days(connector_cls)
+
+    assert _sync_window_field(connector_cls).get("fallbackOperator") == f"last_{days}_days"

@@ -394,7 +394,10 @@ class RateLimiter:
             ),
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            default_operator=FilterOperator.LAST_30_DAYS))
+            default_operator=FilterOperator.LAST_30_DAYS,
+            # What _compute_sync_window_oldest uses when no filter is saved; the
+            # panel shows it while the filter is cleared.
+            fallback_operator=FilterOperator.LAST_30_DAYS))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters
         .add_filter_field(FilterField(

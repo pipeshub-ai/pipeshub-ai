@@ -207,6 +207,53 @@ describe('FiltersSection — adding and clearing a sync filter', () => {
   });
 });
 
+describe('FiltersSection — a sync filter with a fallback when it is not set', () => {
+  // Shaped like Slack's "Sync Messages From": when it is not set the connector still
+  // syncs only the last 30 days, which the schema states as `fallbackOperator`.
+  const syncWindow: FilterSchemaField = {
+    name: 'sync_window',
+    displayName: 'Sync Messages From',
+    description: 'If this filter is not set, only the last 30 days are synced.',
+    filterType: 'datetime',
+    operators: ['is_after', 'is_before', 'is_between', 'last_30_days'],
+    defaultOperator: 'last_30_days',
+    fallbackOperator: 'last_30_days',
+  };
+  const fallbackLine = 'Sync Messages From: Last 30 Days (default)';
+
+  it('keeps the window and its help text on screen after the filter is cleared', () => {
+    setup({ sync: [syncWindow] });
+    // Seeded from the schema default, so the filter's own card shows the window.
+    expect(screen.getByText('Sync Messages From: Last 30 Days')).toBeTruthy();
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear/i }));
+
+    expect(syncValue('sync_window')).toBeNull();
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.getByText('If this filter is not set, only the last 30 days are synced.')).toBeTruthy();
+  });
+
+  it('shows the window when the filter was already cleared before the panel opened', () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+  });
+
+  it('drops the fallback line once the admin sets the filter again', async () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync Messages From' }));
+
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+  });
+
+  it('says nothing extra for a cleared filter that has no fallback', () => {
+    setup({ sync: [{ ...spaces, defaultOperator: 'in' }], syncValues: { space_keys: null } });
+    expect(screen.queryByText(/\(default\)/)).toBeNull();
+  });
+});
+
 describe('FiltersSection — dynamic options', () => {
   const repos: FilterSchemaField = {
     name: 'repo_ids',

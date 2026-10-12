@@ -1269,6 +1269,15 @@ function FilterCategoryBlock({
     ? fields.filter((f) => !f.required && !activeFieldNames.includes(f.name))
     : [];
 
+  /**
+   * Filters that are not set but still limit the sync: the connector applies the
+   * schema's `fallbackOperator` instead. Without this line, clearing such a filter
+   * would remove its card and help text, and the limit would be invisible.
+   */
+  const unsetFallbackFields = fields.filter(
+    (f) => Boolean(f.fallbackOperator?.trim()) && !activeFieldNames.includes(f.name)
+  );
+
   const addField = (fieldName: string) => {
     if (readOnly) return;
     const field = fields.find((f) => f.name === fieldName);
@@ -1435,6 +1444,41 @@ function FilterCategoryBlock({
             {t('workspace.connectors.filters.empty')}
           </Text>
         )
+      ) : null}
+
+      {unsetFallbackFields.length > 0 ? (
+        <Flex direction="column" gap="3" style={{ marginBottom: 14 }}>
+          {unsetFallbackFields.map((field) => (
+            <Flex key={field.name} direction="column" gap="1">
+              <Badge
+                size="1"
+                color="gray"
+                variant="soft"
+                radius="full"
+                style={{
+                  width: 'fit-content',
+                  maxWidth: '100%',
+                  whiteSpace: 'normal',
+                  wordBreak: 'break-word',
+                  height: 'auto',
+                  textAlign: 'left',
+                  lineHeight: 1.35,
+                  padding: '6px 10px',
+                }}
+              >
+                {t('workspace.connectors.filters.unsetFallback', {
+                  field: field.displayName,
+                  value: formatOperatorLabel(field.fallbackOperator ?? '', t),
+                })}
+              </Badge>
+              {field.description ? (
+                <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+                  {field.description}
+                </Text>
+              ) : null}
+            </Flex>
+          ))}
+        </Flex>
       ) : null}
 
       <Flex direction="column" gap="4">
