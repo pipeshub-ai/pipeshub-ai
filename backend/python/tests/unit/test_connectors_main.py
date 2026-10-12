@@ -1,5 +1,6 @@
 """Comprehensive unit tests for app.connectors_main module."""
 
+import asyncio
 import json
 import logging
 import sys
@@ -1437,32 +1438,61 @@ class TestGraphDbHealthCheck:
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
-        """Neo4j health probe returns 200 when connectivity verifies."""
+        """Neo4j health probe returns 200 when the pooled provider answers RETURN 1."""
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock()
-        mock_driver.close = AsyncMock()
+        mock_provider = MagicMock()
+        mock_provider.client = object()
+        mock_provider.execute_query = AsyncMock(return_value=[{"n": 1}])
+        request.app.state.graph_provider = mock_provider
 
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
-
-        def _getenv(key, default=None):
-            values = {
-                "DATA_STORE": "neo4j",
-                "NEO4J_URI": "bolt://localhost:7687",
-                "NEO4J_USERNAME": "neo4j",
-                "NEO4J_PASSWORD": "pass",
-            }
-            return values.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 200
-        mock_driver.close.assert_awaited_once()
+        mock_provider.execute_query.assert_awaited_once_with(
+            "RETURN 1 AS n", timeout_seconds=8.0
+        )
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_no_client(self):
+        """Neo4j provider without a client returns 503."""
+        from app.connectors_main import graph_db_health_check
+
+        request, _records = _request_with_service_logger()
+        request.app.state.graph_provider = MagicMock(client=None)
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j unavailable"
+
+    @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_probe_timeout(self):
+        """A probe that exceeds the wait_for budget returns 503, not a hang."""
+        from app.connectors_main import graph_db_health_check
+
+        request, records = _request_with_service_logger()
+        mock_provider = MagicMock()
+        mock_provider.client = object()
+
+        async def _hang(*_a, **_k):
+            await asyncio.sleep(30)
+
+        mock_provider.execute_query = _hang
+        request.app.state.graph_provider = mock_provider
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"), \
+             patch("app.connectors_main.asyncio.wait_for", side_effect=TimeoutError()):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j health check timed out"
+        assert "timed out" in records[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_unknown_store(self):
@@ -1584,22 +1614,12 @@ class TestGraphDbHealthNeo4jUnhealthy:
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock(side_effect=RuntimeError("neo4j down"))
-        mock_driver.close = AsyncMock()
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        mock_provider = MagicMock()
+        mock_provider.client = object()
+        mock_provider.execute_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
+        request.app.state.graph_provider = mock_provider
 
-        def _getenv(key, default=None):
-            return {
-                "DATA_STORE": "neo4j",
-                "NEO4J_URI": "bolt://localhost:7687",
-                "NEO4J_USERNAME": "neo4j",
-                "NEO4J_PASSWORD": "pass",
-            }.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
@@ -1684,19 +1704,16 @@ class TestHealthProbesReturnFixedText:
         from app.connectors_main import graph_db_health_check
 
         request, records = _request_with_service_logger()
-        mock_driver = AsyncMock()
-        mock_driver.verify_connectivity = AsyncMock(side_effect=error_type(SENTINEL))
-        mock_neo4j = MagicMock()
-        mock_neo4j.AsyncGraphDatabase.driver = MagicMock(return_value=mock_driver)
+        mock_provider = MagicMock()
+        mock_provider.client = object()
+        mock_provider.execute_query = AsyncMock(side_effect=error_type(SENTINEL))
+        request.app.state.graph_provider = mock_provider
         neo4j_exceptions = types.ModuleType("neo4j.exceptions")
         neo4j_exceptions.AuthError = _FakeNeo4jAuthError
         neo4j_exceptions.ServiceUnavailable = _FakeNeo4jServiceUnavailable
 
-        def _getenv(key, default=None):
-            return {"DATA_STORE": "neo4j"}.get(key, default)
-
-        with patch("app.connectors_main.os.getenv", side_effect=_getenv), \
-             patch.dict("sys.modules", {"neo4j": mock_neo4j, "neo4j.exceptions": neo4j_exceptions}):
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"), \
+             patch.dict("sys.modules", {"neo4j.exceptions": neo4j_exceptions}):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
@@ -1708,7 +1725,9 @@ class TestHealthProbesReturnFixedText:
             assert _traceback_text(records) == SENTINEL
         else:
             assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
-        mock_driver.close.assert_awaited_once()
+        mock_provider.execute_query.assert_awaited_once_with(
+            "RETURN 1 AS n", timeout_seconds=8.0
+        )
 
     async def test_vector_db_exception(self):
         from types import SimpleNamespace

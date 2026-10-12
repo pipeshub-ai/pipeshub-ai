@@ -1083,21 +1083,58 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             )
 
     # ── Neo4j ─────────────────────────────────────────────────────────────────
+    # Probe the pooled provider with RETURN 1 (under Node's health budget). A
+    # fresh Bolt driver + verify_connectivity() per poll can take 5–8s under
+    # write load and falsely trip the Node timeout; pool acquisition can also
+    # wait up to ~30s without an outer deadline.
     if data_store == "neo4j":
-        from neo4j import AsyncGraphDatabase
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        username = os.getenv("NEO4J_USERNAME", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "")
+        # Stay under Node's graph-db axios timeout (10s) so a slow/saturated
+        # pool returns 503 from this probe instead of a Node-side abort.
+        neo4j_probe_timeout_sec = 8.0
 
-        driver = None
         try:
-            driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
-            await driver.verify_connectivity()
+            graph_provider = getattr(request.app.state, "graph_provider", None)
+            if graph_provider is None:
+                container = request.app.container  # type: ignore[attr-defined]
+                graph_provider = await container.graph_provider()
+
+            if getattr(graph_provider, "client", None) is None:
+                request.app.container.logger().error(  # type: ignore[attr-defined]
+                    "Neo4j health check failed: provider has no client"
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "error": "Neo4j unavailable",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+
+            await asyncio.wait_for(
+                graph_provider.execute_query(
+                    "RETURN 1 AS n",
+                    timeout_seconds=neo4j_probe_timeout_sec,
+                ),
+                timeout=neo4j_probe_timeout_sec,
+            )
             return JSONResponse(
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        except TimeoutError:
+            request.app.container.logger().error(  # type: ignore[attr-defined]
+                "Neo4j health check timed out after %.1fs", neo4j_probe_timeout_sec
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check timed out",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
         except AuthError as e:
             request.app.container.logger().error("Neo4j auth failed: %s", e)
@@ -1129,9 +1166,6 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        finally:
-            if driver:
-                await driver.close()
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
