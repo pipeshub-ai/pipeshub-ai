@@ -34,20 +34,20 @@ ${PYTHON:-python3} "$WORK_DIR/scripts/filter_sdk_spec.py" \
   "$API_DOCS/pipeshub-openapi.yaml" "$WORK_DIR/source_specs/pipeshub-sdk-openapi.yaml"
 cp "$API_DOCS/tests.arazzo.yaml" "$WORK_DIR/.speakeasy/tests.arazzo.yaml"
 
+# "|| return 1" on every command: errexit is off inside a function called from an || list.
 generate() {
   local lang=$1 sdk_dir="pipeshub-sdk-$1"
   git clone --quiet --depth 1 --branch "$SDK_REF" \
     "https://github.com/pipeshub-ai/pipeshub-sdk-$lang.git" "$sdk_dir" || return 1
-  mkdir -p "$sdk_dir/.speakeasy"
-  cp .speakeasy/tests.arazzo.yaml "$sdk_dir/.speakeasy/tests.arazzo.yaml"
+  mkdir -p "$sdk_dir/.speakeasy" || return 1
+  cp .speakeasy/tests.arazzo.yaml "$sdk_dir/.speakeasy/tests.arazzo.yaml" || return 1
 
-  # "|| return" because errexit is off inside a function called from an || list.
   speakeasy run -t "$lang" --skip-upload-spec --skip-versioning --skip-testing -o console || return 1
 
   # Same patch generate-sdks.yml applies before it opens the SDK pull request.
   if [ "$lang" = typescript ] && [ -d "$sdk_dir/src/__tests__" ]; then
     find "$sdk_dir/src/__tests__" -name '*.ts' -exec sed -i \
-      's#clientID: "<YOUR_CLIENT_ID_HERE>",#clientID: process.env["PIPESHUB_CLIENT_ID"] ?? "value",#g' {} +
+      's#clientID: "<YOUR_CLIENT_ID_HERE>",#clientID: process.env["PIPESHUB_CLIENT_ID"] ?? "value",#g' {} + || return 1
   fi
 
   "$SDK_TESTS_DIR/handwritten/install.sh" "$lang" "$WORK_DIR/$sdk_dir"
@@ -56,7 +56,8 @@ generate() {
 cd "$WORK_DIR"
 failed=()
 for lang in "${LANGS[@]}"; do
-  generate "$lang" || failed+=("$lang")
+  # A failed language keeps no checkout: its old tests from $SDK_REF must not run as the current run.
+  generate "$lang" || { failed+=("$lang"); rm -rf "pipeshub-sdk-$lang"; }
 done
 
 if [ ${#failed[@]} -gt 0 ]; then

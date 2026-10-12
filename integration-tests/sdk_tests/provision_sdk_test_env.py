@@ -5,7 +5,7 @@ Creates the org and admin user, marks onboarding configured, mints one OAuth app
 (client_credentials, all scopes), adds the default LLM and embedding model, and
 indexes one document so search has something to answer from. The tests read the
 four PIPESHUB_* variables this script writes to $GITHUB_ENV and, when
-SDK_TEST_ENV_PATH is set, to that file.
+SDK_TEST_ENV_PATH is set, to that file. The workflow masks the client secret.
 
 Env vars:
     PIPESHUB_BASE_URL            default http://localhost:3000
@@ -64,9 +64,14 @@ def create_org(base_url: str, email: str, password: str) -> None:
     if response.ok:
         log.info("Created org and admin user")
         return
+    # A server error is not "the org exists"; stop here so the real cause is in the log.
+    if response.status_code >= 500:
+        response.raise_for_status()
     # A rerun against the same instance: the login below fails if the org is not ours.
     log.info(
-        "Org not created (HTTP %s); assuming it already exists", response.status_code
+        "Org not created (HTTP %s: %s); assuming it already exists",
+        response.status_code,
+        response.text[:300],
     )
 
 
@@ -158,7 +163,6 @@ def seed_search_document(base_url: str, token: str) -> None:
 
 
 def export_env(values: dict[str, str]) -> None:
-    print(f"::add-mask::{values['PIPESHUB_CLIENT_SECRET']}")
     lines = "".join(f"{key}={value}\n" for key, value in values.items())
     for target in (os.getenv("GITHUB_ENV"), os.getenv("SDK_TEST_ENV_PATH")):
         if target:
