@@ -27,7 +27,7 @@ def _provider(answers: dict) -> tuple[ArangoHTTPProvider, list]:
     stages = {text: name for name, text in ArangoHTTPProvider._kh_v3_check_aql().items()}
     calls: list = []
 
-    async def execute_aql(query, bind_vars=None, txn_id=None, options=None, **_) -> list:  # noqa: ANN001
+    async def execute_aql(query, bind_vars=None, txn_id=None, options=None, **_) -> list:
         stage = stages[query]
         calls.append((stage, list(bind_vars.get("kh_ids", [])), options, dict(bind_vars)))
         answer = answers.get(stage, [])
@@ -97,7 +97,7 @@ class TestStages:
         provider, _ = _provider({"targets": [_row("a", ok=True)]})
         rows = await provider._kh_v3_accessible_rows("u", "org", ["a"], [], access=ACCESS, transaction=None)
         assert rows == [{"id": "a", "vrid": "vr-a", "connectorId": "app", "indexingStatus": "COMPLETED",
-                         "isInternal": False}]
+                         "isInternal": False, "groupIds": []}]
 
     @pytest.mark.asyncio
     async def test_no_stage_asks_for_the_plan_cache(self) -> None:

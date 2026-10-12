@@ -17,13 +17,22 @@ import { useTranslation } from 'react-i18next';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
-import { useChatStore } from '@/chat/store';
+import { useChatStore, type ScopedRowSource } from '@/chat/store';
 import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
 } from '@/lib/store/feature-flags-store';
-import { CollectionRow } from './connectors-collections/collection-row';
+import { useDebouncedSearch } from '@/app/(main)/knowledge-base/hooks/use-debounced-search';
+import {
+  KnowledgeSearchResults,
+  KnowledgeTreeGroup,
+  KnowledgeTreeRoot,
+  type KnowledgeTreeNode,
+} from './connectors-collections/knowledge-tree';
+import { CollectionLeadingIcon } from './connectors-collections/collection-row';
+import { hasAnyFilter, sameSelection } from '@/chat/utils/tree-selection';
+import type { ChatKnowledgeFilters } from '@/chat/types';
 
 type ExpansionViewMode = 'inline' | 'overlay';
 
@@ -220,7 +229,6 @@ function useScopedResourceSource(scope: ScopedResourcesSource) {
   const setAgentKnowledgeScope = useChatStore((s) => s.setAgentKnowledgeScope);
   const setAgentStreamTools = useChatStore((s) => s.setAgentStreamTools);
   const agentId = useChatStore((s) => s.agentSidebarAgentId);
-  const agentKbIds = useChatStore((s) => s.agentChatKbIds);
   const scopedCaps = useChatStore((s) =>
     agentId ? (s.scopedAgentCapabilities[agentId] ?? DEFAULT_AGENT_CAPS) : DEFAULT_AGENT_CAPS
   );
@@ -250,11 +258,11 @@ function useScopedResourceSource(scope: ScopedResourcesSource) {
       setKnowledgeScope: setProjectKnowledgeScope,
       setTools: setProjectStreamTools,
       getToolCatalog: getProjectToolCatalog,
-      internalSearchEnabled: defaults.apps.length > 0 || defaults.kb.length > 0,
+      internalSearchEnabled: hasAnyFilter(defaults),
     };
   }
 
-  const agentHasInternalSearch = agentConnectors.length > 0 || agentKbIds.length > 0;
+  const agentHasInternalSearch = hasAnyFilter(agentDefaults);
   return {
     connectors: agentConnectors,
     collectionRows: agentCollectionRows,
@@ -279,9 +287,9 @@ function setsEqualAsSets(a: string[], b: string[]): boolean {
 }
 
 function effectiveKnowledge(
-  scope: { apps: string[]; kb: string[] } | null,
-  defaults: { apps: string[]; kb: string[] }
-): { apps: string[]; kb: string[] } {
+  scope: ChatKnowledgeFilters | null,
+  defaults: ChatKnowledgeFilters
+): ChatKnowledgeFilters {
   return scope ?? defaults;
 }
 
@@ -320,6 +328,54 @@ function AgentToolsetRowIcon({
     );
   }
   return <ConnectorIcon type={resolveConnectorType(toolsetSlug || label)} size={18} />;
+}
+
+/** Rows in their listed order; the nodes one source is limited to come together, under it. */
+interface SourceGroup<T> {
+  source: ScopedRowSource | null;
+  rows: T[];
+}
+
+function groupBySource<T extends { source?: ScopedRowSource }>(rows: T[]): SourceGroup<T>[] {
+  const groups: SourceGroup<T>[] = [];
+  const bySource = new Map<string, SourceGroup<T>>();
+  for (const row of rows) {
+    if (!row.source) {
+      groups.push({ source: null, rows: [row] });
+      continue;
+    }
+    let group = bySource.get(row.source.id);
+    if (!group) {
+      group = { source: row.source, rows: [] };
+      bySource.set(row.source.id, group);
+      groups.push(group);
+    }
+    group.rows.push(row);
+  }
+  return groups;
+}
+
+function isCollectionKind(kind: string): boolean {
+  return kind.trim().toUpperCase() === 'KB';
+}
+
+/** A project knows only a source's type, so its heading falls back to the type's name. */
+function sourceLabel(source: ScopedRowSource, collectionsLabel: string): string {
+  return source.label || (isCollectionKind(source.kind) ? collectionsLabel : humanizeUnderscores(source.kind));
+}
+
+/** What a search matches a row's heading on: what the heading shows, and the source's type. */
+function sourceSearchText(source: ScopedRowSource | undefined, collectionsLabel: string): string {
+  if (!source) return '';
+  return `${sourceLabel(source, collectionsLabel)} ${source.kind} ${humanizeUnderscores(source.kind)}`.toLowerCase();
+}
+
+function LimitedSourceIcon({ source }: { source: ScopedRowSource }) {
+  return isCollectionKind(source.kind) ? (
+    <CollectionLeadingIcon sourceType="KB" size={20} />
+  ) : (
+    <ConnectorIcon type={resolveConnectorType(`${source.kind} ${source.label}`.trim())} size={20} />
+  );
 }
 
 /** Row shape shared by `agentChatToolGroups` (Actions tab) and `agentChatMcpGroups` (MCP tab). */
@@ -410,42 +466,14 @@ export function AgentScopedResourcesPanel({
    * Omit when the agent never had knowledge (tools-only / retrieval-less agents).
    */
   const showKnowledgeClearedWarning = useMemo(
-    () =>
-      eff.apps.length === 0 &&
-      eff.kb.length === 0 &&
-      (defaults.apps.length > 0 || defaults.kb.length > 0),
-    [eff.apps, eff.kb, defaults.apps, defaults.kb]
+    () => !hasAnyFilter(eff) && hasAnyFilter(defaults),
+    [eff, defaults]
   );
 
-  const tryNormalizeKnowledgeScope = useCallback(
-    (apps: string[], kb: string[]) => {
-      if (setsEqualAsSets(apps, defaults.apps) && setsEqualAsSets(kb, defaults.kb)) {
-        setScope(null);
-      } else {
-        setScope({ apps, kb });
-      }
-    },
-    [defaults.apps, defaults.kb, setScope]
-  );
-
-  const toggleConnector = useCallback(
-    (id: string) => {
-      const nextApps = eff.apps.includes(id)
-        ? eff.apps.filter((x) => x !== id)
-        : [...eff.apps, id];
-      tryNormalizeKnowledgeScope(nextApps, eff.kb);
-    },
-    [eff.apps, eff.kb, tryNormalizeKnowledgeScope]
-  );
-
-  const toggleKb = useCallback(
-    (id: string) => {
-      const nextKb = eff.kb.includes(id)
-        ? eff.kb.filter((x) => x !== id)
-        : [...eff.kb, id];
-      tryNormalizeKnowledgeScope(eff.apps, nextKb);
-    },
-    [eff.apps, eff.kb, tryNormalizeKnowledgeScope]
+  /** A selection equal to the defaults is stored as "nothing narrowed". */
+  const selectKnowledge = useCallback(
+    (next: ChatKnowledgeFilters) => setScope(sameSelection(next, defaults) ? null : next),
+    [defaults, setScope]
   );
 
   const isToolOn = useCallback(
@@ -565,17 +593,76 @@ export function AgentScopedResourcesPanel({
     }
   }, [disabledTabs, hiddenTabs, tab]);
 
+  // A row matches on its own name or on the heading it is listed under.
+  const collectionsLabel = t('nav.collections', { defaultValue: 'Collections' });
   const filteredConnectors = useMemo(() => {
     if (!search.trim()) return connectors;
     const q = search.toLowerCase();
-    return connectors.filter((c) => c.label.toLowerCase().includes(q) || c.id.toLowerCase().includes(q));
-  }, [connectors, search]);
+    return connectors.filter(
+      (c) =>
+        c.label.toLowerCase().includes(q) ||
+        c.id.toLowerCase().includes(q) ||
+        sourceSearchText(c.source, collectionsLabel).includes(q)
+    );
+  }, [connectors, search, collectionsLabel]);
 
   const filteredCollections = useMemo(() => {
     if (!search.trim()) return collectionRows;
     const q = search.toLowerCase();
-    return collectionRows.filter((r) => r.name.toLowerCase().includes(q) || r.id.toLowerCase().includes(q));
-  }, [collectionRows, search]);
+    return collectionRows.filter(
+      (r) =>
+        r.name.toLowerCase().includes(q) ||
+        r.id.toLowerCase().includes(q) ||
+        sourceSearchText(r.source, collectionsLabel).includes(q)
+    );
+  }, [collectionRows, search, collectionsLabel]);
+
+  // What lies under the listed sources is searched on the server.
+  const serverQuery = useDebouncedSearch(search.trim(), 300);
+  const knowledgeTabRows = tab === 'collections' ? collectionRows : tab === 'connectors' ? connectors : EMPTY_ROWS;
+  const searchRoots = useMemo(
+    () => knowledgeTabRows.map((row) => ({ id: row.id, nodeType: row.nodeType ?? 'app' })),
+    [knowledgeTabRows]
+  );
+  const listedIds = useMemo(() => new Set(knowledgeTabRows.map((row) => row.id)), [knowledgeTabRows]);
+  const knowledgeTab = tab === 'connectors' || tab === 'collections';
+  // From the second character, also while the debounce runs, so "nothing found" does not flash first.
+  const searchingServer = knowledgeTab && search.trim().length >= 2;
+
+  // A heading counts what its source is limited to, not what the search left of it.
+  const limitedCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of [...connectors, ...collectionRows]) {
+      if (row.source) counts.set(row.source.id, (counts.get(row.source.id) ?? 0) + 1);
+    }
+    return counts;
+  }, [connectors, collectionRows]);
+
+  const renderSourceGroups = <T extends { source?: ScopedRowSource }>(
+    rows: T[],
+    toNode: (row: T) => KnowledgeTreeNode
+  ) =>
+    groupBySource(rows).flatMap((group) => {
+      if (!group.source) {
+        return group.rows.map((row) => {
+          const node = toNode(row);
+          return <KnowledgeTreeRoot key={node.id} node={node} filters={eff} onSelectionChange={selectKnowledge} />;
+        });
+      }
+      return [
+        <KnowledgeTreeGroup
+          key={`source:${group.source.id}`}
+          title={sourceLabel(group.source, collectionsLabel)}
+          icon={<LimitedSourceIcon source={group.source} />}
+          meta={t('chat.agentResources.limitedToCount', {
+            count: limitedCounts.get(group.source.id) ?? group.rows.length,
+          })}
+          nodes={group.rows.map(toNode)}
+          filters={eff}
+          onSelectionChange={selectKnowledge}
+        />,
+      ];
+    });
 
   const filterGroupsBySearch = useCallback(
     (groups: ChatToolGroupRow[]): ChatToolGroupRow[] =>
@@ -891,43 +978,23 @@ export function AgentScopedResourcesPanel({
       >
         {tab === 'connectors' && (
           <>
-            {filteredConnectors.length === 0 ? (
+            {connectors.length === 0 ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
                 {copy.noConnectors}
               </Text>
+            ) : filteredConnectors.length === 0 && !searchingServer ? (
+              <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
+                {t('chat.noConnectorsFound')}
+              </Text>
             ) : (
-              filteredConnectors.map((c) => (
-                <Flex
-                  key={c.id}
-                  align="center"
-                  justify="between"
-                  gap="2"
-                  onClick={() => toggleConnector(c.id)}
-                  style={{
-                    ...OLIVE_ROW,
-                    padding: 'var(--space-2) var(--space-3)',
-                    cursor: 'pointer',
-                  }}
-                >
-                  <Flex align="center" gap="2" style={{ flex: 1, minWidth: 0 }}>
-                    <span style={CHECKBOX_ALIGN}>
-                      <Checkbox
-                        size="1"
-                        checked={eff.apps.includes(c.id)}
-                        onCheckedChange={() => toggleConnector(c.id)}
-                        onClick={(e) => e.stopPropagation()}
-                      />
-                    </span>
-                    <ConnectorIcon
-                      type={resolveConnectorType(connectorIconHint(c))}
-                      size={20}
-                    />
-                    <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                      {c.label}
-                    </Text>
-                  </Flex>
-                </Flex>
-              ))
+              renderSourceGroups(filteredConnectors, (c) => ({
+                id: c.id,
+                name: c.label,
+                nodeType: c.nodeType ?? 'app',
+                connector: connectorIconHint(c),
+                hasChildren: true,
+                ancestorIds: [],
+              }))
             )}
           </>
         )}
@@ -938,26 +1005,43 @@ export function AgentScopedResourcesPanel({
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
                 {copy.noCollections}
               </Text>
-            ) : filteredCollections.length === 0 ? (
+            ) : filteredCollections.length === 0 && !searchingServer ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
                 {t('chat.agentResources.noCollectionMatches', {
                   defaultValue: 'No collections match your search.',
                 })}
               </Text>
             ) : (
-              filteredCollections.map((row) => (
-                <CollectionRow
-                  key={row.id}
-                  id={row.id}
-                  name={row.name}
-                  sourceType={row.sourceType}
-                  isSelected={eff.kb.includes(row.id)}
-                  onToggle={toggleKb}
-                />
-              ))
+              renderSourceGroups(filteredCollections, (row) => ({
+                id: row.id,
+                name: row.name,
+                nodeType: row.nodeType ?? 'app',
+                connector: row.sourceType ?? 'KB',
+                hasChildren: true,
+                ancestorIds: [],
+                // A whole collection is kept apart from the apps here.
+                ...(row.nodeType ? {} : { bucket: 'kb' as const }),
+              }))
             )}
           </>
         )}
+
+        {knowledgeTab && serverQuery && knowledgeTabRows.length > 0 ? (
+          <KnowledgeSearchResults
+            query={serverQuery}
+            scope={{ roots: searchRoots }}
+            excludeIds={listedIds}
+            emptyText={
+              (tab === 'connectors' ? filteredConnectors.length : filteredCollections.length) === 0
+                ? tab === 'connectors'
+                  ? t('chat.noConnectorsFound')
+                  : t('chat.agentResources.noCollectionMatches', { defaultValue: 'No collections match your search.' })
+                : null
+            }
+            filters={eff}
+            onSelectionChange={selectKnowledge}
+          />
+        ) : null}
 
         {tab === 'actions' &&
           renderToolGroupList({

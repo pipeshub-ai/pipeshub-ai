@@ -677,7 +677,9 @@
     "searchEmptyHint": "찾으시는 항목이 없습니다. 다른 검색어로 시도해 보세요.",
     "adjustFiltersHint": "다른 소스를 선택하거나 필터를 조정하세요",
     "addFromCollectionsHint": "컬렉션에서 회사 파일이나 폴더를 추가할 수 있습니다",
-    "addFilesHint": "파일이나 폴더를 추가하세요"
+    "addFilesHint": "파일이나 폴더를 추가하세요",
+    "chatWithSelection": "채팅",
+    "chatSelectionLimit": "채팅에는 선택한 항목을 최대 {{max}}개까지 가져올 수 있습니다. 일부 선택을 해제한 후 다시 시도하세요."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -757,7 +759,8 @@
       "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다.",
       "notConnected": "연결 안 됨",
       "connect": "연결",
-      "actionConnected": "{{name}} 연결됨"
+      "actionConnected": "{{name}} 연결됨",
+      "limitedToCount": "· {{count}}개로 제한됨"
     },
     "projectResources": {
       "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",
@@ -785,6 +788,12 @@
     "searchCollections": "커넥터 및 컬렉션 검색",
     "loadingCollections": "컬렉션을 불러오는 중…",
     "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
+    "treeEmpty": "항목이 없습니다",
+    "treeLoadFailed": "항목을 불러오지 못했습니다",
+    "treeRetry": "다시 시도",
+    "treeIncludedWith": "{{name}}에 포함됨",
+    "treeExpand": "{{name}}의 내용 표시",
+    "treeCollapse": "{{name}}의 내용 숨기기",
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
     "comingSoon": "출시 예정",
     "answer": "답변",
@@ -1334,6 +1343,11 @@
         "allowedNotRun": "{{tool}}을(를) 허용했지만 실행되지 않았습니다"
       }
     },
+    "selectedAlone": "{{name}} (이 항목만)",
+    "noConnectorsFound": "커넥터를 찾을 수 없습니다",
+    "treeSearching": "검색 중…",
+    "treeSearchFailed": "검색하지 못했습니다. 다시 시도하세요.",
+    "treeSearchMatches": "폴더 및 항목",
     "artifactsPanel": {
       "generated_other": "아티팩트 {{count}}개 생성됨",
       "newerVersion": "최신 버전 사용 가능 (v{{version}})",
@@ -4476,7 +4490,10 @@
     "mcpServerNeedsToolsBanner": "{{names}}에 대해 도구를 하나 이상 선택하거나 \"모든 도구\"를 켜세요.",
     "mcpPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 MCP 서버입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
     "mcpAgentApprovalsEnterprise": "에이전트별 도구 승인은 Enterprise Edition 기능입니다. 여기서는 각자의 도구 승인 설정이 적용됩니다.",
-    "mcpAgentApprovals": "에이전트별 도구 승인"
+    "mcpAgentApprovals": "에이전트별 도구 승인",
+    "limitSource": "{{name}}에서 검색할 범위 선택",
+    "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
+    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨"
   },
   "recordView": {
     "sections": {

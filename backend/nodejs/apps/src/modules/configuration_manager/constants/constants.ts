@@ -185,9 +185,9 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
   },
   {
     key: 'ENABLE_KH_SCOPE_LISTING',
-    label: 'Faster Knowledge Hub Listing',
+    label: 'All Records Cache',
     description:
-      'Serve the All records listing from per-connector scopes precomputed after each sync, instead of walking every connector on each request. Results are the same; a connector that is syncing, or a request it cannot serve (search, filters other than origin and connector, sorting by size or type), falls back to the full listing. Disable to always use the full listing.',
+      'Store, for each connector, who can see which of its records and how they sort, refreshed after every sync, and build the All Records page from that instead of working out access on every request. The page shows the same records either way. The page is built the usual way for a connector that is syncing or cannot use the cache (permissions set on whole groups, items in several places), and for a search, a filter other than source or connector, or sorting by size or type. Neo4j only. Disable to always build the page on each request.',
     defaultEnabled: false,
   },
 ];

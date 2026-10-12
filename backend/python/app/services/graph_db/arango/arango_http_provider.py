@@ -459,7 +459,7 @@ class _Visible:
     collection: bool = False
 
 
-def _kh_v3_ordered(slim: list[list[Any]], descending: bool) -> list[tuple[str, str, str, Any]]:
+def _kh_v3_ordered(slim: list[list[Any]], *, descending: bool) -> list[tuple[str, str, str, Any]]:
     """``(id, handle, nodeType, sortKey)`` in ``kh_merge.SortKey`` order: nulls
     last in both directions, the value, then the id ascending. Tuple keys keep
     the sort in C; the order is the comparator's, which the merge re-uses."""
@@ -474,8 +474,8 @@ def _kh_v3_ordered(slim: list[list[Any]], descending: bool) -> list[tuple[str, s
     return valued + nulls
 
 
-def _kh_v3_key(row: tuple[str, str, str, Any], descending: bool):  # noqa: ANN202
-    return key_for({"id": row[0], "sortKey": row[3], "nullRank": 1 if row[3] is None else 0}, descending)
+def _kh_v3_key(row: tuple[str, str, str, Any], *, descending: bool):  # noqa: ANN202
+    return key_for({"id": row[0], "sortKey": row[3], "nullRank": 1 if row[3] is None else 0}, descending=descending)
 
 
 # Every folder mimeType as an AQL array, for f-string queries.
@@ -13791,7 +13791,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _is_write_conflict(reason: str | None) -> bool:
         return bool(reason) and bool(_WRITE_CONFLICT.search(reason))
 
-    async def _retry_on_write_conflict(self, attempt, own_transaction: bool, attempts: int = 3) -> dict:
+    async def _retry_on_write_conflict(
+        self, attempt: Callable[[], Awaitable[dict]], *, own_transaction: bool, attempts: int = 3,
+    ) -> dict:
         """Run a delete that manages its own transaction again when Arango reports a
         write-write conflict (a concurrent write to the same record, e.g. the
         indexing status update right after an upload). A caller's transaction is
@@ -13819,7 +13821,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction is retried."""
         return await self._retry_on_write_conflict(
             lambda: self._delete_records_recursive_once(
-                record_ids, connector_id, transaction, cascade_children, within_folder_id,
+                record_ids, connector_id, transaction, cascade_children=cascade_children, within_folder_id=within_folder_id,
                 include_trashed_roots=include_trashed_roots,
             ),
             own_transaction=transaction is None,
@@ -13830,9 +13832,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         connector_id: str,
         transaction: str | None = None,
+        *,
         cascade_children: bool = True,
         within_folder_id: str | None = None,
-        *,
         include_trashed_roots: bool = False,
     ) -> dict:
         """Delete records and their owned descendants, scoped by connector_id.
@@ -16507,6 +16509,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         node_var: str = "node",
         parent_var: str = "parent",
         overrides: dict[str, str] | None = None,
+        *,
         include_comparator: bool = True,
     ) -> str:
         """The row a listing returns, as an AQL object expression: field for field
@@ -16702,15 +16705,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         payload = result[0] if result else {}
         descending = self._kh_v2_sort_direction(sort_dir) == "DESC"
-        rows = sorted(payload.get("rows") or [], key=lambda r: key_for(r, descending))
+        rows = sorted(payload.get("rows") or [], key=lambda r: key_for(r, descending=descending))
         if after is not None:
             boundary = key_for(
-                {"nullRank": after["nullRank"], "sortKey": after.get("sortKey"), "id": after["id"]}, descending,
+                {"nullRank": after["nullRank"], "sortKey": after.get("sortKey"), "id": after["id"]}, descending=descending,
             )
             if direction == "next":
-                rows = [r for r in rows if boundary < key_for(r, descending)]
+                rows = [r for r in rows if boundary < key_for(r, descending=descending)]
             else:
-                rows = [r for r in rows if key_for(r, descending) < boundary]
+                rows = [r for r in rows if key_for(r, descending=descending) < boundary]
         if direction == "prev":
             rows.reverse()
         rows = rows[:limit + 1]
@@ -16946,7 +16949,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             [r["id"] for r in rows if r["walk"]], bind, transaction,
         )
         return [
-            {k: r[k] for k in ("id", "vrid", "connectorId", "indexingStatus", "isInternal")}
+            {
+                **{k: r[k] for k in ("id", "vrid", "connectorId", "indexingStatus", "isInternal")},
+                "groupIds": r.get("groupIds") or [],
+            }
             for r in rows
             if r["ok"] or r["id"] in admitted
         ]
@@ -17152,6 +17158,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FILTER kh_ok OR kh_attachment OR kh_walk
             RETURN {{id: t._key, vrid: t.virtualRecordId, connectorId: t.connectorId,
                      indexingStatus: t.indexingStatus, isInternal: t.isInternal == true,
+                     groupIds: (FOR kh_rowgrp IN 1..1 OUTBOUND t {CollectionNames.BELONGS_TO.value}
+                                    FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_rowgrp)
+                                    RETURN kh_rowgrp._key),
                      ok: kh_ok OR kh_attachment, walk: kh_walk}}
         """
 
@@ -17242,7 +17251,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         bind = {
             "app_id": app_id,
             "kh_opens": bool(app["opens"]),
-            "granted": {g: True for g in granted_ids},
+            "granted": dict.fromkeys(granted_ids, True),
         }
         payload: dict[str, Any] = {}
         access = {"grantee_ids": grantee_ids, "gated_app_ids": gated_app_ids,
@@ -17267,7 +17276,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if not starts:
                 return empty()
             payload.update(crumbNodes=starts[0]["crumbNodes"], crumbEdges=starts[0]["crumbEdges"])
-            scope_bind = {"granted": bind["granted"], "kh_scope": {k: True for k in declared_scope}}
+            scope_bind = {"granted": bind["granted"], "kh_scope": dict.fromkeys(declared_scope, True)}
             walked = await self._kh_v3_walk(
                 [starts[0]["handle"]],
                 # An App that opens everything has nothing inaccessible above a start.
@@ -17433,16 +17442,16 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 batch_size=_KH_V3_BATCH,
                 options=_KH_V3_QUERY_OPTIONS,
             ) or []
-        ordered = _kh_v3_ordered(slim, descending)
+        ordered = _kh_v3_ordered(slim, descending=descending)
         if after is not None:
             boundary = key_for(
                 {"id": after["id"], "sortKey": after.get("sortKey"), "nullRank": after["nullRank"]},
-                descending,
+                descending=descending,
             )
             if direction == "next":
-                ordered = ordered[bisect.bisect_right(ordered, boundary, key=lambda r: _kh_v3_key(r, descending)):]
+                ordered = ordered[bisect.bisect_right(ordered, boundary, key=lambda r: _kh_v3_key(r, descending=descending)):]
             else:
-                ordered = ordered[:bisect.bisect_left(ordered, boundary, key=lambda r: _kh_v3_key(r, descending))]
+                ordered = ordered[:bisect.bisect_left(ordered, boundary, key=lambda r: _kh_v3_key(r, descending=descending))]
         counts = {"record": 0, "folder": 0, "recordGroup": 0}
         for row in ordered:
             if row[2] in counts:
@@ -17501,6 +17510,71 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "kh_frontier": [f"{groups}/{d}" for d in declared], "kh_hide": False,
         }, transaction)
         return [handle.split("/", 1)[1] for handle, _ in found]
+
+    async def get_selection_nodes(
+        self,
+        org_id: str,
+        *,
+        group_ids: list[str],
+        record_ids: list[str],
+        exact_record_ids: list[str],
+        limit: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        if not org_id:
+            # AQL compares null equal to null: never match nodes against no org.
+            return {"groups": [], "records": []}
+        hierarchy = '["PARENT_CHILD", "ATTACHMENT"]'
+        relations = CollectionNames.NODE_RELATIONS.value
+        groups_coll, records_coll = CollectionNames.RECORD_GROUPS.value, CollectionNames.RECORDS.value
+        # A node with two parents is walked once per path, so the walk reads up
+        # to twice the limit before the rows are made distinct.
+        bind = {"org_id": org_id, "limit": limit + 1, "scan": 2 * (limit + 1)}
+        groups: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
+        if group_ids:
+            groups = await self.http_client.execute_aql(
+                f"""
+                FOR kh_sg IN {groups_coll}
+                    FILTER kh_sg._key IN @group_ids AND kh_sg.orgId == @org_id AND kh_sg.isDeleted != true
+                    FOR kh_g, kh_e, kh_gp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND kh_sg {relations}
+                        PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_g.isDeleted == true)
+                        OPTIONS {{uniqueVertices: "path", vertexCollections: ["{groups_coll}"]}}
+                        FILTER kh_gp.edges[*].relationshipType ALL IN {hierarchy}
+                        FILTER kh_gp.vertices[*].isDeleted NONE == true
+                        LIMIT @scan
+                        COLLECT id = kh_g._key, connectorId = kh_g.connectorId
+                        LIMIT @limit
+                        RETURN {{id, connectorId}}
+                """,
+                bind_vars={**bind, "group_ids": group_ids},
+            ) or []
+        if record_ids or exact_record_ids:
+            records = await self.http_client.execute_aql(
+                f"""
+                LET kh_under = (
+                    FOR kh_sr IN {records_coll}
+                        FILTER kh_sr._key IN @record_ids AND kh_sr.orgId == @org_id AND {aql_live_record("kh_sr")}
+                        FOR kh_r, kh_e, kh_rp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND kh_sr {relations}
+                            PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_r.isDeleted == true)
+                            OPTIONS {{bfs: true, uniqueVertices: "path", vertexCollections: ["{records_coll}"]}}
+                            FILTER kh_rp.edges[*].relationshipType ALL IN {hierarchy}
+                            FILTER kh_rp.vertices[*].isDeleted NONE == true
+                            LIMIT @scan
+                            RETURN {{id: kh_r._key, vrid: kh_r.virtualRecordId, connectorId: kh_r.connectorId}}
+                )
+                LET kh_exact = (
+                    FOR kh_x IN {records_coll}
+                        FILTER kh_x._key IN @exact_record_ids AND kh_x.orgId == @org_id
+                            AND {aql_live_record("kh_x")}
+                        RETURN {{id: kh_x._key, vrid: kh_x.virtualRecordId, connectorId: kh_x.connectorId}}
+                )
+                FOR kh_row IN UNION_DISTINCT(kh_under, kh_exact)
+                    LIMIT @limit
+                    RETURN kh_row
+                """,
+                bind_vars={**bind, "record_ids": record_ids, "exact_record_ids": exact_record_ids},
+            ) or []
+        return {"groups": list(groups), "records": list(records)}
 
     @staticmethod
     @functools.cache
@@ -17921,7 +17995,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     def _kh_v3_row_aql() -> str:
         """The page row, the v2 projection with the listing's computed fields."""
-        records, groups, apps = (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
+        _records, _groups, _apps = (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                  CollectionNames.APPS.value)
         relations = CollectionNames.NODE_RELATIONS.value
         return ArangoHTTPProvider._kh_v2_projection_aql(

@@ -4,6 +4,7 @@ import math
 import os
 import time
 import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -46,6 +47,16 @@ from app.modules.retrieval.record_cut import (
     passages_per_record,
     point_record_id,
 )
+from app.modules.retrieval.selection_scope import (
+    SELECTION_EMPTY_MESSAGE,
+    SELECTION_NOT_READY_MESSAGE,
+    SELECTION_TOO_LARGE_MESSAGE,
+    SelectionNotReadyError,
+    SelectionScope,
+    SelectionTooLargeError,
+    require_membership_ready,
+    resolve_request_scopes,
+)
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -54,6 +65,10 @@ from app.modules.retrieval.result_merging import (
 )
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import (
+    ALLOWED_FILTER_KEYS,
+    CONTAINER_SCOPE_FILTER_KEYS,
+    SELECTION_APPS_FILTER_KEY,
+    SELECTION_FILTER_KEYS,
     AccessibleContainers,
     IGraphDBProvider,
     _unsupported_container_filters,
@@ -250,6 +265,9 @@ def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
         if key == "strictScope":
             filters[key] = values
             continue
+        # A selection or an allow-list is resolved apart, never a metadata term.
+        if key in _SELECTION_REQUEST_KEYS:
+            continue
         # Convert key to match collection naming
         filters[key.lower()] = values  # e.g., 'departments', 'categories', etc.
     return filters
@@ -261,6 +279,12 @@ def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[s
     keep = set(allowed)
     return [vid for vid in dict.fromkeys(current) if vid in keep]
 
+
+# Filter keys that carry a selection below app level or an allow-list. They
+# keep their case and never reach the permission queries as metadata filters.
+_SELECTION_REQUEST_KEYS = frozenset(
+    (*SELECTION_FILTER_KEYS, *ALLOWED_FILTER_KEYS, SELECTION_APPS_FILTER_KEY)
+)
 
 # Connector names only label citations; a slow graph must not hold up the search.
 CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
@@ -575,6 +599,22 @@ class RetrievalService:
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
 
             filters = _graph_filters(filter_groups)
+            scope_request: dict[str, Any] = {
+                key: values for key, values in (filter_groups or {}).items() if key in _SELECTION_REQUEST_KEYS
+            }
+
+            # A selection below app level. The permission queries below keep
+            # seeing app ids only: the apps the selection touches.
+            selection: SelectionScope | None = None
+            scopes: list[SelectionScope] = []
+            if scope_request:
+                resolved = await self._resolve_selection(user_id, org_id, filters, scope_request)
+                if isinstance(resolved, dict):
+                    return resolved
+                selection, scopes = resolved
+                if selection is not None:
+                    filters = {k: v for k, v in filters.items() if k not in CONTAINER_SCOPE_FILTER_KEYS}
+                    filters["apps"] = sorted(selection.connector_ids)
 
             try:
                 containers, accessible_virtual_id_to_record_id, user = (
@@ -646,7 +686,7 @@ class RetrievalService:
                 )
 
             permission_filter = await self._permission_filter(
-                org_id, containers, accessible_virtual_id_to_record_id, virtual_record_ids_from_tool
+                org_id, containers, accessible_virtual_id_to_record_id, virtual_record_ids_from_tool, selection,
             )
             if permission_filter is None:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
@@ -665,6 +705,7 @@ class RetrievalService:
                     record_cut=record_cut,
                     plan=plan,
                     user_key=user_key,
+                    scopes=scopes,
                 )
                 if verification_degraded:
                     # The graph could not answer. Telling this user to upload
@@ -682,6 +723,7 @@ class RetrievalService:
                     accessible_virtual_id_to_record_id = await self._keep_permitted_hits(
                         search_results, enumerated, user_key, org_id,
                         scope_connector_ids=requested_scope_ids(filters),
+                        scopes=scopes,
                     )
                     denied = enumerated.keys() - accessible_virtual_id_to_record_id.keys()
                     # A denied hit is gone, so all of them denied reads as no match.
@@ -1173,6 +1215,44 @@ class RetrievalService:
             vids = [vid for vid in vids if vid in accessible]
         return vids, None
 
+    async def _resolve_selection(
+        self,
+        user_id: str,
+        org_id: str,
+        filters: dict[str, list[str]],
+        scope_request: dict[str, Any],
+    ) -> "tuple[SelectionScope | None, list[SelectionScope]] | dict[str, Any]":
+        """The request's selection below app level and every scope a cited
+        record must lie in (the selection, and an agent's or project's
+        allow-list), or the response to return when there is nothing to search.
+        """
+        user = await self._get_user_cached(user_id)
+        user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return self._create_empty_response(
+                PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+            )
+        requested = {key: filters.get(key) for key in CONTAINER_SCOPE_FILTER_KEYS}
+        requested.update(scope_request)
+        try:
+            selection, scopes = await resolve_request_scopes(
+                self.graph_provider, user_key, org_id, requested,
+            )
+            if selection is not None:
+                if selection.is_empty:
+                    return self._create_empty_response(SELECTION_EMPTY_MESSAGE, Status.SELECTION_EMPTY)
+                await require_membership_ready(self.graph_provider, selection)
+        except SelectionTooLargeError:
+            return self._create_empty_response(SELECTION_TOO_LARGE_MESSAGE, Status.SELECTION_TOO_LARGE)
+        except SelectionNotReadyError:
+            return self._create_empty_response(SELECTION_NOT_READY_MESSAGE, Status.SELECTION_NOT_READY)
+        except PermissionVerificationUnavailableError as exc:
+            self.logger.warning("Could not resolve the selection of user %s in org %s: %s", user_id, org_id, exc)
+            return self._create_empty_response(
+                PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+            )
+        return selection, scopes
+
     async def _resolve_search_scope(
         self,
         user_id: str,
@@ -1261,13 +1341,14 @@ class RetrievalService:
         containers: "AccessibleContainers | None",
         accessible_virtual_id_to_record_id: dict[str, str],
         virtual_record_ids: list[str] | None,
+        selection: SelectionScope | None = None,
     ) -> tuple[Any, list[str] | None] | None:
         """The vector filter confining a search to what this user may reach, and
         the virtual record ids it is confined to (None when the containers decide
         and any number of records may match). None when nothing is reachable.
         """
         if containers is not None:
-            clauses = self._build_container_clauses(org_id, containers, virtual_record_ids)
+            clauses = self._build_container_clauses(org_id, containers, virtual_record_ids, selection)
             if clauses is None:
                 return None
             must, should = clauses
@@ -1285,11 +1366,13 @@ class RetrievalService:
                 return None
             vector_filter = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
+                should=selection.should_clauses() if selection else None,
             )
             return vector_filter, scoped_virtual_ids
         scope_virtual_ids = list(accessible_virtual_id_to_record_id.keys())
         vector_filter = await self.vector_db_service.filter_collection(
-            must={"orgId": org_id, "virtualRecordId": scope_virtual_ids}
+            must={"orgId": org_id, "virtualRecordId": scope_virtual_ids},
+            should=selection.should_clauses() if selection else None,
         )
         return vector_filter, scope_virtual_ids
 
@@ -1298,6 +1381,7 @@ class RetrievalService:
         org_id: str,
         containers: "AccessibleContainers",
         virtual_record_ids_from_tool: list[str] | None,
+        selection: SelectionScope | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """``(must, should)`` for a container-scoped filter, or None if nothing is reachable.
 
@@ -1319,15 +1403,20 @@ class RetrievalService:
         providers already mean "at least one" when ``must`` is non-empty.
         """
         should: dict[str, Any] = {}
-        if containers.app_ids:
-            should[CONNECTOR_IDS_FIELD] = sorted(containers.app_ids)
-        group_ids = containers.record_group_ids
-        if group_ids:
-            should[RECORD_GROUP_IDS_FIELD] = sorted(group_ids)
-        if containers.root_group_ids:
-            should[ROOT_RECORD_GROUP_IDS_FIELD] = sorted(containers.root_group_ids)
-        if containers.direct_records:
-            should["virtualRecordId"] = sorted(containers.direct_records)
+        if selection is not None:
+            # The selection narrows what the containers admit; each hit is
+            # still decided by the access check.
+            should = selection.should_clauses(containers.app_ids)
+        else:
+            if containers.app_ids:
+                should[CONNECTOR_IDS_FIELD] = sorted(containers.app_ids)
+            group_ids = containers.record_group_ids
+            if group_ids:
+                should[RECORD_GROUP_IDS_FIELD] = sorted(group_ids)
+            if containers.root_group_ids:
+                should[ROOT_RECORD_GROUP_IDS_FIELD] = sorted(containers.root_group_ids)
+            if containers.direct_records:
+                should["virtualRecordId"] = sorted(containers.direct_records)
 
         if not should:
             return None
@@ -1431,6 +1520,7 @@ class RetrievalService:
         record_cut: RecordCut | None = None,
         plan: "_QueryPlan | None" = None,
         user_key: str | None = None,
+        scopes: Sequence[SelectionScope] = (),
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
 
@@ -1506,6 +1596,7 @@ class RetrievalService:
                     virtual_record_ids=returned_vids,
                     indexed_only=True,
                     connector_ids=scope_connector_ids,
+                    scopes=scopes,
                 )).records_by_vrid
             except PermissionVerificationUnavailableError as exc:
                 # The caller turns this into a 503 rather than telling a user
@@ -1754,6 +1845,7 @@ class RetrievalService:
         user_key: str | None,
         org_id: str,
         scope_connector_ids: "tuple[str, ...] | None" = None,
+        scopes: Sequence[SelectionScope] = (),
     ) -> dict[str, str]:
         """The part of the enumerated ``{vrid: recordId}`` map that the hits use
         and the permission model admits. A substitute copy is cited only from
@@ -1772,10 +1864,19 @@ class RetrievalService:
         hits = {vrid: accessible[vrid] for vrid in hit_vrids if vrid in accessible}
         if not hits:
             return hits
+        connector_ids = frozenset(scope_connector_ids) if scope_connector_ids is not None else None
+        if scopes:
+            # The enumerated record may lie outside the selection, and asking
+            # for it by id would keep it: cite only what the scopes admit.
+            check = await self.graph_provider.check_access(
+                user_key or "", org_id, virtual_record_ids=hits.keys(), indexed_only=True,
+                connector_ids=connector_ids, scopes=scopes,
+            )
+            return {vrid: check.records_by_vrid[vrid] for vrid in hits if vrid in check.records_by_vrid}
         check = await self.graph_provider.check_access(
             user_key or "", org_id, node_ids=hits.values(),
             virtual_record_ids=hits.keys(), indexed_only=True,
-            connector_ids=frozenset(scope_connector_ids) if scope_connector_ids is not None else None,
+            connector_ids=connector_ids,
         )
         return {
             vrid: record_id if record_id in check.node_ids else check.records_by_vrid[vrid]
@@ -2154,6 +2255,9 @@ class RetrievalService:
             Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
             Status.INVALID_FILTER: 422,  # the gateway passes the message through on a 422
             Status.SEARCH_INDEX_UNAVAILABLE: 503,  # vector store timed out or unreachable
+            Status.SELECTION_TOO_LARGE: 422,
+            Status.SELECTION_NOT_READY: 422,
+            Status.SELECTION_EMPTY: 404,
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status

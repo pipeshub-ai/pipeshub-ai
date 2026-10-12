@@ -677,7 +677,9 @@
     "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
     "adjustFiltersHint": "Select a different source or adjust your filters",
     "addFromCollectionsHint": "You can add your company files or folders from the Collections",
-    "addFilesHint": "Add your files or folders"
+    "addFilesHint": "Add your files or folders",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -756,7 +758,8 @@
       "noMcpMatches": "No MCP servers match your search.",
       "notConnected": "Not connected",
       "connect": "Connect",
-      "actionConnected": "{{name}} is connected"
+      "actionConnected": "{{name}} is connected",
+      "limitedToCount": "· {{count}} selected"
     },
     "projectResources": {
       "noConnectors": "No connectors enabled for this project.",
@@ -784,6 +787,12 @@
     "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
+    "treeEmpty": "Nothing here",
+    "treeLoadFailed": "Couldn't load these items",
+    "treeRetry": "Try again",
+    "treeIncludedWith": "Included with {{name}}",
+    "treeExpand": "Show what is in {{name}}",
+    "treeCollapse": "Hide what is in {{name}}",
     "noCollectionsAvailable": "No collections available",
     "comingSoon": "Coming soon",
     "answer": "Answer",
@@ -1336,6 +1345,11 @@
         "allowedNotRun": "You allowed {{tool}}, but it didn't run"
       }
     },
+    "selectedAlone": "{{name}} (this item only)",
+    "noConnectorsFound": "No connectors found",
+    "treeSearching": "Searching…",
+    "treeSearchFailed": "Couldn't search. Try again.",
+    "treeSearchMatches": "Folders and items",
     "artifactsPanel": {
       "generated_one": "{{count}} artifact generated",
       "generated_other": "{{count}} artifacts generated",
@@ -4490,7 +4504,10 @@
     "mcpServerNeedsToolsBanner": "Choose at least one tool for {{names}}, or turn on All tools.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} is your personal MCP server. It can't be added to an agent shared with your organization or running as a service account.",
     "mcpAgentApprovalsEnterprise": "Tool approvals per agent are part of the Enterprise Edition. Here, each person's own tool approvals apply.",
-    "mcpAgentApprovals": "Tool approvals per agent"
+    "mcpAgentApprovals": "Tool approvals per agent",
+    "limitSource": "Choose what {{name}} searches",
+    "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
+    "limitSourceCount": "Limited to {{count}} selected"
   },
   "recordView": {
     "sections": {

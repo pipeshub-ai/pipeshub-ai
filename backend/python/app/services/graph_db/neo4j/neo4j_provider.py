@@ -17,8 +17,8 @@ import time
 import traceback
 import unicodedata
 import uuid
-from functools import lru_cache
 from datetime import datetime, timezone
+from functools import lru_cache
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -94,14 +94,18 @@ from app.models.entities import (
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, RETIRED_ROLES, read_role
+from app.modules.named_entities.graph_ops import (
+    NamedEntityGraphMixin,
+    named_entity_neo4j_indexes,
+)
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
+from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
     unseen_node_keys,
 )
-from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
 from app.services.graph_db.common.record_visibility import (
     HAS_INDEXED_COPY,
     RecordVisibility,
@@ -116,12 +120,12 @@ from app.services.graph_db.common.utils import (
     CONTAINER_INHERIT_MAX_DEPTH,
     CONTAINMENT_MAX_DEPTH,
     ENTITY_CANDIDATE_SCAN_CAP,
+    PATH_MAX_CANDIDATES,
     TRASH_LIST_OTHER_ROOT_NAMES,
     TRASH_STATE_FIELDS,
+    TRASHED_EXTERNAL_ID_PREFIX,
     EntityCandidateRows,
     PermittedEntityRows,
-    PATH_MAX_CANDIDATES,
-    TRASHED_EXTERNAL_ID_PREFIX,
     build_connector_stats_response,
     cleans_taxonomy_points,
     dedupe_agents_by_id,
@@ -149,7 +153,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
-    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     KH_LISTING_STATE_FLAG,
     STRICT_SCOPE_FILTER_KEY,
@@ -158,6 +161,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     MoveDestinationMissing,
     _distinct_connector_types,
     _unsupported_container_filters,
+    promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
 from app.services.graph_db.neo4j import kh_scope
@@ -165,21 +169,32 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     Neo4jClient,
 )
-from app.modules.named_entities.graph_ops import NamedEntityGraphMixin, named_entity_neo4j_indexes
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
     is_taxonomy_collection,
     own_record_labels,
     subcategory_level,
-    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
+)
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
+)
+from app.services.graph_db.user_email_identity import (
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    GraphUserEmailConflictError,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
 )
 from app.services.graph_db.vector_membership_queries import (
     PAGE_RECORD_FIELDS,
@@ -189,16 +204,6 @@ from app.services.graph_db.vector_membership_queries import (
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
-from app.services.graph_db.user_email_identity import (
-    GraphUserEmailConflictError,
-    PERMISSION_ROLE_RANK,
-    STUB_EDGE_COLLECTIONS,
-    STUB_EDGE_IDENTITY_FIELDS,
-    VERIFIED_EMAIL_WRITE_COLLECTIONS,
-    classify_email_peer,
-    connector_ids_of_users,
-    graph_user_key,
-)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import action_failed, folder_in_trash
 
@@ -16176,7 +16181,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "team_scope": team_scope,
                     "personal_scope": personal_scope,
                     "user_id": user_id,
-                    "org_id": org_id,
                 },
                 txn_id=transaction
             )
@@ -16326,8 +16330,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         node_var: str = "node",
         carry: tuple[str, ...] = (),
         where: str = "",
-        reverse: bool = False,
         *,
+        reverse: bool = False,
         lowered: bool = False,
         order: bool = True,
     ) -> str:
@@ -16531,6 +16535,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         node_var: str = "node",
         parent_var: str = "parent",
         overrides: dict[str, str] | None = None,
+        *,
         include_comparator: bool = True,
     ) -> str:
         """The row a v2 listing returns, as a Cypher map expression.
@@ -17057,6 +17062,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         connector_id: str,
         only_group: str | None,
         transaction: str | None,
+        *,
         with_ids: bool = True,
         app_children_only: bool = False,
     ) -> tuple[list[str], list[dict[str, Any]]]:
@@ -17298,6 +17304,56 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return (rows or [{}])[0].get("scope") or []
+
+    async def get_selection_nodes(
+        self,
+        org_id: str,
+        *,
+        group_ids: list[str],
+        record_ids: list[str],
+        exact_record_ids: list[str],
+        limit: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        hierarchy = "IN ['PARENT_CHILD', 'ATTACHMENT']"
+        groups: list[dict[str, Any]] = []
+        records: list[dict[str, Any]] = []
+        if group_ids:
+            groups = await self._kh_query(
+                f"""
+                MATCH (sg:RecordGroup) WHERE sg.id IN $group_ids AND sg.orgId = $org_id
+                  AND NOT coalesce(sg.isDeleted, false)
+                MATCH (sg) ((:RecordGroup)-[kh_r:NODE_RELATION]->(cg:RecordGroup)
+                            WHERE kh_r.relationshipType {hierarchy}
+                              AND NOT coalesce(cg.isDeleted, false)){{0,{ACCESS_WALK_MAX_DEPTH}}} (g:RecordGroup)
+                WITH DISTINCT g LIMIT $limit
+                RETURN g.id AS id, g.connectorId AS connectorId
+                """,
+                parameters={"group_ids": group_ids, "org_id": org_id, "limit": limit + 1},
+            )
+        if record_ids or exact_record_ids:
+            records = await self._kh_query(
+                f"""
+                CALL () {{
+                    MATCH (sr:Record) WHERE sr.id IN $record_ids AND sr.orgId = $org_id
+                      AND {cypher_live_record("sr")}
+                    MATCH (sr) ((:Record)-[kh_r:NODE_RELATION]->(cr:Record)
+                                WHERE kh_r.relationshipType {hierarchy}
+                                  AND {cypher_live_record("cr")}){{0,{ACCESS_WALK_MAX_DEPTH}}} (r:Record)
+                    RETURN r
+                    UNION
+                    MATCH (r:Record) WHERE r.id IN $exact_record_ids AND r.orgId = $org_id
+                      AND {cypher_live_record("r")}
+                    RETURN r
+                }}
+                WITH DISTINCT r LIMIT $limit
+                RETURN r.id AS id, r.virtualRecordId AS vrid, r.connectorId AS connectorId
+                """,
+                parameters={
+                    "record_ids": record_ids, "exact_record_ids": exact_record_ids,
+                    "org_id": org_id, "limit": limit + 1,
+                },
+            )
+        return {"groups": [dict(g) for g in groups or []], "records": [dict(r) for r in records or []]}
 
     @staticmethod
     def _kh_v3_chain_top_owns(v: str) -> str:
@@ -17634,7 +17690,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // One row: the driver builds a record object per row returned.
         RETURN collect({{id: ok.id, vrid: ok.virtualRecordId,
                         connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
-                        isInternal: coalesce(ok.isInternal, false)}}) AS items
+                        isInternal: coalesce(ok.isInternal, false),
+                        groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}}) AS items
         """
         parameters = {
             "kh_ids": ids, "kh_vrids": vrids, "org_id": org_id,

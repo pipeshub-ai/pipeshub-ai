@@ -259,20 +259,77 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
 }
 
 /** Connector instance ids (non–knowledge-base) from the agent graph `knowledge[]` entry. */
+/** A node a knowledge source is limited to, as a row of the agent chat panel. */
+export interface AgentKnowledgeNode {
+  id: string;
+  name: string;
+  nodeType: string;
+}
+
+/**
+ * The record groups, folders and records a knowledge source is limited to
+ * (`filters.recordGroups` / `filters.records`), named from the `nodes` the
+ * builder saves beside them. Empty for a source used as a whole.
+ */
+export function agentKnowledgeNodes(entry: KnowledgeGraphEntry): {
+  recordGroups: AgentKnowledgeNode[];
+  records: AgentKnowledgeNode[];
+} {
+  const stored = entry.filtersParsed ?? entry.filters;
+  let filters: Record<string, unknown> = {};
+  if (typeof stored === 'string') {
+    try {
+      filters = (JSON.parse(stored) as Record<string, unknown>) ?? {};
+    } catch {
+      filters = {};
+    }
+  } else if (stored && typeof stored === 'object') {
+    filters = stored as Record<string, unknown>;
+  }
+  const sourceId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
+  const named = new Map<string, AgentKnowledgeNode>();
+  for (const node of Array.isArray(filters.nodes) ? filters.nodes : []) {
+    if (node && typeof node === 'object' && typeof (node as AgentKnowledgeNode).id === 'string') {
+      named.set((node as AgentKnowledgeNode).id, node as AgentKnowledgeNode);
+    }
+  }
+  const nodesOf = (key: 'recordGroups' | 'records', fallbackType: string): AgentKnowledgeNode[] =>
+    (Array.isArray(filters[key]) ? (filters[key] as unknown[]) : [])
+      // Agents saved before each collection became its own source listed the collection here.
+      .filter((id): id is string => typeof id === 'string' && id.trim().length > 0 && id !== sourceId)
+      .map((id) => ({
+        id,
+        name: named.get(id)?.name || id,
+        nodeType: named.get(id)?.nodeType || fallbackType,
+      }));
+  return { recordGroups: nodesOf('recordGroups', 'recordGroup'), records: nodesOf('records', 'folder') };
+}
+
+function isLimitedKnowledgeEntry(entry: KnowledgeGraphEntry): boolean {
+  const nodes = agentKnowledgeNodes(entry);
+  return nodes.recordGroups.length > 0 || nodes.records.length > 0;
+}
+
 export function extractAgentKnowledgeDefaults(
   agent: AgentDetail | null | undefined
-): { apps: string[]; kb: string[] } {
+): { apps: string[]; kb: string[]; recordGroups: string[]; records: string[] } {
   const apps: string[] = [];
   const kb: string[] = [];
+  const recordGroups: string[] = [];
+  const records: string[] = [];
   const raw = agent?.knowledge;
-  if (!Array.isArray(raw)) return { apps, kb };
+  if (!Array.isArray(raw)) return { apps, kb, recordGroups, records };
 
   for (const entry of raw) {
     if (!isKnowledgeGraphEntry(entry)) continue;
     const connectorId = typeof entry.connectorId === 'string' ? entry.connectorId.trim() : '';
     if (!connectorId) continue;
 
-    if (isKbKnowledgeEntry(entry)) {
+    const nodes = agentKnowledgeNodes(entry);
+    if (nodes.recordGroups.length > 0 || nodes.records.length > 0) {
+      recordGroups.push(...nodes.recordGroups.map((node) => node.id));
+      records.push(...nodes.records.map((node) => node.id));
+    } else if (isKbKnowledgeEntry(entry)) {
       kb.push(connectorId);
     } else {
       apps.push(connectorId);
@@ -282,14 +339,19 @@ export function extractAgentKnowledgeDefaults(
   return {
     apps: Array.from(new Set(apps)),
     kb: Array.from(new Set(kb)),
+    recordGroups: Array.from(new Set(recordGroups)),
+    records: Array.from(new Set(records)),
   };
 }
 
-/** App connector rows (instance ids + labels) for agent chat UI — excludes KB-backed sources. */
+/**
+ * App connector rows (instance ids + labels) for agent chat UI — excludes KB-backed sources.
+ * A connector limited to some record groups, folders or records is listed as those nodes.
+ */
 export function extractAgentKnowledgeConnectors(
   agent: AgentDetail | null | undefined
-): Array<{ id: string; label: string; connectorKind: string }> {
-  const rows: Array<{ id: string; label: string; connectorKind: string }> = [];
+): Array<{ id: string; label: string; connectorKind: string; nodeType?: string; source?: LimitedRowSource }> {
+  const rows: Array<{ id: string; label: string; connectorKind: string; nodeType?: string; source?: LimitedRowSource }> = [];
   const seen = new Set<string>();
   const raw = agent?.knowledge;
   if (!Array.isArray(raw)) return rows;
@@ -314,9 +376,25 @@ export function extractAgentKnowledgeConnectors(
       (typeof entry.type === 'string' && entry.type.trim()) ||
       (typeof entry.name === 'string' && entry.name.trim()) ||
       label;
+    if (isLimitedKnowledgeEntry(entry)) {
+      const nodes = agentKnowledgeNodes(entry);
+      const source = { id: connectorId, label, kind: connectorKind };
+      for (const node of [...nodes.recordGroups, ...nodes.records]) {
+        rows.push({ id: node.id, label: node.name, connectorKind, nodeType: node.nodeType, source });
+      }
+      continue;
+    }
     rows.push({ id: connectorId, label, connectorKind });
   }
   return rows;
+}
+
+/** The connector or collection a limited row belongs to, so the rows can be shown under it. */
+export interface LimitedRowSource {
+  id: string;
+  label: string;
+  /** Connector type (`Jira`, `KB`, …), for the icon. */
+  kind: string;
 }
 
 /** Row for agent-scoped Collections UI — id is the KB entry's own `connectorId`. */
@@ -325,6 +403,10 @@ export interface AgentKnowledgeCollectionRow {
   name: string;
   /** Knowledge graph `type` (e.g. `KB`, `Jira`, `Confluence`) — drives row artwork. */
   sourceType?: string;
+  /** Set on a folder or record a collection is limited to; absent for a whole collection. */
+  nodeType?: string;
+  /** The collection a limited row belongs to. */
+  source?: LimitedRowSource;
 }
 
 /**
@@ -359,6 +441,14 @@ export function extractAgentKnowledgeCollectionRows(
         ? entry.type.trim()
         : undefined;
 
+    if (isLimitedKnowledgeEntry(entry)) {
+      const nodes = agentKnowledgeNodes(entry);
+      const source = { id: connectorId, label: name, kind: sourceType ?? 'KB' };
+      for (const node of [...nodes.recordGroups, ...nodes.records]) {
+        rows.push({ id: node.id, name: node.name, sourceType, nodeType: node.nodeType, source });
+      }
+      continue;
+    }
     rows.push({ id: connectorId, name, sourceType });
   }
   return rows;

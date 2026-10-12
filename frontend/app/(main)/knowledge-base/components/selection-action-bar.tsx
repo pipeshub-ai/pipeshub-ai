@@ -1,6 +1,7 @@
 'use client';
 
 import { Flex, Text, Button, Checkbox, Separator } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import type { PageViewMode } from '../types';
@@ -24,6 +25,7 @@ export function SelectionActionBar({
   deletePermissionDenied,
   pageViewMode = 'collections',
 }: SelectionActionBarProps) {
+  const { t } = useTranslation();
   if (selectedCount === 0) return null;
 
   return (
@@ -68,7 +70,6 @@ export function SelectionActionBar({
       {/* Divider */}
       <Separator orientation="vertical" size="1" style={{ height: '16px', background: 'var(--olive-3)' }} />
 
-      {/* Chat button - temporarily hidden
       <Button
         size="1"
         variant="surface"
@@ -83,9 +84,8 @@ export function SelectionActionBar({
         }}
       >
         <MaterialIcon name="assistant" size={16} />
-        Chat
+        {t('kb.chatWithSelection')}
       </Button>
-      */}
 
       {/* Re-index button - Neutral style */}
       <Button

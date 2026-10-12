@@ -109,6 +109,9 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
+import { useTickedRows } from './hooks/use-ticked-rows';
+import { usePendingChatStore } from '@/lib/store/pending-chat-store';
+import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
 import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
@@ -2781,11 +2784,26 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, clearRecordSelection, clearSelection]);
 
-  // Handle bulk chat
+  const tickedRows = useTickedRows(
+    isAllRecordsMode ? allRecordsItems : tableItems,
+    isAllRecordsMode ? selectedRecords : selectedItems
+  );
+
+  // Open a new chat scoped to the ticked rows; nothing is sent until the user asks.
   const handleBulkChat = useCallback(() => {
-    const selectedIds = selectedItemsArray.map(item => item.id);
-    router.push(`/chat?recordIds=${selectedIds.join(',')}`);
-  }, [selectedItemsArray, router]);
+    const selectedNodes = tickedRows();
+    if (selectedNodes.length === 0) return;
+    if (selectedNodes.length > MAX_SELECTED_NODES) {
+      toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
+      return;
+    }
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: { selectedNodes },
+      referrerPage: '/knowledge-base',
+    });
+    router.push('/chat');
+  }, [tickedRows, router, t]);
 
   // Handle bulk reindex
   const handleBulkReindex = useCallback(async () => {

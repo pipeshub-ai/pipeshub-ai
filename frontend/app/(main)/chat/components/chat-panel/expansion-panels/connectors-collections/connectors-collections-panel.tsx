@@ -10,8 +10,7 @@ import { useTranslation } from 'react-i18next';
 type ExpansionViewMode = 'inline' | 'overlay';
 
 interface ConnectorsCollectionsPanelProps {
-  apps: string[];
-  kb: string[];
+  selection: CollectionScopeSelection;
   onSelectionChange: (next: CollectionScopeSelection) => void;
   /** Toggles between inline and overlay view */
   onToggleView?: () => void;
@@ -27,8 +26,7 @@ interface ConnectorsCollectionsPanelProps {
  * Shows a single unified view: collections list with local search.
  */
 export function ConnectorsCollectionsPanel({
-  apps,
-  kb,
+  selection,
   onSelectionChange,
   onToggleView,
   viewMode = 'inline',
@@ -57,7 +55,7 @@ export function ConnectorsCollectionsPanel({
         </IconButton>
       </Flex>
 
-      <CollectionsTab apps={apps} kb={kb} onSelectionChange={onSelectionChange} />
+      <CollectionsTab selection={selection} onSelectionChange={onSelectionChange} />
     </Flex>
   );
 }

@@ -221,6 +221,8 @@ export const KnowledgeHubApi = {
       include?: string;
       sortBy?: string;
       sortOrder?: 'asc' | 'desc';
+      /** No error toast: the caller handles a failure itself. */
+      quiet?: boolean;
     }
   ) {
     const key = getNodeChildrenCacheKey(nodeType, nodeId, params);
@@ -243,6 +245,7 @@ export const KnowledgeHubApi = {
               ...(params?.sortBy != null ? { sortBy: params.sortBy } : {}),
               ...(params?.sortOrder != null ? { sortOrder: params.sortOrder } : {}),
             },
+            ...(params?.quiet ? { suppressErrorToast: true } : {}),
           }
         );
 
@@ -254,6 +257,39 @@ export const KnowledgeHubApi = {
 
     pendingGetNodeChildren.set(key, promise);
     return promise;
+  },
+
+  /**
+   * Nodes whose name contains `q`, at any depth: everywhere the user can
+   * reach, or under one node when `parent` is given.
+   */
+  async searchNodes(params: {
+    q: string;
+    parent?: { nodeType: string; id: string };
+    origins?: 'CONNECTOR' | 'COLLECTION';
+    limit?: number;
+    cursor?: string | null;
+    signal?: AbortSignal;
+  }): Promise<KnowledgeHubApiResponse> {
+    const path = params.parent
+      ? `${BASE_URL}/knowledge-hub/nodes/${params.parent.nodeType}/${params.parent.id}`
+      : `${BASE_URL}/knowledge-hub/nodes`;
+    const { data } = await apiClient.get<KnowledgeHubApiResponse>(path, {
+      params: {
+        q: params.q,
+        flattened: true,
+        onlyContainers: false,
+        limit: params.limit ?? 20,
+        sortBy: 'name',
+        sortOrder: 'asc',
+        ...(params.origins ? { origins: params.origins } : {}),
+        ...(params.cursor ? { cursor: params.cursor } : {}),
+      },
+      signal: params.signal,
+      // The picker shows its own message when a search fails.
+      suppressErrorToast: true,
+    });
+    return data;
   },
 
   /**

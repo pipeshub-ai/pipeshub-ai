@@ -2,9 +2,8 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
-
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.documents import Document
@@ -35,7 +34,7 @@ def _clear_user_cache():
 
 
 @pytest.fixture(autouse=True)
-def _a_user_with_a_graph_key(mock_graph_provider):
+def _a_user_with_a_graph_key(mock_graph_provider) -> None:
     """The shared provider's default user has no key, and no hit is checked without one."""
     mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "test@example.com"}
 
@@ -1051,9 +1050,11 @@ class TestGetUserCached:
     @pytest.mark.asyncio
     async def test_a_failed_lookup_is_an_unavailable_permission_check(
         self, retrieval_service, mock_graph_provider
-    ):
+    ) -> None:
         import app.modules.retrieval.retrieval_service as mod
-        from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
 
         mock_graph_provider.get_user_by_user_id.side_effect = RuntimeError("graph down")
         with pytest.raises(PermissionVerificationUnavailableError):
@@ -1061,7 +1062,7 @@ class TestGetUserCached:
         assert "user1" not in mod._user_cache
 
     @pytest.mark.asyncio
-    async def test_a_missing_user_is_none_and_is_not_cached(self, retrieval_service, mock_graph_provider):
+    async def test_a_missing_user_is_none_and_is_not_cached(self, retrieval_service, mock_graph_provider) -> None:
         import app.modules.retrieval.retrieval_service as mod
 
         mock_graph_provider.get_user_by_user_id.return_value = None
@@ -1152,15 +1153,14 @@ class TestSearchWithFilters:
     @pytest.mark.asyncio
     async def test_a_failed_user_lookup_shows_nothing_and_says_why(
         self, retrieval_service, mock_graph_provider
-    ):
+    ) -> None:
         """The lookup answers None on a graph error unless asked to raise, and
         with no user key every hit was denied: "no relevant documents found"."""
         from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
-        async def lookup(_user_id, *, raise_on_error=False):
+        async def lookup(_user_id, *, raise_on_error=False) -> None:
             if raise_on_error:
                 raise RuntimeError("graph down")
-            return None
 
         mock_graph_provider.get_user_by_user_id = AsyncMock(side_effect=lookup)
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
@@ -1188,7 +1188,7 @@ class TestSearchWithFilters:
     @pytest.mark.parametrize("user", [None, {"email": "u@t.com"}], ids=["no-user", "no-key"])
     async def test_hits_are_not_checked_without_a_user_key(
         self, retrieval_service, mock_graph_provider, user
-    ):
+    ) -> None:
         """The scope was read for this user, so a lookup that names no key did
         not answer; checking the hits as nobody would deny them all."""
         mock_graph_provider.get_user_by_user_id.return_value = user
@@ -1207,7 +1207,7 @@ class TestSearchWithFilters:
     @pytest.mark.asyncio
     async def test_a_user_who_does_not_exist_reaches_nothing(
         self, retrieval_service, mock_graph_provider
-    ):
+    ) -> None:
         """A missing user is a denial, not an outage: nothing is accessible."""
         mock_graph_provider.get_user_by_user_id.return_value = None
         mock_graph_provider.get_accessible_virtual_record_ids.return_value = {}
@@ -2395,6 +2395,49 @@ class TestSearchWithFilters:
 
         assert [hit["block_index"] for hit in result["searchResults"]] == [0, 1, 2]
         assert "omittedPassages" not in result
+
+    @pytest.mark.asyncio
+    async def test_a_code_block_hit_is_not_unpacked_as_a_code_group(
+        self, retrieval_service, mock_graph_provider, mock_blob_store
+    ) -> None:
+        """A block and a group can both be typed "code" (and "table"). A plain
+        code block carries its text; only a group carries (summary, children).
+        Unpacking the text as a pair answered 500 for the whole search."""
+        from app.models.blocks import BlockType, GroupType
+
+        assert BlockType.CODE.value == GroupType.CODE.value
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "github", "recordName": "main.py",
+             "webUrl": "https://example.com/main.py", "mimeType": "text/x-python"},
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {"score": 0.9, "content": "def run(): ...", "citationType": "vectordb|document",
+             "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": True}},
+        ])
+
+        async def mock_get_record(vid, vid_to_record, blob_store, org_id, vtr_map) -> None:
+            vid_to_record[vid] = {"recordName": "main.py", "blocks": []}
+
+        metadata = {"virtualRecordId": "vr1", "orgId": "o1", "origin": "github",
+                    "recordName": "main.py", "recordId": "rec1", "mimeType": "text/x-python"}
+        mock_flattened = [
+            {"block_type": BlockType.CODE.value, "score": 0.9, "content": "def run(): ...",
+             "citationType": "vectordb|document", "metadata": metadata},
+            {"block_type": GroupType.CODE.value, "content": ("", [
+                {"score": 0.8, "content": "child of a code group", "citationType": "vectordb|document",
+                 "metadata": metadata},
+            ])},
+        ]
+        with patch("app.modules.retrieval.retrieval_service.get_record", new=AsyncMock(side_effect=mock_get_record)), \
+             patch("app.modules.retrieval.retrieval_service.get_flattened_results", new=AsyncMock(return_value=mock_flattened)):
+            result = await retrieval_service.search_with_filters(
+                queries=["run"], user_id="u1", org_id="o1", knowledge_search=True,
+            )
+        assert result["status"] == "success"
+        contents = [sr["content"] for sr in result["searchResults"]]
+        assert "def run(): ..." in contents and "child of a code group" in contents
 
     @pytest.mark.asyncio
     async def test_knowledge_search_get_record_returns_none_skips(

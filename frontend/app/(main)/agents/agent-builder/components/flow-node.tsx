@@ -20,6 +20,12 @@ import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import { McpFlowNode } from './mcp-flow-node';
+import {
+  hasSourceLimit,
+  KnowledgeSourceLimitButton,
+  KnowledgeSourceLimitList,
+  KnowledgeSourceLimitNote,
+} from './knowledge-source-limit';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
 export type FlowNodeProps = {
@@ -247,6 +253,8 @@ export const FlowNode = React.memo(function FlowNode({
         </Box>
       );
     }
+  } else if (hasSourceLimit(data)) {
+    groupBody = <KnowledgeSourceLimitList data={data} />;
   }
 
   return (
@@ -302,6 +310,7 @@ export const FlowNode = React.memo(function FlowNode({
                     {subtitle}
                   </Text>
                 ) : null}
+                <KnowledgeSourceLimitNote data={data} />
               </Flex>
               {data.warning ? (
                 <Tooltip content={data.warning}>
@@ -314,6 +323,7 @@ export const FlowNode = React.memo(function FlowNode({
                 </Tooltip>
               ) : null}
             </Flex>
+            {!readOnly ? <KnowledgeSourceLimitButton nodeId={id} data={data} /> : null}
             {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
               <span className="flow-node-delete" style={{ flexShrink: 0 }}>
                 <IconButton

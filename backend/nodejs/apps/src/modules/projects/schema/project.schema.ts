@@ -45,7 +45,8 @@ const appliedFilterNodeSchema = new Schema(
     id: { type: String, required: true },
     name: { type: String, required: true },
     nodeType: { type: String, required: true },
-    connector: { type: String, required: true },
+    // Display only; empty when the picker does not know the connector's name.
+    connector: { type: String, default: '' },
   },
   { _id: false },
 );
@@ -67,10 +68,14 @@ const projectSchema = new Schema<IProjectDocument>(
     knowledgeScope: {
       apps: [{ type: String }],
       kb: [{ type: String }],
+      recordGroups: [{ type: String }],
+      records: [{ type: String }],
     },
     appliedFilters: {
       apps: [appliedFilterNodeSchema],
       kb: [appliedFilterNodeSchema],
+      recordGroups: [appliedFilterNodeSchema],
+      records: [appliedFilterNodeSchema],
     },
     tools: { type: [String], default: [] },
     linkedKnowledgeBaseId: { type: String, default: null },
