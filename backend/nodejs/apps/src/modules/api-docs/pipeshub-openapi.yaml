@@ -27235,7 +27235,7 @@ paths:
 
         **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
 
-        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+        **Request body:** Send `userIds`, `teamIds`, or both. Either array may be omitted; a request that names neither, or sends both empty, returns **400**.
 
         Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
 

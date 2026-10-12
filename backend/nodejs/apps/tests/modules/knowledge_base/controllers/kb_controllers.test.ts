@@ -1045,6 +1045,26 @@ describe('Knowledge Base Controller', () => {
       })
     })
 
+    it('updateKBPermission changes a team role when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+        role: 'WRITER',
+      })
+    })
+
     it('removeKBPermission removes a user when teamIds is omitted', async () => {
       const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [] })
       const req = createMockRequest({
