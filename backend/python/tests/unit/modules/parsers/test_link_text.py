@@ -98,6 +98,12 @@ def test_hostless_autolink_keeps_its_uri() -> None:
         ("[New York](https://en.wikipedia.org/wiki/New York) is big", "New York is big"),
         ('[Acme Corp](https://example.com/docs/Acme Corp "Acme") ok', "Acme Corp ok"),
         ("See [this](a quick note) here", "See [this](a quick note) here"),
+        (
+            "[History](https://en.wikipedia.org/wiki/New York (state)#History) next",
+            "History next",
+        ),
+        ("[Report](https://example.com/docs/Report (final).pdf) ok", "Report ok"),
+        ("[docs](https://example.com/docs (the guide)) ok", "docs ok"),
     ],
 )
 def test_unencoded_space_in_a_url_destination(text, expected) -> None:

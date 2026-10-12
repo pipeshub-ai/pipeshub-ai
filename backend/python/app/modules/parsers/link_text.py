@@ -184,8 +184,9 @@ def link_destination_end(text: str, start: int) -> int | None:
                     following += 1
                 if (
                     following >= length
-                    or text[following] in "\"'()\n"
+                    or text[following] in "\"')\n"
                     or "/" not in text[destination_start:i]
+                    or (text[following] == "(" and _is_parenthesized_title(text, following))
                 ):
                     break
                 i = following
@@ -210,6 +211,21 @@ def link_destination_end(text: str, start: int) -> int | None:
     if i < length and text[i] == ")":
         return i
     return None
+
+
+def _is_parenthesized_title(text: str, start: int) -> bool:
+    """Whether the ``(...)`` group at ``start`` is a link title, not part of the URL.
+
+    A title closes the link, so only whitespace and ``)`` may follow it;
+    ``(state)#History`` or ``(final).pdf`` continue the destination.
+    """
+    close = _matching(text, start, "(", ")")
+    if close is None:
+        return False
+    after = close + 1
+    while after < len(text) and text[after] in " \t":
+        after += 1
+    return after < len(text) and text[after] == ")"
 
 
 def _url_label(url: str) -> str:
