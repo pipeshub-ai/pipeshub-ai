@@ -118,19 +118,21 @@ const decodeEscapes = (text: string): string =>
 // `code%253Dvalue` is still `code%3Dvalue` after the parser's decode.
 // Decoding stops once a raw `&` or `=` shows, so a `%26` inside a value
 // stays part of that value when the name is split into pairs.
-const decodeName = (key: string): string => {
-  let name = key;
+const decodeLayers = (text: string, stop?: RegExp): string => {
+  let out = text;
   for (
     let i = 0;
-    i < MAX_NESTING && name.includes('%') && !/[=&]/.test(name);
+    i < MAX_NESTING && out.includes('%') && !(stop?.test(out) ?? false);
     i += 1
   ) {
-    const next = decodeEscapes(name);
-    if (next === name) break;
-    name = next;
+    const next = decodeEscapes(out);
+    if (next === out) break;
+    out = next;
   }
-  return name;
+  return out;
 };
+
+const decodeName = (key: string): string => decodeLayers(key, /[=&]/);
 
 const paramName = (key: string): string => {
   const name = decodeName(key);
@@ -156,8 +158,30 @@ export const isSensitiveQueryKey = (key: string): boolean => {
 function redactParamName(key: string, depth: number): string {
   const name = decodeName(key);
   if (depth > MAX_NESTING || !/[=&]/.test(name)) return key;
-  const redacted = redactParams(new URLSearchParams(name), depth + 1);
-  return redacted ? redacted.toString() : key;
+  // Split on the raw separators only. Each value stays encoded, so a `%26`
+  // inside a nested code is still part of that code when the value is
+  // itself parsed as a URL or query.
+  let changed = false;
+  const pairs: string[] = [];
+  for (const pair of name.split('&')) {
+    const eq = pair.indexOf('=');
+    const pairKey = eq === -1 ? pair : pair.slice(0, eq);
+    if (isSensitiveQueryKey(pairKey)) {
+      changed = true;
+      pairs.push(`${paramName(pairKey)}=${REDACTED}`);
+      continue;
+    }
+    const keyOut = redactParamName(pairKey, depth + 1);
+    const value = eq === -1 ? null : pair.slice(eq + 1);
+    const valueOut = value === null ? null : redactEmbedded(value, depth + 1);
+    if (keyOut === pairKey && valueOut === value) {
+      pairs.push(pair);
+      continue;
+    }
+    changed = true;
+    pairs.push(valueOut === null ? keyOut : `${keyOut}=${valueOut}`);
+  }
+  return changed ? pairs.join('&') : key;
 }
 
 function redactParams(
@@ -208,21 +232,26 @@ function redactEmbedded(value: string, depth: number): string {
 // scheme://user:password@host — the authority runs to the first `/`, `?` or
 // `#`, and its last `@` ends the userinfo, so a password holding a raw `@`
 // is still caught.
-const USERINFO = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)@/i;
+const AUTHORITY = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)/i;
 
 /**
  * Replace the password of a `scheme://user:password@host` URL, for any
  * scheme. Done on the text rather than through `URL`, which rejects
  * multi-host connection strings such as `mongodb://u:p@h1:27017,h2:27017/db`.
+ * The authority is decoded first, since a logged URL can carry its `@` or
+ * `:` as `%40` or `%3A`.
  */
 function redactUserinfo(url: string): string {
-  const match = USERINFO.exec(url);
+  const match = AUTHORITY.exec(url);
   if (!match) return url;
-  const userinfo = match[2] ?? '';
+  const authority = decodeLayers(match[2] ?? '');
+  const at = authority.lastIndexOf('@');
+  if (at === -1) return url;
+  const userinfo = authority.slice(0, at);
   const colon = userinfo.indexOf(':');
   if (colon === -1) return url;
   const scheme = match[1] ?? '';
-  return `${scheme}${userinfo.slice(0, colon)}:REDACTED@${url.slice(match[0].length)}`;
+  return `${scheme}${userinfo.slice(0, colon)}:REDACTED@${authority.slice(at + 1)}${url.slice(match[0].length)}`;
 }
 
 function redactUrl(rawUrl: string, depth: number): string {

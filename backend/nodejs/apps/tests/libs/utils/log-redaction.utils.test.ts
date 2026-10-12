@@ -184,6 +184,30 @@ describe('log-redaction.utils', () => {
       })
     }
 
+    it('keeps a nested code with an encoded `&` whole inside an encoded name', () => {
+      const url = '/login?returnTo%3D%2Fcb%3Fcode%3D4%252F0Aea%2526CODEWITHAMP'
+      const out = redactSensitiveQueryParams(url)
+      expect(out).to.not.contain('CODEWITHAMP')
+      expect(decodeURIComponent(decodeURIComponent(out))).to.not.contain('CODEWITHAMP')
+      const logged = JSON.stringify(
+        redactQueryForLog(querystring.parse('returnTo%3D%2Fcb%3Fcode%3D4%252F0Aea%2526CODEWITHAMP')),
+      )
+      expect(logged).to.not.contain('CODEWITHAMP')
+    })
+
+    for (const url of [
+      'https://user:hunter2%40host/x?page=1',
+      'https://user:hunter2%40host/x?code=FAKE-auth-code',
+      'https://user%3Ahunter2@host/x?page=1',
+    ]) {
+      it(`redacts a password whose \`@\` or \`:\` is encoded, with a query: ${url}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(out).to.not.contain('hunter2')
+        expect(out).to.not.contain('FAKE-auth-code')
+        expect(out).to.contain('/x?')
+      })
+    }
+
     for (const url of [
       'https%3A%2F%2Falice%3Ahunter2%40db.example.com%',
       `${encodeURIComponent('https://app.example.com/cb?code=hunter2')}%`,

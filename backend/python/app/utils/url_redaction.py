@@ -56,15 +56,20 @@ def _decode_name(key: str) -> str:
     ``code%253Dvalue`` is still ``code%3Dvalue`` after the parser's decode.
     Decoding stops once a raw ``&`` or ``=`` shows, so a ``%26`` inside a
     value stays part of that value when the name is split into pairs."""
-    name = key
+    return _decode_layers(key, stop="&=")
+
+
+def _decode_layers(text: str, stop: str = "") -> str:
+    """Percent-decode up to ``_MAX_NESTING`` layers, stopping early once any
+    character of ``stop`` shows."""
     for _ in range(_MAX_NESTING):
-        if "%" not in name or "&" in name or "=" in name:
+        if "%" not in text or any(c in text for c in stop):
             break
-        decoded = unquote(name)
-        if decoded == name:
+        decoded = unquote(text)
+        if decoded == text:
             break
-        name = decoded
-    return name
+        text = decoded
+    return text
 
 
 def _param_name(key: str) -> str:
@@ -101,17 +106,23 @@ _ENCODED_URL_SYNTAX = re.compile(r"%(3d|3f|23|26|40|25)|%3a%2f%2f", re.IGNORECAS
 # scheme://user:password@host: the authority runs to the first `/`, `?` or
 # `#`, and its last `@` ends the userinfo, so a password holding a raw `@`
 # is still caught.
-_USERINFO = re.compile(r"^([a-z][a-z0-9+.-]*://)([^/?#]*)@", re.IGNORECASE)
+_AUTHORITY = re.compile(r"^([a-z][a-z0-9+.-]*://)([^/?#]*)", re.IGNORECASE)
 
 
 def _redact_userinfo(url: str) -> str:
     """Replace the password of a ``scheme://user:password@host`` URL, for any
-    scheme, keeping the user name and host readable as the Node helper does."""
-    match = _USERINFO.match(url)
-    if not match or ":" not in match.group(2):
+    scheme, keeping the user name and host readable as the Node helper does.
+    The authority is decoded first, since a logged URL can carry its ``@`` or
+    ``:`` as ``%40`` or ``%3A``."""
+    match = _AUTHORITY.match(url)
+    if not match:
         return url
-    user = match.group(2).split(":", 1)[0]
-    return f"{match.group(1)}{user}:REDACTED@{url[match.end():]}"
+    authority = _decode_layers(match.group(2))
+    userinfo, at, host = authority.rpartition("@")
+    if not at or ":" not in userinfo:
+        return url
+    user = userinfo.split(":", 1)[0]
+    return f"{match.group(1)}{user}:REDACTED@{host}{url[match.end():]}"
 
 
 def _redact_name(key: str, depth: int) -> str:
@@ -121,8 +132,25 @@ def _redact_name(key: str, depth: int) -> str:
     name = _decode_name(key)
     if depth > _MAX_NESTING or not re.search(r"[=&]", name):
         return key
-    redacted = _redact_pairs(name, depth + 1)
-    return redacted if redacted != name else key
+    # Split on the raw separators only. Each value stays encoded, so a `%26`
+    # inside a nested code is still part of that code when the value is
+    # itself parsed as a URL or query.
+    changed = False
+    out = []
+    for pair in name.split("&"):
+        pair_key, eq, value = pair.partition("=")
+        if is_sensitive_query_key(pair_key):
+            out.append(f"{_param_name(pair_key)}={REDACTED}")
+            changed = True
+            continue
+        key_out = _redact_name(pair_key, depth + 1)
+        value_out = _redact_embedded(value, depth + 1) if eq else value
+        if key_out == pair_key and value_out == value:
+            out.append(pair)
+            continue
+        changed = True
+        out.append(f"{key_out}={value_out}" if eq else key_out)
+    return "&".join(out) if changed else key
 
 
 def _redact_pairs(segment: str, depth: int = 0) -> str:
