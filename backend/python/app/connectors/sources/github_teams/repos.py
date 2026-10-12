@@ -884,6 +884,21 @@ class ReposSync:
         content_res = await c.runtime.ds_call(
             c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
         )
+        if content_res.status_code == HttpStatusCode.NOT_FOUND.value:
+            # The lookup may be remembered from before the default branch was
+            # renamed; the old ref 404s and the record would fail for good.
+            # Ask again, and retry once only if the answer changed. A 404 on
+            # the current branch is a file that is really gone.
+            c.runtime.forget_repo_lookup(repo_id)
+            fresh_res = await c.runtime.get_repo_by_id(repo_id)
+            fresh = fresh_res.data if fresh_res.success else None
+            if fresh is not None and (fresh.owner.login, fresh.name, fresh.default_branch) != (
+                repo.owner.login, repo.name, repo.default_branch,
+            ):
+                repo = fresh
+                content_res = await c.runtime.ds_call(
+                    c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
+                )
         if not content_res.success or content_res.data is None:
             raise_for_stream_fetch(
                 success=content_res.success,

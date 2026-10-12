@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from app.connectors.sources.github_teams.comments import CommentsHelper
 from app.connectors.sources.github_teams.issues import IssuesSync
@@ -269,3 +270,54 @@ class TestRepositoryLookupCache:
         now[0] += 2
         await c.runtime.get_repo_by_id(10)
         assert gh.calls["get_repo_by_id"] == 2
+
+
+class TestRenamedDefaultBranch:
+    """A remembered lookup can name a default branch that has since been renamed.
+
+    Code files are fetched at the default branch, so the old name 404s. That
+    404 must not fail the record for good while the cache still holds the old
+    name: the stream asks again and retries once on the new branch.
+    """
+
+    @staticmethod
+    def _branch_aware(gh: CountingGitHub, live_branch: str) -> None:
+        serve = gh.get_file_contents
+
+        async def get_file_contents(owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse:
+            if ref != live_branch:
+                gh.calls["get_file_contents"] += 1
+                return GitHubResponse(success=False, error="Not Found", status_code=404)
+            return await serve(owner, repo, path, ref)
+
+        gh.get_file_contents = get_file_contents  # type: ignore[method-assign]
+
+    async def test_a_renamed_branch_is_looked_up_again_and_the_file_served(self) -> None:
+        gh = CountingGitHub(files=0)
+        c = _connector(gh)
+        await c.runtime.get_repo_by_id(10)  # remembered while the branch was "main"
+
+        gh.repo = make_repo(repo_id=10, default_branch="develop")
+        self._branch_aware(gh, "develop")
+
+        content = await c.repos.fetch_code_file_content(_code_record("src/f0.py"))
+
+        assert content == b"print('hi')\n"
+        assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 2})
+
+        # The fresh answer is remembered: the next file pays no lookup and no 404.
+        await c.repos.fetch_code_file_content(_code_record("src/f1.py"))
+        assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 3})
+
+    async def test_a_file_that_is_gone_is_not_fetched_twice(self) -> None:
+        # Same branch after the second lookup: the 404 is real, so the stream
+        # fails as before without a second contents request.
+        gh = CountingGitHub(files=0)
+        c = _connector(gh)
+        self._branch_aware(gh, "no-such-branch")
+
+        with pytest.raises(HTTPException) as raised:
+            await c.repos.fetch_code_file_content(_code_record("src/gone.py"))
+
+        assert raised.value.status_code == 404
+        assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
