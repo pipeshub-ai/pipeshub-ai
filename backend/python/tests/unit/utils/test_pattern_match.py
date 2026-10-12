@@ -1818,8 +1818,8 @@ class TestGrepGenerationLlm:
             "app.utils.pattern_match.get_llm_for_role",
             new_callable=AsyncMock, return_value=(low, {}),
         ) as get_role:
-            first = await _grep_generation_llm(config_service, MagicMock(name="chat"))
-            second = await _grep_generation_llm(config_service, MagicMock(name="chat"))
+            first = await _grep_generation_llm(config_service, "org-1", MagicMock(name="chat"))
+            second = await _grep_generation_llm(config_service, "org-1", MagicMock(name="chat"))
 
         assert first is low and second is low
         get_role.assert_awaited_once()
@@ -1834,21 +1834,45 @@ class TestGrepGenerationLlm:
             "app.utils.pattern_match.get_llm_for_role",
             new_callable=AsyncMock, side_effect=ValueError("No LLM found"),
         ):
-            assert await _grep_generation_llm(MagicMock(), chat) is chat
+            assert await _grep_generation_llm(MagicMock(), "org-1", chat) is chat
 
     @pytest.mark.asyncio
     async def test_cache_expires(self) -> None:
-        from app.utils.pattern_match import _grep_generation_llm
+        from cachetools import TTLCache
 
+        from app.utils.pattern_match import _GREP_LLM_TTL_SECS, _grep_generation_llm
+
+        now = [0.0]
         config_service = MagicMock()
         with patch(
             "app.utils.pattern_match.get_llm_for_role",
             new_callable=AsyncMock, return_value=(MagicMock(), {}),
-        ) as get_role, patch("app.utils.pattern_match._GREP_LLM_TTL_SECS", -1.0):
-            await _grep_generation_llm(config_service, MagicMock())
-            await _grep_generation_llm(config_service, MagicMock())
+        ) as get_role, patch(
+            "app.utils.pattern_match._grep_llm_cache",
+            TTLCache(maxsize=4, ttl=_GREP_LLM_TTL_SECS, timer=lambda: now[0]),
+        ):
+            await _grep_generation_llm(config_service, "org-1", MagicMock())
+            now[0] += _GREP_LLM_TTL_SECS + 1
+            await _grep_generation_llm(config_service, "org-1", MagicMock())
 
         assert get_role.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_each_org_gets_its_own_model(self) -> None:
+        from app.utils.pattern_match import _grep_generation_llm
+
+        org_a, org_b = MagicMock(name="org-a"), MagicMock(name="org-b")
+        config_service = MagicMock()
+        with patch(
+            "app.utils.pattern_match.get_llm_for_role",
+            new_callable=AsyncMock, side_effect=[(org_a, {}), (org_b, {})],
+        ) as get_role:
+            first = await _grep_generation_llm(config_service, "org-a", MagicMock())
+            second = await _grep_generation_llm(config_service, "org-b", MagicMock())
+            again = await _grep_generation_llm(config_service, "org-a", MagicMock())
+
+        assert get_role.await_count == 2
+        assert (first, second, again) == (org_a, org_b, org_a)
 
 
 class TestScaleConstants:

@@ -583,13 +583,14 @@ def _parse_grep_response(
     return None
 
 
-_grep_llm_cache: dict[str, tuple[ConfigurationService, float, BaseChatModel]] = {}
+# Keyed by org: the model carries that org's AI-model config and API key.
+_grep_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=_GREP_LLM_TTL_SECS)
 # The agent often repeats a search query within a turn (retries, other sources).
 _grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
 
 
 async def _grep_generation_llm(
-    config_service: ConfigurationService, fallback: BaseChatModel,
+    config_service: ConfigurationService, org_id: str, fallback: BaseChatModel,
 ) -> BaseChatModel:
     """The model for the ``query`` role (else the default model) at low
     reasoning effort, cached; *fallback* (the chat's model) when none can be built.
@@ -597,15 +598,15 @@ async def _grep_generation_llm(
     The chat's own model runs at the conversation's effort, often high, and its
     completions were often cut off before any command was written.
     """
-    cached = _grep_llm_cache.get("llm")
-    if cached is not None and cached[0] is config_service and cached[1] > time.monotonic():
-        return cached[2]
+    cached = _grep_llm_cache.get(org_id)
+    if cached is not None:
+        return cached
     try:
         llm, _ = await get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low")
     except Exception as exc:
         logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
         return fallback
-    _grep_llm_cache["llm"] = (config_service, time.monotonic() + _GREP_LLM_TTL_SECS, llm)
+    _grep_llm_cache[org_id] = llm
     return llm
 
 
@@ -990,7 +991,7 @@ async def _run_pattern_match_with_llm_grep(
         llm_grep_cmds = _grep_commands_cache.get(cache_key)
         if llm_grep_cmds is None:
             llm_grep_cmds = await generate_grep_command_via_llm(
-                query=query, llm=await _grep_generation_llm(config_service, llm),
+                query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
                 logger_instance=logger_instance, user_query=user_query,
             )
             if llm_grep_cmds:
