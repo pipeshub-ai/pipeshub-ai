@@ -157,7 +157,9 @@ def _question_text(item: AskUserQuestionItemInput | dict[str, Any] | str) -> str
     if isinstance(item, AskUserQuestionItemInput):
         return item.question
     if isinstance(item, dict):
-        return str(item.get("question", ""))
+        question = item.get("question", "")
+        # str() would turn a null question into a card reading "None".
+        return question if isinstance(question, str) else ""
     return str(item)
 
 
@@ -172,7 +174,7 @@ def question_payload(
             options = item.options
             multi_select = item.multiSelect
         else:
-            question_text = str(item.get("question", ""))
+            question_text = _question_text(item)
             options = item.get("options", [])
             multi_select = bool(item.get("multiSelect", False))
 
