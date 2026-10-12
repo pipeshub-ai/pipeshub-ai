@@ -58,6 +58,9 @@ SEARCH_DEADLINE_SECONDS = 4.0
 # On a large entity collection under load the vector search alone can use the
 # whole deadline, leaving no time for a single permission probe.
 PROBE_MIN_SECONDS = 1.5
+# Probes may use the whole deadline; the spellings of the records they found
+# are still looked up, as one keyed query.
+NAME_LOOKUP_MIN_SECONDS = 1.0
 # A listing scans in batches; past this it returns what it found with a
 # cursor to continue from, instead of running batch after batch.
 LISTING_DEADLINE_SECONDS = 8.0
@@ -523,11 +526,21 @@ async def _names_from_permitted_records(
             for spelling in spellings.get((probe.entity_id, row.get("_key")), ())
         ]
 
-    await _look_up(r for p in extracted for r in p.permitted)
+    timed_out = False
+    try:
+        await _within(
+            max(deadline, time.monotonic() + NAME_LOOKUP_MIN_SECONDS),
+            _look_up(r for p in extracted for r in p.permitted),
+        )
+    except TimeoutError:
+        timed_out = True
     round_index = 0
-    while True:
+    while not timed_out:
         pending = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
-        if not pending or time.monotonic() >= deadline:
+        if not pending:
+            break
+        if time.monotonic() >= deadline:
+            timed_out = True
             break
         planned_window = PROBE_WINDOWS[min(round_index, len(PROBE_WINDOWS) - 1)]
         round_index += 1
@@ -555,11 +568,12 @@ async def _names_from_permitted_records(
                     probe.walked += rows.examined
                     probe.exhausted = rows.window_size < window and rows.examined >= rows.window_size
                     probe.capped = probe.capped or rows.capped
-                await _look_up(found)
+                await _within(deadline, _look_up(found))
         except TimeoutError:
+            timed_out = True
             break
 
-    unnamed = [p for p in extracted if not _own(p) and not p.exhausted and p.connector_ids]
+    unnamed = [p for p in extracted if not _own(p)] if timed_out else []
     if unnamed:
         logger.info(
             "entity search org=%s left %d entities unnamed at the deadline after %d naming rounds",

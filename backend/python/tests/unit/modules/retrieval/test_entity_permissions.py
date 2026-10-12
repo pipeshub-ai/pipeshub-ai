@@ -886,6 +886,49 @@ class TestNamesWalkPastRecordsWithoutASpelling:
             await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
 
     @pytest.mark.asyncio
+    async def test_a_stalled_name_lookup_is_a_timeout(self, monkeypatch) -> None:
+        import asyncio
+
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "NAME_LOOKUP_MIN_SECONDS", 0.2)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "conf-1")]}, permitted={"r1"})
+
+        async def _stalled(keys: list[str], transaction: str | None = None) -> list[dict]:
+            await asyncio.sleep(3)
+            return []
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_stalled)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        started = asyncio.get_running_loop().time()
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert asyncio.get_running_loop().time() - started < 2
+
+    @pytest.mark.asyncio
+    async def test_probes_that_use_the_deadline_still_leave_time_to_name(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row("r1", "conf-1")]
+
+        def _slow_probe(refs: list, org: str, **k: object) -> dict:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return {"t1": rows}
+
+        graph = _graph(candidates=_slow_probe, permitted={"r1"})
+        graph.get_record_taxonomy_links = AsyncMock(return_value=[
+            {"recordId": "r1", "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False, "extractedName": "Launch plan"},
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+
+    @pytest.mark.asyncio
     async def test_the_walk_goes_on_past_the_probe_windows(self) -> None:
         """1,100 newer readable records without a spelling, then one with it."""
         copies = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]
