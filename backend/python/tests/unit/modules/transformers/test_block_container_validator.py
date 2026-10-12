@@ -1094,6 +1094,18 @@ class TestQuotedBase64IsNotAnImage:
         assert contains_base64_image(text)
 
 
+    def test_wrapped_smallest_png_with_padded_last_line_is_still_an_image(self) -> None:
+        import textwrap
+
+        raw = "\n".join(textwrap.wrap(self._ONE_PIXEL_PNG, 76))
+        uri = "\n".join(textwrap.wrap("data:image/png;base64," + self._ONE_PIXEL_PNG, 76, break_long_words=True))
+        for text in (raw, uri):
+            assert contains_base64_image(f"Logo:\n{text}\nThanks")
+        _assert_raises_with_codes(
+            _container(blocks=[_text_block(0, data=raw)]), "TEXT_DATA_CONTAINS_BASE64_IMAGE"
+        )
+
+
 class TestParentChainOutOfRangeBreak:
     def test_walk_breaks_on_out_of_range_ancestor(self):
         """Line 320: chain walk stops when an ancestor parent_index is OOB."""

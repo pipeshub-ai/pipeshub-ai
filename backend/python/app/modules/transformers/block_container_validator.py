@@ -77,8 +77,9 @@ _MIN_IMAGE_PAYLOAD_BYTES = 64
 _MIN_IMAGE_PAYLOAD_CHARS = (_MIN_IMAGE_PAYLOAD_BYTES * 4 + 2) // 3
 # Wrapped base64 breaks lines at 64 (PEM) or 76 (MIME) characters. A run of
 # full lines may be led by one short line (the rest of a "data:image/...;base64,"
-# line) but a short line after a full one ends the run uncounted, so a prose
-# word after a quoted fragment cannot push it over the minimum.
+# line) and closed by one padded short line. An unpadded short line after a full
+# one ends the run uncounted, so a prose word after a quoted fragment cannot push
+# it over the minimum.
 _MIN_WRAPPED_LINE_CHARS = 60
 _SEGMENT_RE = re.compile(r"\S+")
 
@@ -95,20 +96,24 @@ def _image_payload_prefixes(raw: str) -> Iterator[str]:
     for m in _SEGMENT_RE.finditer(raw):
         segment = m.group()
         chars = len(segment.rstrip("="))
-        if chars < _MIN_WRAPPED_LINE_CHARS:
-            lead, run, length = segment, [], 0
-            continue
-        if not run:
-            run = [lead + segment, segment] if lead else [segment]
-            length = len(lead.rstrip("=")) + chars
-            if length >= _MIN_IMAGE_PAYLOAD_CHARS:
-                yield from run
-        else:
-            before = length
-            length += chars
+        full = chars >= _MIN_WRAPPED_LINE_CHARS
+        # Padding only ever ends an encoding, so a padded short line is the
+        # last line of a wrap rather than prose.
+        tail = not full and segment.endswith("=") and bool(run or lead)
+        if full or tail:
+            if not run:
+                run = [lead + segment] if lead else []
+                if full:
+                    run.append(segment)
+                length = len(lead.rstrip("="))
+            before, length = length, length + chars
             if before < _MIN_IMAGE_PAYLOAD_CHARS <= length:
                 yield from run
-        lead = ""
+            if full:
+                lead = ""
+                continue
+        run, length = [], 0
+        lead = "" if segment.endswith("=") else segment
 
 
 def _decode_b64_prefix(raw: str, decoded_bytes_needed: int = 32) -> Optional[bytes]:
