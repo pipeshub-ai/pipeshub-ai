@@ -371,7 +371,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         args, _ = connector.data_entities_processor.on_new_record_groups.call_args
         rg, perms = args[0][0]
         assert rg.external_group_id == "org/eng"
-        assert rg.parent_external_group_id == "org"
+        assert rg.parent_external_group_id is None
         assert rg.inherit_permissions is True
         assert perms == []
 
@@ -398,7 +398,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         rg, perms = args[0][0]
         assert rg.name == "Engineering"
         assert rg.external_group_id == "org/eng"
-        assert rg.parent_external_group_id == "org"
+        assert rg.parent_external_group_id is None
         assert rg.group_type == RecordGroupType.PROJECT.value
         assert rg.web_url == "https://gitlab.example.com/org/eng"
         assert rg.inherit_permissions is True
@@ -425,7 +425,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         # downstream syncs (issues/MRs/code) have a parent RG to attach to.
         assert rg.name == "missing/grp"
         assert rg.external_group_id == "missing/grp"
-        assert rg.parent_external_group_id == "missing"
+        assert rg.parent_external_group_id is None
         assert rg.web_url is None
         assert rg.inherit_permissions is True
         assert perms == []
@@ -457,6 +457,38 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         assert (
             connector.data_entities_processor.on_new_record_groups.await_count == 2
         )
+        parents = {
+            rg.external_group_id: rg.parent_external_group_id
+            for call in connector.data_entities_processor.on_new_record_groups.call_args_list
+            for rg, _perms in call[0][0]
+        }
+        assert parents["org/eng"] is None
+        assert parents["org/data"] is None
+
+    @pytest.mark.asyncio
+    async def test_parent_is_set_only_when_that_ancestor_is_synced(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+
+        def fake_ds_call(method, group_path, *_, **__) -> MagicMock:
+            obj = MagicMock()
+            obj.full_path = group_path
+            obj.name = group_path.split("/")[-1]
+            obj.web_url = None
+            return _ok(obj)
+
+        connector.runtime = MagicMock()
+        connector.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
+
+        await connector.projects._ensure_gitlab_group_record_groups(["a/b", "a"])
+
+        parents = {
+            rg.external_group_id: rg.parent_external_group_id
+            for call in connector.data_entities_processor.on_new_record_groups.call_args_list
+            for rg, _perms in call[0][0]
+        }
+        assert parents["a"] is None
+        assert parents["a/b"] == "a"
 
 
 # ---------------------------------------------------------------------------

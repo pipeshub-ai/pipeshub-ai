@@ -33,7 +33,7 @@ from app.connectors.core.registry.filters import (
 from gitlab.v4.objects import Project
 from app.connectors.sources.gitlab.connector import GitLabConnector
 from app.connectors.sources.gitlab.constants import GITLAB_CLOUD_URL
-from app.connectors.sources.gitlab.projects import ProjectsSync
+from app.connectors.sources.gitlab.projects import ProjectsSync, _parent_when_synced
 from app.connectors.sources.gitlab_personal.common.apps import GitLabPersonalApp
 from app.models.entities import RecordGroup, RecordGroupType
 from app.models.permission import Permission
@@ -42,10 +42,8 @@ from app.models.permission import Permission
 class GitLabPersonalProjectsSync(ProjectsSync):
     """ProjectsSync variant for the personal connector.
 
-    Overrides the two permission-building hooks so every project and GitLab-group
-    ``RecordGroup`` is granted access through the single internal ``ConnectorGroup``
-    (materialized by ``ensure_connector_group_permission``) rather than by fanning
-    out individual user edges derived from GitLab membership lists.
+    Project and GitLab-group record groups carry no grants. They inherit up to
+    the app, which the creator reaches through their user-to-app edge.
     """
 
     async def _sync_project_members_as_pseudo(self, project: Project) -> None:
@@ -64,7 +62,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
         group_paths: list[str],
         candidate_projects: list[Project] | None = None,
     ) -> None:
-        """Create GitLab-group record groups with ConnectorGroup permissions only."""
+        """GitLab-group record groups inherit the app. No grants of their own."""
         c = self.c
         if not c.data_source:
             return
@@ -82,7 +80,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
                 full_path = group_path
                 name = group_path
                 web_url = None
-            parent_path = full_path.rsplit("/", 1)[0] if "/" in str(full_path) else None
+            parent_path = _parent_when_synced(full_path, group_paths)
             group_rg = RecordGroup(
                 org_id=c.data_entities_processor.org_id,
                 name=name,
@@ -103,14 +101,9 @@ class GitLabPersonalProjectsSync(ProjectsSync):
     .with_description("Sync content from your personal GitLab account")
     .with_categories(["Knowledge Management"])
     .with_scopes([ConnectorScope.PERSONAL.value])
-    # APP_LEVEL: the only USER_APP_RELATION this connector ever writes is the
-    # creator's (connector_service.ensure_connector_group_permission); the GitLab
-    # user-directory sync that fans edges out to real members belongs to the
-    # workspace connector and is never reached from run_sync here. Reaching the
-    # app therefore already means being the creator, so the per-user ACL
-    # traversal can only return what the connector-wide scan does. Anything that
-    # later grants a non-creator a USER_APP_RELATION to a personal instance must
-    # revert this — the scan does not consult ConnectorGroup membership.
+    # APP_LEVEL: the only user-to-app edge this connector writes is the creator's
+    # (ensure_creator_user_app_relation). Groups inherit that edge. A later grant
+    # of the app to someone else would open every synced project.
     .with_permission_model(PermissionModel.APP_LEVEL)
     .with_auth(
         [
@@ -239,18 +232,8 @@ class GitLabPersonalProjectsSync(ProjectsSync):
 class GitLabPersonalConnector(GitLabConnector):
     """Personal GitLab connector.
 
-    Permission model:
-      - No GitLab user directory is synced.
-      - An internal ``AppUserGroup`` (name: ``ConnectorGroup``, scoped by
-        ``connector_id``) is materialized once per sync. The connector's
-        creator is the sole USER -> GROUP member edge.
-      - Every project / GitLab-group ``RecordGroup`` receives a GROUP
-        permission edge pointing at that internal group, instead of a
-        direct USER edge to the creator.
-
-    This keeps access revocation a single-edge operation (delete the
-    creator -> ConnectorGroup edge) and avoids fanning out per-record
-    permission churn on token swaps or creator changes.
+    No GitLab membership list is synced. Record groups carry no grants and
+    inherit up to the app. The creator reaches them through their user-to-app edge.
     """
 
     def __init__(
@@ -274,33 +257,19 @@ class GitLabPersonalConnector(GitLabConnector):
         )
         self.app = GitLabPersonalApp(connector_id)
         self.connector_name = Connectors.GITLAB_PERSONAL.value
-        # Replace the default ProjectsSync with the personal variant so the two
-        # permission-building hooks route access through ConnectorGroup.
         self.projects = GitLabPersonalProjectsSync(self)
 
     def creator_user_permission(self) -> Permission | None:
-        """Override: emit a GROUP permission on the shared ConnectorGroup.
+        """Unused by the personal project sync, which inherits the app.
 
-        The workspace connector grants the creator direct USER access. For
-        the personal connector we route every record-group permission
-        through the single internal ``AppUserGroup`` (``ConnectorGroup``)
-        materialized by ``ensure_connector_group_permission`` so that:
-
-        - Adding / removing access to all synced content is a one-edge
-          operation on the group, not an N-record fan-out.
-        - The group is internal (not derived from any GitLab entity), so
-          it does not collide with any real GitLab group.
-
-        Returns ``None`` if the group has not been upserted yet (no
-        ``creator_email`` resolved, or called before ``run_sync``);
-        downstream callers (``_apply_creator_fallback_for_project``,
-        ``_ensure_gitlab_group_record_groups``) already handle ``None``
-        by skipping ACL creation.
+        Kept so a call that still reaches the base helper does not fall through
+        to a per-user owner grant. Returns the cached group permission, or
+        ``None`` when that cache has not been filled.
         """
         return self._connector_group_permission
 
     async def run_sync(self) -> None:
-        """Sync GitLab content visible to the configured user; access routed via ConnectorGroup."""
+        """Sync GitLab content visible to the configured user. Groups inherit the app."""
         try:
             await self.runtime.refresh_token_if_needed()
             self.logger.info("Starting GitLab Personal sync")
@@ -308,9 +277,8 @@ class GitLabPersonalConnector(GitLabConnector):
                 self.config_service, "gitlabpersonal", self.connector_id, self.logger
             )
             self._gitlab_included_group_paths = None
-            # Force a fresh ConnectorGroup upsert each run so re-runs after the
-            # creator email is rotated pick up the new identity instead of
-            # reusing a stale cached permission.
+            # The personal project path does not read this cache. Clear it so a
+            # stray creator_user_permission call cannot reuse the previous run.
             self._connector_group_permission = None
 
             if not self.creator_email and self.created_by:
@@ -323,12 +291,7 @@ class GitLabPersonalConnector(GitLabConnector):
                     self.connector_id,
                 )
             else:
-                # Materialize the ConnectorGroup + creator membership edge
-                # before any record-group write, so the GROUP-permission
-                # lookup in on_new_record_groups resolves on the first
-                # write rather than dropping the permission for the first
-                # project / group. creator_user_permission (overridden
-                # above) reads the cached permission populated here.
+                # The creator's user-to-app edge is what inherited groups resolve.
                 await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of projects")
