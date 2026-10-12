@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.agents.actions.storage_search.storage_search import _validate_command
 from app.utils.pattern_match import (
@@ -1837,6 +1838,23 @@ class TestGrepGenerationLlm:
             assert await _grep_generation_llm(MagicMock(), "org-1", chat) is chat
 
     @pytest.mark.asyncio
+    async def test_a_stalled_lookup_falls_back_to_the_chat_model(self) -> None:
+        from app.utils import pattern_match
+        from app.utils.pattern_match import _grep_generation_llm
+
+        async def stalled(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(60)
+
+        chat = MagicMock(name="chat")
+        with patch("app.utils.pattern_match.get_llm_for_role", side_effect=stalled), patch(
+            "app.utils.pattern_match._GREP_LLM_LOOKUP_TIMEOUT", 0.01,
+        ):
+            llm = await asyncio.wait_for(_grep_generation_llm(MagicMock(), "org-1", chat), timeout=2)
+
+        assert llm is chat
+        assert "org-1" not in pattern_match._grep_llm_cache
+
+    @pytest.mark.asyncio
     async def test_cache_expires(self) -> None:
         from cachetools import TTLCache
 
@@ -2147,6 +2165,29 @@ class TestGenerateGrepCommandViaLlm:
             )
 
         assert result == ['grep -rliZ "ttl" . | xargs -0 grep -Hci "cold"']
+        assert structured_llm.ainvoke.await_count == 1
+
+    @pytest.mark.parametrize("raw", [
+        AIMessage(content=[{
+            "type": "tool_use", "id": "t1", "name": "GrepCommandResult",
+            "input": {"grep_commands": ['grep -rci "ttl" .']},
+        }]),
+        AIMessage(content="", invalid_tool_calls=[{
+            "type": "invalid_tool_call", "id": "t1", "name": "GrepCommandResult", "error": None,
+            "args": '{"grep_commands": ["grep -rci \\"ttl\\" ."], "reasoning": "Core concepts: cache',
+        }]),
+    ], ids=["tool_use_input", "invalid_tool_call_args"])
+    @pytest.mark.asyncio
+    async def test_commands_are_recovered_from_tool_calling_output(self, raw: AIMessage) -> None:
+        envelope = {"raw": raw, "parsed": None, "parsing_error": ValueError("truncated")}
+        structured_llm = _mock_structured_llm(return_value=envelope)
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
         assert structured_llm.ainvoke.await_count == 1
 
     @pytest.mark.asyncio

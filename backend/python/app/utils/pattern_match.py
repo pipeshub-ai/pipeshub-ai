@@ -52,6 +52,8 @@ _LLM_GREP_ATTEMPT_TIMEOUT = 10.0
 _LLM_GREP_MIN_RETRY_SECS = 4.0
 _GREP_LLM_ROLE = "query"
 _GREP_LLM_TTL_SECS = 300.0
+# Runs inside the total budget before any grep, so a stalled config read must not eat it.
+_GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
 _PATTERN_MATCH_TOTAL_BUDGET = 35.0
 _MAX_PATTERN_MATCH_RECORDS = 50
@@ -531,6 +533,37 @@ def _message_text(message: object) -> str:
     return ""
 
 
+def _commands_in_args(args: object) -> list[str]:
+    if isinstance(args, str):
+        return _recover_grep_commands(args)
+    if isinstance(args, dict):
+        commands = args.get("grep_commands")
+        if isinstance(commands, list):
+            return [c for c in commands if isinstance(c, str)]
+    return []
+
+
+def _recover_raw_grep_commands(message: object) -> list[str]:
+    """Commands in a raw completion that failed to parse. Tool-calling structured
+    output (Bedrock) carries them in tool-call arguments, not in the text."""
+    recovered = _recover_grep_commands(_message_text(message))
+    if recovered:
+        return recovered
+    content = getattr(message, "content", None)
+    tool_args = [
+        block.get("input")
+        for block in (content if isinstance(content, list) else [])
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    tool_args += [call.get("args") for call in getattr(message, "tool_calls", None) or []]
+    tool_args += [call.get("args") for call in getattr(message, "invalid_tool_calls", None) or []]
+    for args in tool_args:
+        recovered = _commands_in_args(args)
+        if recovered:
+            return recovered
+    return []
+
+
 def _parse_grep_response(
     response: Any,
     logger_instance: logging.Logger,
@@ -548,7 +581,7 @@ def _parse_grep_response(
         parsed = response.get("parsed")
         if parsed is not None:
             return _parse_grep_response(parsed, logger_instance)
-        recovered = _recover_grep_commands(_message_text(response.get("raw")))
+        recovered = _recover_raw_grep_commands(response.get("raw"))
         logger_instance.info(
             "generate_grep_command_via_llm: unparseable output (%s), recovered %d command(s)",
             str(response.get("parsing_error"))[:200], len(recovered),
@@ -602,7 +635,16 @@ async def _grep_generation_llm(
     if cached is not None:
         return cached
     try:
-        llm, _ = await get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low")
+        llm, _ = await asyncio.wait_for(
+            get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low"),
+            timeout=_GREP_LLM_LOOKUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "pattern_match: grep-generation model lookup timed out after %.1fs, using the chat's",
+            _GREP_LLM_LOOKUP_TIMEOUT,
+        )
+        return fallback
     except Exception as exc:
         logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
         return fallback
