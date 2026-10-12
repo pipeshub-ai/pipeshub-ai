@@ -49,6 +49,31 @@ function sanitizeString(value: string): string {
   }
 }
 
+// Field paths are built from the request's own keys, so only plain names are
+// repeated back; anything else (a key that is itself markup) is not echoed.
+const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
+
+/**
+ * Turns a validation path such as `body.params.arguments.query` into the words
+ * a caller needs to find the field: `the field "params.arguments.query"`,
+ * `the query parameter "search"` or `the URL parameter "id"`.
+ */
+function describeField(path: string): string {
+  const dot = path.indexOf('.');
+  const source = dot === -1 ? path : path.slice(0, dot);
+  const field = dot === -1 ? '' : path.slice(dot + 1);
+  if (field === '' || !SAFE_FIELD_PATH.test(field)) {
+    return 'the request';
+  }
+  if (source === 'query') {
+    return `the query parameter "${field}"`;
+  }
+  if (source === 'params') {
+    return `the URL parameter "${field}"`;
+  }
+  return `the field "${field}"`;
+}
+
 /**
  * Recursively checks for HTML/XSS content in an object or array
  * Throws an error if HTML is detected
@@ -66,9 +91,10 @@ function validateNoXSS(value: any, path: string = ''): void {
   // Handle strings - check for HTML/XSS using utility function
   if (typeof value === 'string') {
     if (containsXSSPattern(value)) {
-      // Create a user-friendly field name from the path
       throw new BadRequestError(
-        `HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.`,
+        `HTML tags, scripts, and XSS content are not allowed in ${describeField(path)}. ` +
+          `Text in angle brackets, such as <id>, counts as an HTML tag. ` +
+          `Please remove any HTML tags and try again.`,
       );
     }
     return;

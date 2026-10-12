@@ -4,6 +4,10 @@ import sinon from 'sinon'
 import { xssSanitizationMiddleware } from '../../../src/libs/middlewares/xss-sanitization.middleware'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
+import express from 'express'
+import http from 'http'
+import type { AddressInfo } from 'net'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -782,6 +786,97 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.calledOnce).to.be.true
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(BadRequestError)
+    })
+  })
+  // -----------------------------------------------------------------------
+  // The rejection says which field was refused and why, so a caller whose
+  // text merely contains something like `<id>` can tell what to change.
+  // -----------------------------------------------------------------------
+  describe('Rejection message', () => {
+    let server: http.Server
+    let baseUrl: string
+
+    before(async () => {
+      const app = express()
+      app.use(express.json())
+      app.use(xssSanitizationMiddleware)
+      app.all('*', (_req, res) => {
+        res.status(200).json({ ok: true })
+      })
+      app.use(ErrorMiddleware.handleError())
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s))
+      })
+      baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = async (path: string, body: unknown) => {
+      const resp = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return { status: resp.status, body: (await resp.json()) as any }
+    }
+
+    it('names the body field and explains that <id> counts as a tag', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        query: 'cite [Summary of <id>]',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"query"')
+      expect(body.error.message).to.include('such as <id>')
+    })
+
+    it('names the nested field of an MCP tool call', async () => {
+      const { status, body } = await post('/mcp', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'pipeshub_chat',
+          arguments: { query: 'Is there a bug about "[Summary of <id>]"?' },
+        },
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.query"')
+    })
+
+    it('names a query-string parameter as one', async () => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/users?search=${encodeURIComponent('<b>x</b>')}`,
+      )
+      const body = (await resp.json()) as any
+
+      expect(resp.status).to.equal(400)
+      expect(body.error.message).to.include('query parameter "search"')
+    })
+
+    it('names a route parameter as a URL parameter', () => {
+      const req = createMockRequest({ params: { id: '<svg onload=alert(1)>' } })
+      const next = createMockNext()
+
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(BadRequestError)
+      expect(error.message).to.include('URL parameter "id"')
+    })
+
+    it('does not repeat a field name that is itself markup', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        '<img src=x onerror=alert(1)>': '<b>bold</b>',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).not.to.include('<img')
+      expect(body.error.message).not.to.include('onerror')
     })
   })
 })
