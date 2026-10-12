@@ -1,13 +1,31 @@
 # SDK tests
 
 Tests the TypeScript, Python and Go SDKs against a running app. The workflow is
-`.github/workflows/sdk-tests.yml`; every step in it calls a script in this folder,
-so the same run works on a laptop.
+`.github/workflows/sdk-tests.yml`; every test step in it calls a script in this
+folder, so the same run works on a laptop. It runs on pull requests and every night.
 
 | Run | SDK | Verdict when it fails |
 | --- | --- | --- |
 | Current | Generated from this checkout's spec | BLOCK |
 | Previous | The tags in `.github/sdk-test-matrix.yaml` | FLAG |
+
+The previous run starts only for the languages whose current run passed. The report
+goes to the job summary, a comment on the pull request, and Slack
+(`SLACK_BOT_TOKEN`, channel `vars.SLACK_CI_CHANNEL_ID`).
+
+## When the verdict is FLAG
+
+The change breaks customers who use the last released SDK. It does not stop the
+merge, but a person must accept it:
+
+1. The pull request gets the label `breaks-previous-sdk` and a failed
+   `SDK break approval` status.
+2. Read the failures in the report, and add a note for the changelog.
+3. Add the label `sdk-break-approved`. Anyone with triage access can. The status
+   turns green and names you (`.github/workflows/sdk-break-approval.yml`).
+
+A later OK run removes `breaks-previous-sdk`. After an SDK release, change its tag
+in `.github/sdk-test-matrix.yaml`.
 
 ## Where the tests live
 
@@ -30,11 +48,20 @@ The three suites run at the same time against one app.
   cannot contain spaces or refer to a step output; do not read a list item by
   position. Speakeasy turns a case it cannot generate into a skipped test, and the
   report counts a skipped test as a failure.
+- Do not put a condition on a field the spec types as a one-value enum, such as
+  `success` with `enum: [true]`. The Go SDK has no field for it, so the generated
+  Go test does not compile.
 
 ## Run it locally
 
 Needs a running app, the Speakeasy CLI with `SPEAKEASY_API_KEY`, Node, Python and
-Go 1.24, and a checkout of `pipeshub-ai/open-api`.
+Go 1.24, and a checkout of `pipeshub-ai/open-api` at the `OPEN_API_REF` in the
+workflow. The Go SDK's `go.mod` can ask for a newer Go; with a newer Go installed,
+use `GOTOOLCHAIN=go1.24.9+auto`, as Speakeasy's staticcheck cannot read packages
+built by Go 1.27.
+
+Run it against a stack you can throw away, not a dev instance: provisioning creates
+an org, an OAuth app, AI models and a knowledge base.
 
 ```bash
 cd integration-tests/sdk_tests
@@ -52,7 +79,7 @@ set -a; source /tmp/sdk.env; set +a
 ./run_sdk_tests.sh previous /tmp/sdk-released /tmp/sdk-reports
 
 # 4. Verdict and report.
-python report.py /tmp/sdk-reports --out /tmp/sdk-reports/report
+python report.py /tmp/sdk-reports --out /tmp/sdk-reports/report --releases ../../.github/sdk-test-matrix.yaml
 ```
 
 `provision_sdk_test_env.py` documents the environment variables it reads.
