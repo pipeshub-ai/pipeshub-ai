@@ -2286,3 +2286,69 @@ class TestCodeBlockAndCodeGroupAreDistinguished:
             f"See [x]({_url(REC1, 8)}).", [group], [], []
         )
         assert citations == []
+
+
+class TestDeadRefLinksWithNonNumericIds:
+    """Models sometimes cite ``[source](ref<record id>)`` — a ref built from a
+    UUID or hash rather than one the citation mapper minted.  Valid refs are
+    always ``ref`` plus digits (``CitationRefMapper.get_or_create_ref``), so a
+    link like this can never resolve and must not reach the user as a dead link.
+    """
+
+    DEAD = "ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6"
+    # A UUID whose first segment is all digits: ``\bref\d+\b`` matches its
+    # prefix, so the bare-ref wrapper must not rewrite it into a nested link.
+    DEAD_DIGIT_PREFIX = "ref12345678-90ab-cdef-1234-567890abcdef"
+
+    def test_strip_removes_uuid_ref_link(self) -> None:
+        from app.utils.citations import _strip_unresolved_ref_citations
+        text = f"a [source]({self.DEAD}) b"
+        assert _strip_unresolved_ref_citations(text) == "a  b"
+
+    def test_dead_uuid_ref_stripped_and_real_ref_kept(self) -> None:
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "release notes", block_web_url=url)]
+        answer = f"Shipped in May [source](ref1) and fixed later [source]({self.DEAD})."
+
+        normalized, cites = normalize_citations_and_chunks(
+            answer, docs, records=[], ref_to_url={"ref1": url},
+        )
+
+        assert f"[1]({url})" in normalized
+        assert "ref444d5fad" not in normalized
+        assert len(cites) == 1
+
+    def test_dead_uuid_ref_stripped_when_it_is_the_only_citation(self) -> None:
+        answer = f"Fixed later [source]({self.DEAD})."
+        normalized, cites = normalize_citations_and_chunks(
+            answer, [], records=[], ref_to_url={},
+        )
+        assert normalized == "Fixed later ."
+        assert cites == []
+
+    def test_dead_uuid_ref_stripped_on_agent_path(self) -> None:
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "release notes", block_web_url=url)]
+        answer = f"Shipped [source](ref1) and [source]({self.DEAD})."
+        normalized, _ = normalize_citations_and_chunks_for_agent(
+            answer, docs, records=[], ref_to_url={"ref1": url},
+        )
+        assert f"[1]({url})" in normalized
+        assert "ref444d5fad" not in normalized
+
+    def test_uuid_with_all_digit_first_segment_is_not_nested(self) -> None:
+        answer = f"Fixed later [source]({self.DEAD_DIGIT_PREFIX})."
+        normalized, _ = normalize_citations_and_chunks(
+            answer, [], records=[], ref_to_url={},
+        )
+        assert normalized == "Fixed later ."
+
+    def test_ordinary_relative_link_starting_with_ref_is_kept(self) -> None:
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "policy", block_web_url=url)]
+        answer = "See [Refund policy](refund-policy) and [source](ref1)."
+        normalized, _ = normalize_citations_and_chunks(
+            answer, docs, records=[], ref_to_url={"ref1": url},
+        )
+        assert "[Refund policy](refund-policy)" in normalized
+        assert f"[1]({url})" in normalized

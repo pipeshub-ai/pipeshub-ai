@@ -71,6 +71,14 @@ _BRACKET_REF_RE = re.compile(
     r'|\[(ref\d+)\](?!\()'                          # Grp 2: [refN] not followed by (
 )
 
+# Link target that looks like a citation ref: ``ref`` followed by hex digits and
+# dashes, at least one of them a digit.  Covers the minted form ``ref12`` (see
+# ``CitationRefMapper.get_or_create_ref`` in chat_helpers.py) and the
+# unresolvable forms models invent from record ids, e.g.
+# ``ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6``.  Ordinary words such as
+# ``refund-policy`` or ``refs`` do not match.
+_ANY_REF_TARGET = r'ref(?=[0-9A-Fa-f-]*\d)[0-9A-Fa-f-]+'
+
 # Single-pass pattern used to wrap bare refN tokens and bare https://refN.xyz
 # URLs that the LLM emitted outside proper markdown link syntax.
 # Alternative 1 (Grp 1) matches an already-valid markdown link so the cursor
@@ -78,7 +86,7 @@ _BRACKET_REF_RE = re.compile(
 # Alternative 2 (Grp 2) matches a bare tiny web-ref URL.
 # Alternative 3 (Grp 3) matches a bare refN word token.
 _BARE_CITATION_NORMALIZE_RE = re.compile(
-    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: existing valid md link — skip
+    r'(\[[^\]]*?\]\((?:' + _ANY_REF_TARGET + r'|https?://[^)]+)\))'  # Grp 1: existing md link — skip
     r'|(https?://ref\d+\.xyz/?)'                    # Grp 2: bare tiny URL
     r'|\b(ref\d+)\b'                               # Grp 3: bare refN token
 )
@@ -296,7 +304,10 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(ref\d+\)')
+# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
+# (``_MD_LINK_PATTERN``), and those that did were already rewritten to
+# ``[N](url)`` by the time this runs, so whatever still matches is dead.
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
 
 
 def _renumber_citation_links(
@@ -327,11 +338,13 @@ def _renumber_citation_links(
 
 
 def _strip_unresolved_ref_citations(text: str) -> str:
-    """Remove ``[text](refN)`` links that survived renumbering.
+    """Remove ``[text](ref…)`` links that survived renumbering.
 
     These are dead references — typically carried over from a prior
-    conversation turn whose ``CitationRefMapper`` no longer exists.
-    Leaving them renders as broken ``[source](ref209)`` in the UI.
+    conversation turn whose ``CitationRefMapper`` no longer exists, or
+    invented by the model from a record id (``[source](ref444d5fad-…)``),
+    which no mapper ever mints.  Leaving them renders as broken
+    ``[source](ref209)`` links in the UI.
     """
     return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
@@ -661,7 +674,7 @@ def normalize_citations_and_chunks(
             web_records=web_records,
         )
 
-    return answer_text, []
+    return _strip_unresolved_ref_citations(answer_text), []
 
 
 def _normalize_markdown_link_citations(
@@ -890,7 +903,7 @@ def normalize_citations_and_chunks_for_agent(
             ref_to_url=ref_to_url, web_records=web_records,
         )
 
-    return answer_text, []
+    return _strip_unresolved_ref_citations(answer_text), []
 
 def _normalize_markdown_link_citations_for_agent(
     answer_text: str,
