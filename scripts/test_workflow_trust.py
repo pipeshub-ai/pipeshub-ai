@@ -30,8 +30,20 @@ def _trigger(events: str) -> re.Pattern[str]:
 _PRIVILEGED_TRIGGER = _trigger("pull_request_target|workflow_run")
 # Read after _dotted(): expression property names are case-insensitive. head.repo
 # counts too, since checking out that repository on pull_request_target is the fork.
+# merge_commit_sha is refs/pull/<n>/merge, and workflow_run carries the head of the
+# run that triggered it.
 _PR_HEAD_REF = re.compile(
-    r"github\.event\.pull_request\.head\.(?:sha|ref|repo)\b|github\.head_ref\b|refs/pull/",
+    r"github\.event\.pull_request\.(?:head\.(?:sha|ref|repo)|merge_commit_sha)\b"
+    r"|github\.event\.workflow_run\.(?:head_sha|head_branch|head_repository|head_commit"
+    r"|pull_requests(?:\[\d+\])?\.head\.(?:sha|ref|repo))\b"
+    r"|github\.head_ref\b|refs/pull/",
+    re.IGNORECASE,
+)
+# A whole object that holds the head, e.g. toJSON(github.event.pull_request.head).
+# Matched inside expressions only, where `github` is always the context.
+_HEAD_HOLDING_OBJECT = re.compile(
+    r"(?<![\w.])github(?:\.event(?:\.pull_request(?:\.head)?"
+    r"|\.workflow_run(?:\.pull_requests(?:\[\d+\])?(?:\.head)?)?)?)?(?![\w.\[])",
     re.IGNORECASE,
 )
 
@@ -42,7 +54,8 @@ def _dotted(text: str) -> str:
     The expression lexer skips any Unicode whitespace between tokens, newlines included.
     """
     # Grouping parentheses don't change what is read: `(x.head).sha`, `x.head[('sha')]`.
-    text = re.sub(r"[()]", "", text)
+    # They become spaces, so `toJSON(github)` keeps `github` a word of its own.
+    text = re.sub(r"[()]", " ", text)
     text = re.sub(r"\[\s*(['\"])([A-Za-z0-9_-]+)\1\s*\]", r".\2", text)
     return re.sub(r"\s*\.\s*", ".", text)
 
@@ -90,6 +103,10 @@ def _computes_an_index(text: str) -> bool:
     )
 
 
+def _reads_a_head_holding_object(text: str) -> bool:
+    return any(_HEAD_HOLDING_OBJECT.search(_dotted(e)) for e in _expressions(text))
+
+
 def _conditions(value: Any) -> list[str]:
     """Every `if:` value as an expression; a job or step condition needs no `${{ }}`."""
     if isinstance(value, dict):
@@ -102,14 +119,17 @@ def _conditions(value: Any) -> list[str]:
 
 def _references_pr_head(text: str) -> bool:
     """The raw file or any parsed YAML string (quotes and folds resolved) reads the PR head."""
-    if _PR_HEAD_REF.search(_dotted(text)):
+    if _PR_HEAD_REF.search(_dotted(text)) or _reads_a_head_holding_object(text):
         return True
     try:
         workflow = yaml.load(text, Loader=_StrictLoader)
     except yaml.YAMLError:
         return True
     strings = _strings(workflow) + _conditions(workflow)
-    return any(_PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) for s in strings)
+    return any(
+        _PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) or _reads_a_head_holding_object(s)
+        for s in strings
+    )
 
 
 # Any use of the secrets context except GITHUB_TOKEN: dot or index access, any case
@@ -561,6 +581,18 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ format('}}') && github.event.pull_request.head[true && 'sha'] }}\n",
             "ref: ${{ github.event.pull_request.head[*] }}\n",
             "ref: ${{ github.event.pull_request.head.* }}\n",
+            "ref: ${{ github.event.pull_request.merge_commit_sha }}\n",
+            "ref: ${{ github.event.pull_request['merge_commit_sha'] }}\n",
+            "ref: ${{ github.event.workflow_run.head_sha }}\n",
+            "ref: ${{ github.event.workflow_run.head_branch }}\n",
+            "ref: ${{ github.event.workflow_run.head_repository.full_name }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests[0].head.sha }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests[0]['head']['sha'] }}\n",
+            "ref: ${{ toJSON(github.event.pull_request.head) }}\n",
+            "ref: ${{ toJSON(github.event.pull_request) }}\n",
+            "ref: ${{ toJSON(github.event.workflow_run) }}\n",
+            "ref: ${{ toJSON(github.event) }}\n",
+            "ref: ${{ toJSON(github) }}\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
@@ -575,6 +607,16 @@ class TestUngatedSecretJobs(unittest.TestCase):
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: main\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ (github.event.pull_request.base).sha }}\n"))
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{ github.event.inputs['tag'] }}\n"))
+        for unflagged in (
+            "github.event.pull_request.number",
+            "github.event.workflow_run.conclusion",
+            "github.event.workflow_run.pull_requests[0].number",
+            "github.repository",
+        ):
+            with self.subTest(unflagged=unflagged):
+                self.assertFalse(
+                    _references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{{{ {unflagged} }}}}\n")
+                )
         self.assertFalse(_references_pr_head("jobs:\n  a:\n    steps:\n      - run: echo ${{ steps.probe.outputs.summary }} [ok]\n"))
 
 class TestUnguardedSecretJobs(unittest.TestCase):
