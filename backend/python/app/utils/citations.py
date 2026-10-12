@@ -98,27 +98,20 @@ _BARE_CITATION_NORMALIZE_RE = re.compile(
 
 _REF_TOKEN = r'(?:ref\d+|https?://ref\d+\.xyz/?)'
 
-# A link whose target is only refs, wrapped in stray brackets/quotes, e.g.
-# [source]([ref2]), [source](<ref2>), [source]( ref2 ), [[source](ref2)],
-# or a link nested as the target: [source]([source](ref2)).
-# Only the opening is matched here; closers are counted off in code so a
-# paren that belongs to the surrounding sentence is not eaten.
-_WRAPPED_REF_LINK_RE = re.compile(
-    r'(?P<outer>\[?)\[(?P<label>[^\[\]\n]*)\]\('
-    r'\s*(?P<openers>[\[(<`"\']*)\s*'
-    r'(?P<nested>[^\[\]()\n]*\]\()?'
-    rf'(?P<refs>{_REF_TOKEN}(?:[\s,;\[\]]+{_REF_TOKEN})*)'
-    r'\s*[.,;:]?'
-)
-# Further links in a nested list target: [source]([source](ref1), [source](ref2)).
-_NESTED_SIBLING_LINK_RE = re.compile(
-    rf'[ \t]*[,;]?[ \t]*\[[^\[\]\n]*\]\((?P<ref>{_REF_TOKEN})\)'
-)
-# `)` and `]` close any wrapper (LLMs mismatch them); the rest only close
-# their own opener, so [notes](ref2's-page) is not split at the apostrophe.
-_ALWAYS_CLOSERS = ')]'
-_PAIRED_CLOSERS = {'<': '>', '`': '`', '"': '"', "'": "'"}
-_CLOSER_GAP = ' \t.,;:'
+# A citation link written with extra wrapping: brackets/quotes around the
+# ref, a link (or list of links) as the target, or brackets around the link,
+# e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
+# [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
+# wrapping nests to any depth and a sentence paren after it must be kept.
+_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+_CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
+_TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
+_TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
+# LLMs mismatch ( and [, so either closes the other; quotes and <> only close
+# their own opener, so [notes](ref2's-page) is not taken for a citation.
+_LINK_TARGET_CLOSERS = ')]'
+_WRAPPER_CLOSERS = {'[': '])', '(': ')]', '<': '>', '`': '`', '"': '"', "'": "'"}
+_MAX_CITED_LINK_DEPTH = 8
 _REF_TOKEN_RE = re.compile(_REF_TOKEN)
 
 
@@ -151,64 +144,84 @@ def _expand_multi_ref_links(text: str) -> str:
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
 
 
-def _consume_closers(text: str, end: int, allowed: str, count: int) -> tuple[int, int]:
-    closed = 0
-    while closed < count:
-        probe = end
-        while probe < len(text) and text[probe] in _CLOSER_GAP:
-            probe += 1
-        if probe >= len(text) or text[probe] not in allowed:
-            break
-        end = probe + 1
-        closed += 1
-    return end, closed
+def _parse_target_close(text: str, i: int, closers: str) -> int | None:
+    j = _TARGET_GAP_RE.match(text, i).end()
+    if j < len(text) and text[j] in closers:
+        return j + 1
+    # A truncated answer can end before the wrapper is closed.
+    if j == len(text) or text[j] == '\n':
+        return i
+    return None
 
 
-def _unwrap_ref_link_targets_once(text: str) -> str:
-    out: list[str] = []
-    pos = 0
-    for m in _WRAPPED_REF_LINK_RE.finditer(text):
-        if m.start() < pos:
-            continue
-        openers, refs_text = m['openers'], m['refs']
-        allowed = _ALWAYS_CLOSERS + ''.join(c for o, c in _PAIRED_CLOSERS.items() if o in openers)
-        expected = len(openers) + 1 + max(0, refs_text.count('[') - refs_text.count(']'))
-        end, closed = _consume_closers(text, m.end(), allowed, expected)
-        if not closed:
-            continue
-        refs = _REF_TOKEN_RE.findall(refs_text)
-        while m['nested'] and closed < expected:
-            sibling = _NESTED_SIBLING_LINK_RE.match(text, end)
-            if not sibling:
-                break
-            refs.append(sibling['ref'])
-            end, more = _consume_closers(text, sibling.end(), allowed, expected - closed)
-            closed += more
-        outer_bracket = m['outer']
-        if outer_bracket and end < len(text) and text[end] == ']':
-            end += 1
-            outer_bracket = ''
-        links = ' '.join(f'[{m["label"]}]({ref})' for ref in refs)
-        out.append(text[pos:m.start()] + outer_bracket + links)
-        pos = end
-    out.append(text[pos:])
-    return ''.join(out)
+def _parse_ref_list(text: str, i: int, closers: str, depth: int) -> tuple[list[str], int] | None:
+    """Parse ``item (sep item)* closer``; return the refs and the end past the closer."""
+    refs: list[str] = []
+    while True:
+        item = _parse_ref_item(text, i, depth)
+        if item is None:
+            return None
+        refs.extend(item[0])
+        i = item[1]
+        end = _parse_target_close(text, i, closers)
+        if end is not None:
+            return refs, end
+        sep_end = _TARGET_SEP_RE.match(text, i).end()
+        if sep_end == i and not text.startswith('[', i):
+            return None
+        i = sep_end
+
+
+def _parse_ref_item(text: str, i: int, depth: int) -> tuple[list[str], int] | None:
+    while i < len(text) and text[i] in ' \t':
+        i += 1
+    token = _REF_TOKEN_RE.match(text, i)
+    if token:
+        return [token.group(0)], token.end()
+    if depth >= _MAX_CITED_LINK_DEPTH or i >= len(text) or text[i] not in _WRAPPER_CLOSERS:
+        return None
+    if text[i] == '[':
+        link = _parse_cited_link(text, i, depth + 1)
+        if link is not None:
+            return link[1], link[2]
+    return _parse_ref_list(text, i + 1, _WRAPPER_CLOSERS[text[i]], depth + 1)
+
+
+def _parse_cited_link(text: str, i: int, depth: int) -> tuple[str, list[str], int] | None:
+    """Parse ``[label](target)`` whose target holds only (wrapped) refs."""
+    head = _CITED_LINK_HEAD_RE.match(text, i)
+    if head is None:
+        return None
+    parsed = _parse_ref_list(text, head.end(), _LINK_TARGET_CLOSERS, depth)
+    if parsed is None:
+        return None
+    return head.group(1), parsed[0], parsed[1]
 
 
 def _unwrap_ref_link_targets(text: str) -> str:
-    """Rewrite ``[label](<wrapped refs>)`` into plain ``[label](refN)`` links.
+    """Rewrite citation links with wrapped targets into plain ``[label](refN)`` links.
 
     Without this the bare-ref passes would turn the ref inside the target into
-    its own link, leaving ``[source]([2](url))`` in the final answer. One pass
-    peels one layer, so repeat until a pass changes nothing.
+    its own link, leaving ``[source]([2](url))`` in the final answer.
     """
-    # Every layer needs its own '(', which bounds the passes on any input.
-    for _ in range(text.count('(') + 1):
-        unwrapped = _unwrap_ref_link_targets_once(text)
-        if unwrapped == text:
-            break
-        text = unwrapped
-    return text
+    out: list[str] = []
+    pos = 0
+    for m in _CITED_LINK_START_RE.finditer(text):
+        if m.start() < pos:
+            continue
+        parsed = _parse_cited_link(text, m.end(1), 0)
+        if parsed is None:
+            continue
+        label, refs, end = parsed
+        outer = len(m.group(1))
+        while outer and end < len(text) and text[end] == ']':
+            outer -= 1
+            end += 1
+        links = ' '.join(f'[{label}]({ref})' for ref in refs)
+        out.append(text[pos:m.start()] + '[' * outer + links)
+        pos = end
+    out.append(text[pos:])
+    return ''.join(out)
 
 
 def _normalize_bracket_refs(text: str) -> str:

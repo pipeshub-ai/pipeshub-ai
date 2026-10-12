@@ -1002,6 +1002,26 @@ class TestRefWrappedInsideLinkTarget:
         normalized, _ = self._normalize("Tall " + "[source](" * 6 + "ref2" + ")" * 6 + ".")
         assert normalized == f"Tall [1]({self.URL2})."
 
+    def test_deep_outer_brackets_are_fully_unwrapped(self) -> None:
+        normalized, _ = self._normalize("Tall [[[[source](ref2)]]].")
+        assert normalized == f"Tall [1]({self.URL2})."
+
+    def test_mixed_ref_and_link_lists_become_one_citation_each(self) -> None:
+        for answer in (
+            "Tall [source](ref1, [source](ref2)).",
+            "Tall [source]([source](ref1), ref2).",
+            "Tall [source]([source](ref1), [ref2]).",
+            "Tall [source]([ref1], [source](ref2)).",
+            "Tall [source]([source](ref1), [source]([ref2])).",
+        ):
+            normalized, cites = self._normalize(answer)
+            assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2}).", answer
+            assert len(cites) == 2, answer
+
+    def test_wrapper_left_open_at_end_of_line(self) -> None:
+        normalized, _ = self._normalize("Tall [source]([ref2]\nNext line.")
+        assert normalized == f"Tall [1]({self.URL2})\nNext line."
+
     def test_list_of_links_nested_as_target(self) -> None:
         normalized, cites = self._normalize("Tall [source]([source](ref1), [source](ref2)).")
         assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2})."
