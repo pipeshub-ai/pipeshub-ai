@@ -1248,8 +1248,9 @@ class TestFetchThreadReplies:
             )
         )
         with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
-            reps = await c._fetch_thread_replies_raw("C1", "1.0", ctx, oldest="0.5")
+            reps, complete = await c._fetch_thread_replies_raw("C1", "1.0", ctx, oldest="0.5")
         assert len(reps) == 1 and reps[0]["ts"] == "1.1"
+        assert complete is True
 
 
 class TestProcessThread:
@@ -1269,7 +1270,7 @@ class TestProcessThread:
         rg.group_type = "SLACK_THREAD"
 
         async def _replies(*_a, **_k):
-            return [{"ts": "1.1", "user": "U2", "text": "rep"}]
+            return [{"ts": "1.1", "user": "U2", "text": "rep"}], True
 
         with (
             patch.object(c, "_create_thread_record_group", return_value=rg),
@@ -1286,10 +1287,10 @@ class TestProcessThread:
             with pytest.raises(RuntimeError):
                 await c._process_thread(parent, ctx, "ch-rg")
 
-        with patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=[])):
+        with patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=([], True))):
             await c._process_thread_incremental(parent, ctx, "trg", "0.5")
 
-        with patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=[{"ts": "2.0", "user": "U2", "text": "n"}])):
+        with patch.object(c, "_fetch_thread_replies_raw", new=AsyncMock(return_value=([{"ts": "2.0", "user": "U2", "text": "n"}], True))):
             with (
                 patch.object(c.data_entities_processor, "on_new_records", new=AsyncMock()),
             ):
@@ -2911,7 +2912,7 @@ class TestSlackIndividualAdditionalCoverage:
                     "user": "U2",
                     "text": "reply https://ex.com/2",
                 },
-            ]
+            ], True
 
         with (
             patch.object(c, "_create_thread_record_group", return_value=rg),
@@ -3596,3 +3597,237 @@ class TestListableChannelTypes:
             await c.run_sync()
         messages.assert_not_awaited()
         assert not any("sync complete" in str(call) for call in c.logger.info.call_args_list)
+
+
+# ---------------------------------------------------------------------------
+# A Slack page that fails part-way must not be recorded as synced
+# ---------------------------------------------------------------------------
+
+
+def _slack_ok(messages: list[dict[str, Any]], next_cursor: str = "") -> MagicMock:
+    return MagicMock(
+        success=True,
+        data={"messages": messages, "response_metadata": {"next_cursor": next_cursor}},
+    )
+
+
+def _slack_failure(error: str | None) -> MagicMock | None:
+    """A failed Slack page; ``None`` stands for no response at all."""
+    if error is None:
+        return None
+    return MagicMock(success=False, error=error)
+
+
+def _pages(*responses: object) -> AsyncMock:
+    """AsyncMock returning ``responses`` in order; an Exception is raised instead."""
+    return AsyncMock(side_effect=list(responses))
+
+
+def _pipeline_connector() -> Any:
+    c = _make_connector()
+    c.channel_groups_cache["C1"] = "rg"
+    c.channel_id_to_name_cache["C1"] = "general"
+    c.channel_type_cache["C1"] = "channel"
+    c.data_entities_processor.on_new_records = AsyncMock()
+    c.data_entities_processor.on_new_record_groups = AsyncMock()
+    c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+    return c
+
+
+class TestFailedPageDoesNotAdvanceCheckpoint:
+    """Page 1 succeeds and a later page fails: the checkpoint must stay where it was,
+    otherwise the next incremental sync starts after the unfetched messages and
+    never sees them."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["ratelimited", "internal_error", None])
+    async def test_channel_history_failure_on_page_two_keeps_checkpoint(self, error: str | None) -> None:
+        c = _pipeline_connector()
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_failure(error),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        assert ds.conversations_history.await_count == 2
+        # Page 1 is still published; only the checkpoint is held back.
+        c.data_entities_processor.on_new_records.assert_awaited()
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
+        assert any(
+            "Checkpoint NOT updated" in str(call.args[0])
+            for call in c.logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_history_still_writes_newest_ts(self) -> None:
+        c = _pipeline_connector()
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_ok([{"ts": "9.0", "user": "U1", "text": "older"}]),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        c.messages_sync_point.update_sync_point.assert_awaited_once()
+        _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
+        assert payload == {"last_sync_time": "10.0"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel"])
+    async def test_permanent_skip_on_page_two_still_writes_checkpoint(self, error: str | None) -> None:
+        c = _pipeline_connector()
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_failure(error),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        c.messages_sync_point.update_sync_point.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_partial_thread_replies_do_not_write_thread_checkpoint(self) -> None:
+        c = _pipeline_connector()
+        root = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 3, "latest_reply": "5.3",
+        }
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([root]))
+        ds.conversations_replies = _pages(
+            _slack_ok([root, {"ts": "5.1", "user": "U1", "text": "first reply"}], next_cursor="r2"),
+            _slack_failure("ratelimited"),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        assert ds.conversations_replies.await_count == 2
+        # Channel history itself completed, so its checkpoint still moves.
+        c.messages_sync_point.update_sync_point.assert_awaited_once()
+        # The thread is not recorded as synced up to latest_reply.
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        assert any(
+            "replies were only partly fetched" in str(call.args[0])
+            for call in c.logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_incremental_replies_do_not_write_thread_checkpoint(self) -> None:
+        c = _pipeline_connector()
+        thread_rg = MagicMock()
+        thread_rg.id = "trg"
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=thread_rg)
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "5.1"})
+        md = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 3, "latest_reply": "5.3",
+        }
+        ds = MagicMock()
+        ds.conversations_replies = _pages(
+            _slack_ok([{"ts": "5.2", "user": "U1", "text": "second reply"}], next_cursor="r2"),
+            _slack_failure("internal_error"),
+        )
+
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            await c._handle_new_thread(md, "C1", "5.0")
+
+        assert ds.conversations_replies.await_count == 2
+        # The reply that did arrive is still published.
+        c.data_entities_processor.on_new_records.assert_awaited()
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        assert any(
+            "replies were only partly fetched" in str(call.args[0])
+            for call in c.logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_complete_thread_replies_still_write_thread_checkpoint(self) -> None:
+        c = _pipeline_connector()
+        thread_rg = MagicMock()
+        thread_rg.id = "trg"
+        c.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=thread_rg)
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_reply_ts": "5.1"})
+        md = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 3, "latest_reply": "5.3",
+        }
+        ds = MagicMock()
+        ds.conversations_replies = _pages(
+            _slack_ok([{"ts": "5.2", "user": "U1", "text": "second"}], next_cursor="r2"),
+            _slack_ok([{"ts": "5.3", "user": "U1", "text": "third"}]),
+        )
+
+        with patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)):
+            await c._handle_new_thread(md, "C1", "5.0")
+
+        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+        _key, payload = c.audit_log_sync_point.update_sync_point.call_args[0]
+        assert payload == {"last_reply_ts": "5.3"}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "second_page",
+        [_slack_failure("ratelimited"), _slack_failure(None), RuntimeError("connection reset")],
+        ids=["ratelimited", "no-response", "raises"],
+    )
+    async def test_thread_growth_scan_failure_keeps_last_check_time(self, second_page: object) -> None:
+        c = _pipeline_connector()
+        c.channel_groups_cache = {"C1": "rg"}
+        c.audit_log_sync_point.read_sync_point = AsyncMock(
+            return_value={"last_check_time": 1_700_000_000_000},
+        )
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "no thread"}], next_cursor="c2"),
+            second_page,
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_refresh_user_caches", new=AsyncMock()),
+        ):
+            await c._sync_thread_growth()
+
+        assert ds.conversations_history.await_count == 2
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_thread_growth_scan_complete_writes_last_check_time(self) -> None:
+        c = _pipeline_connector()
+        c.channel_groups_cache = {"C1": "rg"}
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "no thread"}], next_cursor="c2"),
+            _slack_ok([{"ts": "9.0", "user": "U1", "text": "older"}]),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_refresh_user_caches", new=AsyncMock()),
+            patch.object(type(c), "_compute_sync_window_oldest", return_value=None),
+        ):
+            await c._sync_thread_growth()
+
+        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
