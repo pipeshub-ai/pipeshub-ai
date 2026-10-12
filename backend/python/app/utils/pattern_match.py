@@ -1104,17 +1104,23 @@ def _keep_best(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) 
 
 
 def _fuse_ranked(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
-    """Add one command's ranked hits to *found* by reciprocal rank fusion.
+    """Add one command's hits to *found* by reciprocal rank fusion.
 
     Commands search different term sets, so their match counts do not
     compare; a record's place in each command's own ranking does. A record
     several commands rank highly beats one only a broad command found.
     """
-    for rec in records:
-        vrid = rec.get("virtual_record_id")
-        if not vrid:
-            continue
-        fused = _fusion_score(found.get(vrid)) + 1.0 / (_RRF_K + _int_field(rec, "grep_rank"))
+    command_hits: dict[str, dict[str, Any]] = {}
+    _keep_best(command_hits, records)
+    # *records* concatenates per-connector lists, each ranked from 0; within
+    # one command the counts compare across connectors, so rank them together.
+    ranked = sorted(command_hits.values(), key=_record_rank, reverse=True)
+    place = 0
+    for i, rec in enumerate(ranked):
+        if i and _record_rank(rec) != _record_rank(ranked[i - 1]):
+            place = i
+        vrid = rec["virtual_record_id"]
+        fused = _fusion_score(found.get(vrid)) + 1.0 / (_RRF_K + place)
         best = found[vrid] if vrid in found and _record_rank(found[vrid]) >= _record_rank(rec) else rec
         found[vrid] = {**best, "fusion_score": fused}
 
@@ -1395,7 +1401,7 @@ async def run_pattern_match(
         logger_instance.info(
             "Pattern match connector %d returned %d records", i, len(result),
         )
-        all_records.extend({**rec, "grep_rank": rank} for rank, rec in enumerate(result))
+        all_records.extend(result)
     logger_instance.info("Pattern match total raw records: %d", len(all_records))
     return all_records
 
