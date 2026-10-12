@@ -2230,40 +2230,41 @@ def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
     return None
 
 
-def _kind_at(
+def _slot_check(
     record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,
-) -> bool | None:
-    """Whether ``index`` names a group (True) or a block (False) holding ``block_id``.
+) -> tuple[bool, bool] | None:
+    """Check that ``index`` holds ``block_id``: ``(is_group, confirmed)``, or ``None`` if it holds another id.
 
-    Returns ``None`` when the slot holds another id. A reconciled update keeps
-    an unchanged block's vector, payload included, so a position written at
-    index time goes stale once earlier blocks are added or removed. Older
-    points also flagged a table stored as a block as a group. A slot with no
-    id, or past the end, cannot be checked and keeps the point's own flag.
+    A reconciled update keeps an unchanged block's vector, payload included,
+    so a position written at index time goes stale once earlier blocks are
+    added or removed. Older points also flagged a table stored as a block as
+    a group. A slot with no id, or past the stored blocks (the SQL blob keeps
+    only its first rows), is unconfirmed and keeps the point's own flag.
     """
     flagged = bool(is_block_group)
     if not block_id or not isinstance(record, dict):
-        return flagged
+        return flagged, False
     flagged_id = _id_at(record, index, flagged)
     if flagged_id == block_id:
-        return flagged
+        return flagged, True
     if _id_at(record, index, not flagged) == block_id:
         logger.debug("Point for %s named the wrong container kind; reading it as %s",
                      block_id, "a group" if not flagged else "a block")
-        return not flagged
+        return not flagged, True
     if flagged_id is None:
-        return flagged
+        return flagged, False
     return None
 
 
-def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tuple[int, bool] | None:
+def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tuple[int, bool, bool] | None:
+    """The point's own position as ``(index, is_group, confirmed)``; ``None`` when absent or stale."""
     index = _point_position(meta)
     if index is None:
         return None
-    kind = _kind_at(record, meta.get("blockId"), index, meta.get("isBlockGroup"))
-    if kind is None:
+    check = _slot_check(record, meta.get("blockId"), index, meta.get("isBlockGroup"))
+    if check is None:
         return None
-    return index, kind
+    return index, *check
 
 
 def _raise_group_score(unit: dict[str, Any], score: float) -> None:
@@ -2371,8 +2372,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     for result in sorted_new_type_results:
         vrid = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
+        located = _payload_location(meta, virtual_record_id_to_result.get(vrid))
         if (
-            _payload_location(meta, virtual_record_id_to_result.get(vrid)) is None
+            (located is None or not located[2])
             and not meta.get("isRecordSummary")
             and meta.get("blockId")
             and vrid
@@ -2426,24 +2428,26 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         index = None
         is_block_group = meta.get("isBlockGroup")
-        located = _payload_location(meta, virtual_record_id_to_result.get(virtual_record_id))
-        if located is not None:
-            index, is_block_group = located
-        else:
-            block_id = meta.get("blockId")
-            if block_id:
-                recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
-                if recon_metadata:
-                    rm = ReconciliationMetadata.from_dict(recon_metadata)
-                    index_val = rm.block_id_to_index.get(block_id)
-                    kind = (
-                        _kind_at(virtual_record_id_to_result.get(virtual_record_id), block_id, index_val, is_block_group)
-                        if index_val is not None else None
-                    )
-                    if kind is not None:
-                        index = index_val
-                        meta["blockIndex"] = index
-                        is_block_group = kind
+        block_id = meta.get("blockId")
+        record_for_check = virtual_record_id_to_result.get(virtual_record_id)
+        located = _payload_location(meta, record_for_check)
+        if located is not None and (located[2] or not block_id):
+            index, is_block_group = located[0], located[1]
+        elif block_id:
+            recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
+            index_val = (
+                ReconciliationMetadata.from_dict(recon_metadata).block_id_to_index.get(block_id)
+                if recon_metadata else None
+            )
+            if index_val is not None:
+                check = _slot_check(record_for_check, block_id, index_val, is_block_group)
+                if check is not None:
+                    index = index_val
+                    meta["blockIndex"] = index
+                    is_block_group = check[0]
+            elif located is not None:
+                # No id map to check against: the point's own position is the best left.
+                index, is_block_group = located[0], located[1]
 
         # Skip if index is still None - cannot access blocks without a valid index
         if index is None:

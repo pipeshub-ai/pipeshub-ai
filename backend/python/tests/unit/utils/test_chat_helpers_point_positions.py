@@ -20,7 +20,7 @@ pytestmark = pytest.mark.asyncio
 RECON_DOWN = RuntimeError("reconciliation metadata unavailable")
 
 
-def _table_record(*, extra_groups: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+def _table_record(*, extra_groups: list[dict[str, Any]] | None = None, **fields: str) -> dict[str, Any]:
     rows = [
         {"id": f"row-{i}", "index": i, "type": "table_row", "parent_index": 0,
          "data": {"row_natural_language_text": f"row {i}"}}
@@ -29,7 +29,7 @@ def _table_record(*, extra_groups: list[dict[str, Any]] | None = None) -> dict[s
     table = {"id": "table-0", "index": 0, "type": "table", "data": {"table_summary": "Offices"},
              "table_metadata": {"num_of_cells": 4},
              "children": {"block_ranges": [{"start": 0, "end": 1}]}}
-    return blob("v1", rows, [table, *(extra_groups or [])])
+    return blob("v1", rows, [table, *(extra_groups or [])], **fields)
 
 
 class _CountingStore(InMemoryBlobStore):
@@ -145,3 +145,26 @@ async def test_position_from_reconciliation_holding_another_block_is_skipped() -
     )
     results, _ = await flatten(store, [hit("v1", blockId="row-gone")], {"v1": graph_record("r1")})
     assert results == []
+
+
+async def test_kept_point_whose_position_is_now_past_the_end_is_located_by_its_id() -> None:
+    survivor = text(0, "survivor", id="b-1")
+    store = InMemoryBlobStore(
+        {"v1": blob("v1", [survivor])},
+        recon={"v1": {"block_id_to_index": {"b-1": 0}, "hash_to_block_ids": {}}},
+    )
+    (result,), _ = await flatten(store, [hit("v1", 1, blockId="b-1")], {"v1": graph_record("r1")})
+    assert result["content"] == "survivor"
+
+
+async def test_sql_row_past_the_stored_rows_is_still_included_from_the_point() -> None:
+    record = _table_record(record_type="SQL_TABLE")
+    store = InMemoryBlobStore(
+        {"v1": record},
+        recon={"v1": {"block_id_to_index": {"row-0": 0, "row-1": 1, "row-7": 7}, "hash_to_block_ids": {}}},
+    )
+    (table,), _ = await flatten(
+        store, [hit("v1", 7, blockId="row-7", content="row 7 from the point")],
+        {"v1": graph_record("r1", recordType="SQL_TABLE")},
+    )
+    assert "row 7 from the point" in [row["content"] for row in table["content"][1]]
