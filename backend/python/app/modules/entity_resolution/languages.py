@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from functools import cache
 
-from lingua import Language
+from lingua import Language, LanguageDetector, LanguageDetectorBuilder
 
 from app.modules.entity_resolution.normalizer import normalize_name
 
@@ -112,4 +112,27 @@ def canonical_language(raw: str) -> str | None:
     return lingua.get(normalized) or lingua.get(primary)
 
 
-__all__ = ["canonical_language"]
+# Below this the text is code, data or too short to call; the top language of
+# a plain sentence scores ~0.6 and up, a JSON or YAML blob ~0.2-0.3.
+_MIN_DETECTION_CONFIDENCE = 0.5
+
+
+@cache
+def _detector() -> LanguageDetector:
+    # Every language canonical_language accepts, in high-accuracy mode: low
+    # accuracy calls a short English sentence Hungarian. Models load lazily.
+    return LanguageDetectorBuilder.from_all_languages().build()
+
+
+def detect_written_language(text: str) -> str | None:
+    """The canonical name of the language ``text`` is written in, or ``None``
+    when the detector does not settle on one."""
+    if not text or not text.strip():
+        return None
+    ranked = _detector().compute_language_confidence_values(text)
+    if not ranked or ranked[0].value < _MIN_DETECTION_CONFIDENCE:
+        return None
+    return _lingua_name(ranked[0].language)
+
+
+__all__ = ["canonical_language", "detect_written_language"]

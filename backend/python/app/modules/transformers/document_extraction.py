@@ -10,11 +10,13 @@ from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, BlockType, SemanticMetadata
-from app.modules.entity_resolution.languages import canonical_language
+from app.modules.entity_resolution.languages import (
+    canonical_language,
+    detect_written_language,
+)
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
-from app.modules.parsers.text_splitting import detect_language
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import coerce_message_content_to_text
@@ -211,8 +213,7 @@ def _written_language(blocks: list[Block]) -> list[str]:
             size += len(block.data) + 1
             if size >= _LANGUAGE_SAMPLE_CHARS:
                 break
-    sample = " ".join(parts)[:_LANGUAGE_SAMPLE_CHARS]
-    name = canonical_language(detect_language(sample)) if sample.strip() else None
+    name = detect_written_language(" ".join(parts)[:_LANGUAGE_SAMPLE_CHARS])
     return [name] if name else []
 
 
