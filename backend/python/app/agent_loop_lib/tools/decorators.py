@@ -334,9 +334,9 @@ class BoundMethodTool(Tool):
     """Wraps a bound async method (with ``self`` already captured) as a `Tool`.
 
     Created by `ToolsetBuilder` from ``@tool``-decorated methods on a class
-    instance. Validation is intentionally permissive (no-op) because
-    connector tools do their own input normalization internally (e.g.
-    Pydantic model validators that handle LLM input variations).
+    instance. Validation rejects argument names the method does not take and
+    is otherwise permissive: connector tools normalize loosely typed values
+    themselves (e.g. Pydantic model validators that handle LLM input variations).
     """
 
     def __init__(
