@@ -998,6 +998,10 @@ class TestRefWrappedInsideLinkTarget:
             normalized, _ = self._normalize(answer)
             assert normalized == f"Tall [1]({self.URL2}).", answer
 
+    def test_deeply_nested_link_targets_are_fully_unwrapped(self) -> None:
+        normalized, _ = self._normalize("Tall " + "[source](" * 6 + "ref2" + ")" * 6 + ".")
+        assert normalized == f"Tall [1]({self.URL2})."
+
     def test_list_of_links_nested_as_target(self) -> None:
         normalized, cites = self._normalize("Tall [source]([source](ref1), [source](ref2)).")
         assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2})."

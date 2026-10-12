@@ -119,7 +119,6 @@ _NESTED_SIBLING_LINK_RE = re.compile(
 _ALWAYS_CLOSERS = ')]'
 _PAIRED_CLOSERS = {'<': '>', '`': '`', '"': '"', "'": "'"}
 _CLOSER_GAP = ' \t.,;:'
-_MAX_UNWRAP_PASSES = 4
 _REF_TOKEN_RE = re.compile(_REF_TOKEN)
 
 
@@ -203,7 +202,8 @@ def _unwrap_ref_link_targets(text: str) -> str:
     its own link, leaving ``[source]([2](url))`` in the final answer. One pass
     peels one layer, so repeat until a pass changes nothing.
     """
-    for _ in range(_MAX_UNWRAP_PASSES):
+    # Every layer needs its own '(', which bounds the passes on any input.
+    for _ in range(text.count('(') + 1):
         unwrapped = _unwrap_ref_link_targets_once(text)
         if unwrapped == text:
             break
