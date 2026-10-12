@@ -860,6 +860,32 @@ class TestNamesWalkPastRecordsWithoutASpelling:
         assert walked == {r["_key"] for r in rows}
 
     @pytest.mark.asyncio
+    async def test_a_naming_walk_stopped_by_the_deadline_is_a_timeout(self, monkeypatch) -> None:
+        """The probes confirm access in time, but the walk for a spelling
+        does not finish: that is not an empty result."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+
+        async def _slow_links(keys: list[str], transaction: str | None = None) -> list[dict]:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return [
+                {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+                 "canonical": True, "migrated": False, "extractedName": None}
+                for key in keys
+            ]
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_slow_links)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+    @pytest.mark.asyncio
     async def test_the_walk_goes_on_past_the_probe_windows(self) -> None:
         """1,100 newer readable records without a spelling, then one with it."""
         copies = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]

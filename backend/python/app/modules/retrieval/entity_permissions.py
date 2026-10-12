@@ -392,7 +392,8 @@ async def search_entities_for_user(
     queries, each checking permissions in the query, all within
     ``SEARCH_DEADLINE_SECONDS``, extended so the probes get at least
     ``PROBE_MIN_SECONDS`` after the vector request. Raises
-    ``EntitySearchTimedOut`` when time ran out before any match was confirmed.
+    ``EntitySearchTimedOut`` when time ran out before any match was confirmed
+    and named.
     """
     started = time.monotonic()
     deadline = started + SEARCH_DEADLINE_SECONDS
@@ -436,7 +437,9 @@ async def search_entities_for_user(
     deadline = max(deadline, time.monotonic() + PROBE_MIN_SECONDS)
     rounds, timed_out = await _run_probes(graph_provider, context, probes, deadline) if probes else (0, False)
     kept_probes = [probe for probe in probes if _is_kept(context, probe)]
-    shown_names = await _names_from_permitted_records(graph_provider, context, kept_probes, deadline)
+    shown_names, naming_timed_out = await _names_from_permitted_records(
+        graph_provider, context, kept_probes, deadline,
+    )
     kept = [
         EntityHit(
             entity_id=probe.entity_id,
@@ -460,7 +463,7 @@ async def search_entities_for_user(
         context.org_id, "; ".join(stats), len(probes), rounds, len(kept), timed_out,
         int((time.monotonic() - started) * 1000),
     )
-    if timed_out and not kept:
+    if (timed_out or naming_timed_out) and not kept:
         raise EntitySearchTimedOut("Entity search timed out before confirming access to any match")
     return kept[:top_k]
 
@@ -474,8 +477,9 @@ async def _names_from_permitted_records(
     context: EntityAccessContext,
     probes: list[_Probe],
     deadline: float,
-) -> dict[tuple[str, str], str]:
-    """``{(entity_type, entity_id): name to show}`` for the kept probes.
+) -> tuple[dict[tuple[str, str], str], bool]:
+    """``{(entity_type, entity_id): name to show}`` for the kept probes, and
+    whether the deadline left any of them unnamed.
 
     A category, subcategory, topic or language node is named by whichever
     record created it, and keeps every record's spelling as an alias. It is
@@ -569,7 +573,7 @@ async def _names_from_permitted_records(
         stored = _stored_name(probe)
         key = (probe.entity_type, probe.entity_id)
         shown[key] = stored if any(normalize_name(s) == normalize_name(stored) for s in own) else own[0]
-    return shown
+    return shown, bool(unnamed)
 
 
 def _decode_cursor_json(raw: str) -> int | None:
