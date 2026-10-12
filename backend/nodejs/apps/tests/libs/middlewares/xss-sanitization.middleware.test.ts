@@ -824,12 +824,12 @@ describe('XSS Sanitization Middleware', () => {
     }
 
     it('names the body field and explains that <id> counts as a tag', async () => {
-      const { status, body } = await post('/api/v1/search', {
-        query: 'cite [Summary of <id>]',
+      const { status, body } = await post('/api/v1/knowledgeBase', {
+        name: 'cite [Summary of <id>]',
       })
 
       expect(status).to.equal(400)
-      expect(body.error.message).to.include('"query"')
+      expect(body.error.message).to.include('"name"')
       expect(body.error.message).to.include('such as <id>')
     })
 
@@ -840,12 +840,12 @@ describe('XSS Sanitization Middleware', () => {
         method: 'tools/call',
         params: {
           name: 'pipeshub_chat',
-          arguments: { query: 'Is there a bug about "[Summary of <id>]"?' },
+          arguments: { query: 'Any bugs?', conversationId: '<id>' },
         },
       })
 
       expect(status).to.equal(400)
-      expect(body.error.message).to.include('"params.arguments.query"')
+      expect(body.error.message).to.include('"params.arguments.conversationId"')
     })
 
     it('names a query-string parameter as one', async () => {
@@ -891,12 +891,12 @@ describe('XSS Sanitization Middleware', () => {
     })
 
     it('names an encoded script tag rather than tags or javascript: links', async () => {
-      const { status, body } = await post('/api/v1/search', {
-        query: '&lt;script&gt;alert(1)&lt;/script&gt;',
+      const { status, body } = await post('/api/v1/knowledgeBase', {
+        name: '&lt;script&gt;alert(1)&lt;/script&gt;',
       })
 
       expect(status).to.equal(400)
-      expect(body.error.message).to.include('"query"')
+      expect(body.error.message).to.include('"name"')
       expect(body.error.message).to.include('&lt;script')
       expect(body.error.message).not.to.include('<id>')
       expect(body.error.message).not.to.include('javascript:')
@@ -921,6 +921,159 @@ describe('XSS Sanitization Middleware', () => {
       expect(status).to.equal(400)
       expect(body.error.message).not.to.include('<img')
       expect(body.error.message).not.to.include('onerror')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Chat and search questions: free text, passed through unchanged
+  // -----------------------------------------------------------------------
+  describe('Chat and search questions', () => {
+    let server: http.Server
+    let baseUrl: string
+
+    before(async () => {
+      const app = express()
+      app.use(express.json())
+      app.use(xssSanitizationMiddleware)
+      // Echo the body as the route handler would receive it.
+      app.all('*', (req, res) => {
+        res.status(200).json({ received: req.body })
+      })
+      app.use(ErrorMiddleware.handleError())
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s))
+      })
+      baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = async (path: string, body: unknown) => {
+      const resp = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return { status: resp.status, body: (await resp.json()) as any }
+    }
+
+    const toolCall = (name: string, args: Record<string, unknown>) => ({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    })
+
+    const question = 'cite [Summary of <id>] and List<String>'
+
+    it('accepts <id> in the question of an MCP pipeshub_chat call, unchanged', async () => {
+      const { status, body } = await post('/mcp', toolCall('pipeshub_chat', { query: question }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts <id> in the question of an MCP pipeshub_search call, unchanged', async () => {
+      const { status, body } = await post('/mcp', toolCall('pipeshub_search', { query: question, limit: 5 }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts <id> in the query of POST /api/v1/search, which MCP search calls, unchanged', async () => {
+      const { status, body } = await post('/api/v1/search', { query: question, limit: 5 })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+    })
+
+    it('still refuses a script tag in another argument of an MCP chat call', async () => {
+      const { status, body } = await post(
+        '/mcp',
+        toolCall('pipeshub_chat', {
+          query: question,
+          filters: { apps: ['<script>alert(1)</script>'] },
+        }),
+      )
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.filters.apps[0]"')
+    })
+
+    it('still refuses a script tag in another field of POST /api/v1/search', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        query: question,
+        filters: { kb: ['<script>alert(1)</script>'] },
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"filters.kb[0]"')
+    })
+
+    it('still refuses a script tag elsewhere in the MCP request', async () => {
+      const call = toolCall('pipeshub_chat', { query: question }) as any
+      call.params._meta = { note: '<script>alert(1)</script>' }
+
+      const { status, body } = await post('/mcp', call)
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params._meta.note"')
+    })
+
+    it('still checks the query of any other MCP tool', async () => {
+      const { status, body } = await post(
+        '/mcp',
+        toolCall('pipeshub_get_record_content', { query: '<id>' }),
+      )
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.query"')
+    })
+
+    it('still checks a query that is not a string', async () => {
+      const { status } = await post(
+        '/mcp',
+        toolCall('pipeshub_chat', { query: { text: '<script>alert(1)</script>' } }),
+      )
+
+      expect(status).to.equal(400)
+    })
+
+    it('does not pass through a top-level key that only looks like the question path', async () => {
+      const call = toolCall('pipeshub_chat', { query: question }) as any
+      call['params.arguments.query'] = '<script>alert(1)</script>'
+
+      const { status } = await post('/mcp', call)
+
+      expect(status).to.equal(400)
+    })
+
+    it('still checks a field named query on other routes', async () => {
+      const { status, body } = await post('/api/v1/knowledgeBase', { query: '<id>' })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"query"')
+    })
+
+    it('still checks a search query sent as a URL query parameter', async () => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/search?query=${encodeURIComponent('<id>')}`,
+      )
+
+      expect(resp.status).to.equal(400)
+    })
+
+    it('leaves the web chat route as it was: skipped entirely', async () => {
+      const { status, body } = await post('/api/v1/conversations/stream', {
+        query: question,
+        note: '<b>kept</b>',
+      })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+      expect(body.received.note).to.equal('<b>kept</b>')
     })
   })
 })

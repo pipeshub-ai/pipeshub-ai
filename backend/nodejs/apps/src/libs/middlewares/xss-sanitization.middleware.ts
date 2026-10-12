@@ -114,14 +114,109 @@ function xssRejectionMessage(value: string, field: string): string {
 }
 
 /**
+ * The one field of a request that holds a person's question, when it is a
+ * string. `holder` is the object the field sits on, so the field is found by
+ * object identity rather than by a dotted path a caller could imitate with a
+ * key such as "params.arguments.query".
+ */
+interface QuestionField {
+  holder: Record<string, unknown>;
+  key: string;
+}
+
+/** MCP tools whose `query` argument is a question typed for chat or search. */
+const MCP_QUESTION_TOOLS = new Set(['pipeshub_chat', 'pipeshub_search']);
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Object.prototype.toString.call(value) === '[object Object]';
+}
+
+/**
+ * Finds the question on a chat or search tool call made through MCP, and on
+ * the search route MCP calls, so that one string can be passed through
+ * unchecked and unchanged.
+ *
+ * Why: a question is free text, and people (and AI agents) write things like
+ * "cite [Summary of <id>]" or "what does List<String> return?". The web chat
+ * already accepts such text, because its routes under /api/v1/conversations/
+ * are skipped by this middleware entirely (see below). MCP's chat and search
+ * were refused instead, because the MCP request itself (POST /mcp, the
+ * question in `params.arguments.query`) and the search route MCP calls
+ * (POST /api/v1/search, the question in `query`) were checked like any form.
+ *
+ * Why this is safe: the question is never rendered as HTML. It is stored as
+ * plain text and the web app shows it, and the conversation title cut from
+ * it, as React text, which escapes `<` and `>` (frontend
+ * app/(main)/chat/components/message-area/expandable-user-query.tsx and
+ * app/(main)/chat/sidebar/chat-section-element.tsx). It is also the same
+ * text the web chat route already stores unchecked.
+ *
+ * Only that one string is passed through. Every other field of these
+ * requests (filters, ids, model keys) and every field of every other request
+ * is still checked and sanitized as before. Matching is exact and
+ * case-sensitive, so a request that does not match is checked as before.
+ */
+function findQuestionField(req: Request): QuestionField | undefined {
+  if (req.method !== 'POST' || !isPlainObject(req.body)) {
+    return undefined;
+  }
+  const body = req.body;
+
+  // The search route MCP's pipeshub_search calls, and the web search box.
+  if (req.path === '/api/v1/search' || req.path === '/api/v1/search/') {
+    return typeof body.query === 'string'
+      ? { holder: body, key: 'query' }
+      : undefined;
+  }
+
+  // A JSON-RPC tool call to the MCP endpoint.
+  if (req.path === '/mcp' || req.path === '/mcp/') {
+    const params = body.params;
+    if (
+      body.method !== 'tools/call' ||
+      !isPlainObject(params) ||
+      typeof params.name !== 'string' ||
+      !MCP_QUESTION_TOOLS.has(params.name)
+    ) {
+      return undefined;
+    }
+    const args = params.arguments;
+    return isPlainObject(args) && typeof args.query === 'string'
+      ? { holder: args, key: 'query' }
+      : undefined;
+  }
+
+  return undefined;
+}
+
+/** True when `holder[key]` is the request's question field. */
+function isQuestionField(
+  holder: unknown,
+  key: string,
+  question: QuestionField | undefined,
+): boolean {
+  return (
+    question !== undefined &&
+    holder === question.holder &&
+    key === question.key &&
+    typeof question.holder[key] === 'string'
+  );
+}
+
+/**
  * Recursively checks for HTML/XSS content in an object or array
  * Throws an error if HTML is detected
- * 
+ *
  * @param value - The value to check (can be any type)
  * @param path - Current path in the object (for error messages)
+ * @param question - The request's question field, which is not checked
  * @throws BadRequestError if HTML/XSS content is detected
  */
-function validateNoXSS(value: any, path: string = ''): void {
+function validateNoXSS(
+  value: any,
+  path: string = '',
+  question?: QuestionField,
+): void {
   // Handle null and undefined
   if (value === null || value === undefined) {
     return;
@@ -151,7 +246,7 @@ function validateNoXSS(value: any, path: string = ''): void {
   // Handle arrays - validate each element
   if (Array.isArray(value)) {
     value.forEach((item, index) => {
-      validateNoXSS(item, path ? `${path}[${index}]` : `[${index}]`);
+      validateNoXSS(item, path ? `${path}[${index}]` : `[${index}]`, question);
     });
     return;
   }
@@ -175,8 +270,14 @@ function validateNoXSS(value: any, path: string = ''): void {
           continue;
         }
 
+        // A chat or search question is free text, never rendered as HTML.
+        // See findQuestionField for why it is not checked.
+        if (isQuestionField(value, key, question)) {
+          continue;
+        }
+
         const fieldPath = path ? `${path}.${key}` : key;
-        validateNoXSS(propValue, fieldPath);
+        validateNoXSS(propValue, fieldPath, question);
       }
     }
     return;
@@ -192,9 +293,10 @@ function validateNoXSS(value: any, path: string = ''): void {
  * Preserves data structure and types
  * 
  * @param value - The value to sanitize (can be any type)
+ * @param question - The request's question field, which is kept unchanged
  * @returns Sanitized value with same structure
  */
-function sanitizeValue(value: any): any {
+function sanitizeValue(value: any, question?: QuestionField): any {
   // Handle null and undefined
   if (value === null || value === undefined) {
     return value;
@@ -218,7 +320,7 @@ function sanitizeValue(value: any): any {
 
   // Handle arrays - sanitize each element
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeValue(item));
+    return value.map((item) => sanitizeValue(item, question));
   }
 
   // Handle plain objects - sanitize each property
@@ -243,7 +345,15 @@ function sanitizeValue(value: any): any {
             continue;
           }
 
-          sanitized[key] = sanitizeValue(propValue);
+          // Kept as typed: stripping tags would silently change the question,
+          // turning "[Summary of <id>]" into "[Summary of ]". See
+          // findQuestionField for why this is safe.
+          if (isQuestionField(value, key, question)) {
+            sanitized[key] = propValue;
+            continue;
+          }
+
+          sanitized[key] = sanitizeValue(propValue, question);
         } catch (error) {
           // If sanitizing a property fails, keep the original value
           Logger.getInstance().warn('XSS sanitization failed for property', {
@@ -309,9 +419,12 @@ export const xssSanitizationMiddleware = (
     if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       // Skip if body is a Buffer (file upload)
       if (!(req.body instanceof Buffer)) {
-        validateNoXSS(req.body, 'body');
+        // A chat or search question made through MCP is passed through as
+        // the web chat's is; every other body field is still checked.
+        const question = findQuestionField(req);
+        validateNoXSS(req.body, 'body', question);
         // After validation passes, sanitize to ensure clean data
-        req.body = sanitizeValue(req.body);
+        req.body = sanitizeValue(req.body, question);
       }
     }
 
