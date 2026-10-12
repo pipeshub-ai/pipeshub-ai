@@ -242,10 +242,12 @@ class CircuitBreaker:
 
     @property
     def consecutive_failures(self) -> int:
+        """Number of consecutive recorded failures."""
         return self._consecutive_failures
 
     @property
     def state(self) -> str:
+        """Current breaker state: 'closed', 'open', or 'half-open'."""
         now = self._clock()
         if self._state == "open" and (
             now - self._last_failure_time >= self.recovery_window_seconds
@@ -254,6 +256,7 @@ class CircuitBreaker:
         return self._state
 
     def is_open(self) -> bool:
+        """Return True if breaker is currently open and shedding traffic."""
         now = self._clock()
         if self._state == "open":
             if now - self._last_failure_time >= self.recovery_window_seconds:
@@ -262,10 +265,12 @@ class CircuitBreaker:
         return False
 
     def record_success(self) -> None:
+        """Record a successful operation, resetting failure counter to 0."""
         self._consecutive_failures = 0
         self._state = "closed"
 
     def record_failure(self) -> None:
+        """Record a failure and trip breaker to open if failure threshold is reached."""
         now = self._clock()
         self._consecutive_failures += 1
         self._last_failure_time = now
@@ -327,6 +332,7 @@ class SemanticCacheService:
 
     @property
     def circuit_breaker(self) -> CircuitBreaker:
+        """Access the underlying circuit breaker instance."""
         return self._circuit_breaker
 
     def _get_redis(self) -> RedisClient | None:
