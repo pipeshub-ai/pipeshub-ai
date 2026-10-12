@@ -3685,6 +3685,15 @@ async def get_configured_connector_instances(
 # Instance Configuration Endpoints
 # ============================================================================
 
+def _has_oauth_credentials(auth_config: dict[str, Any], connector_type: str) -> bool:
+    """Whether ``auth_config`` carries a value for any of the connector type's OAuth app fields."""
+    return any(
+        auth_config.get(field_name) or
+        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+        for field_name in _get_oauth_field_names_from_registry(connector_type)
+    )
+
+
 async def _handle_oauth_config_creation(
     connector_type: str,
     auth_config: dict[str, Any],
@@ -3729,21 +3738,13 @@ async def _handle_oauth_config_creation(
     # Get OAuth app ID (from auth config or parameter)
     oauth_app_id = auth_config.get("oauthConfigId") or oauth_config_id
 
-    # Check if OAuth credential fields are present
-    oauth_field_names = _get_oauth_field_names_from_registry(connector_type)
-    has_oauth_credentials = any(
-        auth_config.get(field_name) or
-        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
-        for field_name in oauth_field_names
-    )
-
-    if not has_oauth_credentials:
+    if not _has_oauth_credentials(auth_config, connector_type):
         if oauth_app_id:
             logger.info(f"No OAuth credentials provided, using existing OAuth config for {connector_type}")
             return oauth_app_id
         else:
             logger.info(f"No OAuth credentials provided and no oauthConfigId specified for {connector_type} - skipping OAuth config creation")
-            logger.debug(f"Expected OAuth fields for {connector_type}: {oauth_field_names}")
+            logger.debug(f"Expected OAuth fields for {connector_type}: {_get_oauth_field_names_from_registry(connector_type)}")
             logger.debug(f"Received auth config keys: {list(auth_config.keys())}")
             return None
 
@@ -5274,7 +5275,9 @@ async def update_connector_instance_config(
     Update configuration for a connector instance.
 
     Request body can contain:
-    - auth: Authentication configuration
+    - auth: Authentication configuration. When an admin sends OAuth client credentials
+      for an OAUTH connector not yet linked to an OAuth app, an app is created from them
+      and linked (``auth.oauthConfigId``), as the create and auth-only saves do.
     - sync: Sync settings
     - filters: Filter configuration
     - base_url: Optional base URL for OAuth redirects
@@ -5412,6 +5415,44 @@ async def update_connector_instance_config(
             # Use existing auth type from instance (cannot be changed)
             auth_type = instance.get("authType", "").upper()
             if auth_type in [AuthType.OAUTH, AuthType.OAUTH_ADMIN_CONSENT]:
+                # Client credentials written on a connector that has no OAuth app: create the
+                # app and link it, as creating the connector and the auth-only save do. An
+                # OAUTH connector reads its client ID and secret from its linked app, so without
+                # one it can sign in but never start. A connector already linked is left alone.
+                linked_inline_credentials = False
+                if (
+                    is_admin
+                    and auth_type == AuthType.OAUTH
+                    and not oauth_config_id
+                    and isinstance(_incoming_auth, dict)
+                    and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict)
+                    and not new_config[OAuthConfigKeys.AUTH].get(OAuthConfigKeys.OAUTH_CONFIG_ID)
+                    and _has_oauth_credentials(_incoming_auth, connector_type)
+                ):
+                    created_oauth_app_id = await _handle_oauth_config_creation(
+                        connector_type=connector_type,
+                        auth_config=new_config[OAuthConfigKeys.AUTH],
+                        instance_name=instance.get("name", f"{connector_type} Connector"),
+                        user_id=user_id,
+                        org_id=org_id,
+                        is_admin=is_admin,
+                        config_service=config_service,
+                        oauth_config_id=None,
+                        auth_type=auth_type,
+                        base_url=base_url,
+                        logger=logger,
+                        connector_scope=instance.get("scope"),
+                    )
+                    if not created_oauth_app_id:
+                        logger.error("Failed to create an OAuth app from the connector's client credentials")
+                        raise HTTPException(
+                            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                            detail="Failed to create/update OAuth configuration"
+                        )
+                    new_config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = created_oauth_app_id
+                    linked_inline_credentials = True
+                    logger.info(f"Linked connector {connector_id} to new OAuth app {created_oauth_app_id}")
+
                 # If oauth_config_id is provided, fetch and merge OAuth config from etcd
                 shared_oauth_config = None
                 if oauth_config_id:
@@ -5452,7 +5493,9 @@ async def update_connector_instance_config(
                         new_config[OAuthConfigKeys.AUTH],
                         connector_type,
                         org_id,
-                        named_in_request=isinstance(_incoming_auth, dict) and bool(_incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)),
+                        named_in_request=linked_inline_credentials or (
+                            isinstance(_incoming_auth, dict) and bool(_incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID))
+                        ),
                         container=container,
                         config_service=config_service,
                         logger=logger,
