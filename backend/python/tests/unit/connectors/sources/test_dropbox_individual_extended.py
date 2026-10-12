@@ -17,6 +17,7 @@ from app.connectors.sources.dropbox_individual.connector import (
 )
 from app.models.entities import RecordType
 from app.models.permission import PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -182,8 +183,8 @@ class TestDropboxInit:
         connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {"access_token": "t"}, "auth": {},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_oauth_config_not_found(self, mock_fetch, connector):

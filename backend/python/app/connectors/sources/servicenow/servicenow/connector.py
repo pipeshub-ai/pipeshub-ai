@@ -35,7 +35,11 @@ from app.connectors.core.constants import (
     OAuthDefaults,
     OAuthRedirectPaths,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -313,8 +317,11 @@ class ServiceNowConnector(BaseConnector):
             oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
             if not oauth_config_id:
-                self.logger.error("ServiceNow oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "ServiceNow has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -390,6 +397,8 @@ class ServiceNowConnector(BaseConnector):
             self.logger.info("✅ ServiceNow KB Connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize connector: {e}", exc_info=True)
             return False

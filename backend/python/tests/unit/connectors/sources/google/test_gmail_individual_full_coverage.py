@@ -29,6 +29,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 def _make_logger():
@@ -221,8 +222,8 @@ class TestInit:
             "auth": {},
             "credentials": {},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector):
