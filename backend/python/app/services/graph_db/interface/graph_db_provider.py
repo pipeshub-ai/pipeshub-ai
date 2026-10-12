@@ -11,7 +11,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -29,6 +29,8 @@ from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+_T = TypeVar("_T")
 
 # Set once `stamp_kh_listing_state` has covered every node written before.
 KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
@@ -65,6 +67,9 @@ class AccessCheck:
     node_ids: frozenset[str] = frozenset()
     #: Each accessible virtual record id, with the record to cite for it.
     records_by_vrid: dict[str, str] = field(default_factory=dict)
+    #: The accessible asked nodes that every given scope admits (all of
+    #: ``node_ids`` when no scope was given).
+    node_ids_in_scope: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,32 @@ CONTAINER_SCOPE_FILTER_KEYS = ("apps", "kb")
 #: back to everything the user can reach. Carried inside ``filters`` by
 #: `ChatQuery.strictScope` (see `api/routes/chatbot.py`).
 STRICT_SCOPE_FILTER_KEY = "strictScope"
+
+#: Filter keys that select below app level: a record group with its nested
+#: groups, a folder or record with everything under it, and one record alone.
+SELECTION_FILTER_KEYS = ("recordGroups", "records", "recordsExact")
+
+#: Set by the server, never taken from a client: the apps a selection touches,
+#: and the bounds a cited record must lie in, each in the shape of a selection:
+#: a saved agent's sources, and a project's.
+SELECTION_APPS_FILTER_KEY = "selectionApps"
+AGENT_BOUND_FILTER_KEYS = {
+    "allowedApps": "apps",
+    "allowedRecordGroups": "recordGroups",
+    "allowedRecords": "records",
+}
+PROJECT_BOUND_FILTER_KEYS = {
+    "projectApps": "apps",
+    "projectRecordGroups": "recordGroups",
+    "projectRecords": "records",
+}
+ALLOWED_FILTER_KEYS = {**AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS}
+
+
+class RowScope(Protocol):
+    """Decides whether a ``check_access`` row lies inside a selection."""
+
+    def admits(self, row: Mapping[str, Any]) -> bool: ...
 
 #: Set on a record by ``update_queued_duplicates_status`` in the same write
 #: that promotes its queued duplicates, and cleared by the indexing handler once
@@ -6309,6 +6340,7 @@ class IGraphDBProvider(ABC):
         virtual_record_ids: Iterable[str] = (),
         indexed_only: bool = False,
         connector_ids: frozenset[str] | None = None,
+        scopes: Iterable[RowScope] = (),
         access: dict[str, Any] | None = None,
         transaction: str | None = None,
     ) -> AccessCheck:
@@ -6335,6 +6367,10 @@ class IGraphDBProvider(ABC):
                 scope: vector membership is unioned per virtual record id, so a
                 hit can come from an out-of-scope copy). An empty set cites
                 nothing; None does not narrow. Neither filter narrows node ids.
+            scopes: Cite only a record every one of these admits (a selection
+                below app level, and an agent's or project's allow-list). Like
+                ``connector_ids`` they do not narrow ``node_ids``; the asked
+                nodes they admit are reported apart, in ``node_ids_in_scope``.
             access: ``get_knowledge_hub_access_v3`` for this user, when the caller
                 already holds it; computed otherwise.
             transaction: Optional transaction ID.
@@ -6375,11 +6411,18 @@ class IGraphDBProvider(ABC):
                 continue
             if connector_ids is not None and row.get("connectorId") not in connector_ids:
                 continue
+            if not all(scope.admits(row) for scope in scopes):
+                continue
             if vrid not in records_by_vrid or record_id < records_by_vrid[vrid]:
                 records_by_vrid[vrid] = record_id
+        accessible_nodes = [row for row in rows if row.get("id") in asked_nodes]
         return AccessCheck(
-            node_ids=frozenset(row["id"] for row in rows if row.get("id") in asked_nodes),
+            node_ids=frozenset(row["id"] for row in accessible_nodes),
             records_by_vrid=records_by_vrid,
+            node_ids_in_scope=frozenset(
+                row["id"] for row in accessible_nodes
+                if all(scope.admits(row) for scope in scopes)
+            ),
         )
 
     async def _kh_v3_accessible_rows(
@@ -6394,7 +6437,34 @@ class IGraphDBProvider(ABC):
     ) -> list[dict[str, Any]]:
         """The rows ``check_access`` decides from: one per accessible node among
         the asked ids and the records carrying the asked virtual record ids, as
-        ``{id, vrid, connectorId, indexingStatus, isInternal}``."""
+        ``{id, vrid, connectorId, indexingStatus, isInternal, groupIds}``
+        (``groupIds``: the record groups a record belongs to)."""
+        raise NotImplementedError
+
+    async def get_selection_nodes(
+        self,
+        org_id: str,
+        *,
+        group_ids: list[str],
+        record_ids: list[str],
+        exact_record_ids: list[str],
+        limit: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """What a selection below app level covers, read from the hierarchy alone.
+
+        ``groups``: the record groups in ``group_ids`` and every group nested
+        under them, as ``{id, connectorId}``. ``records``: the records in
+        ``record_ids`` with everything under them (PARENT_CHILD/ATTACHMENT,
+        up to ``ACCESS_WALK_MAX_DEPTH`` hops) and the records in
+        ``exact_record_ids`` alone, as ``{id, vrid, connectorId}``. A folder
+        is a record without content: it is returned with ``vrid`` None.
+
+        No permissions are applied: ``check_access`` decides every hit. Only
+        live nodes of ``org_id`` are returned, so an id of another org, of a
+        deleted node or of the wrong kind contributes nothing. Each list holds
+        at most ``limit + 1`` entries, so the caller can tell a selection that
+        is over the limit from one that is at it.
+        """
         raise NotImplementedError
 
     def _kh_v3_empty_page(
@@ -6410,7 +6480,7 @@ class IGraphDBProvider(ABC):
             scope = (
                 {"admitted": False, "nodeId": start_id}
                 if not admitted
-                else browse_scope(start_id or "", True, [], [])
+                else browse_scope(start_id or "", admitted=True, nodes=[], edges=[])
             )
         return {
             "rows": [],
@@ -6468,9 +6538,9 @@ class IGraphDBProvider(ABC):
         if include_scope:
             if scoped_start:
                 scope_out = browse_scope(
-                    start_id, True,
-                    payload.get("crumbNodes") or [],
-                    payload.get("crumbEdges") or [],
+                    start_id, admitted=True,
+                    nodes=payload.get("crumbNodes") or [],
+                    edges=payload.get("crumbEdges") or [],
                     via_parent_id=via_parent_id,
                 )
             else:
@@ -6566,8 +6636,8 @@ class IGraphDBProvider(ABC):
             app_id, CollectionNames.APPS.value, transaction, raise_on_error=True,
         ) or {}
         return browse_scope(
-            app_id, True,
-            [{
+            app_id, admitted=True,
+            nodes=[{
                 "id": app_id,
                 "name": app.get("name") or "",
                 "nodeType": "app",
@@ -6576,7 +6646,7 @@ class IGraphDBProvider(ABC):
                 "isInternal": False,
                 "ownGroups": [],
             }],
-            [],
+            edges=[],
             via_parent_id=via_parent_id,
         )
 
@@ -6614,7 +6684,7 @@ class IGraphDBProvider(ABC):
         the grants of its own connector alone (``get_knowledge_hub_connector_grants``)."""
         raise NotImplementedError
 
-    async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[Any]]) -> Any:
+    async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
         """``compute()``, shared by the callers that ask for ``key`` while it runs:
         one click sends the main pane and the sidebar together, and both need the
         same grants and chain-tops. Nothing is kept once it completes, so no answer
@@ -6874,12 +6944,14 @@ class IGraphDBProvider(ABC):
         trusted_app_ids: frozenset[str] | None = None,
         trusted_group_ids: frozenset[str] | None = None,
         scope_connector_ids: frozenset[str] | None = None,
+        scopes: Iterable[RowScope] = (),
         transaction: str | None = None,
     ) -> dict[str, str]:
         """``{virtualRecordId: recordId}`` for the retrieved virtual record ids the
         user may read, by the batch access check (``check_access``). The record
         cited is live, indexed and, when ``scope_connector_ids`` is given, of one
-        of those connectors (an empty set cites nothing).
+        of those connectors (an empty set cites nothing); with ``scopes``, one
+        that every scope admits.
 
         Nothing is trusted: ``trusted_app_ids`` and ``trusted_group_ids`` are
         accepted and ignored, and every id is checked.
@@ -6908,7 +6980,7 @@ class IGraphDBProvider(ABC):
             return {}
         check = await self.check_access(
             user_key, org_id, virtual_record_ids=asked, indexed_only=True,
-            connector_ids=scope_connector_ids, transaction=transaction,
+            connector_ids=scope_connector_ids, scopes=scopes, transaction=transaction,
         )
         return dict(check.records_by_vrid)
 

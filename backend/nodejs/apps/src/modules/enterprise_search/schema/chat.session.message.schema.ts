@@ -203,24 +203,11 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
       reasoningEffort: { type: String, enum: REASONING_EFFORT_VALUES },
     },
     appliedFilters: {
-      apps: [
-        {
-          id: String,
-          name: String,
-          nodeType: String,
-          connector: String,
-          _id: false,
-        },
-      ],
-      kb: [
-        {
-          id: String,
-          name: String,
-          nodeType: String,
-          connector: String,
-          _id: false,
-        },
-      ],
+      apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      recordGroups: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      records: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      recordsExact: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
     },
     attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)

@@ -43,6 +43,7 @@ import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import { parseDownloadMarkers, parseArtifactMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
+import { hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
 import {
   isPresentationFile,
@@ -848,8 +849,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         style={{
           marginBottom:
             (collections && collections.length > 0) ||
-            (appliedFilters &&
-              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
+            hasAnyFilter(appliedFilters)
               ? 'var(--space-3)'
               : 'var(--space-4)',
         }}
@@ -876,7 +876,7 @@ export const ChatResponse = React.memo(function ChatResponse({
       </Box>
 
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
-      {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
+      {appliedFilters && hasAnyFilter(appliedFilters) && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
           <AppliedFilters appliedFilters={appliedFilters} />
         </Box>

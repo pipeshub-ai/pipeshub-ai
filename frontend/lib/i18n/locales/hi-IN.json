@@ -592,7 +592,9 @@
     "searchEmptyHint": "आप जो खोज रहे हैं वह नहीं मिला। कुछ और खोजकर देखें।",
     "adjustFiltersHint": "कोई दूसरा स्रोत चुनें या अपने फ़िल्टर समायोजित करें",
     "addFromCollectionsHint": "आप अपनी कंपनी की फ़ाइलें या फ़ोल्डर संग्रहों से जोड़ सकते हैं",
-    "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें"
+    "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें",
+    "chatWithSelection": "चैट",
+    "chatSelectionLimit": "चैट में अधिकतम {{max}} चुने गए आइटम लिए जा सकते हैं। कुछ का चयन हटाएँ और फिर से प्रयास करें।"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -671,7 +673,8 @@
       "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।",
       "notConnected": "कनेक्ट नहीं है",
       "connect": "कनेक्ट करें",
-      "actionConnected": "{{name}} कनेक्ट है"
+      "actionConnected": "{{name}} कनेक्ट है",
+      "limitedToCount": "· {{count}} चयनित"
     },
     "projectResources": {
       "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",
@@ -699,6 +702,12 @@
     "searchCollections": "कनेक्टर्स और संग्रह खोजें",
     "loadingCollections": "कलेक्शन लोड हो रहे हैं…",
     "failedToLoadCollections": "कलेक्शन लोड करने में विफल",
+    "treeEmpty": "यहाँ कुछ नहीं है",
+    "treeLoadFailed": "ये आइटम लोड नहीं हो सके",
+    "treeRetry": "फिर से कोशिश करें",
+    "treeIncludedWith": "{{name}} के साथ शामिल",
+    "treeExpand": "{{name}} की सामग्री दिखाएँ",
+    "treeCollapse": "{{name}} की सामग्री छिपाएँ",
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं",
     "comingSoon": "जल्द आ रहा है",
     "answer": "उत्तर",
@@ -1250,6 +1259,11 @@
         "allowedNotRun": "आपने {{tool}} की अनुमति दी, लेकिन यह नहीं चला"
       }
     },
+    "selectedAlone": "{{name}} (केवल यह आइटम)",
+    "noConnectorsFound": "कोई कनेक्टर नहीं मिला",
+    "treeSearching": "खोज रहे हैं…",
+    "treeSearchFailed": "खोज नहीं हो सकी। फिर से कोशिश करें।",
+    "treeSearchMatches": "फ़ोल्डर और आइटम",
     "artifactsPanel": {
       "generated_one": "{{count}} आर्टिफैक्ट बनाया गया",
       "generated_other": "{{count}} आर्टिफैक्ट बनाए गए",
@@ -4404,7 +4418,10 @@
     "mcpServerNeedsToolsBanner": "{{names}} के लिए कम से कम एक टूल चुनें, या \"सभी टूल\" चालू करें।",
     "mcpPersonalOnSharedAgentNotify": "{{name}} आपका व्यक्तिगत MCP सर्वर है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।",
     "mcpAgentApprovalsEnterprise": "हर एजेंट के लिए टूल अनुमोदन Enterprise Edition का हिस्सा हैं। यहाँ, हर व्यक्ति के अपने टूल अनुमोदन लागू होते हैं।",
-    "mcpAgentApprovals": "हर एजेंट के लिए टूल अनुमोदन"
+    "mcpAgentApprovals": "हर एजेंट के लिए टूल अनुमोदन",
+    "limitSource": "चुनें कि {{name}} में क्या खोजा जाए",
+    "limitSourceHint": "पूरे स्रोत को चुना रहने दें, या उसे हटाकर वे फ़ोल्डर और आइटम चुनें जिनमें एजेंट खोज सकता है।",
+    "limitSourceCount": "{{count}} चुने गए आइटम तक सीमित"
   },
   "recordView": {
     "sections": {

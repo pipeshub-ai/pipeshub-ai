@@ -719,9 +719,9 @@ export function UniversalAgentResourcesPanel({
 
   const handleCollectionSelectionChange = useCallback(
     (next: CollectionScopeSelection) => {
-      setFilters({ ...settings.filters, apps: next.apps, kb: next.kb });
+      setFilters(next);
     },
-    [setFilters, settings.filters]
+    [setFilters]
   );
 
   /** Footer/empty-state "browse more" row shared by the Actions and MCP tabs. */
@@ -1047,8 +1047,7 @@ export function UniversalAgentResourcesPanel({
             The component only unmounts when the user switches to the Actions tab. */}
         {(tab === 'connectors' || tab === 'collections') && (
           <CollectionsTab
-            apps={settings.filters?.apps ?? []}
-            kb={settings.filters?.kb ?? []}
+            selection={settings.filters}
             onSelectionChange={handleCollectionSelectionChange}
             filterMode={tab}
           />

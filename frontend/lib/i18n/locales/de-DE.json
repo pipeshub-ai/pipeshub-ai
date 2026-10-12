@@ -592,7 +592,9 @@
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
-    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu"
+    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -670,7 +672,8 @@
       "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche.",
       "notConnected": "Nicht verbunden",
       "connect": "Verbinden",
-      "actionConnected": "{{name}} ist verbunden"
+      "actionConnected": "{{name}} ist verbunden",
+      "limitedToCount": "· {{count}} ausgewählt"
     },
     "projectResources": {
       "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
@@ -698,6 +701,12 @@
     "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
+    "treeEmpty": "Hier ist nichts",
+    "treeLoadFailed": "Diese Elemente konnten nicht geladen werden",
+    "treeRetry": "Erneut versuchen",
+    "treeIncludedWith": "In {{name}} enthalten",
+    "treeExpand": "Inhalt von {{name}} anzeigen",
+    "treeCollapse": "Inhalt von {{name}} ausblenden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "comingSoon": "Demnächst verfügbar",
     "answer": "Antwort",
@@ -1250,6 +1259,11 @@
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
       }
     },
+    "selectedAlone": "{{name}} (nur dieses Element)",
+    "noConnectorsFound": "Keine Konnektoren gefunden",
+    "treeSearching": "Suche läuft…",
+    "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
+    "treeSearchMatches": "Ordner und Elemente",
     "artifactsPanel": {
       "generated_one": "{{count}} Artefakt erstellt",
       "generated_other": "{{count}} Artefakte erstellt",
@@ -4404,7 +4418,10 @@
     "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
     "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
-    "mcpAgentApprovals": "Tool-Freigaben pro Agent"
+    "mcpAgentApprovals": "Tool-Freigaben pro Agent",
+    "limitSource": "Auswählen, was {{name}} durchsucht",
+    "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt"
   },
   "recordView": {
     "sections": {

@@ -1,7 +1,7 @@
 import {
   AIServiceResponse,
   IAIModel,
-  IAppliedFilterNode,
+  IAppliedFilters,
   IChatAttachmentRef,
   IChatSessionDocument,
   IChatSessionMessageDocument,
@@ -90,7 +90,7 @@ export const extractModelInfo = (
 
 export const buildUserQueryMessage = (
   query: string,
-  appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+  appliedFilters?: IAppliedFilters,
   chatMode?: string,
   attachments?: IChatAttachmentRef[],
 ): IMessage => ({

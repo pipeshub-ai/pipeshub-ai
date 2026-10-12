@@ -45,7 +45,7 @@ class TestNodeIds:
     async def test_only_the_asked_nodes_that_came_back_are_accessible(self) -> None:
         provider, calls = _provider([_row("n1")])
         result = await provider.check_access("user-key", "org-1", node_ids=["n1", "n2", "n1"])
-        assert result == AccessCheck(node_ids=frozenset({"n1"}))
+        assert result == AccessCheck(node_ids=frozenset({"n1"}), node_ids_in_scope=frozenset({"n1"}))
         assert calls["node_ids"] == {"n1", "n2"} and calls["vrids"] == set()
 
     @pytest.mark.asyncio
@@ -92,6 +92,60 @@ class TestVirtualRecordIds:
         assert result == AccessCheck() and not calls
 
 
+class _Inside:
+    """A scope that admits the rows of one record group."""
+
+    def __init__(self, group_id: str) -> None:
+        self.group_id = group_id
+
+    def admits(self, row) -> bool:
+        return self.group_id in (row.get("groupIds") or ())
+
+
+class TestScopes:
+    @pytest.mark.asyncio
+    async def test_only_a_copy_every_scope_admits_is_cited(self) -> None:
+        rows = [
+            {**_row("r1-outside", "v1"), "groupIds": ["g-other"]},
+            {**_row("r2-inside", "v1"), "groupIds": ["g-sel", "g-allowed"]},
+            {**_row("r3-half", "v1"), "groupIds": ["g-sel"]},
+        ]
+        provider, _ = _provider(rows)
+        result = await provider.check_access(
+            "user-key", "org-1", virtual_record_ids=["v1"],
+            scopes=[_Inside("g-sel"), _Inside("g-allowed")],
+        )
+        assert result.records_by_vrid == {"v1": "r2-inside"}
+
+    @pytest.mark.asyncio
+    async def test_no_copy_inside_the_scope_cites_nothing(self) -> None:
+        provider, _ = _provider([{**_row("r1", "v1"), "groupIds": ["g-other"]}])
+        result = await provider.check_access(
+            "user-key", "org-1", virtual_record_ids=["v1"], scopes=[_Inside("g-sel")],
+        )
+        assert result.records_by_vrid == {}
+
+    @pytest.mark.asyncio
+    async def test_a_scope_never_narrows_node_ids(self) -> None:
+        """The same check tells whether the selected nodes are readable at all."""
+        provider, _ = _provider([{**_row("n1"), "groupIds": []}])
+        result = await provider.check_access(
+            "user-key", "org-1", node_ids=["n1"], scopes=[_Inside("g-sel")],
+        )
+        assert result.node_ids == frozenset({"n1"})
+        assert result.node_ids_in_scope == frozenset()
+
+    @pytest.mark.asyncio
+    async def test_the_asked_nodes_inside_every_scope_are_reported_apart(self) -> None:
+        rows = [{**_row("in"), "groupIds": ["g-sel"]}, {**_row("out"), "groupIds": ["g-other"]}]
+        provider, _ = _provider(rows)
+        result = await provider.check_access(
+            "user-key", "org-1", node_ids=["in", "out"], scopes=[_Inside("g-sel")],
+        )
+        assert result.node_ids == frozenset({"in", "out"})
+        assert result.node_ids_in_scope == frozenset({"in"})
+
+
 class TestBothInOneCall:
     @pytest.mark.asyncio
     async def test_each_row_answers_only_the_question_it_was_asked_for(self) -> None:
@@ -100,7 +154,9 @@ class TestBothInOneCall:
         rows = [_row("n1", "v-unasked"), _row("r1", "v1")]
         provider, calls = _provider(rows)
         result = await provider.check_access("k", "o", node_ids=["n1"], virtual_record_ids=["v1"])
-        assert result == AccessCheck(node_ids=frozenset({"n1"}), records_by_vrid={"v1": "r1"})
+        assert result == AccessCheck(
+            node_ids=frozenset({"n1"}), records_by_vrid={"v1": "r1"}, node_ids_in_scope=frozenset({"n1"}),
+        )
         assert calls["node_ids"] == {"n1"} and calls["vrids"] == {"v1"}
 
 
@@ -163,7 +219,7 @@ class TestInterface:
             assert not hasattr(IGraphDBProvider, name) and not hasattr(Neo4jProvider, name), name
 
 
-def _failing(backend: str):
+def _failing(backend: str) -> "IGraphDBProvider":
     """A provider of ``backend`` whose check cannot run, and whose linked-records
     query finds one link."""
     from unittest.mock import AsyncMock

@@ -55,6 +55,7 @@ function isAllRecordDisplayRow(item: TableItem): item is AllRecordItem {
 
 // Room for the preview, go-to-parent and more buttons.
 const ACTIONS_WIDTH = '104px';
+const ACTION_SLOT: React.CSSProperties = { width: 24, display: 'flex', justifyContent: 'center', flexShrink: 0 };
 
 interface TableHeaderCellProps {
   label: string;
@@ -641,64 +642,75 @@ function TableRow({
       {!isMobile && extraColumns ? extraColumns.cell(item) : null}
 
       {/* Actions */}
-      <Flex align="center" justify="end" gap="2" style={{ width: ACTIONS_WIDTH, padding: '0 var(--space-2)' }}>
-        {canPreview && (
-          <Tooltip content="Preview" side="top" delayDuration={200}>
-            <IconButton
-              variant="ghost"
-              size="1"
-              color="gray"
-              aria-label="Preview"
-              onClick={(e) => {
-                e.stopPropagation();
-                onPreview!(item);
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
-            </IconButton>
-          </Tooltip>
+      {/* A slot per action the list offers, filled or not, so the icons line up from row to row. */}
+      <Flex align="center" justify="center" gap="2" style={{ width: ACTIONS_WIDTH, padding: '0 var(--space-2)' }}>
+        {onPreview && (
+          <Box style={ACTION_SLOT}>
+            {canPreview && (
+              <Tooltip content="Preview" side="top" delayDuration={200}>
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  color="gray"
+                  aria-label="Preview"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onPreview!(item);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="visibility" size={16} color="var(--slate-11)" />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Box>
         )}
-        {parentTarget && (
-          <Tooltip
-            content={parentTarget.parent?.name ? `Go to ${parentTarget.parent.name}` : 'Go to parent'}
-            side="top"
-            delayDuration={200}
-          >
-            <IconButton
-              variant="ghost"
-              size="1"
-              color="gray"
-              aria-label="Go to parent"
-              onClick={(e) => {
-                e.stopPropagation();
-                onGoToParent!(parentTarget);
-              }}
-              style={{ cursor: 'pointer' }}
-            >
-              <MaterialIcon name="north_west" size={16} color="var(--slate-11)" />
-            </IconButton>
-          </Tooltip>
+        {onGoToParent && (
+          <Box style={ACTION_SLOT}>
+            {parentTarget && (
+              <Tooltip
+                content={parentTarget.parent?.name ? `Go to ${parentTarget.parent.name}` : 'Go to parent'}
+                side="top"
+                delayDuration={200}
+              >
+                <IconButton
+                  variant="ghost"
+                  size="1"
+                  color="gray"
+                  aria-label="Go to parent"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onGoToParent!(parentTarget);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="north_west" size={16} color="var(--slate-11)" />
+                </IconButton>
+              </Tooltip>
+            )}
+          </Box>
         )}
-        <ItemActionMenu
-          open={isMenuOpen}
-          onOpenChange={setIsMenuOpen}
-          actions={[
-            { icon: 'folder_open', label: 'Open', onClick: onOpen },
-            !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
-            onRename && canEditItem && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
-            ...(showReindexMenu
-              ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
-                  onReindex!(item, statusFilters),
-                )
-              : []),
-            !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
-            // Move relocates an item within its collection — a collection itself has nothing to move into.
-            onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
-            // Collections can only be deleted by OWNER
-            onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
-          ]}
-        />
+        <Box style={ACTION_SLOT}>
+          <ItemActionMenu
+            open={isMenuOpen}
+            onOpenChange={setIsMenuOpen}
+            actions={[
+              { icon: 'folder_open', label: 'Open', onClick: onOpen },
+              !isFolder && onDownload && shouldShowDownloadForTableItem(item) && { icon: 'file_download', label: 'Download', onClick: () => onDownload(item) },
+              onRename && canEditItem && { icon: 'edit', label: 'Rename', onClick: () => startEditing() },
+              ...(showReindexMenu
+                ? mapReindexOptionsToMenuActions(reindexMenuOptions, t, (statusFilters) =>
+                    onReindex!(item, statusFilters),
+                  )
+                : []),
+              !isFolder && onReplace && canEditItem && { icon: 'drive_folder_upload', label: 'Replace', onClick: () => onReplace(item) },
+              // Move relocates an item within its collection — a collection itself has nothing to move into.
+              onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
+              // Collections can only be deleted by OWNER
+              onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
+            ]}
+          />
+        </Box>
       </Flex>
     </Flex>
   );

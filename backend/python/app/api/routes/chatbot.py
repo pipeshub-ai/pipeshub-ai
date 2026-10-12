@@ -142,6 +142,10 @@ class ChatQuery(BaseModel):
     # project scope must stay empty, never widen. Threaded into `filters`
     # below rather than passed as a separate retrieval parameter.
     strictScope: bool = False
+    # Set by Node for a project-scoped chat whose turn selects below app level:
+    # the project's own sources (`{"apps": [...]}`), which the selected record
+    # groups, folders and records must lie in. Never taken from a client.
+    allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
     _validate_run_id = field_validator("runId")(validate_run_id)
@@ -1565,6 +1569,7 @@ async def _generate_chat_stream_via_agent_loop(
         "limit": query_info.limit,
         "previous_conversations": previous_conversations,
         "filters": effective_filters,
+        "allowedFilters": query_info.allowedFilters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,

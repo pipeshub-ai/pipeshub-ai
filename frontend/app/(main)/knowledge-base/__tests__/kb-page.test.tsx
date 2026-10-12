@@ -5,6 +5,7 @@ import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
@@ -193,6 +194,7 @@ let replaceState: { mockRestore: () => void } | null = null;
 
 beforeEach(() => {
   installBrowserShims();
+  usePendingChatStore.setState({ pending: null });
   nav.current = createNavigation();
   router.push.mockImplementation((url: string) => nav.current!.setUrl(url));
   router.replace.mockImplementation((url: string) => nav.current!.setUrl(url));
@@ -1239,6 +1241,66 @@ describe('Knowledge base page — selecting several items', () => {
     fireEvent.click(within(bar).getByRole('button', { name: /Re-index/ }));
 
     await waitFor(() => expect(toastTexts()).toContain('Reindexed 1 items, 1 failed'));
+  });
+
+  it('opens a new chat scoped to the selected files, without sending anything', async () => {
+    await selectSpecAndNotes();
+
+    const bar = screen.getByText('2 Items Selected').parentElement!;
+    fireEvent.click(within(bar).getByRole('button', { name: /Chat/ }));
+
+    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(usePendingChatStore.getState().pending).toMatchObject({
+      message: '',
+      pageContext: {
+        selectedNodes: [
+          { id: 'rec-spec', name: 'spec.pdf', nodeType: 'record' },
+          { id: 'rec-notes', name: 'notes.txt', nodeType: 'record' },
+        ],
+      },
+    });
+  });
+
+  it('takes a selected folder to the chat as a folder', async () => {
+    await openEngineering();
+    fireEvent.click(within(row('Designs')).getByRole('checkbox'));
+    const bar = (await screen.findByText('1 Item Selected')).parentElement!;
+
+    fireEvent.click(within(bar).getByRole('button', { name: /Chat/ }));
+
+    expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toMatchObject([
+      { id: DESIGNS.id, name: 'Designs', nodeType: 'folder' },
+    ]);
+  });
+
+  it('takes to the chat exactly the files the bar counts, after moving to another page', async () => {
+    withCollections();
+    api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
+      const page = engineeringContents(params.page === 1 ? [SPEC] : [NOTES]);
+      page.pagination = {
+        page: params.page,
+        limit: 50,
+        totalItems: 100,
+        totalPages: 2,
+        startIndex: (params.page - 1) * 50 + 1,
+        endIndex: params.page * 50,
+        hasNext: params.page < 2,
+        hasPrev: params.page > 1,
+      };
+      return page;
+    }, 2));
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+    fireEvent.click(within(await screen.findByRole('row', { name: 'spec.pdf' })).getByRole('checkbox'));
+    fireEvent.click(screen.getByText('Next'));
+    fireEvent.click(within(await screen.findByRole('row', { name: 'notes.txt' })).getByRole('checkbox'));
+    // A collection's listing starts each page with nothing ticked.
+    const bar = (await screen.findByText('1 Item Selected')).parentElement!;
+
+    fireEvent.click(within(bar).getByRole('button', { name: /Chat/ }));
+
+    expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes?.map((node) => node.name)).toEqual([
+      'notes.txt',
+    ]);
   });
 
   it('clears the selection', async () => {

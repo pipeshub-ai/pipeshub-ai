@@ -181,6 +181,9 @@ const messageSchema = new Schema<IMessage>(
     appliedFilters: {
       apps: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
       kb: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      recordGroups: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      records: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
+      recordsExact: [{ id: String, name: String, nodeType: String, connector: String, _id: false }],
     },
     attachments: [attachmentRefSchema],
     // Reference data for follow-up queries (stores IDs from tool responses)
