@@ -123,7 +123,27 @@ def test_raw_space_in_a_markdown_destination_is_not_a_link() -> None:
         ("https://example.com/a%20b <c>", "https://example.com/a%20b%20%3Cc%3E"),
         ("https://example.com/café?q=1#top", "https://example.com/café?q=1#top"),
         ("  https://example.com/tab\there  ", "https://example.com/tab%09here"),
+        ("https://example.com/a\u00a0b\u2003c", "https://example.com/a%C2%A0b%E2%80%83c"),
     ],
 )
 def test_markdown_link_destination_encodes_only_unsafe_characters(url, expected) -> None:
     assert markdown_link_destination(url) == expected
+
+
+def test_unicode_space_inside_a_bare_destination_does_not_end_it() -> None:
+    assert anchor_text_only("[History](https://example.org/New\u00a0York) next") == "History next"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("[https://example.org/wiki/New York](https://example.org/wiki/New%20York) is big",
+         "example.org is big"),
+        ("Read [https://docs.example.com/a guide][g] now.\n\n[g]: https://docs.example.com/a",
+         "Read docs.example.com now."),
+        # Prose: the word after a bare URL's space is not part of it.
+        ("See https://en.wikipedia.org/wiki/New York today", "See en.wikipedia.org York today"),
+    ],
+)
+def test_link_whose_text_is_a_url_reduces_to_its_host(text, expected) -> None:
+    assert anchor_text_only(text) == expected

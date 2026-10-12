@@ -11,7 +11,7 @@ Code spans and fenced code keep their text untouched: a URL there is content.
 from __future__ import annotations
 
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 # A closing fence may be longer than the opener (CommonMark 4.5).
 _FENCE_RE = re.compile(
@@ -32,7 +32,10 @@ _TRAILING_URL_PUNCTUATION = ".,;:!?'\""
 _INLINE_SPACES_RE = re.compile(r"[ \t]{2,}")
 _PLACEHOLDER = "\x00{}\x00"
 # Characters a bare CommonMark link destination cannot hold raw.
-_UNSAFE_DESTINATION_CHAR_RE = re.compile(r"[\x00-\x20()<>\x7f]")
+# Python's ``\s`` adds Unicode spaces (``&nbsp;``, em space), which split a
+# destination for a reader and for most markdown renderers alike.
+_UNSAFE_DESTINATION_CHAR_RE = re.compile(r"[\x00-\x20()<>\x7f]|\s")
+_URL_LABEL_RE = re.compile(r"(?:https?|ftp)://\S", re.IGNORECASE)
 _PLACEHOLDER_RE = re.compile(r"\x00(\d+)\x00")
 
 
@@ -44,7 +47,7 @@ def markdown_link_destination(url: str) -> str:
     Only those characters are encoded, so existing ``%XX`` escapes and
     non-ASCII text are untouched and the URL names the same resource.
     """
-    return _UNSAFE_DESTINATION_CHAR_RE.sub(lambda m: f"%{ord(m.group(0)):02X}", url.strip())
+    return _UNSAFE_DESTINATION_CHAR_RE.sub(lambda m: quote(m.group(0), safe=""), url.strip())
 
 
 def anchor_text_only(text: str) -> str:
@@ -117,7 +120,7 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
         if after < length and text[after] == "(":
             end = link_destination_end(text, after)
             if end is not None:
-                out.append(_strip_bracket_links(label, reference_labels).strip())
+                out.append(_visible_label(label, reference_labels))
                 i = end + 1
                 continue
         # A block rarely holds the definitions its references point at, so an
@@ -129,16 +132,26 @@ def _strip_bracket_links(text: str, reference_labels: set[str]) -> str:
             if ref_end is not None:
                 ref = text[after + 1 : ref_end].strip().lower() or label.strip().lower()
                 if ref in reference_labels or not reference_labels:
-                    out.append(_strip_bracket_links(label, reference_labels).strip())
+                    out.append(_visible_label(label, reference_labels))
                     i = ref_end + 1
                     continue
         if label.strip().lower() in reference_labels:
-            out.append(_strip_bracket_links(label, reference_labels).strip())
+            out.append(_visible_label(label, reference_labels))
             i = after
             continue
         out.append(char)
         i += 1
     return "".join(out)
+
+
+def _visible_label(label: str, reference_labels: set[str]) -> str:
+    """A link's text, or its host when the text is itself a URL.
+
+    The bare-URL pass stops at whitespace, so a URL label with a space
+    (``[https://x/New York](...)``) would keep the words after it.
+    """
+    text = _strip_bracket_links(label, reference_labels).strip()
+    return _url_label(text) if _URL_LABEL_RE.match(text) else text
 
 
 def _matching(text: str, start: int, opener: str, closer: str) -> int | None:
@@ -187,7 +200,9 @@ def link_destination_end(text: str, start: int) -> int | None:
             if char == "\\":
                 i += 2
                 continue
-            if char.isspace() or ord(char) < 0x20:
+            # CommonMark ends a bare destination only on ASCII space or a
+            # control character; other Unicode spaces are part of it.
+            if char == " " or ord(char) < 0x20 or char == "\x7f":
                 break
             if char == "(":
                 depth += 1

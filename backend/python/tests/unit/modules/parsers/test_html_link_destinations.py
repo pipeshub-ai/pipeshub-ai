@@ -62,6 +62,23 @@ def _texts(container: BlocksContainer) -> list[str]:
             "Page",
         ),
         (
+            '<a href="https://en.wikipedia.org/wiki/New&nbsp;York&nbsp;(state)#History">History</a> next',
+            "https://en.wikipedia.org/wiki/New%C2%A0York%C2%A0%28state%29#History",
+            "History next",
+        ),
+        (
+            '<a href="https://en.wikipedia.org/wiki/New York">https://en.wikipedia.org/wiki/New York</a>'
+            " is big",
+            "https://en.wikipedia.org/wiki/New%20York",
+            "en.wikipedia.org is big",
+        ),
+        (
+            '<a href="https://example.com/docs/Report (final).pdf">'
+            "https://example.com/docs/Report (final).pdf</a>",
+            "https://example.com/docs/Report%20%28final%29.pdf",
+            "example.com",
+        ),
+        (
             '<a href="https://example.com/docs/Acme Corp" title="Acme">Acme Corp</a> ok',
             '(https://example.com/docs/Acme%20Corp "Acme")',
             "Acme Corp ok",
@@ -90,6 +107,10 @@ async def test_href_is_stored_encoded_and_embedded_as_anchor_text(
         (
             "https://example.com/docs/Report (Q3 (final)).pdf",
             "https://example.com/docs/Report%20%28Q3%20%28final%29%29.pdf",
+        ),
+        (
+            "https://example.com/docs/New&nbsp;York&nbsp;(HQ).pdf",
+            "https://example.com/docs/New%C2%A0York%C2%A0%28HQ%29.pdf",
         ),
     ],
 )
