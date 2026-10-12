@@ -1,9 +1,12 @@
 name: SDK Tests
 
 # Tests the TypeScript, Python and Go SDKs against the app built from this commit.
-#   Current run:  SDKs generated from this commit's spec. A failure is BLOCK.
-#   Previous run: the last released SDKs (.github/sdk-test-matrix.yaml). A failure is FLAG.
+#   Current run:  SDKs generated from this commit's spec and tests.arazzo.yaml. A failure is BLOCK.
+#   Previous run: the last released SDKs (.github/sdk-test-matrix.yaml) with the tests in their
+#                 tags, only for the languages whose current run passed. A failure is FLAG.
 # One job, one app: the three suites run side by side and each test checks only what it created.
+# FLAG does not stop the merge; a person accepts it with a label (sdk-break-approval.yml).
+# integration-tests/sdk_tests/README.md has the rules and the local run steps.
 
 on:
   pull_request:
@@ -30,10 +33,10 @@ concurrency:
 
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
-  # generate-sdks.yml in pipeshub-ai/open-api installs this version; workflow.yaml there pins the
-  # generator the CLI then switches to. Keep both in step so the SDK under test equals the published one.
-  SPEAKEASY_VERSION: v1.739.0
-  OPEN_API_REF: a3f82813eda8c5f60648e16b3d46c1967cff987f
+  # The open-api commit whose generation settings this job uses (gen.yaml, workflow.yaml, the
+  # overlay, filter_sdk_spec.py and the Speakeasy CLI version in generate-sdks.yml), so the SDK
+  # under test equals the published one. Move it when open-api changes them.
+  OPEN_API_REF: 11f2c863fb3ec8fb591ccd98baaa26b83f548603
   COMPOSE_FILE: docker-compose.integration.neo4j.yml
   SDK_WORK_DIR: ${{ github.workspace }}/sdk-work
   SDK_RELEASED_DIR: ${{ github.workspace }}/sdk-released
@@ -48,9 +51,13 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: read
-      pull-requests: write
+      issues: write          # create the FLAG labels
+      pull-requests: write   # the report comment and the labels
+      statuses: write        # the "SDK break approval" status on FLAG
+    # Same gate as integration-tests.yml: its required reviewers approve every run that is not the
+    # nightly, so a manual run cannot reach the secrets without review.
     environment:
-      name: ${{ github.event_name == 'pull_request' && 'integration-test-dev' || 'integration-test-daily' }}
+      name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     steps:
       - name: Checkout code
@@ -79,18 +86,33 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
-      # Speakeasy lints the Go SDK with staticcheck v0.6.1, which cannot read packages built by a newer Go.
+      # Same Go as generate-sdks.yml: Speakeasy lints the Go SDK with staticcheck v0.6.1, which
+      # cannot read packages built by a newer Go. GOTOOLCHAIN=auto still lets a go.mod ask for more.
       - name: Set up Go
         uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.24'
           cache: false
 
+      # The CLI version comes from generate-sdks.yml at OPEN_API_REF, so the two cannot drift.
       - name: Install Speakeasy CLI
         run: |
-          curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${SPEAKEASY_VERSION}/speakeasy_linux_amd64.zip"
-          sudo unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           pip install --quiet pyyaml
+          version=$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["env"]["SPEAKEASY_VERSION"])' \
+            open-api/.github/workflows/generate-sdks.yml)
+          curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${version}/speakeasy_linux_amd64.zip"
+          sudo unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
+          speakeasy --version
+
+      # Fails when a test names an operation the spec no longer has.
+      - name: List the SDK operations no test calls
+        run: |
+          {
+            echo '### SDK test coverage'
+            echo '```'
+            python3 integration-tests/sdk_tests/coverage.py
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # A language that fails to generate has no suite to run, which the report reads as BLOCK.
       - name: Generate the SDKs and their tests
@@ -100,10 +122,19 @@ jobs:
           SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
         run: integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_WORK_DIR"
 
+      # The app Dockerfile uses these as FROM stages. From GHCR first, as integration-tests.yml does;
+      # Docker Hub is the fallback per image.
       - name: Pull pre-built base images
         run: |
-          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
-          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              image="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull the GHCR base image, so this run uses ${image} from Docker Hub."
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
 
       - name: Build the app
         working-directory: deployment/docker-compose
@@ -139,6 +170,10 @@ jobs:
           TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
         run: uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py
 
+      # Provisioning wrote the OAuth app to $GITHUB_ENV; hide its secret from every later log line.
+      - name: Mask the OAuth client secret
+        run: echo "::add-mask::${PIPESHUB_CLIENT_SECRET}"
+
       # The suites get only the OAuth app the provisioning step wrote to $GITHUB_ENV.
       - name: 'Current run: generated SDKs'
         id: current
@@ -162,25 +197,49 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SDK_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          # Folded, because " #" would start a YAML comment in a plain value.
+          SDK_TEST_TRIGGER: >-
+            ${{ github.event_name == 'pull_request' && format('<{0}|pull request #{1}>', github.event.pull_request.html_url, github.event.pull_request.number) || format('{0} on {1}', github.event_name, github.ref_name) }}
         run: |
           status=0
-          python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --out "$SDK_REPORTS_DIR/report" || status=$?
+          python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --out "$SDK_REPORTS_DIR/report" \
+            --releases .github/sdk-test-matrix.yaml || status=$?
           echo "verdict=$(cat "$SDK_REPORTS_DIR/report/verdict.txt")" >> "$GITHUB_OUTPUT"
           exit $status
 
-      - name: Comment on the pull request
-        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+      - name: Update the pull request
+        if: ${{ !cancelled() && github.event_name == 'pull_request' && steps.report.outputs.verdict != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           VERDICT: ${{ steps.report.outputs.verdict }}
+        run: integration-tests/sdk_tests/update_pull_request.sh "$PR_NUMBER" "$VERDICT" "$SDK_REPORTS_DIR/report/summary.md"
+
+      # report.py wrote both chat.postMessage bodies; the failures go in the message's thread.
+      - name: Send the report to Slack
+        if: ${{ !cancelled() && steps.report.outputs.verdict != '' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
         run: |
-          gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --edit-last --create-if-none \
-            --body-file "$SDK_REPORTS_DIR/report/summary.md"
-          if [ "$VERDICT" = FLAG ]; then
-            gh label create breaks-previous-sdk --repo "$GITHUB_REPOSITORY" --color D93F0B \
-              --description "Breaks the last released SDK" 2>/dev/null || true
-            gh pr edit "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label breaks-previous-sdk
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            echo "::notice::SLACK_BOT_TOKEN or SLACK_CI_CHANNEL_ID is not set, so the report is not sent to Slack."
+            exit 0
+          fi
+          post() {
+            curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
+              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
+              -H "Content-Type: application/json; charset=utf-8" --data-binary @- \
+              | jq -er 'if .ok then .ts else error("Slack refused the message: \(.error)") end'
+          }
+          payloads="$SDK_REPORTS_DIR/report/slack.json"
+          ts=$(jq --arg channel "$SLACK_CHANNEL_ID" '.message + {channel: $channel}' "$payloads" | post)
+          if jq -e '.thread' "$payloads" > /dev/null; then
+            jq --arg channel "$SLACK_CHANNEL_ID" --arg ts "$ts" '.thread + {channel: $channel, thread_ts: $ts}' "$payloads" \
+              | post > /dev/null
           fi
 
       - name: Collect Docker logs
@@ -194,7 +253,6 @@ jobs:
               > "$SDK_REPORTS_DIR/docker-logs/${svc}.log" 2>&1 || true
           done
 
-      # TODO(siddhant-ota, PA-2590): send report/slack.json to Slack once the channel is decided; it is only saved for now.
       - name: Upload the reports
         if: ${{ always() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
