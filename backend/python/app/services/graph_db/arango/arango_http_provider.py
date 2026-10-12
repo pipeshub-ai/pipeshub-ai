@@ -12445,7 +12445,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR kb_role IN kb_roles
                 LET kb = kb_role.kb_doc
                 LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
-                SORT {sort_field} {sort_direction}
+                SORT {sort_field} {sort_direction}, kb._key
                 LIMIT @skip, @limit
                 RETURN {{
                     id: kb._key,
@@ -12830,7 +12830,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -13111,7 +13111,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -15649,7 +15649,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
@@ -15988,7 +15988,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR item IN all_records_data
                 LET record = item.record
                 LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )

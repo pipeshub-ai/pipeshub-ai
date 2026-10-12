@@ -12040,7 +12040,7 @@ class Neo4jProvider(IGraphDBProvider):
 
             WITH kb, final_role, [f IN allFolders WHERE f IS NOT NULL] AS folders
 
-            ORDER BY {sort_field} {sort_direction}
+            ORDER BY {sort_field} {sort_direction}, kb.id
             SKIP $skip
             LIMIT $limit
 
@@ -14519,7 +14519,7 @@ class Neo4jProvider(IGraphDBProvider):
             UNWIND [item IN allRecords WHERE item.record IS NOT NULL] AS item
 
             WITH item.record AS record, item.permission AS permission, item.kb_id AS kb_id, item.kb_name AS kb_name, item.file AS file
-            ORDER BY record.{sort_by} {sort_order.upper()}
+            ORDER BY record.{sort_by} {sort_order.upper()}, record.id
             SKIP $skip
             LIMIT $limit
 
@@ -15121,7 +15121,9 @@ class Neo4jProvider(IGraphDBProvider):
             {records_union}
             }}
             WITH result
-            ORDER BY result.{sort_by} {sort_order.upper()}
+            // Unique tie-breaker: many records share a timestamp (one per upload
+            // batch), and SKIP/LIMIT over ties repeats some rows and drops others.
+            ORDER BY result.{sort_by} {sort_order.upper()}, result.id
             SKIP $skip
             LIMIT $limit
             RETURN result
@@ -15157,6 +15159,9 @@ class Neo4jProvider(IGraphDBProvider):
             WHERE (folderRecord.isDeleted IS NULL OR folderRecord.isDeleted <> true)
             AND folderRecord.orgId = $org_id
             AND NOT folderRecord.mimeType = "application/vnd.folder"
+            // Aggregate before matching root records: in one pipeline the planner
+            // re-expands the KB's BELONGS_TO edges once per root record.
+            WITH kb, collect(DISTINCT folderRecord) AS folderRecords, collect(DISTINCT folder) AS allFolders
 
             // Get records at KB root
             OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)
@@ -15167,9 +15172,8 @@ class Neo4jProvider(IGraphDBProvider):
                 MATCH (pf:Record)-[:RECORD_RELATION {relationshipType: "PARENT_CHILD"}]->(rootRecord)
             }
 
-            WITH collect(DISTINCT folderRecord) + collect(DISTINCT rootRecord) AS allRecords,
-                 collect(DISTINCT folder) AS allFolders
-            UNWIND allRecords AS record
+            WITH folderRecords, allFolders, collect(DISTINCT rootRecord) AS rootRecords
+            UNWIND folderRecords + rootRecords AS record
             WITH DISTINCT record, allFolders WHERE record IS NOT NULL
 
             WITH collect(DISTINCT record.recordType) AS recordTypes,
@@ -15332,7 +15336,7 @@ class Neo4jProvider(IGraphDBProvider):
             {record_filter}
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
             WITH record, file
-            ORDER BY {record_sort_field} {sort_direction}
+            ORDER BY {record_sort_field} {sort_direction}, record.id
             RETURN {{
                 id: record.id,
                 recordName: record.recordName,
@@ -15548,7 +15552,7 @@ class Neo4jProvider(IGraphDBProvider):
             {record_filter}
             OPTIONAL MATCH (record)-[:IS_OF_TYPE]->(file:File)
             WITH record, file
-            ORDER BY {record_sort_field} {sort_direction}
+            ORDER BY {record_sort_field} {sort_direction}, record.id
             RETURN {{
                 id: record.id,
                 recordName: record.recordName,
