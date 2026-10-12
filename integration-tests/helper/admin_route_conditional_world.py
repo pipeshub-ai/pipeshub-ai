@@ -36,6 +36,7 @@ from helper.admin_route_conditional_table import (
     INDEXING_SERVICE,
     KEYED_TOOLSET_FIELD,
     KEYED_TOOLSET_TYPE,
+    MCP_SERVER_URL,
     MEMBER,
     OAUTH_CONNECTOR_TYPE,
     OAUTH_TOOLSET_TYPE,
@@ -58,6 +59,7 @@ _BODY_LIMIT = 262_144
 _CONNECTORS = "/api/v1/connectors"
 _TOOLSETS = "/api/v1/toolsets"
 _MCP = "/api/v1/mcp-servers/instances"
+_AGENTS = "/api/v1/agents"
 _SKILLS = "/api/v1/skills"
 _GONE_TIMEOUT_SEC = 120.0
 _GONE_POLL_SEC = 2.0
@@ -323,6 +325,11 @@ class World:
     def _fresh_value(self, key: str) -> str:
         if key == "unique_name":
             return self._unique_name()
+        if key in ("fresh_mcp", "fresh_personal_mcp"):
+            self._switch_on(MCP_FLAG)
+            if key == "fresh_mcp":
+                return self._create_mcp_server(ADMIN, shared=False)
+            return self._create_mcp_server(CREATOR, shared=False, scope="personal")
         caller, scope = (ADMIN, "team") if key == "fresh_team" else (CREATOR, "personal")
         connector_id, _ = self._create_connector(caller, PLAIN_CONNECTOR_TYPE, scope)
         self._fresh.append((connector_id, caller))
@@ -521,22 +528,23 @@ class World:
 
     # --------------------------------------------------------------------- mcp
 
-    def _create_mcp_server(self, *, shared: bool) -> str:
+    def _create_mcp_server(self, caller: str, *, shared: bool, scope: str = "org") -> str:
         name = self._unique_name("mcp")
-        # A closed local port: the server is registered, never contacted.
+        # Registered, never contacted (the URL never resolves).
         body = self._json(
-            ADMIN, "POST", _MCP, "Registering an MCP server", ok=(201,),
+            caller, "POST", _MCP, "Registering an MCP server", ok=(201,),
             json={
                 "name": name, "transport": "streamable_http", "authMode": "api_token",
-                "useAdminAuth": shared, "url": "http://127.0.0.1:1/mcp",
+                "useAdminAuth": shared, "url": MCP_SERVER_URL, "scope": scope,
             },
         )
         instance_id = str(body.get("_id") or "")
         if not instance_id:
             raise RuntimeError("Registering an MCP server returned no id.")
+        # A case may have deleted it already.
         self._later(
             f"MCP server {name}",
-            lambda: self._json(ADMIN, "DELETE", f"{_MCP}/{instance_id}", "Removing a test MCP server",
+            lambda: self._json(caller, "DELETE", f"{_MCP}/{instance_id}", "Removing a test MCP server",
                                ok=(200, 404)),
         )
         return instance_id
@@ -544,9 +552,28 @@ class World:
     def _build_mcp(self) -> dict[str, str]:
         self._switch_on(MCP_FLAG)
         return {
-            "shared_mcp": self._create_mcp_server(shared=True),
-            "own_mcp": self._create_mcp_server(shared=False),
+            "shared_mcp": self._create_mcp_server(ADMIN, shared=True),
+            "own_mcp": self._create_mcp_server(ADMIN, shared=False),
+            "personal_mcp": self._create_mcp_server(CREATOR, shared=False, scope="personal"),
         }
+
+    # ------------------------------------------------------------------ agents
+
+    def _build_agents(self) -> dict[str, str]:
+        # Its MCP listing must have an org server in it.
+        self.value("shared_mcp")
+        body = self._json(ADMIN, "POST", f"{_AGENTS}/create", "Creating a test agent",
+                          ok=(200, 201), json={"name": self._unique_name("agent")})
+        agent = body.get("agent")
+        agent_key = str(agent.get("_key") or "") if isinstance(agent, dict) else ""
+        if not agent_key:
+            raise RuntimeError("Creating a test agent returned no _key.")
+        self._later(
+            "the test agent",
+            lambda: self._json(ADMIN, "DELETE", f"{_AGENTS}/{agent_key}", "Deleting the test agent",
+                               ok=(200, 204, 404)),
+        )
+        return {"admin_agent": agent_key}
 
     # ---------------------------------------------------------------- teardown
 

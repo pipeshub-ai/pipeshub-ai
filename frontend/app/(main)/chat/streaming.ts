@@ -48,6 +48,7 @@ import {
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
+import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -345,6 +346,7 @@ function applyAskUserQuestionSse(
 /**
  * If the last message is the empty placeholder assistant for an in-flight stream,
  * replace it with the error text. Otherwise append a new assistant error row.
+ * `streamError` (the server's error code and details) lets the thread offer a fix.
  */
 function pendingAfterStreamFailure(
   pending: PendingAskUserQuestion | null | undefined,
@@ -362,20 +364,29 @@ function notifyAskUserQuestionResumeFailed(detail: string): void {
   });
 }
 
+function notifyToolApprovalFailed(detail: string): void {
+  toast.error(i18n.t('chat.toolApproval.answerFailed'), {
+    ...(detail ? { description: detail } : {}),
+  });
+}
+
 function withStreamingErrorMessage(
   currentMessages: ThreadMessageLike[],
-  errorText: string
+  errorText: string,
+  streamError?: ChatStreamErrorInfo
 ): ThreadMessageLike[] {
+  const withError = (metadata?: ThreadMessageLike['metadata']) =>
+    streamError ? { metadata: { ...metadata, custom: { ...metadata?.custom, streamError } } } : {};
   const last = currentMessages[currentMessages.length - 1];
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }] },
+      { ...last, content: [{ type: 'text' as const, text: errorText }], ...withError(last.metadata) },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }] },
+    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }], ...withError() },
   ];
 }
 
@@ -587,7 +598,11 @@ export async function streamMessageForSlot(
   slotId: string,
   query: string,
   request: StreamChatRequest,
-  options?: { resumeAskUserQuestion?: boolean }
+  options?: {
+    resumeAskUserQuestion?: boolean;
+    /** An answer to a tool approval card: it carries on this assistant row, with no user bubble. */
+    reuseRowId?: string;
+  }
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
@@ -625,9 +640,10 @@ export async function streamMessageForSlot(
   // "User selections:" user bubble. MessageList still matches live SSE to
   // that row because `streamingQuestion` is the original user text.
   const resumeAskUserQuestion = options?.resumeAskUserQuestion === true;
+  const reuseRowId = resumeAskUserQuestion ? undefined : options?.reuseRowId;
   const cardAssistantId = resumeAskUserQuestion
     ? slot.pendingAskUserQuestion?.assistantMessageId
-    : undefined;
+    : reuseRowId;
   let lastUserText = '';
   let lastAssistantId: string | undefined;
   let lastAssistantParts: MessagePart[] = [];
@@ -650,7 +666,8 @@ export async function streamMessageForSlot(
   // A card id the thread does not carry must not fall through to "newest
   // assistant row": reusing an unrelated turn overwrites the answer already
   // there. Start a fresh turn instead — misplaced at worst, not destructive.
-  const cardRowMissing = Boolean(cardAssistantId) && !lastAssistantId;
+  // An approval card is only answered on the latest reply, which is the newest row anyway.
+  const cardRowMissing = resumeAskUserQuestion && Boolean(cardAssistantId) && !lastAssistantId;
   if (!lastAssistantId && !cardRowMissing) {
     for (let i = baseMessages.length - 1; i >= 0; i -= 1) {
       const row = baseMessages[i];
@@ -665,7 +682,7 @@ export async function streamMessageForSlot(
       if (lastAssistantId && lastUserText) break;
     }
   }
-  const reuseExistingAssistant = resumeAskUserQuestion && Boolean(lastAssistantId);
+  const reuseExistingAssistant = (resumeAskUserQuestion || Boolean(reuseRowId)) && Boolean(lastAssistantId);
   const messagesWithPreviousCard = reuseExistingAssistant
     ? baseMessages
     : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion);
@@ -1223,12 +1240,15 @@ export async function streamMessageForSlot(
           runId: null,
           stopping: false,
           pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
-          messages: resumeAskUserQuestion
+          // A failed answer to a card leaves the card as it was, to answer again.
+          messages: resumeAskUserQuestion || reuseRowId
             ? currentMessages
-            : withStreamingErrorMessage(currentMessages, err),
+            : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error)),
         });
         if (resumeAskUserQuestion) {
           notifyAskUserQuestionResumeFailed(err);
+        } else if (reuseRowId) {
+          notifyToolApprovalFailed(err);
         }
         if (isNewConversation) {
           useChatStore.getState().clearPendingConversation(slotId);
@@ -1295,12 +1315,14 @@ export async function streamMessageForSlot(
       runId: null,
       stopping: false,
       pendingAskUserQuestion: pendingAfterStreamFailure(pendingNow),
-      messages: resumeAskUserQuestion
+      messages: resumeAskUserQuestion || reuseRowId
         ? currentMessages
         : withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (resumeAskUserQuestion) {
       notifyAskUserQuestionResumeFailed(errorMessage);
+    } else if (reuseRowId) {
+      notifyToolApprovalFailed(errorMessage);
     }
     if (isNewConversation) {
       useChatStore.getState().clearPendingConversation(slotId);

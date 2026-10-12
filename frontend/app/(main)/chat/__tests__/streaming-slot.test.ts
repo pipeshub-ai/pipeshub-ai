@@ -260,6 +260,18 @@ describe('when the answer fails', () => {
     expect(useChatStore.getState().pendingConversations[slotId]).toBeUndefined();
   });
 
+  it('keeps the error code and details so the thread can offer a fix', async () => {
+    const slotId = newSlot();
+    const details = { agentId: 'a-1', serviceAccount: false, servers: [{ instanceId: 'inst-1', name: 'GitHub', problem: 'not_connected' }] };
+    respondWith([frame('RUN_ERROR', { message: 'Connect GitHub first.', code: 'mcp_server_config_missing', details })]);
+
+    await streamMessageForSlot(slotId, Q, request());
+
+    const reply = slot(slotId).messages[1];
+    expect(getThreadMessagePlainText(reply)).toBe('Connect GitHub first.');
+    expect(reply.metadata?.custom?.streamError).toEqual({ code: 'mcp_server_config_missing', details });
+  });
+
   it('says PipesHub is busy when the request is rate limited', async () => {
     const slotId = newSlot();
     respondWith(jsonResponse(429, {}, { 'retry-after': '3' }));
@@ -896,6 +908,87 @@ describe('asking the user a question mid-run', () => {
     );
 
     expect(slot(slotId).pendingAskUserQuestion?.status).toBe('pending');
+  });
+});
+
+describe('answering an approval card', () => {
+  const WAITING = 'Waiting for your approval to run create_issue on Jira.';
+  const CARD = { approvalId: 'ap-1', serverName: 'Jira', toolName: 'create_issue', expiresAt: 1_900_000_000_000 };
+  const parked = (): ConversationMessage[] => [
+    storedMessage({ _id: 'q1', messageType: 'user_query', content: Q }),
+    storedMessage({
+      _id: 'a1', messageType: 'bot_response', content: WAITING,
+      parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD }],
+    } as Partial<ConversationMessage>),
+  ];
+
+  async function stoppedOnTheCard(): Promise<string> {
+    const slotId = newSlot();
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation(WAITING), messages: parked() } } })]);
+    await streamMessageForSlot(slotId, Q, request());
+    return slotId;
+  }
+
+  const answer = (decision: 'allow' | 'deny') =>
+    request({ query: `Tool approval: ${decision}`, toolApproval: { approvalId: 'ap-1', decision } });
+
+  it('carries on the same reply: no new bubble, and the call is settled where the card was', async () => {
+    const slotId = await stoppedOnTheCard();
+    let liveParts: MessagePart[] = [];
+    const unsubscribe = useChatStore.subscribe((state) => {
+      const parts = state.slots[slotId]?.streamingParts;
+      if (parts?.some((p) => p.toolCallId === 'c1' && p.approvalAnswer === 'allowed')) liveParts = parts;
+    });
+    respondWith([
+      frame('TOOL_CALL_START', { toolCallId: 'c1', toolCallName: 'mcp_jira_create_issue', approved: true, approvalAnswer: 'allowed' }),
+      frame('TOOL_CALL_END', { toolCallId: 'c1' }),
+      frame('TOOL_CALL_RESULT', { toolCallId: 'c1', content: 'created JIRA-7', status: 'completed' }),
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Filed JIRA-7.' }),
+      frame('RUN_FINISHED', {
+        result: {
+          conversation: {
+            ...finishedConversation('Filed JIRA-7.'),
+            messages: [
+              ...parked(),
+              storedMessage({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+              storedMessage({
+                _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.',
+                parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'completed', approved: true, approvalAnswer: 'allowed' }],
+              } as Partial<ConversationMessage>),
+            ],
+          },
+        },
+      }),
+    ]);
+
+    const streaming = streamMessageForSlot(slotId, 'Tool approval: allow', answer('allow'), { reuseRowId: 'a1' });
+    expect(texts(slotId)).toEqual([['user', Q], ['assistant', WAITING]]);
+    expect(slot(slotId).streamingQuestion).toBe(Q);
+    await streaming;
+    unsubscribe();
+
+    // The card's call is replaced where it was, not added again below it.
+    expect(liveParts.filter((p) => p.toolCallId === 'c1')).toEqual([
+      expect.objectContaining({ approved: true, approvalAnswer: 'allowed', approval: CARD }),
+    ]);
+    expect(texts(slotId)).toEqual([['user', Q], ['assistant', 'Filed JIRA-7.']]);
+    expect(slot(slotId).messages[1].id).toBe('a1');
+    expect(JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body)).toolApproval).toEqual({ approvalId: 'ap-1', decision: 'allow' });
+  });
+
+  it('leaves the card as it was and says so when the answer fails to send', async () => {
+    const slotId = await stoppedOnTheCard();
+    const before = slot(slotId).messages;
+    respondWith([frame('RUN_ERROR', { message: 'offline' })]);
+
+    await streamMessageForSlot(slotId, 'Tool approval: deny', answer('deny'), { reuseRowId: 'a1' });
+
+    expect(slot(slotId).messages).toEqual(before);
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(
+      useToastStore.getState().toasts.map((t) => ({ variant: t.variant, title: t.title, description: t.description })),
+    ).toEqual([{ variant: 'error', title: "Couldn't send your answer. Try again.", description: 'offline' }]);
   });
 });
 

@@ -111,6 +111,16 @@ const nullable = (value: unknown): unknown => value || null;
  * `/chat`. The project's tool scope is applied after the request's own
  * `tools`, so a project always narrows what the caller asked for.
  */
+/** The answer to a tool approval card, for the agent paths (where MCP tools run). */
+const assignToolApprovalToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  if (body.toolApproval && typeof body.toolApproval === 'object') {
+    payload.toolApproval = body.toolApproval;
+  }
+};
+
 export const buildAiChatRequest = (
   target: ChatTarget,
   body: Record<string, unknown>,
@@ -141,6 +151,7 @@ export const buildAiChatRequest = (
     assignToolsToPayload(payload, body.tools);
     assignCallerContextToAiPayload(payload, body);
     assignAgentCapabilitiesToPayload(payload, body);
+    assignToolApprovalToPayload(payload, body);
   } else {
     const { chatMode, agentMode } = parseChatMode(
       body.chatMode as string | undefined,
@@ -150,6 +161,7 @@ export const buildAiChatRequest = (
     if (agentMode) {
       assignToolsToPayload(payload, body.tools);
       assignAgentCapabilitiesToPayload(payload, body);
+      assignToolApprovalToPayload(payload, body);
     }
   }
   applyProjectScope(payload, context.project);

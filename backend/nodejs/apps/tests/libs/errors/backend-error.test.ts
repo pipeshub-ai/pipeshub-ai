@@ -173,6 +173,12 @@ describe('handleBackendError', () => {
       const result = handleBackendError({ statusCode: 504, data: {} }, 'search')
       expect(result).to.be.instanceOf(GatewayTimeoutError)
     })
+
+    it('reads a request that timed out as a gateway timeout, not a failure', () => {
+      const result = handleBackendError(new DOMException('The operation was aborted due to timeout', 'TimeoutError'), 'list MCP servers')
+      expect(result).to.be.instanceOf(GatewayTimeoutError)
+      expect(result.message).to.not.include('aborted')
+    })
   })
 
   describe('when the service cannot be reached', () => {

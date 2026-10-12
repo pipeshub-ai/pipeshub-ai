@@ -10,9 +10,10 @@ import {
 } from '../sidebar-toolset-utils';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import {
-  collectActiveMcpInstanceIdsFromNodes,
   collectActiveMcpTypeIdsFromNodes,
   isMcpTypeIdConflict,
+  mergeMcpDropIntoConfig,
+  type McpFlowTool,
 } from '../sidebar-mcp-utils';
 import { applyAutoConnectToEdges } from '../connection-rules';
 import { resolvePremiumDropPosition } from '../drop-position';
@@ -88,6 +89,9 @@ export function handleFlowCanvasDrop(
     readOnly: boolean;
     t: TFunction;
     onError?: (message: string) => void;
+    /** Set while the agent's MCP servers couldn't be read: a save leaves them out, so an MCP
+     * server dropped now would be lost without a word. */
+    mcpDropBlockedMessage?: string;
   }
 ): void {
   if (ctx.readOnly) return;
@@ -393,15 +397,23 @@ export function handleFlowCanvasDrop(
     return;
   }
 
-  if (type === 'mcp-server' || type.startsWith('mcp-')) {
+  if (type.startsWith('mcp-')) {
     const mcpInstanceId = event.dataTransfer.getData('instanceId');
     const mcpName = event.dataTransfer.getData('name');
     const mcpDisplayName = event.dataTransfer.getData('displayName') || mcpName;
     const mcpTypeId = event.dataTransfer.getData('typeId');
     const mcpIsAuthenticated = event.dataTransfer.getData('isAuthenticated') === 'true';
     const mcpToolsStr = event.dataTransfer.getData('tools');
+    const droppedTool =
+      toolsetType === 'mcp-tool' ? parseJson<McpFlowTool | null>(event.dataTransfer.getData('tool'), null) : null;
+    if (toolsetType === 'mcp-tool' && !droppedTool?.name) return;
 
     if (!mcpInstanceId || !mcpName) return;
+
+    if (ctx.mcpDropBlockedMessage) {
+      onError?.(ctx.mcpDropBlockedMessage);
+      return;
+    }
 
     if (!mcpIsAuthenticated) {
       onError?.(
@@ -413,17 +425,38 @@ export function handleFlowCanvasDrop(
       return;
     }
 
-    if (
-      collectActiveMcpInstanceIdsFromNodes(nodes).has(mcpInstanceId) ||
-      isMcpTypeIdConflict(collectActiveMcpTypeIdsFromNodes(nodes), mcpInstanceId, mcpTypeId || undefined)
-    ) {
+    if (isMcpTypeIdConflict(collectActiveMcpTypeIdsFromNodes(nodes), mcpInstanceId, mcpTypeId || undefined)) {
       onError?.(t('agentBuilder.mcpServerAlreadyAttachedNotify', { name: mcpDisplayName }));
       return;
     }
 
-    const mcpTools = mcpToolsStr
-      ? parseJson<{ name: string; fullName: string; description?: string }[]>(mcpToolsStr, [])
-      : [];
+    const serverTools = mcpToolsStr ? parseJson<McpFlowTool[]>(mcpToolsStr, []) : [];
+
+    const existingMcpNode = nodes.find(
+      (n) => n.data?.type?.startsWith('mcp-') && n.data.config?.instanceId === mcpInstanceId
+    );
+    if (existingMcpNode) {
+      setNodes((nds) =>
+        nds.map((node) =>
+          node.id === existingMcpNode.id
+            ? {
+                ...node,
+                data: {
+                  ...node.data,
+                  config: mergeMcpDropIntoConfig(node.data.config || {}, serverTools, droppedTool),
+                },
+              }
+            : node
+        )
+      );
+      return;
+    }
+
+    const mcpTools = droppedTool ? [droppedTool] : serverTools;
+    const availableTools =
+      droppedTool && !serverTools.some((tool) => tool.name === droppedTool.name)
+        ? [...serverTools, droppedTool]
+        : serverTools;
 
     const mcpNodeType = `mcp-${mcpInstanceId}`;
     const mcpNodeId = `${mcpNodeType}-${Date.now()}`;
@@ -443,7 +476,9 @@ export function handleFlowCanvasDrop(
           name: mcpName,
           displayName: mcpDisplayName,
           typeId: mcpTypeId || undefined,
+          allTools: !droppedTool,
           tools: mcpTools,
+          availableTools,
           isAuthenticated: mcpIsAuthenticated,
         },
         inputs: [],

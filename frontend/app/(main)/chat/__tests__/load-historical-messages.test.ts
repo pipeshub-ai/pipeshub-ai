@@ -28,6 +28,79 @@ function message(overrides: Partial<ConversationMessage>): ConversationMessage {
   } as ConversationMessage;
 }
 
+const WAITING = 'Waiting for your approval to run create_issue on Jira.';
+const CARD = { approvalId: 'ap-1', serverName: 'Jira', toolName: 'create_issue', expiresAt: 1_900_000_000_000 };
+
+describe('loadHistoricalMessages, an answered approval card', () => {
+  it('hides the answer and carries the reply on in the card\'s row, the call settled in place', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [
+          { type: 'tool_call', toolCallId: 'c0', toolName: 'search', status: 'completed' },
+          { type: 'sub_agent', runId: 'r', parts: [
+            { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD },
+          ] },
+          { type: 'text', content: WAITING, isFinal: true },
+        ],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({
+        _id: 'a2', messageType: 'bot_response', content: 'Filed JIRA-7.',
+        parts: [
+          { type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'completed', approved: true, approvalAnswer: 'allowed' },
+          { type: 'text', content: 'Filed JIRA-7.', isFinal: true },
+        ],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'q2', messageType: 'user_query', content: 'thanks' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1'], ['user', 'q2']]);
+    expect(messages[1].content).toEqual([{ type: 'text', text: 'Filed JIRA-7.' }]);
+    expect(messages[1].metadata?.custom?.messageId).toBe('a2');
+    const parts = messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>;
+    expect(parts.map((p) => p.toolCallId ?? p.type)).toEqual(['c0', 'sub_agent', 'text', 'text']);
+    expect((parts[1].parts as Array<Record<string, unknown>>)[0]).toMatchObject({
+      toolCallId: 'c1', status: 'completed', approvalAnswer: 'allowed', approval: CARD,
+    });
+  });
+
+  it('keeps the next question\'s reply on its own row after an answer that failed', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: allow' }),
+      message({ _id: 'err', messageType: 'error', content: 'Error Generating Response, Please try again' }),
+      message({ _id: 'q2', messageType: 'user_query', content: 'never mind, what is on my calendar?' }),
+      message({ _id: 'a2', messageType: 'bot_response', content: 'Two meetings.' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([
+      ['user', 'q'], ['assistant', 'a1'], ['user', 'q2'], ['assistant', 'a2'],
+    ]);
+    expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+
+  it('hides the error row of an answer whose run failed, leaving the card to answer again', () => {
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'file a bug' }),
+      message({
+        _id: 'a1', messageType: 'bot_response', content: WAITING,
+        parts: [{ type: 'tool_call', toolCallId: 'c1', toolName: 'mcp_jira_create_issue', status: 'awaiting_approval', approval: CARD }],
+      } as Partial<ConversationMessage>),
+      message({ _id: 'ans', messageType: 'user_query', content: 'Tool approval: deny' }),
+      message({ _id: 'err', messageType: 'error', content: 'Error Generating Response, Please try again' }),
+    ]);
+
+    expect(messages.map((m) => [m.role, m.id])).toEqual([['user', 'q'], ['assistant', 'a1']]);
+    expect((messages[1].metadata?.custom?.persistedParts as Array<Record<string, unknown>>)[0].status).toBe('awaiting_approval');
+  });
+});
+
 describe('loadHistoricalMessages', () => {
   it('drops a reply that was stopped before any text arrived', () => {
     // The backend saves this row when a stopped run's connection closes; the
@@ -35,6 +108,16 @@ describe('loadHistoricalMessages', () => {
     const { messages } = loadHistoricalMessages([
       message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
       message({ _id: 'a', messageType: 'bot_response', content: '', status: 'stopped' }),
+    ]);
+
+    expect(messages.map((m) => m.role)).toEqual(['user']);
+  });
+
+  it('drops an empty stopped reply whose only part is the sign-in card', () => {
+    const parts = [{ type: 'mcp_sign_in', servers: [{ instanceId: 'inst-drive', serverName: 'Drive', scopes: [] }] }];
+    const { messages } = loadHistoricalMessages([
+      message({ _id: 'q', messageType: 'user_query', content: 'A question' }),
+      message({ _id: 'a', messageType: 'bot_response', content: '', status: 'stopped', parts } as Partial<ConversationMessage>),
     ]);
 
     expect(messages.map((m) => m.role)).toEqual(['user']);

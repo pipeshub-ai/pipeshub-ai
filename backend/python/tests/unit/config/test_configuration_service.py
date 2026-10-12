@@ -94,6 +94,15 @@ class TestGetConfig:
         store.get_key.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_value_read_without_keeping_it_stays_out_of_the_cache(self) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(return_value={"tools": []})
+        svc = _build_service(store)
+
+        assert await svc.get_config("/catalog", keep_in_cache=False) == {"tools": []}
+        assert "/catalog" not in svc.cache
+
+    @pytest.mark.asyncio
     async def test_store_returns_none_falls_through_to_default(self):
         store = AsyncMock()
         store.get_key = AsyncMock(return_value=None)
@@ -369,6 +378,26 @@ class TestSetConfig:
         assert svc.cache["/my/key"] == "value1"
 
     @pytest.mark.asyncio
+    async def test_a_ttl_reaches_the_store(self) -> None:
+        store = AsyncMock()
+        store.create_key = AsyncMock(return_value=True)
+        svc = _build_service(store)
+
+        assert await svc.set_config("/my/key", {"v": 1}, ttl_seconds=86400) is True
+
+        store.create_key.assert_awaited_once_with("/my/key", {"v": 1}, overwrite=True, ttl=86400)
+
+    @pytest.mark.asyncio
+    async def test_a_value_written_without_keeping_it_leaves_no_stale_copy(self) -> None:
+        store = AsyncMock()
+        store.create_key = AsyncMock(return_value=True)
+        svc = _build_service(store)
+        svc.cache["/catalog"] = "older"
+
+        assert await svc.set_config("/catalog", {"tools": []}, keep_in_cache=False) is True
+        assert "/catalog" not in svc.cache
+
+    @pytest.mark.asyncio
     async def test_set_publishes_invalidation_for_redis(self):
         store = AsyncMock()
         store.create_key = AsyncMock(return_value=True)
@@ -415,6 +444,28 @@ class TestSetConfig:
 # =========================================================================
 # update_config
 # =========================================================================
+class TestCreateConfigIfAbsentTtl:
+    @pytest.mark.asyncio
+    async def test_ttl_is_passed_to_the_store(self):
+        store = AsyncMock()
+        store.create_key = AsyncMock(return_value=True)
+        svc = _build_service(store)
+
+        assert await svc.create_config_if_absent("/lock", {"owner": "a"}, ttl_seconds=60) is True
+
+        store.create_key.assert_awaited_once_with("/lock", {"owner": "a"}, overwrite=False, ttl=60)
+
+    @pytest.mark.asyncio
+    async def test_no_ttl_by_default(self):
+        store = AsyncMock()
+        store.create_key = AsyncMock(return_value=False)
+        svc = _build_service(store)
+
+        assert await svc.create_config_if_absent("/k", "v") is False
+
+        store.create_key.assert_awaited_once_with("/k", "v", overwrite=False, ttl=None)
+
+
 class TestUpdateConfig:
     """Tests for ConfigurationService.update_config."""
 

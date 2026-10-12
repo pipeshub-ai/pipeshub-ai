@@ -1067,6 +1067,7 @@ export function MessageList() {
                   attachments={pair.attachments}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
+                  rowId={pair.key}
                   citationMessageRowKey={pair.key}
                   createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
@@ -1080,6 +1081,7 @@ export function MessageList() {
                   persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
                   feedbackInfo={pair.feedbackInfo}
                   status={pair.status}
+                  streamError={pair.streamError}
                   unanswered={pair.unanswered}
                 />
 

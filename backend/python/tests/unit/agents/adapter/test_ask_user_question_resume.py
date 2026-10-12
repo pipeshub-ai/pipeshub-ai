@@ -32,6 +32,16 @@ def test_last_real_user_query_skips_resume_rows() -> None:
     assert last_real_user_query(previous, "fallback") == "See below attached file(s)."
 
 
+def test_last_real_user_query_skips_tool_approval_answers_too() -> None:
+    previous = [
+        {"role": "user_query", "content": "file a bug"},
+        {"role": "bot_response", "content": "Waiting for your approval to run create_issue on Jira."},
+        {"role": "user_query", "content": "Tool approval: allow"},
+        {"role": "bot_response", "content": "Waiting for your approval to run add_label on Jira."},
+    ]
+    assert last_real_user_query(previous, "Tool approval: deny") == "file a bug"
+
+
 def test_terminal_ask_user_question_sets_needs_input() -> None:
     tr = SimpleNamespace(content="{}")
     call = SimpleNamespace(name="internaltools__ask_user_question")
@@ -68,6 +78,29 @@ async def test_injects_answers_on_existing_ask_tool_call() -> None:
     payload = json.loads(messages[1].content)
     assert payload["status"] == "answered"
     assert "Vim" in payload["answers"]
+    assert "do the next step now" in payload["next"]
+
+
+@pytest.mark.asyncio
+async def test_a_call_made_alongside_the_question_keeps_its_result() -> None:
+    ctx = ContextManager()
+    await ctx.add(UserMessage(content="look up the space, then ask me what to write"))
+    await ctx.add(AssistantMessage(content=[], tool_calls=[
+        ToolCall(id="tc-lookup", name="knowledgegraph__lookup_record", arguments={}),
+        ToolCall(id="tc-ask-1", name="internaltools__ask_user_question", arguments={}),
+    ]))
+    await ctx.add(ToolMessage(content="Space TS, id 4242", tool_call_id="tc-lookup"))
+    await ctx.add(ToolMessage(content='{"questions":[]}', tool_call_id="tc-ask-1"))
+    await ctx.add(AssistantMessage(content="I'll ask first."))
+
+    await inject_ask_user_question_resume(SimpleNamespace(context=ctx), 'User selections:\n1. "About?" → RAG')
+
+    messages = await ctx.messages()
+    assert [(type(m).__name__, getattr(m, "tool_call_id", None)) for m in messages[2:]] == [
+        ("ToolMessage", "tc-lookup"), ("ToolMessage", "tc-ask-1"),
+    ]
+    assert messages[2].content == "Space TS, id 4242"
+    assert "RAG" in json.loads(messages[3].content)["answers"]
 
 
 @pytest.mark.asyncio

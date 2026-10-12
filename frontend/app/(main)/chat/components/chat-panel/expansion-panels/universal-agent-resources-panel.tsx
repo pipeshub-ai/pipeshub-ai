@@ -817,7 +817,8 @@ export function UniversalAgentResourcesPanel({
                 group.fullNames.map((internalKey) => {
                   // Strip instanceId prefix for display and icon resolution
                   const fn = bareToolFullName(internalKey);
-                  const shortRaw = fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn;
+                  const shortRaw =
+                    group.toolLabels?.[internalKey] ?? (fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn);
                   const short = humanizeUnderscores(shortRaw);
                   return (
                     <Flex

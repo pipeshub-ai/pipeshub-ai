@@ -33,6 +33,7 @@ import {
   type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
+  type ToolApprovalAnswer,
 } from './types';
 import {
   buildCitationMapsFromApi,
@@ -45,6 +46,7 @@ import {
   parseAnswerMessage,
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
+import { isToolApprovalResumeQuery } from './tool-approval';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
 const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
@@ -189,11 +191,17 @@ function effectiveAgentIdForSlot(slot: ChatSlot): string | undefined {
 /**
  * Build the streaming POST body for the given slot (agent vs assistant, filters,
  * tools, model). Used by questionnaire submit and the chat composer bridge.
+ *
+ * `toolApproval` answers an approval card. Only an agent run can ask, so in an
+ * assistant chat the answer goes in Agent mode even if the mode was switched since.
  */
 export function buildStreamChatRequestForSlot(
   slotId: string,
   query: string,
-  outgoingMessage?: ThreadMessageLike
+  outgoingMessage?: ThreadMessageLike,
+  toolApproval?: ToolApprovalAnswer,
+  /** `agentMode`: send as agent mode whatever the composer is set to, as an approval answer is. */
+  options?: { agentMode?: boolean }
 ): StreamChatRequest | null {
   const currentState = useChatStore.getState();
   const currentSlot = currentState.slots[slotId];
@@ -208,7 +216,8 @@ export function buildStreamChatRequestForSlot(
   const effectiveAgentId = effectiveAgentIdForSlot(currentSlot);
 
   const isUniversalAgentMode =
-    !effectiveAgentId && currentState.settings.queryMode === 'agent';
+    !effectiveAgentId &&
+    (currentState.settings.queryMode === 'agent' || Boolean(toolApproval) || Boolean(options?.agentMode));
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
@@ -252,7 +261,7 @@ export function buildStreamChatRequestForSlot(
   const resolvedAgentKnowledge =
     isAgent && knowledgeScope === null ? knowledgeDefaults : knowledgeScope;
 
-  const isWebSearch = currentState.settings.queryMode === 'web-search';
+  const isWebSearch = currentState.settings.queryMode === 'web-search' && !isUniversalAgentMode;
   const resolvedScopedKnowledge = isAgent
     ? resolvedAgentKnowledge
     : projectScope && !isWebSearch
@@ -300,7 +309,9 @@ export function buildStreamChatRequestForSlot(
     query,
     ...effectiveModel,
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...buildStreamRequestModeFields(currentState.settings, isAgent),
+    ...(isUniversalAgentMode
+      ? { chatMode: 'agent' as const }
+      : buildStreamRequestModeFields(currentState.settings, isAgent)),
     timezone: getClientTimezone(),
     currentTime: getClientCurrentTime(),
     filters: resolvedFilters,
@@ -332,6 +343,7 @@ export function buildStreamChatRequestForSlot(
             agentCapabilities: currentState.settings.agentCapabilities,
           }
         : {}),
+    ...(toolApproval ? { toolApproval } : {}),
   };
 
   return request;
@@ -346,11 +358,11 @@ function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean 
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
-/** The stored record of a card resume whose stream died. The live view reports
- *  that with a toast and keeps the card, so replaying the row as an error
- *  bubble would show a failure the user never saw. A plain chat failure sits
- *  behind a real user query and still renders. */
-function isFailedAskUserQuestionResumeError(
+/** The stored record of a card resume (a question card or an approval card)
+ *  whose stream died. The live view reports that with a toast and keeps the
+ *  card, so replaying the row as an error bubble would show a failure the user
+ *  never saw. A plain chat failure sits behind a real user query and still renders. */
+function isFailedCardResumeError(
   messages: ConversationMessage[],
   errorIndex: number,
 ): boolean {
@@ -359,7 +371,7 @@ function isFailedAskUserQuestionResumeError(
     if (prev?.messageType === 'tool_call') continue;
     return (
       prev?.messageType === 'user_query' &&
-      isAskUserQuestionResumeQuery(prev.content)
+      (isAskUserQuestionResumeQuery(prev.content) || isToolApprovalResumeQuery(prev.content))
     );
   }
   return false;
@@ -550,7 +562,9 @@ export function loadHistoricalMessages(
 
     if (msg.messageType === 'error') {
       toolPayload = null;
-      if (isFailedAskUserQuestionResumeError(messages, i)) {
+      if (isFailedCardResumeError(messages, i)) {
+        // That answer produced no reply to merge; a later one comes after its own answer row.
+        mergeNextBotIntoId = null;
         continue;
       }
       result.push({
@@ -603,13 +617,16 @@ export function loadHistoricalMessages(
       // A run stopped before any text arrived is saved as an empty stopped
       // reply. The live view drops that row (`buildStoppedMessages`); showing
       // it after a reload would add an empty "Stopped" bubble the user never saw.
+      // The sign-in part alone isn't something the user saw stream.
+      const shownParts = msg.parts?.some((part) => part.type !== 'mcp_sign_in') ?? false;
       if (
         msg.status === 'stopped' &&
         !answerText.trim() &&
-        !msg.parts?.length &&
+        !shownParts &&
         !capturedPayload &&
         !peekFollowingAskPayload(messages, i)
       ) {
+        mergeNextBotIntoId = null;
         continue;
       }
 
@@ -672,6 +689,15 @@ export function loadHistoricalMessages(
       continue;
     }
 
+    if (isToolApprovalResumeQuery(msg.content)) {
+      // An answer to an approval card carried on the reply that stopped on the card: it is no
+      // bubble of its own, and the reply it produced joins that row.
+      const row = [...result].reverse().find((m) => m.role === 'assistant');
+      if (row?.role === 'assistant' && typeof row.id === 'string') mergeNextBotIntoId = row.id;
+      toolPayload = null;
+      continue;
+    }
+
     if (isAskUserQuestionResumeQuery(msg.content)) {
       const last = findQuestionAssistantRow(result, lastUnansweredAssistantId);
       if (last?.role === 'assistant' && typeof last.id === 'string') {
@@ -714,6 +740,8 @@ export function loadHistoricalMessages(
     }
 
     toolPayload = null;
+    // A real question: the reply after it is its own row, whatever came before.
+    mergeNextBotIntoId = null;
     result.push({
       id: msg._id,
       role: 'user' as const,
