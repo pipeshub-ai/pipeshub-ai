@@ -157,14 +157,13 @@ class TestAccessControl:
         assert result["matches"] == 0 and "error" not in result
 
     async def test_a_failed_permission_lookup_does_not_fail_open(self) -> None:
+        # An unanswerable access check is an error, never an empty or a full
+        # listing: empty reads as "nothing here", full leaks.
         class Broken(QueryGraphProvider):
-            async def get_accessible_virtual_record_ids(self, *a: object, **k: object) -> None:
+            async def filter_accessible_record_ids(self, *a: object, **k: object) -> None:
                 raise RuntimeError("neo4j is down")
 
-            async def check_record_access_with_details(self, *a: object, **k: object) -> None:
-                raise RuntimeError("neo4j is down")
-
-        listing = await query_code_graph_impl(**_ctx(Broken()), select="web/")
-        assert "directories" not in listing and listing["matches"] == 0
-        symbols = await query_code_graph_impl(**_ctx(Broken()), select="src/b.py")
-        assert symbols["nodes"] == [] and symbols["matches"] == 0
+        with pytest.raises(RuntimeError, match="neo4j is down"):
+            await query_code_graph_impl(**_ctx(Broken()), select="web/")
+        with pytest.raises(RuntimeError, match="neo4j is down"):
+            await query_code_graph_impl(**_ctx(Broken()), select="src/b.py")

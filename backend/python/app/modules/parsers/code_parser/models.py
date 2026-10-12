@@ -103,6 +103,10 @@ class PendingEdgeFact:
     receiver: str | None = None
     receiver_type: str | None = None
     qualified_prefix: str | None = None
+    # The name an import binds in the importing file, when it differs from the
+    # imported one: `b` in `from m import a as b` and `import { a as b }`, `ns`
+    # in `import * as ns`. Calls are written against this name.
+    local_name: str | None = None
     context: str | None = None
     # EXPORTS names a symbol in *this* file; resolving it against the whole repo
     # would happily bind to a same-named symbol elsewhere.
@@ -128,6 +132,8 @@ class PendingEdgeFact:
             out["receiverType"] = self.receiver_type
         if self.qualified_prefix:
             out["qualifiedPrefix"] = self.qualified_prefix
+        if self.local_name:
+            out["localName"] = self.local_name
         if self.context:
             out["context"] = self.context
         if self.restrict_to_file:

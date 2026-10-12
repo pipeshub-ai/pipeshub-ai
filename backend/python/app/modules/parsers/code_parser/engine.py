@@ -223,10 +223,12 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
         for child in node.named_children:
             if child.type == "aliased_import":
                 target = _field(child, "name")
+                alias = _field(child, "alias")
                 if target is not None:
                     out.append(PendingEdgeFact(
                         relation=Relation.IMPORTS_FROM, to_name=_text(target, src),
                         line=line, to_kind="record",
+                        local_name=_text(alias, src) if alias is not None else None,
                     ))
             elif child.type == "dotted_name":
                 out.append(PendingEdgeFact(
@@ -244,14 +246,19 @@ def _imports_python(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                 line=line, to_kind="record",
             ))
         for child in node.named_children:
-            if child is module:
+            # py-tree-sitter hands out a fresh wrapper per access, so identity
+            # never matches; compare the span.
+            if module is not None and child.start_byte == module.start_byte \
+                    and child.end_byte == module.end_byte:
                 continue
             if child.type == "aliased_import":
                 target = _field(child, "name")
+                alias = _field(child, "alias")
                 if target is not None:
                     out.append(PendingEdgeFact(
                         relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
                         to_kind="block", qualified_prefix=module_name,
+                        local_name=_text(alias, src) if alias is not None else None,
                     ))
             elif child.type in ("dotted_name", "identifier"):
                 out.append(PendingEdgeFact(
@@ -266,10 +273,11 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
     specifier = _text(source, src).strip("'\"") if source is not None else ""
     if not specifier:
         return
-    out.append(PendingEdgeFact(
+    module_fact = PendingEdgeFact(
         relation=Relation.IMPORTS_FROM, to_name=specifier,
         line=line, to_kind="record",
-    ))
+    )
+    out.append(module_fact)
     for clause in node.named_children:
         if clause.type not in ("import_clause", "named_imports"):
             continue
@@ -279,13 +287,19 @@ def _imports_js(node: Node, src: bytes, out: list[PendingEdgeFact]) -> None:
                     relation=Relation.IMPORTS, to_name=_text(spec, src), line=line,
                     to_kind="block", qualified_prefix=specifier,
                 ))
+            elif spec.type == "namespace_import":
+                ns = next((c for c in spec.named_children if c.type == "identifier"), None)
+                if ns is not None:
+                    module_fact.local_name = _text(ns, src)
             elif spec.type == "named_imports":
                 for item in spec.named_children:
                     target = _field(item, "name")
+                    alias = _field(item, "alias")
                     if target is not None:
                         out.append(PendingEdgeFact(
                             relation=Relation.IMPORTS, to_name=_text(target, src), line=line,
                             to_kind="block", qualified_prefix=specifier,
+                            local_name=_text(alias, src) if alias is not None else None,
                         ))
 
 
@@ -917,6 +931,10 @@ class _Walker:
         actually runs them.
         """
         cfg = self.cfg
+        # An expression-bodied arrow (`(id) => fetchUser(id)`) has the call as
+        # its body, and the loop below only sees the call's children.
+        if body.type in cfg.call_types:
+            self._emit_call(body, enclosing)
         for child in body.named_children:
             span = self._classify(child, in_container=in_type, in_type=in_type)
             if span is not None and span.kind == "definition":
@@ -937,6 +955,10 @@ class _Walker:
         for fact in self.out.pending[before:]:
             fact.byte_offset = node.start_byte
             fact.from_symbol = idx
+        # `export const store = createStore(reducer)` carries calls; only a
+        # re-export (`export ... from`) has none.
+        if node.type in cfg.export_types and _field(node, "source") is None:
+            self._walk_facts(node, idx)
 
     def _walk_facts(self, node: Node, enclosing: int) -> None:
         """Collect references inside *node*, all owned by *enclosing*.
@@ -964,7 +986,8 @@ class _Walker:
 
     def _emit_call(self, node, enclosing: int) -> None:
         name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
-        if not name or name in self.builtins:
+        # Builtin globals only shadow bare calls; `this.fetch()` is a method.
+        if not name or (not is_member and name in self.builtins):
             return
         self.out.pending.append(PendingEdgeFact(
             relation=Relation.CALLS,

@@ -16,7 +16,6 @@ Kept separate from ``ops.py`` so the narrow tools stay readable; both share
 """
 from __future__ import annotations
 
-import asyncio
 import fnmatch
 import logging
 from typing import Any
@@ -26,14 +25,17 @@ from app.modules.parsers.code_parser.models import FILLER_KINDS
 
 from .ops import (
     TEST_ROLE,
+    RecordAccess,
     SymbolRef,
     _degrees,
     _key_of,
     _readable_blocks,
     _readable_only,
+    _repo_matches,
     _unwrap,
-    get_accessible_record_ids,
+    coverage_for,
     get_record_roles,
+    repo_names,
 )
 
 logger = logging.getLogger(__name__)
@@ -138,6 +140,7 @@ async def _select_by_path(
         prefix=prefix,
         filters={"orgId": org_id},
         limit=_SELECT_SCAN_LIMIT,
+        raise_on_error=True,
     )
     paths: dict[str, str] = {}
     for raw in files or []:
@@ -158,7 +161,7 @@ async def _select_by_path(
     capped = sorted(paths)[:_PATH_FANOUT_FILES]
     scan_capped = len(files or []) >= _SELECT_SCAN_LIMIT or len(capped) < len(paths)
     rows = await graph_provider.get_nodes_by_field_in(
-        collection=_BLOCKS, field_name="recordId", field_values=capped
+        collection=_BLOCKS, field_name="recordId", field_values=capped, raise_on_error=True
     )
     out = []
     for raw in rows or []:
@@ -187,22 +190,17 @@ async def _visible_record_ids(
     """
     if not record_ids:
         return set()
-    accessible = await get_accessible_record_ids(graph_provider, org_id, user_id)
-    if accessible is None:
-        return set()
-    candidates = sorted(record_ids & accessible)
+    candidates = sorted(await RecordAccess(graph_provider, org_id, user_id).readable(record_ids))
     if not candidates:
         return set()
-    try:
-        rows = await graph_provider.get_nodes_by_field_in(
-            collection=_RECORDS,
-            field_name="_key",
-            field_values=candidates,
-            return_fields=["_key", "orgId", "connectorId"],
-        )
-    except Exception as exc:
-        logger.warning("Connector scope lookup failed for directory listing: %s", exc)
-        return set()
+    # Raises on failure: an empty set would list the directory as empty.
+    rows = await graph_provider.get_nodes_by_field_in(
+        collection=_RECORDS,
+        field_name="_key",
+        field_values=candidates,
+        return_fields=["_key", "orgId", "connectorId"],
+        raise_on_error=True,
+    )
     visible: set[str] = set()
     for raw in rows or []:
         row = _unwrap(raw)
@@ -241,6 +239,7 @@ async def _list_children(
             prefix=prefix,
             filters={"orgId": org_id},
             limit=_LIST_SCAN_LIMIT,
+            raise_on_error=True,
         ) or []
     ]
     visible = await _visible_record_ids(
@@ -309,6 +308,7 @@ async def query_code_graph_impl(
     kinds: list[str] | None = None,
     limit: int = DEFAULT_QUERY_LIMIT,
     include_tests: bool = False,
+    repo: str | None = None,
 ) -> dict[str, Any]:
     if not (connector_id or "").strip():
         return {"error": CONNECTOR_ID_REQUIRED}
@@ -367,18 +367,17 @@ async def query_code_graph_impl(
     # miss have to produce the same payload.
     if wanted_kinds:
         matched = [m for m in matched if (m.get("kind") or "").lower() in wanted_kinds]
+    if repo:
+        names = await repo_names(graph_provider, org_id, (m.get("recordGroupId") for m in matched))
+        matched = [m for m in matched if _repo_matches(repo, m.get("recordGroupId"), names)]
 
     _rids = {b.get("recordId") for b in matched if b.get("recordId")}
-    coros: list = [get_accessible_record_ids(graph_provider, org_id, user_id)]
+    access = RecordAccess(graph_provider, org_id, user_id)
     if not include_tests:
-        coros.append(get_record_roles(graph_provider, org_id, _rids))
-    results = await asyncio.gather(*coros)
-    accessible: set[str] | None = results[0]
-    if not include_tests:
-        _roles: dict[str, str] = results[1]
+        _roles = await get_record_roles(graph_provider, org_id, _rids)
         matched = [b for b in matched if _roles.get(b.get("recordId")) != TEST_ROLE]
 
-    matched = await _readable_only(graph_provider, org_id, user_id, matched, accessible)
+    matched = await _readable_only(access, matched)
 
     if not matched:
         empty: dict[str, Any] = {
@@ -406,8 +405,8 @@ async def query_code_graph_impl(
     seeds = matched[:limit]
     seed_keys = [k for m in seeds if (k := _key_of(m))]
 
-    blocks = await _readable_blocks(graph_provider, org_id, user_id, sorted(seed_keys),
-                                     accessible=accessible, connector_id=connector_id)
+    blocks = await _readable_blocks(graph_provider, org_id, access, sorted(seed_keys),
+                                     connector_id=connector_id)
 
     result: dict[str, Any] = {
         "select": select,
@@ -416,6 +415,7 @@ async def query_code_graph_impl(
         # result, and every follow-up call requires it. Without it the output
         # of one tool is not valid input to the next.
         "connector_id": connector_id,
+        **({"coverage": gap} if (gap := coverage_for(matched)) else {}),
         "matches": total_matched,
         # Silence reads as absence: a model that thinks it saw everything will
         # state a wrong conclusion confidently.

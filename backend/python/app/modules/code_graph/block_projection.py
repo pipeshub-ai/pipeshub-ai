@@ -293,14 +293,26 @@ async def write_code_file_blocks_to_graph(
     # builder queries it alongside filePath, avoiding a block-scan join.
     referenced = _referenced_names(block_containers)
     if referenced is not None:
-        await _with_retry(
-            lambda: graph_provider.update_node(
-                context.record_id,
-                CollectionNames.CODE_FILES.value,
-                {"referencedNames": referenced},
+        code_file = await _with_retry(
+            lambda: graph_provider.get_document(
+                context.record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
             ),
-            what="update codeFiles referencedNames", log=log,
+            what="load codeFiles node", log=log,
         )
+        if code_file:
+            await _with_retry(
+                lambda: graph_provider.update_node(
+                    context.record_id,
+                    CollectionNames.CODE_FILES.value,
+                    {"referencedNames": referenced},
+                ),
+                what="update codeFiles referencedNames", log=log,
+            )
+        elif docs:
+            # No codeFiles node (an uploaded .py): updating one would 404 and
+            # fail the record. The symbol index falls back to the names on the
+            # file's blocks, so they go on the first one.
+            docs[0]["referencedNames"] = referenced
 
     fresh_ids = {doc["id"] for doc in docs}
 

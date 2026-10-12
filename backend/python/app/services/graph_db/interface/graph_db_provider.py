@@ -1334,7 +1334,9 @@ class IGraphDBProvider(ABC):
         relationship_types: list[str],
         direction: str,
         limit: int = 5000,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Walk one hop from many nodes at once along the given relationship types.
@@ -1506,6 +1508,8 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes whose field starts with a prefix."""
         pass
@@ -1519,6 +1523,8 @@ class IGraphDBProvider(ABC):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get nodes whose field contains any search term."""
         pass
@@ -1558,6 +1564,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         record_ids: list[str],
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, CodeFileInfo]:
         """Return code-file info (path + referencedNames) for each requested record."""
         pass

@@ -11,7 +11,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from app.config.constants.arangodb import CollectionNames, RecordRelations
+from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
 from app.modules.code_graph.facts_source import CodeFactsSource
 from app.modules.code_graph.guards import (
     lang_family,
@@ -59,6 +59,18 @@ _INTERFACE_KINDS = frozenset({"interface", "trait", "protocol"})
 # indexed field is needed to recognise it. `@abstractmethod` would be the
 # sharper signal but decorators are not projected onto block nodes.
 _ABSTRACT_BASE_NAMES = frozenset({"ABC", "ABCMeta", "Protocol"})
+
+# Why an edge exists, stored on it so a wrong edge can be traced to its rule.
+RESOLUTION_IMPORT = "import-binding"
+RESOLUTION_SAME_FILE = "same-file"
+RESOLUTION_QUALIFIER = "qualifier"
+RESOLUTION_MODULE = "module-import"
+RESOLUTION_TYPE = "receiver-type"
+RESOLUTION_NAME = "name-heuristic"
+
+# A local name an import binds to something outside the repo (`from requests
+# import get`). It shadows every repo definition of that name in the file.
+_EXTERNAL = ""
 
 logger = logging.getLogger(__name__)
 
@@ -161,9 +173,32 @@ async def _scan_file_info(graph_provider: IGraphDBProvider, org_id: str,
     return paths, referenced
 
 
+async def _scan_repo_paths(graph_provider: IGraphDBProvider, org_id: str,
+                           record_group_id: str) -> set[str]:
+    """Every code file in the repo, including those with no blocks.
+
+    Import resolution needs the empty ones: an empty `__init__.py` is what
+    makes its directory a package, and without it `import requests` matches
+    `app/legacy/requests.py` as though `legacy/` were a source root.
+    """
+    rows = await graph_provider.get_nodes_by_filters(
+        collection=CollectionNames.RECORDS.value,
+        filters={"orgId": org_id, "recordGroupId": record_group_id,
+                 "recordType": RecordTypes.CODE_FILE.value},
+        return_fields=["_key"],
+        raise_on_error=True,
+    )
+    record_ids = sorted({row["_key"] for row in rows if row.get("_key")})
+    paths: set[str] = set()
+    for chunk in _chunks(record_ids, 2000):
+        info = await graph_provider.get_file_paths_for_records(org_id=org_id, record_ids=chunk)
+        paths.update(file_info.file_path for file_info in info.values() if file_info.file_path)
+    return paths
+
+
 class _Builder:
     def __init__(self, index: SymbolIndex, org_id: str, record_group_id: str,
-                 log: logging.Logger) -> None:
+                 log: logging.Logger, repo_paths: set[str] | None = None) -> None:
         self.index = index
         self.org_id = org_id
         self.record_group_id = record_group_id
@@ -171,18 +206,22 @@ class _Builder:
         self.result = EdgeBuildResult()
         self.edges: dict[tuple[str, str, str], dict] = {}
         self.external_nodes: dict[str, dict] = {}
-        # file -> imported symbol names / imported module files
-        self.symbol_imports: dict[str, set[str]] = {}
+        # file -> imported module files, the evidence a module-level reference uses
         self.module_imports: dict[str, set[str]] = {}
+        # file -> local name -> what the file's imports bind it to: a block for
+        # `from m import f`, a file for `import m` / `import * as m`, or
+        # `_EXTERNAL`. Calls resolve through these before any name matching.
+        self.symbol_bindings: dict[str, dict[str, str]] = {}
+        self.module_bindings: dict[str, dict[str, str]] = {}
         self.re_exports: dict[str, set[str]] = {}
-        self.imports = ImportResolution(set(index.record_by_file.keys()))
+        self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
         self._bases_memo: dict[str, list[str]] = {}
 
     # -- emit -----------------------------------------------------------
 
     def _add_edge(self, from_key: str, to_key: str, relation: str, *,
-                  confidence: str, line: int | None) -> None:
+                  confidence: str, line: int | None, resolution: str | None = None) -> None:
         if from_key == to_key:  # self-loop
             return
         dedup = (from_key, to_key, relation)
@@ -198,6 +237,7 @@ class _Builder:
             "recordGroupId": self.record_group_id,
             "source": CODE_GRAPH_SOURCE,
             "confidence": confidence,
+            "resolution": resolution,
             "line": line,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
@@ -235,6 +275,13 @@ class _Builder:
             family = self.index.family_by_block.get(block_id) or lang_family(None, from_file)
             specifier = fact.get("toName") or ""
             target_file = self.imports.resolve(specifier, from_file or "", family)
+            if relation == RecordRelations.IMPORTS_FROM.value:
+                # `import m` binds `m`; a JS import binds a module only as `* as ns`.
+                local = fact.get("localName") or (specifier if family == "py" else None)
+                if local:
+                    self.module_bindings.setdefault(from_file or "", {})[local] = (
+                        target_file or _EXTERNAL
+                    )
             if not target_file:
                 # A bare specifier (`react`, `os`) resolves to no repo file.
                 self.result.external_refs += 1
@@ -246,47 +293,75 @@ class _Builder:
             self._add_edge(
                 self._source_key(block_id, fact), self._record_key(target_record), relation,
                 confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
+                resolution=RESOLUTION_IMPORT,
             )
 
-        # Symbol-level imports become evidence and, when the symbol is in the
-        # repo, an edge to the definition itself.
+        # Symbol-level imports bind a local name and, when the symbol is in the
+        # repo, become an edge to the definition itself.
         for block_id, fact in work:
-            if fact.get("relation") != RecordRelations.IMPORTS.value:
-                continue
-            record_id = self.index.record_by_block.get(block_id, "")
-            from_file = self.index.file_by_record.get(record_id) or ""
-            name = fact.get("toName") or ""
-            self.symbol_imports.setdefault(from_file, set()).add(name)
+            if fact.get("relation") == RecordRelations.IMPORTS.value:
+                self._bind_symbol_import(block_id, fact)
 
-            family = self.index.family_by_block.get(block_id) or lang_family(None, from_file)
-            specifier = fact.get("qualifiedPrefix") or ""
-            target_file = self.imports.resolve(specifier, from_file, family)
-            if target_file:
-                target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
-            candidates = self.index.candidates(name)
-            if target_file:
-                candidates = [cid for cid in candidates
-                              if self.index.file_by_block.get(cid) == target_file]
-            elif family:
-                # The specifier named no repo file, so it is a package
-                # (`@mui/material`) and the only thing left to go on is the
-                # name. Unguarded, the single repo block called `Box` wins --
-                # which is how a .tsx import of `Box` landed on box.py, and
-                # `Graph` on models/graph.py.
-                candidates = [cid for cid in candidates if self._family_of(cid) == family]
-            if len(candidates) != 1:
-                if candidates:
-                    self.result.ambiguous_skipped += 1
-                else:
-                    # An imported symbol the repo does not define is a
-                    # third-party import, not a failure.
-                    self.result.external_refs += 1
-                continue
+    def _bind_symbol_import(self, block_id: str, fact: dict) -> None:
+        record_id = self.index.record_by_block.get(block_id, "")
+        from_file = self.index.file_by_record.get(record_id) or ""
+        name = fact.get("toName") or ""
+        local = fact.get("localName") or name
+        bindings = self.symbol_bindings.setdefault(from_file, {})
+
+        family = self.index.family_by_block.get(block_id) or lang_family(None, from_file)
+        specifier = fact.get("qualifiedPrefix") or ""
+        target_file = self.imports.resolve(specifier, from_file, family)
+        if not target_file:
+            # A package import (`requests`, `lodash`). Matching the name across
+            # the repo instead is how `from requests import get` used to land
+            # on a repo `get` and an import of `logging` on telemetry/logging.py.
+            bindings[local] = _EXTERNAL
+            self.result.external_refs += 1
+            return
+        target_file = self.imports.walk_barrel_chain(target_file, self.re_exports)
+        candidates = [cid for cid in self.index.candidates(name)
+                      if self.index.file_by_block.get(cid) == target_file]
+        top_level = [cid for cid in candidates if not self._parent_of(cid)]
+        candidates = top_level or candidates
+        if len(candidates) == 1:
+            bindings[local] = candidates[0]
             self._add_edge(
                 self._source_key(block_id, fact), self._block_key(candidates[0]),
                 RecordRelations.IMPORTS.value,
                 confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
+                resolution=RESOLUTION_IMPORT,
             )
+            return
+        if candidates:
+            self.result.ambiguous_skipped += 1
+            return
+        submodule = self._python_submodule(specifier, name, from_file, family)
+        if submodule:
+            # `from app.analytics import jobs`: the name is a module, not a symbol.
+            self.module_bindings.setdefault(from_file, {})[local] = submodule
+            self.module_imports.setdefault(from_file, set()).add(submodule)
+            self._add_edge(
+                self._source_key(block_id, fact),
+                self._record_key(self.index.record_by_file[submodule]),
+                RecordRelations.IMPORTS_FROM.value,
+                confidence=CONFIDENCE_EXTRACTED, line=fact.get("line"),
+                resolution=RESOLUTION_IMPORT,
+            )
+        # Otherwise the file re-exports the name from elsewhere (a Python
+        # `__init__`); it stays unbound and resolves by the weaker rules.
+
+    def _python_submodule(self, specifier: str, name: str, from_file: str,
+                          family: str | None) -> str | None:
+        if family != "py" or not specifier:
+            return None
+        joined = f"{specifier}{name}" if specifier.endswith(".") else f"{specifier}.{name}"
+        target = self.imports.resolve(joined, from_file, family)
+        return target if target in self.index.record_by_file else None
+
+    def _parent_of(self, block_id: str) -> str | None:
+        row = self.index.rows.get(block_id)
+        return row.parent_block_id if row else None
 
     def _collect_re_exports(self) -> None:
         """Barrel hops, read from every row rather than the re-resolve slice.
@@ -316,13 +391,15 @@ class _Builder:
         return (self.index.family_by_block.get(block_id)
                 or lang_family(None, self.index.file_by_block.get(block_id)))
 
-    def _has_import_evidence(self, candidate_id: str, call_site_file: str) -> bool:
+    def _has_module_evidence(self, candidate_id: str, call_site_file: str) -> bool:
+        """The call site's file imports the module that defines the candidate.
+
+        Deliberately not "imports some symbol of that name": that matched any
+        same-named definition, so an imported `validate` lent its evidence to a
+        same-directory decoy.
+        """
         row = self.index.rows.get(candidate_id)
-        if row is None:
-            return False
-        if row.name and row.name in self.symbol_imports.get(call_site_file, ()):
-            return True
-        return (row.file_path or "") in self.module_imports.get(call_site_file, ())
+        return row is not None and (row.file_path or "") in self.module_imports.get(call_site_file, ())
 
     # -- steps 4/6/7: everything else ------------------------------------
 
@@ -351,14 +428,14 @@ class _Builder:
                 continue
 
             if fact.get("isMemberCall"):
-                target = self._resolve_member_call(block_id, fact, record_id)
+                target, confidence, resolution = self._resolve_member_call(block_id, fact, record_id)
                 if target:
                     self._add_edge(
                         self._source_key(block_id, fact), self._block_key(target),
                         RecordRelations.CALLS.value,
-                        confidence=CONFIDENCE_INFERRED, line=fact.get("line"),
+                        confidence=confidence, line=fact.get("line"), resolution=resolution,
                     )
-                elif not self.index.candidates(name):
+                elif resolution == _EXTERNAL or not self.index.candidates(name):
                     # `resp.json()` on a third-party object -- the method name
                     # exists nowhere in the repo.
                     self.result.external_refs += 1
@@ -366,7 +443,7 @@ class _Builder:
                     self.result.unresolved += 1
                 continue
 
-            target, confidence = self._resolve_direct(
+            target, confidence, resolution = self._resolve_direct(
                 name, call_file, family, relation, fact.get("qualifiedPrefix"),
             )
             if not target:
@@ -374,7 +451,7 @@ class _Builder:
             self._add_edge(
                 self._source_key(block_id, fact), self._block_key(target),
                 self._heritage_relation(relation, target),
-                confidence=confidence, line=fact.get("line"),
+                confidence=confidence, line=fact.get("line"), resolution=resolution,
             )
 
     def _heritage_relation(self, relation: str, target: str) -> str:
@@ -445,7 +522,7 @@ class _Builder:
                     RecordRelations.OVERRIDES.value,
                     # Proven, not guessed: a heritage edge the parser extracted
                     # plus an exact name match on the base chain.
-                    confidence=CONFIDENCE_EXTRACTED, line=None,
+                    confidence=CONFIDENCE_EXTRACTED, line=None, resolution=RESOLUTION_TYPE,
                 )
 
     def _resolve_within_record(self, record_id: str, name: str) -> str | None:
@@ -457,20 +534,30 @@ class _Builder:
 
     def _resolve_direct(self, name: str, call_file: str, family: str | None,
                         relation: str, qualified_prefix: str | None = None,
-                        ) -> tuple[str | None, str]:
+                        ) -> tuple[str | None, str, str | None]:
+        """Name -> definition, strongest evidence first.
+
+        An import binding decides outright; then a dotted qualifier, a
+        same-file definition, an imported module defining the name; a bare-name
+        guess comes last and is only ever INFERRED.
+        """
+        bound = self.symbol_bindings.get(call_file, {}).get(name) if not qualified_prefix else None
+        if bound == _EXTERNAL:
+            self.result.external_refs += 1
+            return None, CONFIDENCE_INFERRED, None
+        if (bound and (family is None or self._family_of(bound) == family)
+                and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
+            return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
+
         candidates = self.index.candidates(name)
         if not candidates:
             # Nothing in the repo defines this name at all: a third-party or
             # stdlib reference, not a resolution failure.
             self.result.external_refs += 1
-            return None, CONFIDENCE_INFERRED
+            return None, CONFIDENCE_INFERRED, None
 
-        # Cross-language family guard.
         if family:
-            candidates = [
-                cid for cid in candidates
-                if self.index.family_by_block.get(cid) in (None, family)
-            ]
+            candidates = [cid for cid in candidates if self._family_of(cid) == family]
         # A type relation must land on a type; a call must land on something callable.
         if relation in _TYPE_RELATIONS:
             typed = [cid for cid in candidates if cid in self.index.type_blocks]
@@ -482,36 +569,35 @@ class _Builder:
                 candidates = callable_only
         if not candidates:
             self.result.unresolved += 1
-            return None, CONFIDENCE_INFERRED
+            return None, CONFIDENCE_INFERRED, None
 
         # `pkg.mod.Parent` and `Outer.Inner` are evidence the bare name is not.
         # A qualifier that does not leave exactly one candidate is ignored, so
         # an unresolved module path still falls through to import and proximity.
         pinned = self._prefix_candidates(candidates, qualified_prefix, call_file, family)
         if pinned:
-            return pinned[0], CONFIDENCE_EXTRACTED
+            return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
-        with_evidence = [cid for cid in candidates if self._has_import_evidence(cid, call_file)]
-        if with_evidence:
-            candidates, confidence = with_evidence, CONFIDENCE_EXTRACTED
+        same_file = [cid for cid in candidates if self.index.file_by_block.get(cid) == call_file]
+        with_evidence = [cid for cid in candidates if self._has_module_evidence(cid, call_file)]
+        if same_file:
+            candidates, confidence, resolution = same_file, CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
+        elif with_evidence:
+            candidates, confidence, resolution = with_evidence, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
+        elif family == "js" and relation in _CALL_RELATIONS:
+            # ES modules have no implicit cross-module scope: without an
+            # import the call cannot be reaching this definition.
+            self.result.unresolved += 1
+            return None, CONFIDENCE_INFERRED, None
         else:
-            same_file = [cid for cid in candidates if self.index.file_by_block.get(cid) == call_file]
-            if same_file:
-                candidates, confidence = same_file, CONFIDENCE_EXTRACTED
-            elif family == "js" and relation in _CALL_RELATIONS:
-                # ES modules have no implicit cross-module scope: without an
-                # import the call cannot be reaching this definition.
-                self.result.unresolved += 1
-                return None, CONFIDENCE_INFERRED
-            else:
-                confidence = CONFIDENCE_INFERRED
+            confidence, resolution = CONFIDENCE_INFERRED, RESOLUTION_NAME
 
         candidates = prefer_non_test(candidates, self.index.file_by_block, call_file)
         candidates = path_proximity_winner(candidates, self.index.file_by_block, call_file)
         if len(candidates) != 1:
             self.result.ambiguous_skipped += 1
-            return None, confidence
-        return candidates[0], confidence
+            return None, confidence, None
+        return candidates[0], confidence, resolution
 
     def _resolve_module_qualified_call(self, fact: dict, record_id: str) -> str | None:
         """`import analysis; analysis.analyze_game()`.
@@ -542,8 +628,15 @@ class _Builder:
                     return candidate
         return None
 
-    def _resolve_member_call(self, block_id: str, fact: dict, record_id: str) -> str | None:
-        """`obj.method()` -- find the receiver's type, then its method."""
+    def _resolve_member_call(self, block_id: str, fact: dict, record_id: str,
+                             ) -> tuple[str | None, str, str | None]:
+        """`obj.method()` -- find the receiver's type, then its method.
+
+        Returns ``(target, confidence, resolution)``; a resolution of
+        ``_EXTERNAL`` with no target means the receiver is a third-party or
+        stdlib module (`logging.getLogger`).
+        """
+        name = fact.get("toName") or ""
         receiver_type = fact.get("receiverType")
         receiver = fact.get("receiver")
         if not receiver_type and receiver:
@@ -551,19 +644,59 @@ class _Builder:
         if not receiver_type and receiver in ("self", "this"):
             owner = self._enclosing_type(block_id)
             if owner:
-                return self._resolve_self_method(owner, fact.get("toName") or "")
+                return self._resolve_self_method(owner, name), CONFIDENCE_INFERRED, RESOLUTION_TYPE
+        if not receiver_type and receiver:
+            bound = self._resolve_bound_receiver(receiver, name, record_id)
+            if bound is not None:
+                return bound
         if not receiver_type:
-            return self._resolve_module_qualified_call(fact, record_id)
+            target = self._resolve_module_qualified_call(fact, record_id)
+            return target, CONFIDENCE_INFERRED, RESOLUTION_MODULE if target else None
 
+        family = self._family_of(block_id)
         type_candidates = [
             cid for cid in self.index.candidates(receiver_type)
             if cid in self.index.type_blocks
+            and (family is None or self._family_of(cid) == family)
         ]
         if len(type_candidates) != 1:  # god-node guard
             if type_candidates:
                 self.result.ambiguous_skipped += 1
-            return None
-        return self._resolve_self_method(type_candidates[0], fact.get("toName") or "")
+            return None, CONFIDENCE_INFERRED, None
+        return (self._resolve_self_method(type_candidates[0], name),
+                CONFIDENCE_INFERRED, RESOLUTION_TYPE)
+
+    def _resolve_bound_receiver(self, receiver: str, name: str, record_id: str,
+                                ) -> tuple[str | None, str, str | None] | None:
+        """`jobs.run()`, `ns.f()`, `Order.from_dict()`: a receiver an import or a
+        same-file class names. None when the receiver is none of those."""
+        call_file = self.index.file_by_record.get(record_id) or ""
+        module = self.module_bindings.get(call_file, {}).get(receiver)
+        if module == _EXTERNAL:
+            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        if module:
+            target = self._top_level_in_file(module, name)
+            return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
+        bound = self.symbol_bindings.get(call_file, {}).get(receiver)
+        if bound == _EXTERNAL:
+            return None, CONFIDENCE_INFERRED, _EXTERNAL
+        if not bound:
+            local = [cid for cid in self.index.blocks_by_record.get(record_id, ())
+                     if cid in self.index.type_blocks
+                     and (self.index.rows[cid].name if cid in self.index.rows else None) == receiver]
+            bound = local[0] if len(local) == 1 else None
+        if bound and bound in self.index.type_blocks:
+            target = self._resolve_self_method(bound, name)
+            return target, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if target else None
+        return None
+
+    def _top_level_in_file(self, file_path: str, name: str) -> str | None:
+        record = self.index.record_by_file.get(file_path)
+        for candidate in self.index.blocks_by_record.get(record, ()):
+            row = self.index.rows.get(candidate)
+            if row and row.name == name and not row.parent_block_id:
+                return candidate
+        return None
 
     def _enclosing_type(self, block_id: str) -> str | None:
         """The class a block sits in, through any intermediate scopes.
@@ -676,20 +809,27 @@ class _Builder:
         the run should report on."""
         if not name:
             return None
+        bound = self.symbol_bindings.get(from_file, {}).get(name) if not qualified_prefix else None
+        if bound == _EXTERNAL:
+            return None
+        if bound in self.index.type_blocks:
+            return bound
         candidates = [
             cid for cid in self.index.candidates(name) if cid in self.index.type_blocks
         ]
         if family:
             candidates = [
                 cid for cid in candidates
-                if self.index.family_by_block.get(cid) in (None, family)
+                if self._family_of(cid) == family
             ]
         pinned = self._prefix_candidates(candidates, qualified_prefix, from_file, family)
         if pinned:
             return pinned[0]
         if len(candidates) > 1:
-            with_evidence = [
-                cid for cid in candidates if self._has_import_evidence(cid, from_file)
+            same_file = [cid for cid in candidates
+                         if self.index.file_by_block.get(cid) == from_file]
+            with_evidence = same_file or [
+                cid for cid in candidates if self._has_module_evidence(cid, from_file)
             ]
             candidates = with_evidence or candidates
             candidates = prefer_non_test(candidates, self.index.file_by_block, from_file)
@@ -759,8 +899,9 @@ async def build_code_graph_edges(
     docs = await _scan_blocks(graph_provider, org_id, record_group_id)
     paths, referenced_names = await _scan_file_info(graph_provider, org_id, docs)
     index = build_symbol_index(docs, paths, referenced_names)
+    repo_paths = await _scan_repo_paths(graph_provider, org_id, record_group_id)
 
-    builder = _Builder(index, org_id, record_group_id, log)
+    builder = _Builder(index, org_id, record_group_id, log, repo_paths)
     builder.result.blocks = len(docs)
     builder.result.files_total = len(index.blocks_by_record)
 

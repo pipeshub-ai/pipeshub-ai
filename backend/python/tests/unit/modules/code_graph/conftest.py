@@ -50,6 +50,11 @@ class FakeGraphProvider:
             if record_id in wanted
         }
 
+    async def get_document(self, key, collection, transaction=None, *, raise_on_error=False):
+        if collection == CollectionNames.CODE_FILES.value and key in self.code_files:
+            return {"_key": key, "filePath": self.code_files[key]}
+        return None
+
     async def update_node(self, key, collection, updates, transaction=None):
         if collection == CollectionNames.CODE_FILES.value:
             if "referencedNames" in updates:
@@ -119,7 +124,11 @@ class FakeGraphProvider:
         ]
         return original_count - len(self.edges)
 
-    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None):
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None,
+                                   *, raise_on_error=False):
+        if collection == CollectionNames.RECORDS.value:
+            # The repo's code files, empty ones included, as the builder lists them.
+            return [{"_key": record_id} for record_id in self.code_files]
         return [
             {"_key": key} for key, doc in self.blocks.items()
             if all(doc.get(field) == value for field, value in filters.items())

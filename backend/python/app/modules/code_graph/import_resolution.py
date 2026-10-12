@@ -10,12 +10,26 @@ shared external node instead.
 from __future__ import annotations
 
 import posixpath
+import sys
 
 __all__ = ["ImportResolution", "resolve_import_specifier"]
 
 _JS_EXTENSIONS = (".ts", ".tsx", ".d.ts", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts")
 _JS_INDEX_FILES = tuple(f"index{ext}" for ext in _JS_EXTENSIONS)
 _PY_EXTENSIONS = (".py", ".pyi")
+# TypeScript ESM (node16/nodenext/bundler) imports a source by its emitted name:
+# `./foo.js` while the repo holds `foo.ts`.
+_TS_SOURCE_FOR_EMITTED = {
+    ".js": (".ts", ".tsx"), ".jsx": (".tsx",), ".mjs": (".mts",), ".cjs": (".cts",),
+}
+
+# `import logging` is the standard library even when the repo has a
+# `telemetry/logging.py`; only a module at a source root could shadow it.
+_STDLIB_MODULES = frozenset(getattr(sys, "stdlib_module_names", ()))
+
+# tsconfig/vite path aliases for the source root. A scoped package is
+# `@scope/name`, so `@/` and `~/` cannot be one.
+_JS_ROOT_ALIASES = ("@/", "~/", "#/")
 
 # Bounded so a cycle of barrel files cannot spin forever.
 _MAX_BARREL_HOPS = 8
@@ -48,17 +62,26 @@ class ImportResolution:
         direct = self._python_candidates(rel)
         if direct:
             return direct
-        # Absolute imports are usually rooted at a package dir (src/, app/…),
-        # so match on the tail of known paths. The basename index narrows the
-        # scan to files sharing the leaf name; without it every unrooted import
-        # walked the whole repo.
+        if rel.split("/", 1)[0] in _STDLIB_MODULES:
+            return None
+        # Absolute imports are rooted at a source dir (src/, backend/…), so match
+        # on the tail of known paths -- but only where the first segment is a
+        # top-level package. `telemetry/logging.py` inside the `app` package is
+        # `app.telemetry.logging`, never `logging`. The basename index narrows
+        # the scan to files sharing the leaf name.
         leaf = rel.rsplit("/", 1)[-1]
         for suffix, base in ((f"/{rel}.py", f"{leaf}.py"),
                              (f"/{rel}/__init__.py", "__init__.py")):
-            matches = [p for p in self._by_suffix.get(base, ()) if p.endswith(suffix)]
+            matches = [
+                p for p in self._by_suffix.get(base, ())
+                if p.endswith(suffix) and self._is_source_root(p[: -len(suffix)])
+            ]
             if len(matches) == 1:
                 return matches[0]
         return None
+
+    def _is_source_root(self, directory: str) -> bool:
+        return f"{directory}/__init__.py" not in self._files
 
     def _python_candidates(self, base: str) -> str | None:
         for ext in _PY_EXTENSIONS:
@@ -71,11 +94,36 @@ class ImportResolution:
     # -- javascript / typescript ----------------------------------------
 
     def _resolve_js(self, specifier: str, from_file: str) -> str | None:
+        if specifier.startswith(_JS_ROOT_ALIASES):
+            return self._resolve_js_alias(specifier[2:], from_file)
         if not specifier.startswith("."):
             return None  # bare specifier: a package, not a repo file
         base = posixpath.normpath(posixpath.join(posixpath.dirname(from_file), specifier))
+        return self._js_file(base)
+
+    def _resolve_js_alias(self, rest: str, from_file: str) -> str | None:
+        """`@/lib/http` against the importing file's ancestors, then their `src/`.
+
+        tsconfig is not read, so the alias root is taken to be the nearest
+        ancestor (or its `src/`) that holds the target.
+        """
+        directory = posixpath.dirname(from_file)
+        while True:
+            for root in (directory, posixpath.join(directory, "src") if directory else "src"):
+                hit = self._js_file(posixpath.normpath(posixpath.join(root, rest)) if root else rest)
+                if hit:
+                    return hit
+            if not directory:
+                return None
+            directory = posixpath.dirname(directory)
+
+    def _js_file(self, base: str) -> str | None:
         if base in self._files:
             return base
+        stem, emitted_ext = posixpath.splitext(base)
+        for ext in _TS_SOURCE_FOR_EMITTED.get(emitted_ext, ()):
+            if f"{stem}{ext}" in self._files:
+                return f"{stem}{ext}"
         for ext in _JS_EXTENSIONS:
             candidate = f"{base}{ext}"
             if candidate in self._files:
@@ -94,7 +142,11 @@ class ImportResolution:
         try:
             if family == "py":
                 return self._resolve_python(specifier, from_file)
-            return self._resolve_js(specifier, from_file)
+            if family in ("js", None):
+                return self._resolve_js(specifier, from_file)
+            # No resolver for this language's imports yet; JS rules would only
+            # misread its specifiers.
+            return None
         except (ValueError, IndexError):
             return None
 

@@ -58,6 +58,11 @@ class _CapturingProvider:
     def __init__(self) -> None:
         self.docs: list[dict[str, Any]] = []
         self.referenced_names: list[str] | None = None
+        self.has_code_file = True
+
+    async def get_document(self, key: str, collection: str, transaction: str | None = None,
+                           *, raise_on_error: bool = False) -> dict | None:
+        return {"_key": key} if self.has_code_file else None
 
     async def get_nodes_by_filters(self, *args: object, **kwargs: object) -> list:
         return []
@@ -174,6 +179,27 @@ async def test_referenced_names_written_to_codefiles_not_blocks() -> None:
     # this file by; module specifiers can never match a defined symbol.
     assert {"fetch", "Base"} <= set(names)
     assert not any(name.startswith(".") for name in names)
+
+
+@pytest.mark.asyncio
+async def test_referenced_names_stay_on_a_block_when_there_is_no_codefiles_node() -> None:
+    """An uploaded .py has no codeFiles node; updating one would fail the record."""
+    containers = CodeFileParser().parse_to_blocks(_PYTHON, "client.py", "src/client.py", "python")
+    provider = _CapturingProvider()
+    provider.has_code_file = False
+
+    await write_code_file_blocks_to_graph(
+        graph_provider=provider, context=_context(), block_containers=containers,
+    )
+
+    assert provider.referenced_names is None
+    on_blocks = [d["referencedNames"] for d in provider.docs if d["referencedNames"]]
+    assert len(on_blocks) == 1
+    assert {"fetch", "Base"} <= set(on_blocks[0])
+    errors = list(_VALIDATOR.iter_errors(
+        {k: v for k, v in provider.docs[0].items() if k != "id"}
+    ))
+    assert not errors
 
 
 @pytest.mark.parametrize(

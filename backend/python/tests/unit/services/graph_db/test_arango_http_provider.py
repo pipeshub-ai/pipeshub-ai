@@ -25,8 +25,7 @@ Tests cover:
 import asyncio
 import logging
 import re
-import uuid
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -5178,7 +5177,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 58
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 59
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -5215,6 +5214,7 @@ class TestEnsureIndexes:
             ("recordId",),                                # per-file reconciliation
             ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
             ("orgId", "name"),                            # free-text select, repo-agnostic
+            ("connectorId",),                             # connector-scoped delete
         }
 
         code_files = {
@@ -7569,7 +7569,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 58
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 59
 
 
 # ---------------------------------------------------------------------------

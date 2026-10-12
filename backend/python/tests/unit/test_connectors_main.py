@@ -449,6 +449,32 @@ class TestStartKafkaConsumers:
         assert consumers[1] == ("sync", mock_sync_consumer)
         assert consumers[2] == ("code_graph", mock_code_graph_consumer)
 
+    async def test_a_code_graph_consumer_failure_keeps_the_sync_consumers(self):
+        """The code graph is optional; it must not take entity and sync events down."""
+        from app.connectors_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        gp = _make_graph_provider()
+        mock_entity_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+        mock_sync_consumer = MagicMock(start=AsyncMock(), stop=AsyncMock())
+
+        with (
+            patch("app.connectors_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.connectors_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.connectors_main.MessagingUtils.create_entity_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_sync_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.connectors_main.MessagingUtils.create_code_graph_consumer_config", new_callable=AsyncMock, side_effect=RuntimeError("redis down")),
+            patch("app.connectors_main.KafkaUtils.create_entity_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.KafkaUtils.create_sync_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.connectors_main.MessagingFactory.create_consumer", side_effect=[mock_entity_consumer, mock_sync_consumer]),
+        ):
+            consumers = await start_kafka_consumers(mock_container, gp)
+
+        assert consumers == [("entity", mock_entity_consumer), ("sync", mock_sync_consumer)]
+        mock_entity_consumer.stop.assert_not_awaited()
+        mock_sync_consumer.stop.assert_not_awaited()
+
     async def test_error_on_second_consumer_cleans_up_first(self):
         """If second consumer fails, first consumer is stopped for cleanup."""
         from app.connectors_main import start_kafka_consumers

@@ -92,7 +92,7 @@ class FakeGraphProvider:
             for record_id, path in self.code_files.items()
         ]
 
-    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None):
+    async def get_nodes_by_filters(self, collection, filters, return_fields=None, transaction=None, raise_on_error=False):
         if collection == CODE_FILES:
             return [d for d in self._code_file_docs()
                     if all(d.get(k) == v for k, v in filters.items())]
@@ -101,7 +101,7 @@ class FakeGraphProvider:
         return [d for d in self.blocks.values()
                 if all(d.get(k) == v for k, v in filters.items())]
 
-    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None) -> dict:
+    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None, raise_on_error=False) -> dict:
         wanted = set(record_ids)
         return {
             r: CodeFileInfo(file_path=p, referenced_names=())
@@ -109,7 +109,7 @@ class FakeGraphProvider:
         }
 
     async def get_nodes_by_field_in(self, collection, field_name, field_values,
-                                    return_fields=None, transaction=None):
+                                    return_fields=None, transaction=None, raise_on_error=False):
         wanted = set(field_values)
         if collection == RECORDS:
             docs = self.records.values()
@@ -119,12 +119,12 @@ class FakeGraphProvider:
             docs = self.blocks.values()
         return [d for d in docs if d.get(field_name) in wanted]
 
-    async def get_document(self, document_key, collection):
+    async def get_document(self, document_key, collection, raise_on_error=False):
         return self.records.get(document_key)
 
     async def search_nodes_by_field_terms(
         self, collection, field_name, terms, filters=None, limit=400,
-        transaction=None,
+        transaction=None, raise_on_error=False
     ):
         """Substring matching, like the provider's non-full-text fallback.
 
@@ -137,6 +137,12 @@ class FakeGraphProvider:
             and any(term.lower() in doc[field_name].lower() for term in terms)
             and all(doc.get(key) == value for key, value in (filters or {}).items())
         ][:limit]
+
+    async def filter_accessible_record_ids(self, record_ids, user_id, org_id, *,
+                                           transaction=None) -> set[str]:
+        if user_id != self.allow_user:
+            return set()
+        return {r for r in record_ids if r in self.records and r not in self.deny_records}
 
     async def check_record_access_with_details(self, user_id, org_id, record_id):
         if user_id != self.allow_user or record_id in self.deny_records:
@@ -161,7 +167,7 @@ class FakeGraphProvider:
 
     async def get_neighbors_for_nodes_by_relationship_types(self, node_keys, node_collection,
                                                             relationship_types, direction,
-                                                            limit=5000, transaction=None):
+                                                            limit=5000, transaction=None, raise_on_error=False):
         anchors = {f"{node_collection}/{k}" for k in node_keys}
         out = []
         for edge in self.edges:
@@ -213,7 +219,7 @@ class QueryGraphProvider(FakeGraphProvider):
     """Adds the query operations used by `query.py`."""
 
     async def get_accessible_virtual_record_ids(self, user_id, org_id, filters=None,
-                                                time_range=None):
+                                                time_range=None, raise_on_error=False):
         if user_id != self.allow_user:
             return {}
         return {f"v-{r}": r for r in self.records if r not in self.deny_records}
@@ -250,7 +256,7 @@ class QueryGraphProvider(FakeGraphProvider):
 
     async def get_nodes_by_field_prefix(
         self, collection, field_name, prefix, filters=None, limit=400,
-        transaction=None,
+        transaction=None, raise_on_error=False
     ):
         docs = self._code_file_docs() if collection == CODE_FILES else self.blocks.values()
         return [

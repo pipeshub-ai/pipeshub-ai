@@ -1696,10 +1696,12 @@ class Neo4jProvider(IGraphDBProvider):
         concurrent overwrite cannot sneak in between the check and the write."""
         try:
             label = collection_to_label(collection)
+            # Before conversion, which JSON-serializes nested values the schema
+            # expects as objects or arrays.
+            self.validator.validate_node_update(collection, node)
             neo4j_node = self._arango_to_neo4j_node(node, collection)
             if "id" not in neo4j_node:
                 neo4j_node["id"] = key
-            self.validator.validate_node_update(collection, neo4j_node)
             query = f"""
             MATCH (n:{label} {{id: $key}})
             WHERE n[$field] = $expected
@@ -2750,6 +2752,8 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         try:
             label = collection_to_label(collection)
@@ -2772,6 +2776,8 @@ class Neo4jProvider(IGraphDBProvider):
             ]
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def search_nodes_by_field_terms(
@@ -2782,6 +2788,8 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         if not terms:
             return []
@@ -2855,6 +2863,8 @@ class Neo4jProvider(IGraphDBProvider):
             ]
         except Exception as e:
             self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def delete_edges_touching_nodes(
@@ -2955,6 +2965,8 @@ class Neo4jProvider(IGraphDBProvider):
         org_id: str,
         record_ids: list[str],
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, CodeFileInfo]:
         if not record_ids:
             return {}
@@ -2991,6 +3003,8 @@ class Neo4jProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            if raise_on_error:
+                raise
             return {}
 
     @staticmethod
@@ -3369,7 +3383,9 @@ class Neo4jProvider(IGraphDBProvider):
         relationship_types: list[str],
         direction: str,
         limit: int = 5000,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """Walk one hop from many nodes at once.
 
@@ -3440,6 +3456,8 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return []
 
     async def get_related_nodes(

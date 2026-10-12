@@ -9,6 +9,7 @@ from __future__ import annotations
 import posixpath
 
 from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
+from app.modules.parsers.code_parser.lang_config import LANGUAGES
 
 __all__ = [
     "CALLABLE_KINDS",
@@ -22,21 +23,22 @@ __all__ = [
 CALLABLE_KINDS = frozenset({"function", "method", "constructor"})
 TYPE_KINDS = frozenset({"class", "interface", "enum", "type_alias"})
 
-# JS and TS share a module system and resolve against each other; Python does
-# not. A Python `validate()` must never bind to a TypeScript `validate()`.
-_FAMILY_BY_LANGUAGE = {
+# A family is the set of languages whose code can call each other's
+# definitions directly. JS and TS share a module system; C++ includes C
+# headers; the JVM languages call each other's classes. Every other language
+# is its own family, so a Python `validate()` never binds to a TypeScript or
+# Rust one. Derived from the parser's language table so a newly supported
+# language gets a family without a change here.
+_SHARED_FAMILIES = {
+    "javascript": "js", "typescript": "js", "tsx": "js",
     "python": "py",
-    "javascript": "js",
-    "typescript": "js",
-    "tsx": "js",
+    "c": "c", "cpp": "c",
+    "java": "jvm", "kotlin": "jvm", "scala": "jvm", "groovy": "jvm",
 }
-
+_FAMILY_BY_LANGUAGE = {name: _SHARED_FAMILIES.get(name, name) for name in LANGUAGES}
 _FAMILY_BY_EXTENSION = {
-    "py": "py", "pyi": "py",
-    "js": "js", "jsx": "js", "mjs": "js", "cjs": "js",
-    "ts": "js", "tsx": "js", "mts": "js", "cts": "js",
+    ext: _FAMILY_BY_LANGUAGE[cfg.name] for cfg in LANGUAGES.values() for ext in cfg.extensions
 }
-
 
 
 def lang_family(language: str | None, file_path: str | None = None) -> str | None:

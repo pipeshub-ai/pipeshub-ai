@@ -10,6 +10,7 @@ import pytest
 
 from app.agents.actions.code_graph.query import query_code_graph_impl
 from app.config.constants.arangodb import CollectionNames
+from app.services.graph_db.interface.graph_db_provider import CodeFileInfo
 
 CTX = {"graph_provider": None, "org_id": "org-1", "user_id": "user-1", "connector_id": "conn-1"}
 
@@ -20,13 +21,13 @@ def query_graph():
 
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                            filters=None, limit=None):
+                                            filters=None, limit=None, raise_on_error=False):
             if collection != CollectionNames.CODE_FILES.value:
                 return []
             return [{"_key": "rec-1", "filePath": "app/events/events.py", "fileRole": "source"}]
 
         async def get_nodes_by_field_in(self, collection, field_name, field_values,
-                                        return_fields=None):
+                                        return_fields=None, raise_on_error=False):
             return [{
                 "_key": "b1", "id": "b1", "orgId": "org-1", "connectorId": "conn-1",
                 "recordId": "rec-1", "qualifiedName": "method:EventProcessor.on_event",
@@ -36,15 +37,19 @@ def query_graph():
         async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs):
             return [{"anchorKey": "b1", "key": "b2", "collection": "blocks"}]
 
-        async def get_accessible_record_ids(self, *a, **k):
-            return None
+        async def filter_accessible_record_ids(self, record_ids, *a, **k) -> set:
+            return set(record_ids)
 
         async def check_record_access_with_details(self, *a, **k):
             return {"record": {"_key": "rec-1"}}
 
         async def get_nodes_by_filters(self, collection, filters, return_fields=None,
-                                       transaction=None):
+                                       transaction=None, raise_on_error=False):
             return []
+
+        async def get_file_paths_for_records(self, org_id, record_ids, transaction=None,
+                                             raise_on_error=False) -> dict:
+            return {"rec-1": CodeFileInfo(file_path="app/events/events.py", referenced_names=())}
 
     return _Graph()
 
@@ -60,8 +65,8 @@ def empty_graph():
         async def get_nodes_by_field_in(self, **kwargs):
             return []
 
-        async def get_accessible_record_ids(self, *a, **k):
-            return None
+        async def filter_accessible_record_ids(self, record_ids, *a, **k) -> set:
+            return set(record_ids)
 
         async def get_nodes_by_filters(self, **kwargs):
             return []
@@ -77,19 +82,19 @@ def repo_root_graph():
 
     class _Graph:
         async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                            filters=None, limit=None):
+                                            filters=None, limit=None, raise_on_error=False):
             return [{"_key": p, "filePath": p, "fileRole": "source"}
                     for p in paths if p.startswith(prefix)]
 
         # The listing is gated on the owning records: readable by the caller
         # and in the connector asked for.
-        async def get_accessible_virtual_record_ids(self, user_id: str, org_id: str,
-                                                    **kwargs: object) -> dict[str, str]:
-            return {f"v-{p}": p for p in paths}
+        async def filter_accessible_record_ids(self, record_ids: list[str], user_id: str,
+                                               org_id: str, **kwargs: object) -> set[str]:
+            return set(record_ids) & set(paths)
 
         async def get_nodes_by_field_in(self, collection: str, field_name: str,
                                         field_values: list[str],
-                                        return_fields: list[str] | None = None) -> list[dict]:
+                                        return_fields: list[str] | None = None, raise_on_error=False) -> list[dict]:
             if collection != CollectionNames.RECORDS.value:
                 return []
             return [{"_key": p, "orgId": "org-1", "connectorId": "conn-1"}
@@ -222,14 +227,14 @@ class _CappedGraph:
     """Two files where the scan only looks at one."""
 
     async def get_nodes_by_field_prefix(self, collection, field_name, prefix,
-                                        filters=None, limit=None):
+                                        filters=None, limit=None, raise_on_error=False):
         if collection != CollectionNames.CODE_FILES.value:
             return []
         return [{"_key": f"rec-{i}", "filePath": f"app/events/e{i}.py",
                  "fileRole": "source"} for i in range(2)][:limit]
 
     async def get_nodes_by_field_in(self, collection, field_name, field_values,
-                                    return_fields=None):
+                                    return_fields=None, raise_on_error=False):
         return [{
             "_key": "b1", "id": "b1", "orgId": "org-1", "connectorId": "conn-1",
             "recordId": "rec-0", "qualifiedName": "function:handle",
@@ -239,12 +244,17 @@ class _CappedGraph:
     async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs):
         return []
 
-    async def get_accessible_record_ids(self, *a, **k):
-        return None
+    async def filter_accessible_record_ids(self, record_ids, *a, **k) -> set:
+        return set(record_ids)
 
     async def check_record_access_with_details(self, *a, **k):
         return {"record": {"_key": "rec-0"}}
 
     async def get_nodes_by_filters(self, collection, filters, return_fields=None,
-                                   transaction=None):
+                                   transaction=None, raise_on_error=False):
         return []
+
+    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None,
+                                         raise_on_error=False) -> dict:
+        return {f"rec-{i}": CodeFileInfo(file_path=f"app/events/e{i}.py", referenced_names=())
+                for i in range(2)}

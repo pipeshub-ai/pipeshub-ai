@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 
@@ -39,6 +40,9 @@ from .ops import (
     DEFAULT_MAX_LINES,
     DEFAULT_NEIGHBOR_LIMIT,
     MAX_NEIGHBOUR_DEPTH,
+    AmbiguousRepoError,
+    _record_in_connector,
+    _user_can_read,
     find_symbol_path_impl,
     get_neighbour_impl,
     path_for_record,
@@ -74,6 +78,11 @@ _CONNECTOR_ID_DESC = (
 )
 
 _INCLUDE_TESTS_DESC = "Include test files and test symbols in results. False by default."
+_REPO_DESC = (
+    "The repository, as results show it in `repo` (e.g. `acme/shop`, or just "
+    "`shop`). Only needed when one connector holds several repos and a path "
+    "exists in more than one -- the tool then says which repos to choose from."
+)
 
 # Every failed lookup in the traces was a composed address, not a wrong one: a
 # real symbol under an invented path, or the right path with `function:` where
@@ -178,16 +187,20 @@ class CodeGraph:
             return denied
         try:
             return await call()
+        except AmbiguousRepoError as exc:
+            return {"error": str(exc), "repos": exc.repos}
         except Exception as exc:
             self._log.exception("codegraph %s failed", name)
             return {"error": f"{failure}: {exc}"}
 
     async def _anchor_path(
-        self, connector_id: str, file_path: str | None, record_id: str | None
-    ) -> tuple[str | None, dict[str, Any] | None]:
+        self, connector_id: str, file_path: str | None, record_id: str | None,
+        repo: str | None = None,
+    ) -> tuple[str | None, str | None, dict[str, Any] | None]:
         """Resolve the file a call starts from, given a path OR a `Record ID`.
 
-        Returns ``(path, error)``. Search results carry a Record ID and no path,
+        Returns ``(path, repo, error)``. A record id names one repo, which is
+        returned so a path two repos share still resolves to that record's. Search results carry a Record ID and no path,
         so accepting one removes the listing step that used to be the only way
         to turn a search hit into an argument these tools accept.
 
@@ -196,22 +209,41 @@ class CodeGraph:
         for a connector the caller cannot read.
         """
         if file_path:
-            return file_path, None
+            return file_path, repo, None
         denied = self._in_scope(connector_id or "")
         if denied:
-            return None, denied
+            return None, None, denied
         if not record_id:
-            return None, {"error": (
+            return None, None, {"error": (
                 "Give either `file_path` (repo-relative) or `record_id` (the "
                 "`Record ID` from a knowledge-search result)."
             )}
+        not_code = {"error": (
+            f"record_id {record_id!r} is not an indexed code file. Code files "
+            "show `Type: CODE_FILE` and a `Path:` in search results."
+        )}
+        # One answer for unreadable, other-connector and unknown records: the
+        # path of a record the caller cannot read is itself a leak.
+        if not await _user_can_read(
+            self._graph_provider, self._user_id, self._org_id, record_id
+        ):
+            return None, None, not_code
+        try:
+            in_connector = await _record_in_connector(
+                self._graph_provider, self._org_id, [record_id], connector_id
+            )
+            record = await self._graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
+            )
+        except Exception:
+            self._log.warning("codegraph record connector check failed", exc_info=True)
+            return None, None, not_code
+        if in_connector is None:
+            return None, None, not_code
         resolved = await path_for_record(self._graph_provider, self._org_id, record_id)
         if not resolved:
-            return None, {"error": (
-                f"record_id {record_id!r} is not an indexed code file. Code files "
-                "show `Type: CODE_FILE` and a `Path:` in search results."
-            )}
-        return resolved, None
+            return None, None, not_code
+        return resolved, (record or {}).get("recordGroupId") or repo, None
 
     def _in_scope(self, connector_id: str) -> dict[str, Any] | None:
         if self._allowed_connector_ids and connector_id not in self._allowed_connector_ids:
@@ -280,6 +312,10 @@ class CodeGraph:
                 name="include_tests", type=ParameterType.BOOLEAN, required=False,
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
+            ToolParameter(
+                name="repo", type=ParameterType.STRING, required=False, default=None,
+                description=_REPO_DESC,
+            ),
         ],
         tags=_QUERY_TAGS,
     )
@@ -290,6 +326,7 @@ class CodeGraph:
         kinds: list[str] | None = None,
         limit: int = DEFAULT_QUERY_LIMIT,
         include_tests: bool = False,
+        repo: str | None = None,
     ) -> tuple[bool, str]:
         result = await self._run(
             "query_code_graph",
@@ -297,7 +334,7 @@ class CodeGraph:
             lambda: query_code_graph_impl(
                 graph_provider=self._graph_provider, org_id=self._org_id,
                 user_id=self._user_id, connector_id=connector_id, select=select,
-                kinds=kinds, limit=limit, include_tests=include_tests,
+                kinds=kinds, limit=limit, include_tests=include_tests, repo=repo,
             ),
             "Failed to query the code graph",
         )
@@ -373,7 +410,10 @@ class CodeGraph:
                 description=(
                     "'any' (both directions — the default, and usually what you "
                     "want), 'inbound' (what reaches it), or 'outbound' (what it "
-                    "reaches)"
+                    "reaches). Every row's `direction` says which way its edge "
+                    "points: an inbound CALLS row is a caller, an outbound one a "
+                    "callee. Rows past the first hop carry `via`, the node they "
+                    "were reached through."
                 ),
             ),
             ToolParameter(
@@ -411,6 +451,10 @@ class CodeGraph:
                 name="include_tests", type=ParameterType.BOOLEAN, required=False,
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
+            ToolParameter(
+                name="repo", type=ParameterType.STRING, required=False, default=None,
+                description=_REPO_DESC,
+            ),
         ],
         tags=_NEIGHBOUR_TAGS,
     )
@@ -426,11 +470,12 @@ class CodeGraph:
         limit: int = DEFAULT_NEIGHBOR_LIMIT,
         offset: int = 0,
         include_tests: bool = False,
+        repo: str | None = None,
     ) -> tuple[bool, str]:
         # A name with no file is the one call that needs no anchor: the impl
         # resolves it against the repo and asks which match was meant.
         if file_path or record_id or not qualified_name:
-            path, error = await self._anchor_path(connector_id, file_path, record_id)
+            path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
             if error is not None:
                 return self._to_output(error)
         else:
@@ -445,7 +490,7 @@ class CodeGraph:
                 user_id=self._user_id, connector_id=connector_id,
                 file_path=path, qualified_name=qualified_name,
                 direction=direction, edge_types=edge_types, depth=depth,
-                limit=limit, offset=offset, include_tests=include_tests,
+                limit=limit, offset=offset, include_tests=include_tests, repo=repo,
             ),
             "Failed to walk the code graph",
         )
@@ -521,6 +566,10 @@ class CodeGraph:
                 name="include_tests", type=ParameterType.BOOLEAN, required=False,
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
+            ToolParameter(
+                name="repo", type=ParameterType.STRING, required=False, default=None,
+                description=_REPO_DESC,
+            ),
         ],
         tags=_READ_TAGS,
     )
@@ -533,8 +582,9 @@ class CodeGraph:
         lines: str | None = None,
         max_lines: int | None = None,
         include_tests: bool = False,
+        repo: str | None = None,
     ) -> tuple[bool, str]:
-        path, error = await self._anchor_path(connector_id, file_path, record_id)
+        path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
         if error is not None:
             return self._to_output(error)
         result = await self._run(
@@ -545,7 +595,7 @@ class CodeGraph:
                 user_id=self._user_id, connector_id=connector_id,
                 blob_store=self._blob_store, file_path=path,
                 qualified_name=qualified_name, lines=lines,
-                max_lines=max_lines, include_tests=include_tests,
+                max_lines=max_lines, include_tests=include_tests, repo=repo,
             ),
             "Failed to read the code",
         )
@@ -564,7 +614,11 @@ class CodeGraph:
         short_description="Trace how two symbols in the same language are connected",
         description=(
             "Trace how two symbols in the same language are connected. Walks every "
-            "edge type (calls, imports, inheritance, containment), not just calls.\n\n"
+            "edge type (calls, imports, inheritance, containment), not just calls, "
+            "and follows each the way it points: a path means the first symbol "
+            "reaches the second. If only the second reaches the first, that path is "
+            "returned with `reversed: true`. Each hop carries an `explain` "
+            "sentence.\n\n"
             "Only edges the parser could prove — one language and one repository. "
             "Two layers talking over HTTP have no path here. Read the route handler "
             "instead.\n\n"
@@ -611,6 +665,18 @@ class CodeGraph:
                 name="include_tests", type=ParameterType.BOOLEAN, required=False,
                 default=False, description=_INCLUDE_TESTS_DESC,
             ),
+            ToolParameter(
+                name="repo", type=ParameterType.STRING, required=False, default=None,
+                description=_REPO_DESC,
+            ),
+            ToolParameter(
+                name="undirected", type=ParameterType.BOOLEAN, required=False,
+                default=False,
+                description=(
+                    "Ignore edge direction. Only for \"are these related at all\": "
+                    "two helpers that merely share a caller count as connected."
+                ),
+            ),
         ],
         tags=_PATH_TAGS,
     )
@@ -624,6 +690,8 @@ class CodeGraph:
         max_depth: int = DEFAULT_MAX_DEPTH,
         edge_types: list[str] | None = None,
         include_tests: bool = False,
+        undirected: bool = False,
+        repo: str | None = None,
     ) -> tuple[bool, str]:
         result = await self._run(
             "find_symbol_path",
@@ -634,7 +702,7 @@ class CodeGraph:
                 file_path_a=file_path_a, qualified_name_a=qualified_name_a,
                 file_path_b=file_path_b, qualified_name_b=qualified_name_b,
                 max_depth=max_depth, edge_types=edge_types,
-                include_tests=include_tests,
+                include_tests=include_tests, undirected=undirected, repo=repo,
             ),
             "Failed to search for a path",
         )

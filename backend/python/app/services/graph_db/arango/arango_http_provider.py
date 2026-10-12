@@ -1139,6 +1139,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "name"],
         )
 
+        # SINGLE: connector-scoped block delete (delete_blocks_by_connector_id),
+        # which runs inside the connector-deletion transaction.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["connectorId"],
+        )
+
         # COMPOSITE: skillKey + version — GraphSkillStore.get_version lookup.
         await self.http_client.ensure_persistent_index(
             CollectionNames.AGENT_SKILL_VERSIONS.value,
@@ -3590,6 +3597,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         filter_conditions, bind_vars = self._filter_conditions(filters)
         conditions = [f"STARTS_WITH(doc.{field_name}, @prefix)", *filter_conditions]
@@ -3606,6 +3615,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes by field prefix failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def search_nodes_by_field_terms(
@@ -3616,6 +3627,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         limit: int = 400,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         if not terms:
             return []
@@ -3640,6 +3653,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) or []
         except Exception as e:
             self.logger.error(f"❌ Search nodes by field terms failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def delete_edges_touching_nodes(
@@ -3754,6 +3769,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         org_id: str,
         record_ids: list[str],
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, CodeFileInfo]:
         if not record_ids:
             return {}
@@ -3790,6 +3807,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ Get file paths for records failed: {str(e)}")
+            if raise_on_error:
+                raise
             return {}
 
     async def get_edges_by_target_keys(
@@ -4157,7 +4176,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         relationship_types: list[str],
         direction: str,
         limit: int = 5000,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Walk one hop from many nodes at once - FULLY ASYNC.
@@ -4230,6 +4251,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Get neighbors for nodes by relationship types failed: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return []
 
     async def get_related_nodes(
@@ -14534,10 +14557,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER {condition}
                     RETURN block._id
             )
-            FILTER LENGTH(block_ids) > 0
-            FOR edge IN {edges}
-                FILTER edge._from IN block_ids OR edge._to IN block_ids
-                REMOVE edge IN {edges} OPTIONS {{ ignoreErrors: true }}
+            // One equality lookup per direction: `_from IN ids OR _to IN ids`
+            // does not reliably use the edge index and scans the collection.
+            LET edge_keys = UNION_DISTINCT(
+                (FOR bid IN block_ids FOR e IN {edges} FILTER e._from == bid RETURN e._key),
+                (FOR bid IN block_ids FOR e IN {edges} FILTER e._to == bid RETURN e._key)
+            )
+            FOR key IN edge_keys
+                REMOVE key IN {edges} OPTIONS {{ ignoreErrors: true }}
                 RETURN 1
             """
             await self.http_client.execute_aql(

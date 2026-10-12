@@ -45,7 +45,7 @@ class TestDepth:
 
             async def get_neighbors_for_nodes_by_relationship_types(
                 self, node_keys, node_collection, relationship_types, direction,
-                limit=5000, transaction=None,
+                limit=5000, transaction=None, raise_on_error=False
             ) -> list[dict]:
                 self.calls += 1
                 return [{
@@ -57,7 +57,9 @@ class TestDepth:
         graph = Endless()
         result = await _path(graph, max_depth=99)
         assert result == {"found": False, "hops": []}
-        assert graph.calls == MAX_PATH_DEPTH, "one query per hop, and no more hops than the cap"
+        # One query per hop, capped, and once more from the far end when the
+        # forward search finds nothing.
+        assert graph.calls == 2 * MAX_PATH_DEPTH
 
     async def test_a_depth_short_of_the_path_misses(self, graph) -> None:
         assert (await _path(graph, max_depth=2))["found"] is False
