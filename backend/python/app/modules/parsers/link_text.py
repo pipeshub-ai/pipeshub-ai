@@ -13,10 +13,16 @@ from __future__ import annotations
 import re
 from urllib.parse import urlsplit
 
-_FENCE_RE = re.compile(r"^[ \t]{0,3}(`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}\1[ \t]*$|\Z)", re.MULTILINE | re.DOTALL)
+# A closing fence may be longer than the opener (CommonMark 4.5).
+_FENCE_RE = re.compile(
+    r"^[ \t]{0,3}(?P<fence>(?P<char>[`~])(?P=char){2,})[^\n]*\n"
+    r".*?(?:^[ \t]{0,3}(?P=fence)(?P=char)*[ \t]*$|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
 _CODE_SPAN_RE = re.compile(r"(?<!\\)(`+)(?!`)(.+?)(?<!`)\1(?!`)", re.DOTALL)
 _REFERENCE_DEFINITION_RE = re.compile(
-    r"^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*\S+(?:[ \t]+(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$\n?",
+    r"^[ \t]{0,3}\[([^\]\n]+)\]:[ \t]*\n?[ \t]*\S+"
+    r"(?:(?:[ \t]+|[ \t]*\n[ \t]*)(?:\"[^\"\n]*\"|'[^'\n]*'|\([^)\n]*\)))?[ \t]*$\n?",
     re.MULTILINE,
 )
 _AUTOLINK_RE = re.compile(r"<((?:[a-zA-Z][a-zA-Z0-9+.-]{1,31}):[^\s<>]+)>")
@@ -192,7 +198,9 @@ def _link_destination_end(text: str, start: int) -> int | None:
 def _url_label(url: str) -> str:
     if url.lower().startswith("mailto:"):
         return url[len("mailto:"):]
-    return _host(url) or ""
+    # A hostless URI (tel:, urn:) is its own visible text; dropping it can
+    # leave nothing to embed.
+    return _host(url) or url
 
 
 def _bare_url_label(url: str) -> str:

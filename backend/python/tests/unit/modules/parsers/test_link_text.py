@@ -72,3 +72,21 @@ def test_unbalanced_brackets_do_not_swallow_text() -> None:
     assert anchor_text_only("open [bracket and (https://example.com/x") == (
         "open [bracket and (example.com"
     )
+
+
+def test_longer_closing_fence_ends_the_code_block() -> None:
+    text = "```\nGET https://api.example.com/v1\n````\nafter [z](https://z.example)"
+    assert anchor_text_only(text) == "```\nGET https://api.example.com/v1\n````\nafter z"
+
+
+def test_multiline_reference_definitions_are_removed() -> None:
+    text = (
+        "Read [the guide][guide] and [the FAQ][faq].\n\n"
+        "[guide]:\nhttps://docs.example.com/guide\n"
+        "[faq]: https://docs.example.com/faq\n\"Frequently asked\"\n"
+    )
+    assert anchor_text_only(text) == "Read the guide and the FAQ."
+
+
+def test_hostless_autolink_keeps_its_uri() -> None:
+    assert anchor_text_only("Call <tel:+15551234567>") == "Call tel:+15551234567"
