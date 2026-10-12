@@ -85,10 +85,13 @@ class RunTimer:
     under its name, in the order it finished; a name can repeat (two
     ``tool:retrieval`` spans, say).
 
-    `start(key)` / `stop(key, name)` time a span between two events that share
+    `start(key, name)` / `stop(key)` time a span between two events that share
     a key (a turn number, a tool-call id); `stop` without a matching `start` is
-    ignored. `record(name, ms)` adds a span measured elsewhere. `emit()` is
-    safe to call more than once; only the first call logs.
+    ignored. `record(name, ms)` adds a span measured elsewhere. A span still
+    open when `emit()` runs (a model call that raised, a tool cut off by a
+    client disconnect) is logged too, timed up to that moment and marked
+    ``(open)``. `emit()` is safe to call more than once; only the first call
+    logs.
     """
 
     __slots__ = ("_enabled", "_t0", "_open", "_spans", "_emitted")
@@ -96,7 +99,7 @@ class RunTimer:
     def __init__(self, *, enabled: bool | None = None) -> None:
         self._enabled = timing_enabled() if enabled is None else enabled
         self._t0 = time.perf_counter()
-        self._open: dict[Hashable, float] = {}
+        self._open: dict[Hashable, tuple[str, float]] = {}
         self._spans: list[tuple[str, float]] = []
         self._emitted = False
 
@@ -109,16 +112,17 @@ class RunTimer:
         """Finished spans as ``(name, ms)``, in the order they finished."""
         return list(self._spans)
 
-    def start(self, key: Hashable) -> None:
+    def start(self, key: Hashable, name: str) -> None:
         if not self._enabled:
             return
-        self._open[key] = time.perf_counter()
+        self._open[key] = (name, time.perf_counter())
 
-    def stop(self, key: Hashable, name: str) -> None:
+    def stop(self, key: Hashable) -> None:
         if not self._enabled:
             return
-        started = self._open.pop(key, None)
-        if started is not None:
+        opened = self._open.pop(key, None)
+        if opened is not None:
+            name, started = opened
             self._spans.append((name, (time.perf_counter() - started) * 1000.0))
 
     def record(self, name: str, ms: float) -> None:
@@ -130,8 +134,14 @@ class RunTimer:
         if not self._enabled or self._emitted:
             return
         self._emitted = True
-        total_ms = (time.perf_counter() - self._t0) * 1000.0
-        parts = " ".join(f"{name}={ms:.0f}ms" for name, ms in self._spans)
+        now = time.perf_counter()
+        total_ms = (now - self._t0) * 1000.0
+        finished = [f"{name}={ms:.0f}ms" for name, ms in self._spans]
+        unfinished = [
+            f"{name}={(now - started) * 1000.0:.0f}ms(open)"
+            for name, started in self._open.values()
+        ]
+        parts = " ".join(finished + unfinished)
         suffix = " ".join(f"{k}={v}" for k, v in extra.items() if v is not None)
         with contextlib.suppress(Exception):
             logger.info(

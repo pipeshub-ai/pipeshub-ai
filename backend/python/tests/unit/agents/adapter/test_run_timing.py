@@ -21,7 +21,7 @@ from app.utils.pattern_match import await_pattern_match
 from app.utils.stage_timer import RunTimer, StageTimer
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from app.agents.agent_loop.context import AgentContext
 
@@ -67,11 +67,53 @@ def _two_turn_agent(context: AgentContext) -> MagicMock:
     return agent
 
 
-async def _run(stage_timer: StageTimer | None, *, patch_finalizer: bool = True) -> MagicMock:
+def _model_error_agent(context: AgentContext) -> MagicMock:
+    """The model call raises: `Agent.step` has emitted TURN_START, then
+    `fail()` emits ERROR — no TEXT_MESSAGE_END or TURN_COMPLETE follows."""
+    agent = MagicMock()
+    agent.last_stream_result = None
+
+    async def _fake_stream(goal: object, **kwargs: object) -> AsyncIterator[AgentEvent]:
+        yield _ev(EventType.TURN_START, {"turn_index": 0})
+        yield _ev(EventType.ERROR, {"error": "LLM call failed"})
+        agent.last_stream_result = MagicMock(
+            success=False, error="LLM call failed", output=None, confidence=None,
+            cancelled=False, needs_input=None,
+        )
+
+    agent.stream = _fake_stream
+    return agent
+
+
+def _hanging_tool_agent(context: AgentContext) -> MagicMock:
+    """A tool call that is still running when the client goes away."""
+    agent = MagicMock()
+    agent.last_stream_result = None
+
+    async def _fake_stream(goal: object, **kwargs: object) -> AsyncIterator[AgentEvent]:
+        yield _ev(EventType.TURN_START, {"turn_index": 0})
+        yield _ev(EventType.TEXT_MESSAGE_END, {"turn_index": 0})
+        yield _ev(EventType.TOOL_CALL, {"tool": "retrieval", "tool_call_id": "c1"})
+        await asyncio.sleep(30)
+
+    agent.stream = _fake_stream
+    return agent
+
+
+async def _run(
+    stage_timer: StageTimer | None,
+    *,
+    patch_finalizer: bool = True,
+    make_agent: Callable[[AgentContext], MagicMock] | None = None,
+    disconnect_after_first_frame: bool = False,
+) -> MagicMock:
+    make_agent = make_agent or _two_turn_agent
+
     async def _fake_create(  # noqa: ANN202 - mirrors PipesHubAgentFactory.create
         self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None,
     ):
-        return _two_turn_agent(context), MagicMock(), MagicMock(), []
+        await context.event_sink.write({"event": "status", "data": {"status": "planning"}})
+        return make_agent(context), MagicMock(), MagicMock(), []
 
     async def _fake_finalizer_run(self, *, event_sink, **kwargs) -> None:
         await event_sink.write({"event": "complete", "data": {"answer": "42"}})
@@ -95,16 +137,20 @@ async def _run(stage_timer: StageTimer | None, *, patch_finalizer: bool = True) 
             new=_fake_finalizer_run,
         ) if patch_finalizer else contextlib.nullcontext(),
     ):
-        _ = [
-            chunk async for chunk in run_agent_loop_stream(
-                query_info={"query": "hello", "chatMode": "quick"},
-                user_info={"userId": "user-1", "orgId": "org-1"},
-                llm=MagicMock(), log=log, retrieval_service=MagicMock(),
-                graph_provider=MagicMock(), reranker_service=MagicMock(),
-                config_service=MagicMock(), model_name="gpt-4",
-                stage_timer=stage_timer,
-            )
-        ]
+        stream = run_agent_loop_stream(
+            query_info={"query": "hello", "chatMode": "quick"},
+            user_info={"userId": "user-1", "orgId": "org-1"},
+            llm=MagicMock(), log=log, retrieval_service=MagicMock(),
+            graph_provider=MagicMock(), reranker_service=MagicMock(),
+            config_service=MagicMock(), model_name="gpt-4",
+            stage_timer=stage_timer,
+        )
+        if disconnect_after_first_frame:
+            await stream.__anext__()
+            await asyncio.sleep(0.05)  # let the agent reach its tool call
+            await stream.aclose()  # the client goes away
+        else:
+            _ = [chunk async for chunk in stream]
     return log
 
 
@@ -147,14 +193,14 @@ class TestRunTimingLog:
 class TestRunTimer:
     def test_disabled_timer_records_nothing(self) -> None:
         timer = RunTimer(enabled=False)
-        timer.start("a")
-        timer.stop("a", "a")
+        timer.start("a", "a")
+        timer.stop("a")
         timer.record("b", 5.0)
         assert timer.spans == []
 
     def test_stop_without_start_is_ignored(self) -> None:
         timer = RunTimer(enabled=True)
-        timer.stop("missing", "x")
+        timer.stop("missing")
         assert timer.spans == []
 
     def test_emit_logs_once(self) -> None:
@@ -165,6 +211,16 @@ class TestRunTimer:
         timer.emit(log, "agent chat run")
         assert log.info.call_count == 1
         assert "tool:retrieval=12ms" in log.info.call_args.args[3]
+
+    def test_emit_includes_spans_still_open(self) -> None:
+        timer = RunTimer(enabled=True)
+        timer.start("t1", "llm_turn_1")
+        timer.stop("t1")
+        timer.start("c1", "tool:retrieval")
+        log = MagicMock()
+        timer.emit(log, "agent chat run (incomplete)")
+        spans = log.info.call_args.args[3]
+        assert re.fullmatch(r"llm_turn_1=\d+ms tool:retrieval=\d+ms\(open\)", spans)
 
 
 class TestRunTimingWhenTheRunFails:
@@ -180,3 +236,35 @@ class TestRunTimingWhenTheRunFails:
         labels = [c.args[1] for c in log.info.call_args_list if len(c.args) > 1]
         assert "agent chat run (incomplete)" in labels
         assert "agent chat run" not in labels
+
+
+class TestUnfinishedSpansAreStillLogged:
+    async def test_model_error_logs_the_open_turn_and_is_incomplete(self) -> None:
+        log = await _run(StageTimer(enabled=True), make_agent=_model_error_agent)
+
+        lines = [
+            c.args for c in log.info.call_args_list
+            if len(c.args) > 1 and str(c.args[1]).startswith("agent chat run")
+        ]
+        assert len(lines) == 1
+        _fmt, label, _total, spans, suffix = lines[0]
+        assert label == "agent chat run (incomplete)"
+        assert re.search(r"llm_turn_1=\d+ms\(open\)", spans)
+        assert "turns=1" in suffix
+
+    async def test_disconnect_mid_tool_logs_the_open_tool(self) -> None:
+        log = await _run(
+            StageTimer(enabled=True), make_agent=_hanging_tool_agent,
+            disconnect_after_first_frame=True,
+        )
+
+        lines = [
+            c.args for c in log.info.call_args_list
+            if len(c.args) > 1 and str(c.args[1]).startswith("agent chat run")
+        ]
+        assert len(lines) == 1
+        _fmt, label, _total, spans, suffix = lines[0]
+        assert label == "agent chat run (incomplete)"
+        assert re.search(r"llm_turn_1=\d+ms(?!\()", spans)
+        assert re.search(r"tool:retrieval=\d+ms\(open\)", spans)
+        assert "tool_calls=1" in suffix
