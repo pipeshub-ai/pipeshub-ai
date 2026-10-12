@@ -116,9 +116,15 @@ const decodeEscapes = (text: string): string =>
 // Parsers split on a raw `&` or `=` before decoding, so a pair sent as
 // `code%3Dvalue` arrives as the single name "code=value", and one sent as
 // `code%253Dvalue` is still `code%3Dvalue` after the parser's decode.
+// Decoding stops once a raw `&` or `=` shows, so a `%26` inside a value
+// stays part of that value when the name is split into pairs.
 const decodeName = (key: string): string => {
   let name = key;
-  for (let i = 0; i < MAX_NESTING && name.includes('%'); i += 1) {
+  for (
+    let i = 0;
+    i < MAX_NESTING && name.includes('%') && !/[=&]/.test(name);
+    i += 1
+  ) {
     const next = decodeEscapes(name);
     if (next === name) break;
     name = next;
@@ -189,8 +195,9 @@ function redactEmbedded(value: string, depth: number): string {
     return redacted ? redacted.toString() : text;
   }
   if (ENCODED_URL_SYNTAX.test(text)) {
-    const decoded = tryDecode(text);
-    if (decoded !== null && decoded !== text) {
+    // Run by run, so a stray `%` cannot leave the whole text undecoded.
+    const decoded = decodeEscapes(text);
+    if (decoded !== text) {
       const inner = redactEmbedded(decoded, depth + 1);
       if (inner !== decoded) return inner;
     }

@@ -173,6 +173,27 @@ describe('log-redaction.utils', () => {
       })
     }
 
+    for (const [url, secret] of [
+      ['/cb?page%3D1%26code%3D4%252F0Aea%2526restOfCode123', 'restOfCode123'],
+      ['/cb?page%3D1%26password%3Ds3cret%2526correct-horse', 'correct-horse'],
+    ]) {
+      it(`keeps a secret whole when it holds an encoded \`&\`: ${secret}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(out).to.not.contain(secret)
+        expect(decodeURIComponent(decodeURIComponent(out))).to.not.contain(secret)
+      })
+    }
+
+    for (const url of [
+      'https%3A%2F%2Falice%3Ahunter2%40db.example.com%',
+      `${encodeURIComponent('https://app.example.com/cb?code=hunter2')}%`,
+      `/login?next=${encodeURIComponent(encodeURIComponent('https://app.example.com/cb?code=hunter2'))}%`,
+    ]) {
+      it(`decodes past a stray \`%\`: ${url.slice(0, 24)}`, () => {
+        expect(redactSensitiveQueryParams(url)).to.not.contain('hunter2')
+      })
+    }
+
     it('redacts a callback URL nested, encoded, inside another parameter', () => {
       const out = redactSensitiveQueryParams(
         `/login?returnTo=${encodeURIComponent(`/cb?code=${FAKE_CODE}&page=2`)}`,
@@ -340,6 +361,13 @@ describe('log-redaction.utils', () => {
         expect(logged).to.not.contain('FAKE-auth-code')
         expect(logged).to.not.contain(FAKE_STATE)
       }
+    })
+
+    it('keeps a secret holding an encoded `&` whole inside a parameter name', () => {
+      const logged = JSON.stringify(
+        redactQueryForLog(querystring.parse('page%3D1%26code%3D4%252F0Aea%2526restOfCode123')),
+      )
+      expect(logged).to.not.contain('restOfCode123')
     })
 
     it('keeps an ordinary parameter name as it was', () => {

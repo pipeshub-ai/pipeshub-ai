@@ -96,6 +96,18 @@ class TestRedactSensitiveQueryParams:
         assert "SECRET" not in out
         assert "SECRET" not in unquote(unquote(out))
 
+    @pytest.mark.parametrize(
+        ("url", "secret"),
+        [
+            ("/cb?page%3D1%26code%3D4%252F0Aea%2526restOfCode123", "restOfCode123"),
+            ("/cb?page%3D1%26password%3Ds3cret%2526correct-horse", "correct-horse"),
+        ],
+    )
+    def test_a_secret_holding_an_encoded_ampersand_stays_whole(self, url: str, secret: str) -> None:
+        out = redact_sensitive_query_params(url)
+        assert secret not in out
+        assert secret not in unquote(unquote(out))
+
     def test_an_encoded_sensitive_name_is_logged_trimmed(self) -> None:
         assert redact_sensitive_query_params("/cb?code%253DSECRET&page=1") == "/cb?code=[REDACTED]&page=1"
 

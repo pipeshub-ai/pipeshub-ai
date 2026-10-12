@@ -53,10 +53,12 @@ _MAX_NESTING = 3
 def _decode_name(key: str) -> str:
     """Parsers split on a raw ``&`` or ``=`` before decoding, so a pair sent as
     ``code%3Dvalue`` arrives as the single name "code=value", and one sent as
-    ``code%253Dvalue`` is still ``code%3Dvalue`` after the parser's decode."""
+    ``code%253Dvalue`` is still ``code%3Dvalue`` after the parser's decode.
+    Decoding stops once a raw ``&`` or ``=`` shows, so a ``%26`` inside a
+    value stays part of that value when the name is split into pairs."""
     name = key
     for _ in range(_MAX_NESTING):
-        if "%" not in name:
+        if "%" not in name or "&" in name or "=" in name:
             break
         decoded = unquote(name)
         if decoded == name:
