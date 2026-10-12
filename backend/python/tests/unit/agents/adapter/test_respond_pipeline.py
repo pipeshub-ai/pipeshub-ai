@@ -108,6 +108,24 @@ class TestModelCallFailure:
         assert "conv-1" in logged and "run-1" in logged and "org-1" in logged
         assert "APIError: upstream hiccup" in logged[-1]
 
+    async def test_logged_error_masks_urls_and_account_ids(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LLM call failed: LangChain transport error (stream): APIError: 403 for "
+                "https://generativelanguage.googleapis.com/v1/models?key=AIzaSECRET in org-abc12345"
+            ),
+            event_sink=_RecordingSink(),
+        )
+
+        logged = context.logger.error.call_args.args[-1]
+        assert "AIzaSECRET" not in logged
+        assert "org-abc12345" not in logged
+        assert "APIError: 403 for [url]" in logged
+
     async def test_content_filter_refusal_is_logged_and_explained(self) -> None:
         context = make_context()
         finalizer = AnswerFinalizer(context, CitationCollector(context))

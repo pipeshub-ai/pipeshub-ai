@@ -241,6 +241,17 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     return error_code, _USER_MESSAGES[error_code]
 
 
+def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
+    """The raw error with URLs and account ids masked, capped at `max_len`.
+
+    A provider's error can echo the request URL, whose query string may carry
+    a credential (Google's REST endpoints accept `?key=`).
+    """
+    text = _URL_RE.sub("[url]", error_msg)
+    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
+    return text[:max_len]
+
+
 def _status_phrase(status_code: int) -> str | None:
     try:
         return HTTPStatus(status_code).phrase
@@ -273,4 +284,4 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
-__all__ = ["classify_error", "classify_exception"]
+__all__ = ["classify_error", "classify_exception", "redact_error_for_log"]
