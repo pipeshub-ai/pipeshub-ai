@@ -3623,6 +3623,27 @@ def _pages(*responses: object) -> AsyncMock:
     return AsyncMock(side_effect=list(responses))
 
 
+def _history_since(messages: list[dict[str, Any]]) -> AsyncMock:
+    """conversations.history over a fixed channel, honouring the exclusive ``oldest``."""
+
+    async def _history(**kwargs: object) -> MagicMock:
+        oldest = kwargs.get("oldest")
+        msgs = [m for m in messages if oldest is None or float(m["ts"]) > float(oldest)]
+        return _slack_ok(sorted(msgs, key=lambda m: float(m["ts"]), reverse=True))
+
+    return AsyncMock(side_effect=_history)
+
+
+def _dict_sync_point() -> MagicMock:
+    """A sync-point store that remembers what was written, like the real one."""
+    saved: dict[str, Any] = {}
+    sp = MagicMock()
+    sp.saved = saved
+    sp.read_sync_point = AsyncMock(side_effect=lambda key: saved.get(key))
+    sp.update_sync_point = AsyncMock(side_effect=lambda key, value: saved.__setitem__(key, value))
+    return sp
+
+
 def _pipeline_connector() -> Any:
     c = _make_connector()
     c.channel_groups_cache["C1"] = "rg"
@@ -3724,10 +3745,12 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
             await c.sync_channel_messages("C1")
 
         assert ds.conversations_replies.await_count == 2
-        # Channel history itself completed, so its checkpoint still moves.
-        c.messages_sync_point.update_sync_point.assert_awaited_once()
         # The thread is not recorded as synced up to latest_reply.
         c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+        # Nor is the channel: Slack's ``oldest`` is exclusive, so moving the
+        # channel checkpoint to the parent's ts would put the parent outside
+        # the next sync's window and its replies would never be read again.
+        c.messages_sync_point.update_sync_point.assert_not_awaited()
         assert any(
             "replies were only partly fetched" in str(call.args[0])
             for call in c.logger.warning.call_args_list
@@ -3830,4 +3853,87 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         ):
             await c._sync_thread_growth()
 
+        c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_thread_with_unread_replies_is_read_again_on_the_next_sync(self) -> None:
+        c = _pipeline_connector()
+        c.messages_sync_point = _dict_sync_point()
+        c.audit_log_sync_point = _dict_sync_point()
+        root = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 2, "latest_reply": "5.2",
+        }
+        first = {"ts": "5.1", "user": "U1", "text": "first reply"}
+        second = {"ts": "5.2", "user": "U1", "text": "second reply"}
+        ds = MagicMock()
+        ds.conversations_history = _history_since([root])
+        ds.conversations_replies = _pages(
+            # First sync: page 2 of the replies is rate-limited.
+            _slack_ok([root, first], next_cursor="r2"),
+            _slack_failure("ratelimited"),
+            # Second sync: Slack answers.
+            _slack_ok([root, first, second]),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+            patch.object(type(c), "_compute_sync_window_oldest", return_value=None),
+        ):
+            await c.sync_channel_messages("C1")
+            await c.sync_channel_messages("C1")
+
+        assert ds.conversations_replies.await_count == 3
+        assert ds.conversations_replies.await_args.kwargs["ts"] == "5.0"
+        assert {"last_sync_time": "5.0"} in c.messages_sync_point.saved.values()
+        assert {"last_reply_ts": "5.2"} in c.audit_log_sync_point.saved.values()
+
+    @pytest.mark.asyncio
+    async def test_thread_growth_holds_last_check_time_when_a_threads_replies_fail(self) -> None:
+        c = _pipeline_connector()
+        c.channel_groups_cache = {"C1": "rg"}
+        root = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 2, "latest_reply": "5.2",
+        }
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([root]))
+        ds.conversations_replies = _pages(
+            _slack_ok([root, {"ts": "5.1", "user": "U1", "text": "first reply"}], next_cursor="r2"),
+            _slack_failure("ratelimited"),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_refresh_user_caches", new=AsyncMock()),
+            patch.object(type(c), "_compute_sync_window_oldest", return_value=None),
+        ):
+            await c._sync_thread_growth()
+
+        assert ds.conversations_replies.await_count == 2
+        # Neither the thread's last_reply_ts nor the scan's last_check_time.
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["thread_not_found", "channel_not_found", "not_in_channel"])
+    async def test_a_thread_that_is_gone_does_not_hold_the_channel_checkpoint(self, error: str) -> None:
+        c = _pipeline_connector()
+        root = {
+            "ts": "5.0", "user": "U1", "text": "root",
+            "thread_ts": "5.0", "reply_count": 2, "latest_reply": "5.2",
+        }
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([root]))
+        ds.conversations_replies = _pages(_slack_failure(error))
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        c.messages_sync_point.update_sync_point.assert_awaited_once()
+        _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
+        assert payload == {"last_sync_time": "5.0"}
         c.audit_log_sync_point.update_sync_point.assert_awaited_once()

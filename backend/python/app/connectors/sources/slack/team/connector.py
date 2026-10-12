@@ -1300,6 +1300,10 @@ class SlackConnector(BaseConnector):
         # (rate limit, server error, no response). Older pages were never
         # fetched, so the checkpoint must not move past them.
         history_error: Optional[str] = None
+        # Threads whose replies were not all read (a failed replies page, or
+        # an exception while processing the thread). Their parents must stay
+        # inside the next sync's window, so the channel checkpoint waits too.
+        incomplete_threads = 0
         join_attempted = False
 
         while True:
@@ -1444,6 +1448,7 @@ class SlackConnector(BaseConnector):
                         )
 
                     if not replies_complete:
+                        incomplete_threads += 1
                         self.logger.warning(
                             f"[DeferredThread] Thread checkpoint NOT updated for ts={ts}, "
                             f"channel={dt.ctx.channel_id}: replies were only partly fetched"
@@ -1455,6 +1460,7 @@ class SlackConnector(BaseConnector):
                         thread_sp_key, {"last_reply_ts": latest_reply}
                     )
                 except Exception as exc:
+                    incomplete_threads += 1
                     self.logger.error(
                         f"[DeferredThread] Thread processing FAILED for ts={ts}, "
                         f"channel={dt.ctx.channel_id}: {exc}",
@@ -1467,6 +1473,12 @@ class SlackConnector(BaseConnector):
                 f"⚠️ Checkpoint NOT updated for {channel_id}: conversations.history "
                 f"failed part-way ({history_error}) after {total_msgs} messages; "
                 f"the next sync starts again from the previous checkpoint"
+            )
+        elif incomplete_threads:
+            self.logger.warning(
+                f"⚠️ Checkpoint NOT updated for {channel_id}: replies of "
+                f"{incomplete_threads} thread(s) could not all be read; the next "
+                f"sync starts again from the previous checkpoint"
             )
         elif newest_ts:
             await self.messages_sync_point.update_sync_point(
@@ -1816,10 +1828,17 @@ class SlackConnector(BaseConnector):
                 kwargs["oldest"] = oldest
             resp = await ds.conversations_replies(**kwargs)
             if not resp or not resp.success:
+                error = getattr(resp, "error", "no response")
+                # The thread or channel is gone: nothing more can be read, so
+                # a retry would fail the same way. Treat it as finished.
+                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                    self.logger.warning(
+                        f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
+                    )
+                    return replies, True
                 self.logger.warning(
                     f"conversations.replies({channel_id}, ts={thread_ts}) failed: "
-                    f"{getattr(resp, 'error', 'no response')}; "
-                    f"returning {len(replies)} replies fetched so far as incomplete"
+                    f"{error}; returning {len(replies)} replies fetched so far as incomplete"
                 )
                 return replies, False
 
@@ -2974,8 +2993,8 @@ class SlackConnector(BaseConnector):
         ``_handle_new_thread()`` for every thread-root message (reply_count > 0).
 
         Returns True when the whole range was scanned (or the channel is gone
-        for good), False when a page failed part-way and the caller must not
-        advance its checkpoint.
+        for good), False when a page failed part-way or a thread's replies
+        could not all be read, so the caller must not advance its checkpoint.
         """
         bot_messages_enabled = self.indexing_filters.is_enabled(
             IndexingFilterKey.BOT_MESSAGES
@@ -3004,6 +3023,7 @@ class SlackConnector(BaseConnector):
         # Slack expects canonical "<sec>.<6-digit μs>"; `str(time.time())` can
         # emit 7 decimals, which the API silently rejects.
         now_ts = f"{time.time():.6f}"
+        threads_complete = True
 
         while True:
             await self.rate_limiter.acquire(Tier.T3)
@@ -3073,8 +3093,10 @@ class SlackConnector(BaseConnector):
                     if not bot_messages_enabled and self._is_bot_message(md):
                         continue
                     try:
-                        await self._handle_new_thread(md, channel_id, ts)
+                        if not await self._handle_new_thread(md, channel_id, ts):
+                            threads_complete = False
                     except Exception as exc:
+                        threads_complete = False
                         self.logger.error(
                             f"Thread-growth for ts={ts} in {channel_id}: {exc}",
                             exc_info=True,
@@ -3086,7 +3108,7 @@ class SlackConnector(BaseConnector):
             if not cursor:
                 break
 
-        return True
+        return threads_complete
 
     # =========================================================================
     # 7b. Phase 5 — Full change detection (bypassed for now)
@@ -3605,9 +3627,12 @@ class SlackConnector(BaseConnector):
 
     async def _handle_new_thread(
         self, md: dict[str, Any], channel_id: str, ts: str
-    ) -> None:
+    ) -> bool:
         """
         Handle a thread root discovered during change detection.
+
+        Returns False when the thread's replies could not all be read, so
+        the thread-growth scan must not advance its checkpoint.
 
         Decision is gated on the per-thread sync_point, not on whether the
         thread RecordGroup node already exists. A full sync deletes sync_points
@@ -3669,13 +3694,13 @@ class SlackConnector(BaseConnector):
                     f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
                     f"channel={channel_id}: replies were only partly fetched"
                 )
-                return
+                return False
 
             latest_reply = md.get("latest_reply") or ts
             await self.audit_log_sync_point.update_sync_point(
                 thread_sp_key, {"last_reply_ts": latest_reply}
             )
-            return
+            return True
 
         # ── Incremental ───────────────────────────────────────────────────
         replies_complete = await self._process_thread_incremental(
@@ -3686,12 +3711,13 @@ class SlackConnector(BaseConnector):
                 f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
                 f"channel={channel_id}: replies were only partly fetched"
             )
-            return
+            return False
 
         latest_reply = md.get("latest_reply") or last_reply_ts
         await self.audit_log_sync_point.update_sync_point(
             thread_sp_key, {"last_reply_ts": latest_reply}
         )
+        return True
 
     def _record_changed(
         self, md: dict[str, Any], existing: Any
