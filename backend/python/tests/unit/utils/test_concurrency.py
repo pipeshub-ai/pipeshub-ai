@@ -153,8 +153,21 @@ class TestIndexingLlmStats:
 
         assert seen[0]["in_use"] == 1 and seen[0]["waiting"] == 1
         assert stats["in_use"] == 0 and stats["waiting"] == 0 and stats["acquired"] == 2
-        assert stats["hold_s_total"] >= 0.1
-        assert stats["wait_s_total"] >= 0.04  # the second call waited out the first
+        # Unrounded: the snapshot rounds totals to 0.1 s, which would hide a ~0.05 s wait.
+        assert concurrency._slot_stats.hold_s >= 0.09
+        assert concurrency._slot_stats.wait_s >= 0.04  # the second call waited out the first
+
+    def test_hold_mean_ignores_calls_still_in_flight(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils import concurrency
+
+        stats = concurrency._SlotStats()
+        stats.acquired, stats.in_use, stats.hold_s = 10, 9, 10.0
+        monkeypatch.setattr(concurrency, "_slot_stats", stats)
+
+        assert concurrency.indexing_llm_stats()["hold_s_mean"] == 10.0
+
+        stats.acquired, stats.in_use, stats.hold_s = 3, 3, 0.0
+        assert concurrency.indexing_llm_stats()["hold_s_mean"] == 0.0
 
     @pytest.mark.asyncio
     async def test_a_cancelled_wait_leaves_no_phantom_waiter(self, monkeypatch: pytest.MonkeyPatch) -> None:

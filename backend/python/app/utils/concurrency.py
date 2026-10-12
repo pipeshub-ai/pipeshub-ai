@@ -75,6 +75,8 @@ class _SlotStats:
     def snapshot(self) -> dict[str, float | int]:
         with self._lock:
             acquired = self.acquired
+            # hold_s only grows on release, so in-flight calls must not dilute its mean.
+            released = acquired - self.in_use
             return {
                 "slots_per_loop": scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS),
                 "loops": len(_sem_by_loop),
@@ -85,7 +87,7 @@ class _SlotStats:
                 "wait_s_total": round(self.wait_s, 1),
                 "hold_s_total": round(self.hold_s, 1),
                 "wait_s_mean": round(self.wait_s / acquired, 3) if acquired else 0.0,
-                "hold_s_mean": round(self.hold_s / acquired, 3) if acquired else 0.0,
+                "hold_s_mean": round(self.hold_s / released, 3) if released else 0.0,
             }
 
 
