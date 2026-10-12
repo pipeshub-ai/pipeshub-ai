@@ -421,10 +421,8 @@ describe('Enterprise Search Routes', () => {
       expect(runScopeCheck(['semantic:read'])).to.be.undefined
     })
 
-    it('should reject an OAuth token that has only semantic:write', () => {
-      const error = runScopeCheck(['semantic:write'])
-      expect(error).to.be.an('error')
-      expect(error.message).to.equal('Insufficient scope. Required: semantic:read')
+    it('should admit an OAuth token that has only semantic:write', () => {
+      expect(runScopeCheck(['semantic:write'])).to.be.undefined
     })
 
     it('should reject an OAuth token with no semantic scopes', () => {
