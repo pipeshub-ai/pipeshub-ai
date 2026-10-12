@@ -1142,7 +1142,8 @@ class TestRecordNotFound:
 
         handler.logger.error.assert_not_called()
         assert any(
-            "not found in database" in str(c) for c in handler.logger.warning.call_args_list
+            "not found in database" in str(c)
+            for c in handler.logger.warning.call_args_list
         )
 
     @pytest.mark.asyncio
