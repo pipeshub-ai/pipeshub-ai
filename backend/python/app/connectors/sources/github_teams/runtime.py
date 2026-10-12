@@ -40,6 +40,7 @@ from .constants import (
     _GITHUB_RETRY_BASE_DELAY_SECONDS,
     _GITHUB_RETRY_MAX_DELAY_SECONDS,
     _GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS,
+    _REPO_LOOKUP_TTL_SECONDS,
     _RETRYABLE_STATUS_CODES,
 )
 
@@ -66,6 +67,10 @@ class RuntimeHelper:
         self._search_semaphore = asyncio.Semaphore(GITHUB_SEARCH_CONCURRENCY)
         self._search_call_times: deque[float] = deque()
         self._search_lock = asyncio.Lock()
+
+        # repo id -> (when fetched, repository). See ``get_repo_by_id``.
+        self._repo_lookups: dict[int, tuple[float, object]] = {}
+        self._repo_lookup_locks: dict[int, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # Auth-error detection
@@ -257,6 +262,42 @@ class RuntimeHelper:
                 status_code=extract_source_status(e),
                 exception_type=type(e).__name__,
             )
+
+    async def get_repo_by_id(self, repo_id: int) -> GitHubResponse:
+        """``GET /repositories/{id}`` through ``ds_call``, remembered per repository.
+
+        Tickets, pull requests and code files name their repository only by
+        numeric id, and every one of them is streamed separately. Without this,
+        each paid a lookup before its real request: one extra call per PR or
+        issue, and half of what a code file costs. The answer is the same for
+        every record in the repository, so it is fetched once and kept for
+        ``_REPO_LOOKUP_TTL_SECONDS``.
+
+        Only a successful lookup is kept; a failure is returned as it was and
+        the next record asks again. Concurrent streams for the same repository
+        wait for one lookup rather than each making their own.
+        """
+        cached = self._fresh_repo_lookup(repo_id)
+        if cached is not None:
+            return GitHubResponse(success=True, data=cached)
+        lock = self._repo_lookup_locks.setdefault(repo_id, asyncio.Lock())
+        async with lock:
+            cached = self._fresh_repo_lookup(repo_id)
+            if cached is not None:
+                return GitHubResponse(success=True, data=cached)
+            response = await self.ds_call(self.c.data_source.get_repo_by_id, repo_id)
+            if response.success and response.data is not None:
+                self._repo_lookups[repo_id] = (time.monotonic(), response.data)
+            return response
+
+    def _fresh_repo_lookup(self, repo_id: int) -> object | None:
+        entry = self._repo_lookups.get(repo_id)
+        if entry is None:
+            return None
+        fetched_at, repo = entry
+        if time.monotonic() - fetched_at >= _REPO_LOOKUP_TTL_SECONDS:
+            return None
+        return repo
 
     async def ds_call(
         self,

@@ -130,6 +130,12 @@ _SEARCH_PUBLIC_PAGES_PER_REQUEST = 3
 # sync-state to lean on). One keystroke = one request, so cache briefly.
 _ORG_SCOPE_CACHE_TTL_SECONDS = 60.0
 
+# Streamed records name their repository only by numeric id, so each one needs
+# owner/name before its real request. Remembered per repository for this long:
+# a sync streams hundreds of records per repo, and the bound means a renamed or
+# transferred repository is picked up again within minutes.
+_REPO_LOOKUP_TTL_SECONDS = 15 * 60.0
+
 # ---------------------------------------------------------------------------
 # Auth error markers — substring fallback for stringified errors on
 # GitHubResponse objects that carry no HTTP status
