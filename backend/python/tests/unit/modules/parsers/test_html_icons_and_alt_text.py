@@ -74,6 +74,25 @@ class TestIconOnlyLinks:
         )
         assert _texts(container) == ["Carol", "Dana", "Erin"]
 
+    def test_full_size_linked_image_that_will_be_stored_stays_an_image(self) -> None:
+        container = _parse_like_indexing(
+            '<ul><li><a href="https://example.com/photo"><img src="https://cdn.example.com/office.png" '
+            'alt="Office photo" width="640" height="480"></a> Headquarters</li></ul>'
+        )
+        image = next(b for b in container.blocks if b.type == BlockType.IMAGE)
+        assert image.media_metadata.alt_text == "Office photo"
+        assert all("[Office photo]" not in text for text in _texts(container))
+
+    def test_every_leading_icon_link_in_a_cell_is_labelled(self) -> None:
+        container = _convert(
+            '<ul><li>\n  <a href="https://example.com/a" title="Alpha">'
+            '<img src="https://cdn.example.com/a.png" width="16" height="16" alt=""></a>\n  '
+            '<a href="https://example.com/b" title="Beta">'
+            '<img src="https://cdn.example.com/b.png" width="16" height="16" alt=""></a>\n  Name\n</li></ul>'
+        )
+        [text] = _texts(container)
+        assert "[Alpha]" in text and "[Beta]" in text and "Name" in text
+
 
 class TestInlineIcons:
     def test_icon_inside_a_paragraph_does_not_split_it(self) -> None:
@@ -89,6 +108,15 @@ class TestInlineIcons:
             '<p>Signed <img src="https://cdn.example.com/dot.png" width="1" height="1">today</p>'
         )
         assert _texts(container) == ["Signed today"]
+
+    def test_generic_alt_on_a_linked_icon_is_not_written_into_the_text(self) -> None:
+        container = _convert(
+            '<ul><li><a href="https://example.com/doc"><img alt="Edit" width="16" height="16" '
+            'src="https://cdn.example.com/pen.png"></a> Dana</li>'
+            '<li><a href="#top" title="Back to top"><img alt="Back to top" width="16" height="16" '
+            'src="https://cdn.example.com/up.png"></a> Carol</li></ul>'
+        )
+        assert _texts(container) == ["Dana", "Carol"]
 
     def test_full_size_image_in_a_paragraph_is_still_an_image(self) -> None:
         container = _convert(f'<p>Before <img src="{PNG}" alt="Diagram" width="640"> after</p>')
@@ -119,6 +147,18 @@ class TestImageAltText:
         image = next(b for b in container.blocks if b.type == BlockType.IMAGE)
         assert image.image_metadata.captions == ["Revenue by quarter"]
         assert image.media_metadata.alt_text == "Bar chart"
+
+    def test_inline_figure_images_get_their_own_captions(self) -> None:
+        container = _convert(
+            f'<figure><img src="{PNG}" alt="Chart"><figcaption>Revenue</figcaption></figure>'
+            f'<figure><img src="{PNG}" alt="Chart"><figcaption>Costs</figcaption></figure>'
+            f'<figure><img src="{PNG}"><figcaption>Headcount</figcaption></figure>'
+        )
+        images = [b for b in container.blocks if b.type == BlockType.IMAGE]
+        assert [b.image_metadata.captions for b in images] == [["Revenue"], ["Costs"], ["Headcount"]]
+        assert [b.media_metadata.alt_text if b.media_metadata else None for b in images] == [
+            "Chart", "Chart", None,
+        ]
 
     def test_image_without_alt_gets_no_key_as_caption(self) -> None:
         container = _parse_like_indexing('<p><img src="https://cdn.example.com/a.png"></p>')

@@ -595,6 +595,7 @@ ORIGINAL_ALT_ATTR = "data-ph-alt"
 
 _ICON_MAX_PX = 32
 _ICON_LINK_CELL_TAGS = frozenset({"li", "td", "th"})
+_ANCHOR_TAGS = frozenset({"a"})
 _ICON_TEXT_CONTAINER_TAGS = frozenset({
     "p", "li", "td", "th", "dd", "dt", "figcaption", "caption", "address",
     *_HEADING_TAGS,
@@ -613,6 +614,30 @@ def original_alt(img: LexborNode) -> str:
     if ORIGINAL_ALT_ATTR in attrs:
         return (attrs.get(ORIGINAL_ALT_ATTR) or "").strip()
     return (attrs.get("alt") or "").strip()
+
+
+def _img_data_uri(img: LexborNode, caption_map: dict[str, str]) -> str | None:
+    """The ``data:image`` URI an ``<img>`` will be stored with, or ``None``.
+
+    ``caption_map`` (keyed by ``alt``) wins over ``src``, then the first
+    ``srcset`` entry. HTTP(S) sources are not stored, so they return ``None``.
+    """
+    attrs = img.attributes or {}
+    alt_text = (attrs.get("alt") or "").strip()
+    if alt_text and alt_text in caption_map:
+        caption_uri = (caption_map[alt_text] or "").strip()
+        if caption_uri.startswith("data:image"):
+            return caption_uri
+    src = (attrs.get("src") or "").strip()
+    if not src and attrs.get("srcset"):
+        first_part = attrs["srcset"].split(",")[0].split()
+        if first_part:
+            src = first_part[0].strip()
+    return src if src.startswith("data:image") else None
+
+
+def _is_generic_label(text: str | None) -> bool:
+    return (text or "").strip().lower() in _GENERIC_LINK_LABELS
 
 
 def _pixel_size(value: str | None) -> int | None:
@@ -709,28 +734,33 @@ def _icon_link_label(anchor: LexborNode, img: LexborNode) -> str:
     attrs = anchor.attributes or {}
     for candidate in ((attrs.get("title") or "").strip(), original_alt(img)):
         if candidate:
-            return "" if candidate.lower() in _GENERIC_LINK_LABELS else candidate
+            return "" if _is_generic_label(candidate) else candidate
     href = (attrs.get("href") or "").strip()
     if "?" in href:
         return ""
     label = _label_from_target(href)
-    return "" if label.lower() in _GENERIC_LINK_LABELS else label
+    return "" if _is_generic_label(label) else label
 
 
-def _label_icon_only_links(root: LexborNode) -> int:
+def _label_icon_only_links(root: LexborNode, caption_map: dict[str, str]) -> int:
     """Replace an image-only link that introduces a list item or cell with ``[label]``.
 
     Such a link (a flag or logo in front of a name) carries the only mention
     of what it links to; left as an image it is dropped whenever the image
     cannot be stored. Links with no usable label, or not placed before text,
-    are left alone so edit and back-to-top controls do not turn into words.
+    are left alone so edit and back-to-top controls do not turn into words,
+    and so is a full-size image that will be stored as an image block.
     """
-    labelled = 0
+    # Decide against the tree as parsed: a label written for one link is text
+    # that would make the next link in the same cell look like it follows text.
+    pending: list[tuple[LexborNode, str]] = []
     for anchor in root.css("a"):
         if anchor.text(deep=True).strip():
             continue
         images = anchor.css("img")
         if not images:
+            continue
+        if any(not _is_icon_image(img) and _img_data_uri(img, caption_map) for img in images):
             continue
         cell = _nearest_ancestor(anchor, _ICON_LINK_CELL_TAGS)
         if cell is None:
@@ -739,11 +769,11 @@ def _label_icon_only_links(root: LexborNode) -> int:
         if before or not after:
             continue
         label = _icon_link_label(anchor, images[0])
-        if not label:
-            continue
+        if label:
+            pending.append((anchor, label))
+    for anchor, label in pending:
         _replace_with_inline_text(anchor, f"[{label}]")
-        labelled += 1
-    return labelled
+    return len(pending)
 
 
 def _inline_icons_as_text(root: LexborNode) -> int:
@@ -762,6 +792,11 @@ def _inline_icons_as_text(root: LexborNode) -> int:
         if not any(_text_around(container, img)):
             continue
         alt = original_alt(img)
+        anchor = _nearest_ancestor(img, _ANCHOR_TAGS)
+        if anchor is not None and (
+            _is_generic_label(alt) or _is_generic_label((anchor.attributes or {}).get("title"))
+        ):
+            alt = ""
         if alt:
             _replace_with_inline_text(img, alt)
         else:
@@ -770,8 +805,17 @@ def _inline_icons_as_text(root: LexborNode) -> int:
     return replaced
 
 
+_FIGURE_IMAGE_KEY = "ph-figure-image-{}"
+
+
 def _figure_captions(root: LexborNode) -> dict[str, str]:
-    """``alt`` → ``<figcaption>`` text for images inside a ``<figure>``."""
+    """Image key → ``<figcaption>`` text for images inside a ``<figure>``.
+
+    The walker finds an image's metadata by its ``alt``. Downloaded images
+    already carry a unique ``Image_N`` key there; an inline ``data:`` image
+    keeps the author's alt, which can repeat or be empty, so it is given a
+    key of its own (author alt kept in ``ORIGINAL_ALT_ATTR``).
+    """
     captions: dict[str, str] = {}
     for figure in root.css("figure"):
         caption_node = figure.css_first("figcaption")
@@ -779,6 +823,10 @@ def _figure_captions(root: LexborNode) -> dict[str, str]:
         if not caption:
             continue
         for img in figure.css("img"):
+            attrs = img.attributes or {}
+            if ORIGINAL_ALT_ATTR not in attrs and _img_data_uri(img, {}):
+                img.attrs[ORIGINAL_ALT_ATTR] = (attrs.get("alt") or "").strip()
+                img.attrs["alt"] = _FIGURE_IMAGE_KEY.format(len(captions) + 1)
             alt = ((img.attributes or {}).get("alt") or "").strip()
             if alt:
                 captions.setdefault(alt, caption)
@@ -1386,7 +1434,7 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
-        labelled = _label_icon_only_links(root)
+        labelled = _label_icon_only_links(root, caption_map or {})
         inlined = _inline_icons_as_text(root)
         if labelled or inlined:
             logger.debug(
@@ -1395,11 +1443,13 @@ class HtmlToBlocksConverter:
             )
         title_node = parser.css_first("head > title")
         document_title = _node_text(title_node) if title_node is not None else ""
+        # Runs first: it re-keys inline figure images that _original_alts reads.
+        figure_captions = _figure_captions(root)
         walker = _DomWalker(
             caption_map=caption_map,
             document_title=document_title,
             original_alts=_original_alts(root),
-            figure_captions=_figure_captions(root),
+            figure_captions=figure_captions,
         )
         return walker.walk(root)
 
@@ -1432,7 +1482,7 @@ class _DomWalker:
                 as a leading HEADING before body content.
             original_alts: Lookup key → author alt, for images whose ``alt``
                 was rewritten to a ``caption_map`` key.
-            figure_captions: ``alt`` → ``<figcaption>`` text.
+            figure_captions: Image key (``alt``) → ``<figcaption>`` text.
         """
         self.caption_map = caption_map or {}
         self.original_alts = original_alts or {}
@@ -1884,22 +1934,7 @@ class _DomWalker:
         entry in ``srcset``. Only ``data:image`` URIs are returned; HTTP(S)
         URLs are ignored so behaviour matches standalone ``_emit_image``.
         """
-        attrs = node.attributes or {}
-        alt_text = (attrs.get("alt") or "").strip()
-        if alt_text and alt_text in self.caption_map:
-            caption_uri = (self.caption_map[alt_text] or "").strip()
-            if caption_uri.startswith("data:image"):
-                return caption_uri
-        src = (attrs.get("src") or "").strip()
-        if not src and attrs.get("srcset"):
-            srcset_parts = attrs["srcset"].split(",")
-            if srcset_parts:
-                first_part = srcset_parts[0].split()
-                if first_part:
-                    src = first_part[0].strip()
-        if src.startswith("data:image"):
-            return src
-        return None
+        return _img_data_uri(node, self.caption_map)
 
     def _uri_from_markdown(
         self,
