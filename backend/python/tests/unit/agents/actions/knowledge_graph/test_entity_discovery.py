@@ -80,7 +80,7 @@ class TestGuards:
 
     @pytest.mark.asyncio
     async def test_only_unknown_entity_types_fails(self, patched) -> None:
-        ok, text = await execute_search_entities(_state(), "legal", entity_types=["person"])
+        ok, text = await execute_search_entities(_state(), "legal", entity_types=["planet"])
         assert ok is False
         assert "Unsupported" in json.loads(text)["message"]
         patched[1].assert_not_called()
@@ -108,6 +108,15 @@ class TestGuards:
         assert ok is True
         _, search_kwargs = patched[1].call_args
         assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["topic"], None)
+
+    @pytest.mark.asyncio
+    async def test_a_kind_given_as_an_entity_type_searches_named_entities(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        ok, text = await execute_search_entities(_state(), "ValeHealth", entity_types=["organization", "record"])
+        assert ok is True
+        assert "ignoredEntityTypes" not in json.loads(text)
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization"])
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:

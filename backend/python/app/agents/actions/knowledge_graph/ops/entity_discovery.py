@@ -18,6 +18,7 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 )
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
@@ -48,6 +49,9 @@ _DEFAULT_TOP_K = 10
 _PREVIEW_ENTITY_COUNT = 3
 
 
+_ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
+
+
 def _error(message: str) -> str:
     return json.dumps({"status": "error", "message": message})
 
@@ -73,6 +77,10 @@ async def execute_search_entities(
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
     kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
+    # A kind put in entity_types ("organization") was ignored, leaving only the
+    # other types searched; it is a named-entity kind.
+    kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES]
     enabled = await _named_entities_enabled(state)
     if not enabled:
         wanted_named = bool(kinds) or "named_entity" in requested
