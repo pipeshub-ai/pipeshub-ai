@@ -1091,7 +1091,11 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
         # Under Node's 5s graph timeout, which is also the Helm probe budget.
+        # Acquisition is shorter than the wait so an idle-connection RESET
+        # fails inside the driver and releases the pool slot. wait_for
+        # cancelling that RESET would leave the slot checked out.
         neo4j_probe_timeout_sec = 3.0
+        neo4j_acquire_timeout_sec = 2.0
 
         try:
             graph_provider = getattr(request.app.state, "graph_provider", None)
@@ -1117,7 +1121,10 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             database = getattr(client, "database", None)
 
             async def _ping() -> None:
-                async with driver.session(database=database) as session:
+                async with driver.session(
+                    database=database,
+                    connection_acquisition_timeout=neo4j_acquire_timeout_sec,
+                ) as session:
                     result = await session.run("RETURN 1 AS n")
                     await result.consume()
 

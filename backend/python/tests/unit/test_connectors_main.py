@@ -1469,6 +1469,10 @@ class TestGraphDbHealthCheck:
         assert response.status_code == 200
         session.run.assert_awaited_once_with("RETURN 1 AS n")
         client.connect.assert_not_called()
+        client.driver.session.assert_called_once_with(
+            database="neo4j",
+            connection_acquisition_timeout=2.0,
+        )
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_no_client(self):
@@ -1815,8 +1819,6 @@ class TestRefreshConnectorMetrics:
     @pytest.mark.asyncio
     async def test_refresh_connector_metrics_updates_gauge(self):
         """Metrics refresh counts only active connector apps by type."""
-        import asyncio
-
         from app.connectors_main import refresh_connector_metrics
 
         gp = AsyncMock()
@@ -1836,8 +1838,6 @@ class TestRefreshConnectorMetrics:
 
     @pytest.mark.asyncio
     async def test_logs_warning_when_gauge_refresh_fails(self):
-        import asyncio
-
         from app.connectors_main import refresh_connector_metrics
 
         gp = AsyncMock()
