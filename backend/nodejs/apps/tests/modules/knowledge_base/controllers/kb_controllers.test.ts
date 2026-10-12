@@ -971,6 +971,132 @@ describe('Knowledge Base Controller', () => {
     })
   })
 
+  // The request validators let a caller leave out either userIds or teamIds
+  // (both are optional arrays). These handlers must treat a missing list as
+  // empty instead of reading `.length` of undefined and answering 500.
+  describe('KB permission handlers with userIds or teamIds omitted', () => {
+    function stubConnector(data: Record<string, unknown>): sinon.SinonStub {
+      return sinon
+        .stub(ConnectorServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data } as any)
+    }
+
+    // The command keeps the forwarded body as a JSON string.
+    function sentBody(executeStub: sinon.SinonStub): unknown {
+      return JSON.parse(executeStub.firstCall.thisValue.body)
+    }
+
+    it('createKBPermission shares with users when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'READER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'READER',
+      })
+    })
+
+    it('createKBPermission shares with teams when userIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('updateKBPermission changes a user role when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'WRITER',
+      })
+    })
+
+    it('removeKBPermission removes a user when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+      })
+    })
+
+    it('removeKBPermission removes a team when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('still rejects a request that names neither users nor teams', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({ params: { kbId: 'kb-1' }, body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
+    })
+  })
+
   // -----------------------------------------------------------------------
   // Connector Stats
   // -----------------------------------------------------------------------
