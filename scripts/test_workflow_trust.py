@@ -107,6 +107,15 @@ def _computes_an_index(text: str) -> bool:
     )
 
 
+# These can assemble `refs/pull/<n>/merge` from pieces, e.g. format('refs/{0}/{1}/merge',
+# 'pull', number), or decode it from an escaped literal, so a privileged workflow fails closed.
+_BUILDS_A_STRING = re.compile(r"\b(?:format|join|fromjson)\s*\(", re.IGNORECASE)
+
+
+def _builds_a_string(text: str) -> bool:
+    return any(_BUILDS_A_STRING.search(e) for e in _expressions(text))
+
+
 def _reads_a_head_holding_object(text: str) -> bool:
     return any(_HEAD_HOLDING_OBJECT.search(_dotted(e)) for e in _expressions(text))
 
@@ -131,7 +140,10 @@ def _references_pr_head(text: str) -> bool:
         return True
     strings = _strings(workflow) + _conditions(workflow)
     return any(
-        _PR_HEAD_REF.search(_dotted(s)) or _computes_an_index(s) or _reads_a_head_holding_object(s)
+        _PR_HEAD_REF.search(_dotted(s))
+        or _computes_an_index(s)
+        or _builds_a_string(s)
+        or _reads_a_head_holding_object(s)
         for s in strings
     )
 
@@ -606,6 +618,11 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ toJSON(github.event.workflow_run) }}\n",
             "ref: ${{ toJSON(github.event) }}\n",
             "ref: ${{ toJSON(github) }}\n",
+            "ref: ${{ format('refs/{0}/{1}/merge', 'pull', github.event.pull_request.number) }}\n",
+            "ref: ${{ format('refs/{0}/{1}/head', 'pull', github.event.workflow_run.pull_requests[0].number) }}\n",
+            "ref: ${{ FORMAT ( 'refs/{0}/{1}/merge', 'pull', github.event.number) }}\n",
+            "ref: ${{ join(fromJSON('[\"refs\", \"pull\", \"1\", \"merge\"]'), '/') }}\n",
+            "ref: ${{ fromJSON('\"refs\\/pull\\/1\\/merge\"') }}\n",
         ):
             with self.subTest(step=step):
                 self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          {step}"))
