@@ -176,16 +176,17 @@ export function createHealthRouter(
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
           if (graphDbResp.status !== 200) {
             overallHealthy = false;
-            logger.error('graph-db health check returned non-200', {
-              status: graphDbResp.status,
-            });
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              'graph-db health check returned non-200',
+              { status: graphDbResp.status },
+            );
           }
         } catch (error: unknown) {
           services.graphDb = 'unhealthy';
           overallHealthy = false;
           const axiosErr = error as { code?: string; message?: string };
           const timedOut = axiosErr?.code === 'ECONNABORTED';
-          logger.error(
+          Logger.getInstance({ service: 'HealthStatus' }).error(
             timedOut
               ? 'graph-db health check timed out'
               : 'graph-db health check failed',
