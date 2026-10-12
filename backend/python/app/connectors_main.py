@@ -176,8 +176,11 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     connector's sync points and permission edges before it was cut off, so the
     records it had not reached yet are unreadable. Reset to a bare IDLE, the
     connector looked healthy and its next sync was incremental, which does not
-    revisit them. With the flag, the boot resume below runs it again in full,
-    and for a MANUAL connector the next sync anyone starts is a full one.
+    revisit them. With the flag, the boot resume below runs it again in full.
+
+    It also gets pendingResync: nothing finished that run, so the request it
+    was serving is still owed, and that is what lets the boot resume restart it
+    on a MANUAL connector too (see ``_resumes_interrupted_full_sync``).
     """
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
@@ -252,7 +255,14 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
                 "updatedAtTimestamp": now,
-                **({ConnectorStateKeys.PENDING_FULL_SYNC: True} if key in full_sync_keys else {}),
+                **(
+                    {
+                        ConnectorStateKeys.PENDING_FULL_SYNC: True,
+                        ConnectorStateKeys.PENDING_RESYNC: True,
+                    }
+                    if key in full_sync_keys
+                    else {}
+                ),
             }
             for key in stuck_keys
         ]
@@ -271,7 +281,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         if owed:
             logger.warning(
                 f"Startup sweep: full sync did not finish on {len(owed)} connector(s); "
-                f"their next sync runs in full: {owed}"
+                f"they resume in full: {owed}"
             )
     except Exception as e:
         logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
@@ -383,6 +393,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_name=connector_name,
                         connector_id=connector_id,
                         org_id=org_id,
+                        app=app,
                     )
                 return connector_name, connector_id, connector
 
@@ -403,6 +414,33 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
+
+def _resumes_interrupted_full_sync(app: dict | None) -> bool:
+    """Whether a MANUAL connector is owed the full sync a restart cut short.
+
+    MANUAL means "not on a schedule", not "abandon a sync someone started". A
+    full sync cut short by a restart or a crash leaves both pendingFullSync and
+    pendingResync (``sync_runner._finalize``, ``reset_stale_sync_state``).
+    pendingFullSync alone is not enough: saving new filters sets it, and so
+    does stopping a full sync, and neither of those should start a MANUAL
+    connector by itself. The stop route clears pendingResync, so a stop holds.
+
+    And only a connector that can run at all, the same states the start path
+    refuses (``event_service._start_sync_with_lease``): not disabled, not
+    signed out, not being deleted. A QUEUED one is left to the startup drain,
+    which re-issues it after this; publishing it here too would run it twice.
+    """
+    if not app:
+        return False
+    return (
+        bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
+        and bool(app.get(ConnectorStateKeys.PENDING_RESYNC))
+        and app.get(ConnectorStateKeys.IS_ACTIVE) is not False
+        and app.get(ConnectorStateKeys.IS_AUTHENTICATED) is not False
+        and app.get("status") not in (AppStatus.QUEUED.value, "DELETING")
+    )
+
+
 async def _publish_startup_resync(
     app_container: ConnectorAppContainer,
     config_service,
@@ -411,12 +449,14 @@ async def _publish_startup_resync(
     connector_name: str,
     connector_id: str,
     org_id: str,
+    app: dict | None = None,
 ) -> None:
     """Hand a startup sync to whichever process consumes sync events.
 
     Respects the MANUAL strategy, which the event handler deliberately does not:
     that path also carries the user's resync button, and MANUAL means "not on a
-    schedule", not "never".
+    schedule", not "never". The one exception is a full sync a restart cut
+    short, which resumes (``_resumes_interrupted_full_sync``).
 
     Publishing rather than sharding by hash keeps this a single pass with no
     shard-count to get wrong, and the consumer's capacity gate meters the
@@ -424,10 +464,15 @@ async def _publish_startup_resync(
     """
     try:
         if await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id):
+            if not _resumes_interrupted_full_sync(app):
+                logger.info(
+                    f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                )
+                return
             logger.info(
-                f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                f"Resuming {connector_name} {connector_id}: sync strategy is MANUAL, "
+                "but a restart cut its full sync short"
             )
-            return
         dispatcher = get_dispatcher()
         if dispatcher is None:
             logger.warning(

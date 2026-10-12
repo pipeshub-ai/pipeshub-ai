@@ -138,6 +138,7 @@ async def _finalize(
     org_id: str | None = None,
     *,
     full_sync_cut_short: bool = False,
+    full_sync_still_requested: bool = False,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -159,8 +160,20 @@ async def _finalize(
     through were linked again, so the rest stay unreadable until a full sync
     runs to the end. The flag that asks for one goes in the same write as IDLE:
     the connector is never seen IDLE without it.
+
+    ``full_sync_still_requested``: the run was cut short by this service
+    shutting down, not by a person stopping it or by the sync failing. The
+    request it was serving is still owed, so pendingResync goes in the same
+    write, and the next boot resumes the full sync even on a MANUAL connector
+    (see ``connectors_main._resumes_interrupted_full_sync``). Not written when
+    the lease was lost: the new owner runs the connector, not the next boot.
     """
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
+    still_requested = (
+        {ConnectorStateKeys.PENDING_RESYNC: True}
+        if full_sync_cut_short and full_sync_still_requested
+        else {}
+    )
     if full_sync_cut_short:
         logger.warning(
             f"Full sync for connector {connector_id} did not finish; the next sync "
@@ -181,7 +194,7 @@ async def _finalize(
                     CollectionNames.APPS.value,
                     {"status": AppStatus.IDLE.value,
                      "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                     **owed},
+                     **owed, **still_requested},
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
@@ -610,6 +623,16 @@ async def run_sync_task(
                         or stopped
                         or (lease is not None and lease.lost.is_set())
                     )
+                ),
+                # Cut short by the shutdown itself. A stop someone asked for
+                # (stop_requested, which also covers one still winding down when
+                # the shutdown arrived) and a run that raised are not: neither
+                # should start again on its own at the next boot.
+                full_sync_still_requested=(
+                    stopped
+                    and not failed
+                    and getattr(coordinator, "shutting_down", False) is True
+                    and not (lease is not None and lease.stop_requested.is_set())
                 ),
             ),
             name=f"sync_cleanup_{connector_id}",
