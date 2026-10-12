@@ -2266,10 +2266,24 @@ def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tu
     return index, kind
 
 
+def _raise_group_score(unit: dict[str, Any], score: float) -> None:
+    """Give a list unit, and the children /search unpacks from it, its best hit's score."""
+    if score <= float(unit.get("score") or 0.0):
+        return
+    unit["score"] = score
+    content = unit.get("content")
+    if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
+        for child in content[1]:
+            if isinstance(child, dict):
+                child["score"] = score
+
+
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
+    # Hits arrive in query order, not score order, on the multi-query /search path.
+    emitted_groups: dict[str, dict[str, Any]] = {}
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
@@ -2508,6 +2522,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 target_index = container_parent_index
                 group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
                 if group_chunk_id in seen_chunks:
+                    if group_chunk_id in emitted_groups:
+                        _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
                     continue
                 fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
                 group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2529,6 +2545,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+                emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
             continue
 
@@ -2720,6 +2737,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             # its items would otherwise take two ranked slots with one unit.
             group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
             if group_chunk_id in seen_chunks:
+                if group_chunk_id in emitted_groups:
+                    _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
                 continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
@@ -2744,6 +2763,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+            emitted_groups[group_chunk_id] = result
             flattened_results.append(result)
             continue
         else:
