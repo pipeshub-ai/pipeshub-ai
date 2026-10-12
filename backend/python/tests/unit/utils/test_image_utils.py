@@ -397,7 +397,8 @@ class TestDecorativeImage:
         [
             pytest.param(100, 100, False, id="normal-content-image"),
             pytest.param(10, 10, True, id="image-below-minimum-size"),
-            pytest.param(1000, 50, True, id="extreme-landscape-ratio"),
+            pytest.param(1100, 100, True, id="extreme-landscape-ratio"),
+            pytest.param(100, 1100, True, id="extreme-portrait-ratio"),
         ],
     )
     def test_decorative_image_classification(
