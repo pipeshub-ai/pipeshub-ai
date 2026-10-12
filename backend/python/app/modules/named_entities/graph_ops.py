@@ -457,14 +457,17 @@ RETURN r.attempts AS attempts
 
 # A re-extraction (``reextract``) is a pending job on the same marker: the record's
 # stored extraction left text unread, so its entities are extracted again from its
-# stored blocks. It is due now, keeps a pending failure count, and, like a retry, is
-# dropped by any normal write of the record (that write extracted afresh).
+# stored blocks. It is due now and, like a retry, is dropped by any normal write of
+# the record (that write extracted afresh). A pending persist retry it replaces does
+# not pass on its failure count: a retry may have more failures than a re-extraction
+# is allowed, and the job would be dropped before it ran.
 SCHEDULE_REEXTRACT_AQL = f"""
 LET old = DOCUMENT("{_RETRIES}", @recordId)
 UPSERT {{ _key: @recordId }}
 INSERT {{ _key: @recordId, orgId: @orgId, recordId: @recordId, attempts: 0, dueAt: @now, reextract: true,
          createdAtTimestamp: @now, updatedAtTimestamp: @now }}
-UPDATE {{ reextract: true, dueAt: MIN([old.dueAt, @now]), updatedAtTimestamp: @now }}
+UPDATE {{ reextract: true, attempts: old.reextract == true ? old.attempts : 0,
+          dueAt: MIN([old.dueAt, @now]), updatedAtTimestamp: @now }}
 IN {_RETRIES}
 RETURN NEW.dueAt
 """
@@ -473,7 +476,8 @@ SCHEDULE_REEXTRACT_CYPHER = f"""
 MERGE (r:{_RETRY_LABEL} {{id: $recordId}})
 ON CREATE SET r.orgId = $orgId, r.recordId = $recordId, r.attempts = 0, r.dueAt = $now,
               r.createdAtTimestamp = $now
-SET r.reextract = true,
+SET r.attempts = CASE WHEN coalesce(r.reextract, false) THEN r.attempts ELSE 0 END,
+    r.reextract = true,
     r.dueAt = CASE WHEN r.dueAt < $now THEN r.dueAt ELSE $now END,
     r.updatedAtTimestamp = $now
 RETURN r.dueAt AS dueAt

@@ -149,8 +149,10 @@ up to 50 windows, without the record lease; the write then takes the lease and,
 like a retry, lands only while its job is still the one it read, so a record
 indexed meanwhile keeps its newer entities. Nothing is parsed or embedded again.
 A re-extraction that used all 50 windows is not queued again, so a very long
-record settles; a failure backs off like a retry and stays a re-extraction. The
-persist-retry pass reads only the write retries. The blob keeps the extraction
+record settles; a failure backs off like a retry and stays a re-extraction. A job
+queued on a pending persist retry starts its own failure count, so a retry's
+write failures never use up a re-extraction's attempts. The persist-retry pass
+reads only the write retries. The blob keeps the extraction
 indexing stored: a retry that later writes it again queues the record once more.
 
 Records indexed before extraction read long blocks whole are queued by an

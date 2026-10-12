@@ -757,16 +757,30 @@ async def test_a_reextraction_lands_while_it_is_still_pending_and_ends(graph) ->
     assert await _due(provider, record, reextract=True) == []
 
 
-async def test_a_reextraction_queued_on_a_pending_retry_keeps_its_count_and_is_due_now(graph) -> None:
+async def test_a_reextraction_queued_on_a_pending_retry_starts_its_own_count_and_is_due_now(graph) -> None:
+    from app.modules.indexing.named_entity_completion import MAX_REEXTRACT_ATTEMPTS
+
     provider, org_id, _backend = graph
     record = f"{org_id}-rec"
-    await provider.schedule_named_entity_persist_retry(org_id, record, "DeadlockDetected")
-    await provider.schedule_named_entity_persist_retry(org_id, record, "DeadlockDetected")
+    for _ in range(MAX_REEXTRACT_ATTEMPTS + 2):
+        await provider.schedule_named_entity_persist_retry(org_id, record, "DeadlockDetected")
 
     await provider.schedule_named_entity_reextract(org_id, record)
 
     (row,) = await _due(provider, record, reextract=True)
-    assert row["attempts"] == 2
+    assert row["attempts"] == 0
+
+
+async def test_a_reextraction_queued_again_keeps_its_failure_count(graph) -> None:
+    provider, org_id, _backend = graph
+    record = f"{org_id}-rec"
+    await provider.schedule_named_entity_reextract(org_id, record)
+    await provider.schedule_named_entity_persist_retry(org_id, record, "extract_failed")
+
+    await provider.schedule_named_entity_reextract(org_id, record)
+
+    (row,) = await _due(provider, record, reextract=True)
+    assert row["attempts"] == 1
 
 
 async def test_a_failed_reextraction_backs_off_and_stays_a_reextraction(graph) -> None:
