@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Turn the JUnit files of an SDK test run into one verdict and a report.
 
-Usage: report.py <reports dir> --out <dir>
+Usage: report.py <reports dir> --out <dir> [--releases <file>]
        report.py <reports dir> --current-passed
 
 <reports dir> holds current-<language>.xml and, when the previous run ran,
@@ -13,7 +13,12 @@ Verdicts:
     BLOCK  the generated SDK does not work, or produced no results
 
 --current-passed prints the languages whose current run passed, one per line;
-the previous run starts only for those.
+the previous run starts only for those. --releases is .github/sdk-test-matrix.yaml;
+the report names the tag each previous run used.
+
+--out writes summary.md (the job summary and the pull request comment),
+verdict.txt, and slack.json: the Slack message and the failures for its thread,
+as chat.postMessage bodies without the channel.
 
 A skipped test counts as a failure: Speakeasy writes a skipped placeholder for a
 case it could not turn into code, so a skip means the case never ran.
@@ -33,12 +38,29 @@ from pathlib import Path
 LANGUAGES = ("typescript", "python", "go")
 CURRENT = "current"
 PREVIOUS = "previous"
+# The pull request step finds its own earlier comment by this line.
+COMMENT_MARKER = "<!-- sdk-tests-report -->"
 
 
 class Verdict(str, Enum):
     OK = "OK"
     FLAG = "FLAG"
     BLOCK = "BLOCK"
+
+
+MEANING = {
+    Verdict.OK: "The SDKs generated from this commit and the last released SDKs work with this app.",
+    Verdict.FLAG: (
+        "This change breaks the last released SDK. It can merge: a person adds the label "
+        "`sdk-break-approved` after reading the failures, and adds a changelog note."
+    ),
+    Verdict.BLOCK: "An SDK generated from this commit fails against this app. Fix it before merging.",
+}
+_SLACK_ICONS = {
+    Verdict.OK: ":large_green_circle:",
+    Verdict.FLAG: ":warning:",
+    Verdict.BLOCK: ":red_circle:",
+}
 
 
 class Status(str, Enum):
@@ -94,8 +116,13 @@ def read_junit(path: Path) -> dict[str, Case] | None:
     """Cases by ID, or None when the suite wrote no report."""
     if not path.is_file():
         return None
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError:
+        # A suite that crashed while writing its report; no results reads as BLOCK.
+        return None
     cases: dict[str, Case] = {}
-    for element in ET.parse(path).getroot().iter("testcase"):
+    for element in root.iter("testcase"):
         name = element.get("name", "")
         problem = element.find("failure")
         if problem is None:
@@ -110,6 +137,18 @@ def read_junit(path: Path) -> dict[str, Case] | None:
         else:
             cases[case_id(name)] = Case(name, Status.PASSED)
     return cases
+
+
+def read_releases(path: Path | None) -> dict[str, str]:
+    """language -> tag from the flat "language: tag" lines of the release list."""
+    if path is None:
+        return {}
+    releases = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("#")[0].partition(":")
+        if key.strip() and value.strip():
+            releases[key.strip()] = value.strip()
+    return releases
 
 
 def read_results(reports_dir: Path) -> list[LanguageResult]:
@@ -146,15 +185,46 @@ def _counts(cases: dict[str, Case] | None) -> str:
     return f"{len(cases) - len(_failures(cases))}/{len(cases)} passed"
 
 
-def render_summary(results: list[LanguageResult]) -> str:
+def _previous_label(language: str, releases: dict[str, str]) -> str:
+    return releases.get(language, "last release")
+
+
+def _failure_lines(
+    results: list[LanguageResult], releases: dict[str, str]
+) -> list[str]:
+    """One line per failed case: language, run, case name, first line of the error."""
+    return [
+        f"{result.language} {run}: {case.name}: "
+        f"{(case.detail.splitlines() or ['no detail'])[0][:300]}"
+        for result in results
+        for run, cases in (
+            (CURRENT, result.current_failures),
+            (
+                f"{PREVIOUS} ({_previous_label(result.language, releases)})",
+                result.previous_failures,
+            ),
+        )
+        for case in cases
+    ]
+
+
+def render_summary(
+    results: list[LanguageResult], releases: dict[str, str] | None = None
+) -> str:
+    releases = releases or {}
+    verdict = overall_verdict(results)
     lines = [
-        f"## SDK tests: {overall_verdict(results).value}",
+        COMMENT_MARKER,
+        f"## SDK tests: {verdict.value}",
+        "",
+        MEANING[verdict],
         "",
         "| SDK | Verdict | Current run | Previous run |",
         "| --- | --- | --- | --- |",
     ]
     lines += [
-        f"| {r.language} | {r.verdict.value} | {_counts(r.current)} | {_counts(r.previous)} |"
+        f"| {r.language} | {r.verdict.value} | {_counts(r.current)} | "
+        f"{_counts(r.previous)} ({_previous_label(r.language, releases)}) |"
         for r in results
     ]
 
@@ -174,43 +244,71 @@ def render_summary(results: list[LanguageResult]) -> str:
         )
         lines.append(f"| {names[key]} | {cells} |")
 
-    failures = [
-        f"- **{result.language} {run}: {case.name}**: {case.detail.splitlines()[0][:300]}"
-        for result in results
-        for run, cases in (
-            (CURRENT, result.current_failures),
-            (PREVIOUS, result.previous_failures),
-        )
-        for case in cases
-    ]
+    failures = _failure_lines(results, releases)
     if failures:
-        lines += ["", "### Failures", "", *failures]
+        lines += ["", "### Failures", "", *(f"- {line}" for line in failures)]
     return "\n".join(lines) + "\n"
 
 
-def slack_message(results: list[LanguageResult], run_url: str) -> dict[str, object]:
-    return {
-        "verdict": overall_verdict(results).value,
-        "text": f"SDK tests: {overall_verdict(results).value}",
-        "run_url": run_url,
-        "languages": [
+def _slack_escape(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def slack_payloads(
+    results: list[LanguageResult],
+    run_url: str,
+    trigger: str,
+    releases: dict[str, str] | None = None,
+) -> dict[str, object]:
+    """The verdict message and, when a case failed, a thread reply listing the failures.
+
+    trigger is Slack mrkdwn from the workflow, such as a link to the pull request.
+    """
+    releases = releases or {}
+    verdict = overall_verdict(results)
+    title = f"{_SLACK_ICONS[verdict]} SDK tests: {verdict.value}"
+    current = "\n".join(f"{r.language}: {_counts(r.current)}" for r in results)
+    previous = "\n".join(
+        f"{r.language} {_previous_label(r.language, releases)}: {_counts(r.previous)}"
+        for r in results
+    )
+    blocks: list[dict[str, object]] = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": title, "emoji": True},
+        },
+        {"type": "section", "text": {"type": "mrkdwn", "text": MEANING[verdict]}},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"*Trigger:*\n{trigger or 'unknown'}"},
+                {"type": "mrkdwn", "text": f"*Current run (SDK from CI):*\n{current}"},
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Previous run (last release):*\n{previous}",
+                },
+            ],
+        },
+    ]
+    if run_url:
+        blocks.append(
             {
-                "language": r.language,
-                "verdict": r.verdict.value,
-                "current": _counts(r.current),
-                "previous": _counts(r.previous),
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open the run"},
+                        "url": run_url,
+                    }
+                ],
             }
-            for r in results
-        ],
-        "thread": [
-            f"{result.language} {run}: {case.name}"
-            for result in results
-            for run, cases in (
-                (CURRENT, result.current_failures),
-                (PREVIOUS, result.previous_failures),
-            )
-            for case in cases
-        ],
+        )
+    failures = _failure_lines(results, releases)
+    return {
+        "message": {"text": title, "blocks": blocks},
+        "thread": {"text": "\n".join(f"• {_slack_escape(line)}" for line in failures)}
+        if failures
+        else None,
     }
 
 
@@ -220,6 +318,7 @@ def main() -> int:
     output = parser.add_mutually_exclusive_group(required=True)
     output.add_argument("--out", type=Path)
     output.add_argument("--current-passed", action="store_true")
+    parser.add_argument("--releases", type=Path)
     args = parser.parse_args()
 
     results = read_results(args.reports_dir)
@@ -232,13 +331,22 @@ def main() -> int:
         return 0
 
     verdict = overall_verdict(results)
-    summary = render_summary(results)
+    releases = read_releases(args.releases)
+    summary = render_summary(results, releases)
 
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "summary.md").write_text(summary, encoding="utf-8")
     (args.out / "verdict.txt").write_text(verdict.value + "\n", encoding="utf-8")
     (args.out / "slack.json").write_text(
-        json.dumps(slack_message(results, os.getenv("SDK_TEST_RUN_URL", "")), indent=2)
+        json.dumps(
+            slack_payloads(
+                results,
+                os.getenv("SDK_TEST_RUN_URL", ""),
+                os.getenv("SDK_TEST_TRIGGER", ""),
+                releases,
+            ),
+            indent=2,
+        )
         + "\n",
         encoding="utf-8",
     )

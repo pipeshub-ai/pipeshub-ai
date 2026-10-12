@@ -14,14 +14,16 @@ import pytest
 
 from sdk_tests import report
 from sdk_tests.report import (
+    COMMENT_MARKER,
     Status,
     Verdict,
     case_id,
     overall_verdict,
     read_junit,
+    read_releases,
     read_results,
     render_summary,
-    slack_message,
+    slack_payloads,
 )
 
 pytestmark = pytest.mark.unit
@@ -164,13 +166,89 @@ def test_summary_and_slack_name_each_failed_case(tmp_path: Path):
 
     results = read_results(tmp_path)
     summary = render_summary(results)
-    message = slack_message(results, "https://example.test/run/1")
+    payloads = slack_payloads(results, "https://example.test/run/1", "nightly")
 
+    assert summary.startswith(COMMENT_MARKER)
     assert "## SDK tests: BLOCK" in summary
-    assert "**go current: TestAgents_AgentLifecycle**: expected 200, got 500" in summary
-    assert message["verdict"] == "BLOCK"
-    assert message["thread"] == ["go current: TestAgents_AgentLifecycle"]
-    assert message["run_url"] == "https://example.test/run/1"
+    assert "- go current: TestAgents_AgentLifecycle: expected 200, got 500" in summary
+    assert payloads["message"]["text"] == ":red_circle: SDK tests: BLOCK"
+    assert payloads["message"]["blocks"][-1]["elements"][0]["url"] == (
+        "https://example.test/run/1"
+    )
+    assert payloads["thread"] == {
+        "text": "• go current: TestAgents_AgentLifecycle: expected 200, got 500"
+    }
+
+
+def test_a_passing_run_has_no_slack_thread(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+
+    assert slack_payloads(read_results(tmp_path), "", "nightly")["thread"] is None
+
+
+def test_slack_thread_escapes_control_characters(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_report(
+        tmp_path,
+        "current",
+        "go",
+        '<testcase name="TestAgents_AgentLifecycle">'
+        '<failure message="got &lt;nil&gt; &amp; 500"/></testcase>',
+    )
+
+    thread = slack_payloads(read_results(tmp_path), "", "nightly")["thread"]
+
+    assert thread == {
+        "text": "• go current: TestAgents_AgentLifecycle: got &lt;nil&gt; &amp; 500"
+    }
+
+
+def test_a_flag_names_the_release_that_breaks(tmp_path: Path):
+    releases_file = tmp_path / "sdk-test-matrix.yaml"
+    releases_file.write_text(
+        "# The last released tag of each SDK.\ntypescript: v1.7.0\npython: v1.7.0  # note\n",
+        encoding="utf-8",
+    )
+    write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    write_report(
+        tmp_path, "previous", "python", FAIL.format(name="test_agents_agent_lifecycle")
+    )
+
+    releases = read_releases(releases_file)
+    summary = render_summary(read_results(tmp_path), releases)
+
+    assert releases == {"typescript": "v1.7.0", "python": "v1.7.0"}
+    assert "sdk-break-approved" in summary
+    assert "| python | FLAG | 1/1 passed | 0/1 passed (v1.7.0) |" in summary
+    assert "| go | OK | 1/1 passed | 1/1 passed (last release) |" in summary
+    assert "- python previous (v1.7.0): test_agents_agent_lifecycle" in summary
+
+
+@pytest.mark.parametrize("content", ["", "<testsuites><testsuite>"])
+def test_a_truncated_report_is_block(tmp_path: Path, content: str):
+    write_all_passing(tmp_path, "current")
+    (tmp_path / "current-go.xml").write_text(content, encoding="utf-8")
+
+    results = read_results(tmp_path)
+
+    assert results[2].current is None
+    assert overall_verdict(results) is Verdict.BLOCK
+
+
+def test_a_failure_with_no_message_still_renders(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_report(
+        tmp_path,
+        "current",
+        "go",
+        '<testcase name="TestAgents_AgentLifecycle"><failure/></testcase>',
+    )
+
+    summary = render_summary(read_results(tmp_path))
+
+    assert "- go current: TestAgents_AgentLifecycle: no detail" in summary
 
 
 def test_current_passed_lists_only_languages_with_a_clean_current_run(
