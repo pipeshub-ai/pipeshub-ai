@@ -3363,6 +3363,30 @@ class Neo4jProvider(IGraphDBProvider):
             # processed nothing.
             raise
 
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.get_virtual_record_ids_in_use`."""
+        wanted = [v for v in dict.fromkeys(virtual_record_ids) if isinstance(v, str) and v]
+        if not wanted:
+            return set()
+        query = f"""
+        UNWIND $virtual_record_ids AS vrid
+        MATCH (r:Record {{virtualRecordId: vrid}})
+        WHERE {cypher_record_visibility("r", visibility)}
+        RETURN DISTINCT vrid
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={"virtual_record_ids": wanted},
+            txn_id=transaction,
+        )
+        return {row["vrid"] for row in results or [] if row.get("vrid")}
+
     def _create_typed_record_from_neo4j(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
         Factory method to create properly typed Record instances from Neo4j data.

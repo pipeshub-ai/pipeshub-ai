@@ -48,6 +48,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.PARAM,
         "LIVE decides whether a VRID's vectors may be deleted; the orphan sweeper asks DELETED",
     ),
+    "get_virtual_record_ids_in_use": (
+        Rule.PARAM,
+        "get_records_by_virtual_record_id for a page of VRIDs: the orphan sweeper asks LIVE, then DELETED",
+    ),
     "get_record_by_external_revision_id": (
         Rule.PARAM,
         "rename detection asks LIVE: after a hard delete there is no old record, so the item is new",
