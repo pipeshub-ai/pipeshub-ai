@@ -731,6 +731,11 @@ li > blockquote {
   .agent-activity-enter {
     animation: none;
   }
+
+  /* Connector firewall-IP card border; its animation is set inline, hence !important. */
+  [data-ph-egress-glow] {
+    animation: none !important;
+  }
 }
 
 /* ========================
