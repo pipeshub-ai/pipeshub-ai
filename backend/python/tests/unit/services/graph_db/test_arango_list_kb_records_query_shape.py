@@ -24,3 +24,13 @@ async def _captured(folder_id: str | None = None, **kwargs) -> list[tuple[str, d
 async def test_page_order_has_a_unique_tie_breaker() -> None:
     (main_query, _), _ = await _captured(sort_by="createdAtTimestamp", sort_order="desc")
     assert "SORT record.createdAtTimestamp DESC, record._key" in main_query
+
+
+@pytest.mark.asyncio
+async def test_listing_uses_keyed_lookups_and_fetches_files_after_limit() -> None:
+    """A folder scan per record and every record's file matched before LIMIT
+    made each page cost O(records x folders) and O(records) file reads."""
+    (main_query, _), _ = await _captured()
+    assert "FOR f IN kbFolders FILTER" not in main_query
+    assert "all_files" not in main_query
+    assert main_query.index("LIMIT @skip, @limit") < main_query.index("@@is_of_type")

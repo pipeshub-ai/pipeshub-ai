@@ -16,7 +16,7 @@ ROOT_MATCH = "OPTIONAL MATCH (rootRecord:Record)-[:BELONGS_TO]->(kb)"
 def provider() -> Neo4jProvider:
     p = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
     p.client = AsyncMock()
-    p.client.execute_query = AsyncMock(return_value=[{"total": 0, "filters": {}}])
+    p.client.execute_query = AsyncMock(return_value=[{"total": 0, "records": [], "filters": {}}])
     p.get_user_kb_permission = AsyncMock(return_value="OWNER")
     return p
 
@@ -44,8 +44,21 @@ async def test_page_order_has_a_unique_tie_breaker(provider: Neo4jProvider) -> N
     SKIP/LIMIT pages repeat 1,103 of 12,441 records and never return others."""
     await provider.list_kb_records("kb-1", "user-1", "org-1", skip=0, limit=10)
     queries = [c.args[0] if c.args else c.kwargs["query"] for c in provider.client.execute_query.await_args_list]
-    main = next(q for q in queries if "SKIP $skip" in q)
-    assert "ORDER BY result.createdAtTimestamp DESC, result.id" in main
+    main = next(q for q in queries if "$skip" in q)
+    assert "ORDER BY record.createdAtTimestamp DESC, record.id" in main
+
+
+@pytest.mark.asyncio
+async def test_files_are_matched_for_the_page_only(provider: Neo4jProvider) -> None:
+    """Matching every record's file and building its map before ORDER BY, plus
+    a separate count query doing the same, cost ~5 s a page on a 100k-record KB."""
+    await provider.list_kb_records("kb-1", "user-1", "org-1", skip=0, limit=10)
+    queries = [c.args[0] if c.args else c.kwargs["query"] for c in provider.client.execute_query.await_args_list]
+    paged = [q for q in queries if "$skip" in q]
+    assert len(paged) == 1
+    assert not [q for q in queries if "count(result)" in q]
+    main = paged[0]
+    assert main.index("rows[$skip..") < main.index("IS_OF_TYPE")
 
 
 @pytest.mark.asyncio

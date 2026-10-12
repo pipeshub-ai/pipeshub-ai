@@ -15968,6 +15968,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
+            // Keyed lookup: a FIRST(FOR ... FILTER) per record is O(records x folders).
+            LET folder_by_id = MERGE(FOR f IN kbFolders RETURN {{ [f.folder._id]: f }})
             LET folder_records = (
                 FOR relEdge IN @@record_relations
                     FILTER relEdge._from IN folder_ids
@@ -15978,18 +15980,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.orgId == @org_id
                     FILTER record.mimeType != "application/vnd.folder"
                     {record_filter}
-                    LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
+                    LET folder_info = folder_by_id[relEdge._from]
                     RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
             LET all_records_data = APPEND(folder_records, {root_records})
-            LET record_ids = all_records_data[*].record._id
-            LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
             LET page = (
             FOR item IN all_records_data
                 LET record = item.record
-                LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
                 SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
+                // File details only for the page: matching every record's file against every record ran before LIMIT.
+                LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )
             RETURN {{ records: page, total: LENGTH(all_records_data) }}
