@@ -69,9 +69,10 @@ func TestHandwritten_RecordLifecycle(t *testing.T) {
 
 	reindexed, err := s.KnowledgeBase.ReindexRecord(ctx, recordID, nil)
 	require.NoError(t, err)
-	assert.True(t, reindexed.ReIndexRecordResponseSchema.Success)
+	// success is a one-value enum, so the SDK has no field for it; a decoded body is the check.
+	require.NotNil(t, reindexed.ReIndexRecordResponseSchema)
 
 	deleted, err := s.KnowledgeBase.DeleteRecord(ctx, recordID)
 	require.NoError(t, err)
-	assert.True(t, deleted.DeleteRecordResponseSchema.Success)
+	require.NotNil(t, deleted.DeleteRecordResponseSchema)
 }

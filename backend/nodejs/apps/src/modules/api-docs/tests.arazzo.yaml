@@ -5,6 +5,8 @@
 # A step whose output a later step uses needs a response-body condition, or Speakeasy skips the test.
 # Speakeasy cannot generate tests for streaming operations, and reading a list item by position breaks the
 # TypeScript build; tests that need either live in integration-tests/sdk_tests/handwritten.
+# Do not put a condition on a field the spec types as a one-value enum (such as `enum: [true]`): the Go
+# SDK makes it a constant with no struct field, and the generated Go test does not compile.
 arazzo: 1.0.1
 info:
   title: Test Suite
@@ -533,7 +535,6 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
-          - condition: $response.body#/success == true
       - stepId: deleteKnowledgeBase
         operationId: deleteKnowledgeBase
         parameters:
@@ -605,7 +606,6 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
-          - condition: $response.body#/success == true
       - stepId: deleteFolder
         operationId: deleteFolder
         parameters:
