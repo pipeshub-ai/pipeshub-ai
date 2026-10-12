@@ -26,6 +26,10 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
 from app.agent_loop_lib.transport.prompt_cache import (
     anthropic_breakpoint,
@@ -341,6 +345,21 @@ class AnthropicTransport(LLMTransport):
             cache_write_tokens=cache_write,
         )
 
+    def _check_output(
+        self, response: Any, message: AssistantMessage, usage: TokenUsage, context: str,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        stop_reason = getattr(response, "stop_reason", None)
+        logger.warning(
+            "AnthropicTransport.%s: model=%s returned no output (response_id=%s "
+            "stop_reason=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, getattr(response, "id", None), stop_reason,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if stop_reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"stop_reason={stop_reason}")
+
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         """Classify an SDK exception into a TransportError with retry metadata."""
         status_code = getattr(exc, "status_code", None)
@@ -523,6 +542,7 @@ class AnthropicTransport(LLMTransport):
 
         usage = self._usage_from(response)
         message = self._parse_response(response)
+        self._check_output(response, message, usage, "complete")
         stop_reason = _STOP_REASON_MAP.get(getattr(response, "stop_reason", None), StopReason.END_TURN)
         return ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=kwargs["model"])
 
@@ -626,11 +646,14 @@ class AnthropicTransport(LLMTransport):
                 final = await stream.get_final_message()
                 usage = self._usage_from(final)
                 message = self._parse_response(final)
+                self._check_output(final, message, usage, "stream")
                 stop_reason = _STOP_REASON_MAP.get(getattr(final, "stop_reason", None), StopReason.END_TURN)
                 emitted = True
                 yield StreamCompleteEvent(
                     response=ModelResponse(message=message, usage=usage, stop_reason=stop_reason, model=resolved_model)
                 )
+        except TransportError:
+            raise
         except Exception as exc:
             # Resending after deltas reached the caller would replay them.
             if emitted or not self._drop_cache_params(exc):
