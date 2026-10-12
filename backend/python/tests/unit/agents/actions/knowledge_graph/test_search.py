@@ -828,6 +828,51 @@ class TestEmptyNarrowedSearch:
         assert parsed["message"] == NARROWED_SEARCH_EMPTY_MESSAGE
 
 
+class TestGrepHitsDoNotDisplaceLoadedRecords:
+    """A grep hit enters the records map as its graph record, with no blocks.
+    It once replaced the record prefetch had loaded for the same content, so a
+    citation of one of that record's blocks no longer resolved."""
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_loaded_record_survives_a_grep_hit_on_it(self, mock_parse) -> None:
+        loaded = {
+            "id": "rec-1", "virtual_record_id": "vr-1", "record_name": "msa.pdf",
+            "block_containers": {"blocks": [{"index": 0}], "block_groups": []},
+        }
+
+        def graph_record(n: int, name: str) -> dict[str, Any]:
+            return {
+                "_key": f"rec-{n}", "id": f"rec-{n}", "virtualRecordId": f"vr-{n}",
+                "recordName": name, "recordType": "FILE",
+            }
+
+        async def merge(**kwargs) -> list[dict]:
+            kwargs["virtual_record_id_to_result"].update({
+                "vr-1": graph_record(1, "msa.pdf"),
+                "vr-2": graph_record(2, "sow.pdf"),
+            })
+            return [
+                {"virtual_record_id": "vr-1", "source": "pattern_match"},
+                {"virtual_record_id": "vr-2", "source": "pattern_match"},
+            ]
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = _empty()
+        state = {**_state(retrieval), "virtual_record_id_to_result": {"vr-1": loaded}}
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
+                patch(f"{search_mod}.get_flattened_results", AsyncMock(return_value=[])), \
+                patch(f"{search_mod}.BlobStorage"):
+            await execute_search(state, "annual fee")
+
+        records = state["virtual_record_id_to_result"]
+        assert records["vr-1"] is loaded
+        # A record only grep found stays in the map: fetch and record-page citations resolve it.
+        assert records["vr-2"]["recordName"] == "sow.pdf"
+
+
 # ---------------------------------------------------------------------------
 # resolve_entity_filter_groups + execute_search entity-filter wiring
 # ---------------------------------------------------------------------------

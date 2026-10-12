@@ -1143,6 +1143,22 @@ def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
     # What the record already holds in the blob's shape wins over the conversion.
     return {**converted, **{key: value for key, value in record.items() if value is not None}}
 
+def merge_into_records_map(live: dict[str, Any], records: dict[str, Any]) -> None:
+    """Add a search's ``records`` to the request's records map, in place.
+
+    A graph record (a grep hit, not read from the blob) never replaces a record
+    already loaded from the blob for the same content: citations and
+    fetch_record read that one's blocks, and the graph record has none.
+    """
+    for vrid, record in records.items():
+        current = live.get(vrid)
+        if (
+            isinstance(current, dict) and "record_name" in current
+            and isinstance(record, dict) and "record_name" not in record
+        ):
+            continue
+        live[vrid] = record
+
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
     """Convert a graph base doc (camelCase) to a blob-like record_dict (snake_case)."""
     record_dict: dict[str, Any] = {

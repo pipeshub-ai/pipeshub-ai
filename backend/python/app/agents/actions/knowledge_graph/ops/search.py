@@ -42,6 +42,7 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     get_flattened_results,
     get_record_id_shortener_if_enabled,
+    merge_into_records_map,
 )
 from app.utils.pattern_match import (
     await_pattern_match,
@@ -654,7 +655,7 @@ async def execute_search(
         live_virtual_map = state.get("virtual_record_id_to_result")
         if not isinstance(live_virtual_map, dict):
             live_virtual_map = state["virtual_record_id_to_result"] = {}
-        live_virtual_map.update(virtual_record_id_to_result)
+        merge_into_records_map(live_virtual_map, virtual_record_id_to_result)
         existing_tool_records = state.get("tool_records")
         if not isinstance(existing_tool_records, list):
             existing_tool_records = []

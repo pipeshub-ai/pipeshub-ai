@@ -3304,3 +3304,22 @@ def test_a_blob_field_a_record_already_has_survives_the_conversion() -> None:
     converted = as_blob_record({"_key": "rec-1", "recordName": "msa.pdf", "mime_type": "application/pdf"})
 
     assert (converted["record_name"], converted["mime_type"], converted["id"]) == ("msa.pdf", "application/pdf", "rec-1")
+
+
+def test_a_grep_hit_never_replaces_a_record_loaded_from_the_blob() -> None:
+    from app.utils.chat_helpers import merge_into_records_map
+
+    loaded = {"id": "rec-1", "record_name": "msa.pdf", "block_containers": {"blocks": [{"index": 0}]}}
+    stub = {"_key": "rec-2", "recordName": "sow.pdf"}
+    live = {"vr-1": loaded, "vr-2": stub}
+    reloaded = {"id": "rec-2", "record_name": "sow.pdf", "block_containers": {"blocks": []}}
+
+    merge_into_records_map(live, {
+        "vr-1": {"_key": "rec-1", "recordName": "msa.pdf"},
+        "vr-2": reloaded,
+        "vr-3": {"_key": "rec-3", "recordName": "nda.pdf"},
+    })
+
+    assert live["vr-1"] is loaded
+    assert live["vr-2"] is reloaded
+    assert live["vr-3"]["recordName"] == "nda.pdf"
