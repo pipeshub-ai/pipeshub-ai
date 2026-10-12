@@ -69,6 +69,9 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.zendesk import (
+    oauth_urls,  # noqa: F401 - registers the OAuth URL rule the router and token refresh apply
+)
 from app.connectors.sources.zendesk.common.apps import ZendeskApp
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.blocks import (

@@ -162,12 +162,11 @@ from app.utils.jwt import generate_jwt
 from app.utils.logger import create_logger
 from app.utils.oauth_config import (
     SALESFORCE_LOGIN_URL_ERROR,
-    ZENDESK_OAUTH_URL_ERROR,
+    check_oauth_url_settings,
     check_salesforce_login_url_setting,
-    check_zendesk_oauth_settings,
     extract_oauth_error_message,
     get_oauth_config,
-    pin_zendesk_oauth_urls,
+    pin_oauth_urls,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
 from app.utils.retry import retry_async
@@ -3984,9 +3983,9 @@ def _check_oauth_app_urls(connector_type: str, settings: dict[str, Any] | None) 
     except ValueError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=SALESFORCE_LOGIN_URL_ERROR) from e
     try:
-        check_zendesk_oauth_settings(connector_type, settings)
+        check_oauth_url_settings(connector_type, settings)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=ZENDESK_OAUTH_URL_ERROR) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
 
 
 async def _link_to_shared_oauth_app(
@@ -6567,9 +6566,9 @@ async def _build_oauth_flow_config(
     )
 
     try:
-        pin_zendesk_oauth_urls(connector_type, oauth_flow_config)
+        pin_oauth_urls(connector_type, oauth_flow_config)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=ZENDESK_OAUTH_URL_ERROR) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
 
     return oauth_flow_config
 
