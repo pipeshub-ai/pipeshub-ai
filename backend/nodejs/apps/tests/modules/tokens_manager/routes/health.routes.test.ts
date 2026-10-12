@@ -588,7 +588,7 @@ describe('tokens_manager/routes/health.routes', () => {
       )
       expect(graphDbCall).to.exist
       expect(graphDbCall!.args[0]).to.equal('http://localhost:8088/health/graph-db')
-      expect(graphDbCall!.args[1]).to.include({ timeout: 10000 })
+      expect(graphDbCall!.args[1]).to.include({ timeout: 5000 })
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.services.graphDb).to.equal('healthy')
@@ -603,7 +603,7 @@ describe('tokens_manager/routes/health.routes', () => {
       const res = mockRes()
       const next = sinon.stub()
 
-      const timeoutErr: any = new Error('timeout of 10000ms exceeded')
+      const timeoutErr: any = new Error('timeout of 5000ms exceeded')
       timeoutErr.code = 'ECONNABORTED'
 
       const axiosModule = require('axios')

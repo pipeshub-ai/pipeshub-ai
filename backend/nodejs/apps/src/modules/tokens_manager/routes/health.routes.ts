@@ -166,11 +166,12 @@ export function createHealthRouter(
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
-          // 10s: covers a slow pooled RETURN 1; connector probe self-times out
-          // under this. The old 5s cut off mid-handshake on a fresh Bolt driver.
+          // Stay at 5s. Helm startup, readiness, and liveness probes call this
+          // route with timeoutSeconds 5; a longer wait here fails the probe
+          // and restarts the pod. The connector probe returns before this.
           const graphDbResp = await axios.get(
             `${appConfig.connectorBackend}/health/graph-db`,
-            { timeout: 10000, validateStatus: () => true },
+            { timeout: 5000, validateStatus: () => true },
           );
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
           if (graphDbResp.status !== 200) {

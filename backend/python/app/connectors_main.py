@@ -1090,9 +1090,10 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
     if data_store == "neo4j":
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
-        # Stay under Node's graph-db axios timeout (10s) so a slow/saturated
-        # pool returns 503 from this probe instead of a Node-side abort.
-        neo4j_probe_timeout_sec = 8.0
+        # Under Node's 5s graph timeout, which is also the Helm probe budget.
+        # A saturated pool returns 503 here instead of holding the health
+        # response until kubelet gives up.
+        neo4j_probe_timeout_sec = 3.0
 
         try:
             graph_provider = getattr(request.app.state, "graph_provider", None)

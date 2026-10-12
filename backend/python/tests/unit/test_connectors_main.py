@@ -1452,7 +1452,7 @@ class TestGraphDbHealthCheck:
 
         assert response.status_code == 200
         mock_provider.execute_query.assert_awaited_once_with(
-            "RETURN 1 AS n", timeout_seconds=8.0
+            "RETURN 1 AS n", timeout_seconds=3.0
         )
 
     @pytest.mark.asyncio
@@ -1726,7 +1726,7 @@ class TestHealthProbesReturnFixedText:
         else:
             assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
         mock_provider.execute_query.assert_awaited_once_with(
-            "RETURN 1 AS n", timeout_seconds=8.0
+            "RETURN 1 AS n", timeout_seconds=3.0
         )
 
     async def test_vector_db_exception(self):
