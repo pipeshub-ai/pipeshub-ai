@@ -759,7 +759,9 @@ class TestScopingAndUserIsolation:
         )
         assert exact_bob.hit is True
         assert exact_bob.kind == "exact"
+        assert exact_bob.author_user_id == "author_alice"
         assert exact_bob.completion_data == completion
+        assert "author_user_id" not in (exact_bob.completion_data or {})
 
         # Cross-user Bob with SEMANTIC paraphrase (cosine ~ 0.99, guard passes): BLOCKED!
         # (Anti-poisoning rule: semantic hits only for the same author)
@@ -785,6 +787,7 @@ class TestScopingAndUserIsolation:
         )
         assert sem_alice.hit is True
         assert sem_alice.kind == "semantic"
+        assert sem_alice.author_user_id == "author_alice"
 
 
 class TestFailOpenAndMetrics:

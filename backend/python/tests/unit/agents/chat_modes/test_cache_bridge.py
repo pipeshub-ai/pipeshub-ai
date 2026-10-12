@@ -819,9 +819,9 @@ class TestReplayCachedTurn:
             kind="exact",
             score=1.0,
             entry_id="entry-1",
+            author_user_id="user_author_1",
             completion_data={
                 "answer": "Universal answer.",
-                "author_user_id": "user_author_1",
                 "reasoning": [{"step": "confidential private thought"}],
                 "parts": [{"type": "reasoning", "text": "secret"}],
             },
@@ -858,9 +858,9 @@ class TestReplayCachedTurn:
             kind="semantic",
             score=0.98,
             entry_id="entry-2",
+            author_user_id="user_same",
             completion_data={
                 "answer": "My answer.",
-                "author_user_id": "user_same",
                 "reasoning": [{"step": "my thoughts"}],
             },
         )

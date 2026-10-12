@@ -284,6 +284,7 @@ class CacheLookupResult:
     completion_data: dict[str, object] | None = None
     reasons: list[str] = field(default_factory=list)
     cache_ref: dict[str, object] | None = None
+    author_user_id: str | None = None
 
 
 @dataclass
@@ -552,6 +553,7 @@ class SemanticCacheService:
                         kind="exact",
                         score=1.0,
                         entry_id=entry_id,
+                        author_user_id=author,
                         completion_data=completion_data,
                         reasons=[],
                         cache_ref=cache_ref,
@@ -633,6 +635,7 @@ class SemanticCacheService:
                     kind="semantic",
                     score=score,
                     entry_id=entry_id,
+                    author_user_id=author,
                     completion_data=completion_data,
                     reasons=[],
                     cache_ref=cache_ref,

@@ -297,7 +297,11 @@ def build_replay_events(
     confidence = completion_data.get("confidence")
 
     # Author user rule: do not replay reasoning/parts for cross-user hits
-    cached_author = str(completion_data.get("author_user_id") or "")
+    cached_author = str(
+        lookup_result.author_user_id
+        or completion_data.get("author_user_id")
+        or ""
+    )
     if cached_author and cached_author != current_user_id:
         _ = completion_data.pop("reasoning", None)
         _ = completion_data.pop("parts", None)
