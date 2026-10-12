@@ -115,6 +115,27 @@ class TestPermalinkLookup:
         assert [m.id for m in result.matches] == [burst.id]
         assert result.not_found_identifiers == []
 
+    async def test_a_lone_reply_resolves_to_its_own_record_not_a_channel_burst_around_it(self, workspace, store, checkpoints) -> None:
+        parent = ts_minutes_ago(300)
+        workspace.post(GENERAL, parent, ALICE, "deploy is failing on staging")
+        reply = ts_minutes_ago(290)  # more than five minutes after the parent: a record of its own
+        workspace.reply(GENERAL, parent, reply, BOB, "fixed it")
+        around = [ts_minutes_ago(291), ts_minutes_ago(289)]  # channel chatter on both sides of the reply
+        for ts, user in zip(around, (CAROL, ALICE)):
+            workspace.post(GENERAL, ts, user, f"lunch? {ts}")
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+
+        own = holding(store, reply)
+        assert own.external_record_group_id == f"thread_{GENERAL}_{parent}"
+        assert own.start_ts == own.end_ts == reply  # the providers' range lookup skips such records
+        chatter = holding(store, around[0])
+        assert chatter.start_ts <= reply <= chatter.end_ts  # a channel burst whose window covers the reply
+
+        result = await resolver_over(store.messages()).resolve_many([permalink(GENERAL, reply, parent)])
+
+        assert [m.id for m in result.matches] == [own.id]
+
     async def test_a_message_in_the_middle_of_a_channel_burst_still_resolves(self, workspace, store, checkpoints) -> None:
         stamps = [ts_minutes_ago(m) for m in (120, 119, 118)]
         for ts, user in zip(stamps, (ALICE, BOB, CAROL)):

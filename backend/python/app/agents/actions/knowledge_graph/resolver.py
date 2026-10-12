@@ -56,7 +56,7 @@ class LookupStrategy:
         "issue_key"   — get_record_by_issue_key(connector_id, value)
         "weburl"      — get_record_by_weburl(value, org_id)
         "slack_ts"    — find_slack_burst_record_by_ts(connector_id, group, ts),
-                        in the reply's thread group first, then the channel
+                        in the reply's thread group, else the channel
 
     connector_types:
         frozenset of connector type strings to restrict to (e.g. {"JIRA"}).
@@ -451,33 +451,37 @@ class RecordResolver:
         Thread replies are grouped under the thread's own group,
         ``thread_<channel>_<thread_ts>`` (see the Slack connectors'
         ``_build_thread_burst_record``), so a reply's permalink, which names
-        its thread, is looked up there first and then in the channel.
+        its thread, is looked up in that thread's group only. The channel is
+        not searched for a reply: a channel burst whose time window happens to
+        cover the reply's timestamp would be the wrong record. A miss falls
+        through to the webUrl fallback in ``_fetch_candidates``, which finds
+        a reply stored on its own (those have ``startTs == endTs``, which the
+        provider query skips). Links without ``thread_ts``, and the thread's
+        first message (``thread_ts == ts``), are looked up in the channel.
         """
         if not connectors:
             logger.debug("No Slack connectors in catalog — skipping Slack ts lookup")
             return []
         channel_id = ref.channel_id or ""
-        group_ids = [channel_id]
         if ref.thread_ts and ref.thread_ts != ref.value:
-            group_ids.insert(0, f"thread_{channel_id}_{ref.thread_ts}")
+            group_id = f"thread_{channel_id}_{ref.thread_ts}"
+        else:
+            group_id = channel_id
 
-        for group_id in group_ids:
-            tasks = [
-                self._graph.find_slack_burst_record_by_ts(
-                    connector_id=c.id,
-                    channel_id=group_id,
-                    ts=ref.value,
-                )
-                for c in connectors
-            ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            matches = []
-            for rec in results:
-                if isinstance(rec, Exception) or rec is None:
-                    continue
-                m = _record_to_match(rec, ref.value, self._frontend_url)
-                if m and m.id:
-                    matches.append(m)
-            if matches:
-                return matches
-        return []
+        tasks = [
+            self._graph.find_slack_burst_record_by_ts(
+                connector_id=c.id,
+                channel_id=group_id,
+                ts=ref.value,
+            )
+            for c in connectors
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        matches = []
+        for rec in results:
+            if isinstance(rec, Exception) or rec is None:
+                continue
+            m = _record_to_match(rec, ref.value, self._frontend_url)
+            if m and m.id:
+                matches.append(m)
+        return matches
