@@ -615,8 +615,9 @@ describe('tokens_manager/routes/health.routes', () => {
       })
 
       const LoggerModule = require('../../../../src/libs/services/logger.service')
-      const loggerInstance = LoggerModule.Logger.getInstance({ service: 'HealthStatus' })
-      const errorStub = sinon.stub(loggerInstance, 'error')
+      // The route captured the singleton at import. A later test can replace
+      // that singleton, so stub the method every instance uses.
+      const errorStub = sinon.stub(LoggerModule.Logger.prototype, 'error')
 
       await handler({}, res, next)
 
