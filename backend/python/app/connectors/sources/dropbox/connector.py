@@ -329,7 +329,7 @@ class DropboxConnector(BaseConnector):
         refresh_token = credentials_config.get("refresh_token")
         is_team = credentials_config.get("isTeam", True)
 
-        auth_config = config.get("auth")
+        auth_config = config.get("auth") or {}
         oauth_config_id = auth_config.get("oauthConfigId")
 
         if not oauth_config_id:

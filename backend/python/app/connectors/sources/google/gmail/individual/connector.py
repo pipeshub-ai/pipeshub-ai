@@ -256,7 +256,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.config = {"credentials": config}
 
             # Extract auth configuration
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:

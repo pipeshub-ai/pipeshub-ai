@@ -179,9 +179,11 @@ class TestDropboxInit:
         result = await connector.init()
         assert result is False
 
-    async def test_init_no_oauth_config_id(self, connector):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, connector, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         connector.config_service.get_config = AsyncMock(return_value={
-            "credentials": {"access_token": "t"}, "auth": {},
+            "credentials": {"access_token": "t"}, "auth": auth,
         })
         with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
             await connector.init()
