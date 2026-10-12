@@ -219,11 +219,12 @@ async def test_an_llm_outage_with_nothing_deterministic_is_failed():
     assert (result.termination_reason, result.status, result.entities) == ("llm_error", "FAILED", [])
 
 
-def _people_request(blocks: int) -> NamedEntityRequest:
+def _people_request(blocks: int, **budgets: int) -> NamedEntityRequest:
     return NamedEntityRequest(
         blocks=[SimpleNamespace(index=i, id=f"b{i}", type="text", data=f"Person{i} Example joined.") for i in range(blocks)],
         org_id="org",
         enabled=frozenset({EntityKind.PERSON}),
+        budgets=NamedEntityBudgets(**budgets),
         provider_name="p",
         model_name="m",
         supports_tools=False,
@@ -245,9 +246,13 @@ def _people_reply(fail_call: int | None = None):
     return complete
 
 
+# Each block is 23-24 characters, so a 125-character window holds five.
+_FIVE_BLOCKS = 125
+
+
 async def test_windows_past_the_budget_make_single_call_partial():
     extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply()))
-    result = await extractor.extract(_people_request(30))
+    result = await extractor.extract(_people_request(30, max_window_chars=_FIVE_BLOCKS))
     assert (result.termination_reason, result.status) == ("single_call", "PARTIAL")
     assert (result.stats.windows_total, result.stats.windows_run, result.stats.windows_failed) == (6, 3, 0)
     assert len(result.entities) == 15
@@ -255,7 +260,7 @@ async def test_windows_past_the_budget_make_single_call_partial():
 
 async def test_a_failed_window_among_good_ones_is_partial():
     extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply(fail_call=2)))
-    result = await extractor.extract(_people_request(15))
+    result = await extractor.extract(_people_request(15, max_window_chars=_FIVE_BLOCKS))
     assert (result.termination_reason, result.status) == ("single_call", "PARTIAL")
     assert (result.stats.windows_run, result.stats.windows_failed) == (3, 1)
     assert len(result.entities) == 10
@@ -263,7 +268,7 @@ async def test_a_failed_window_among_good_ones_is_partial():
 
 async def test_a_document_the_windows_cover_stays_completed():
     extractor = NamedEntityExtractor(single=SingleCallExtractionStrategy(complete=_people_reply()))
-    result = await extractor.extract(_people_request(10))
+    result = await extractor.extract(_people_request(10, max_window_chars=_FIVE_BLOCKS))
     assert result.status == "COMPLETED"
     assert (result.stats.windows_total, result.stats.windows_run) == (2, 2)
 

@@ -6,7 +6,8 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
 
@@ -24,10 +25,13 @@ from app.modules.named_entities.wire import EntitySubmission, WireEntity
 from app.telemetry.modules.named_entity_metrics import record_step_down
 from app.utils.concurrency import indexing_llm_slot
 
+if TYPE_CHECKING:
+    from app.modules.named_entities.text import TextUnit
+
 logger = logging.getLogger(__name__)
 
-_WINDOW = 5
-# A window is five blocks; a reply with more items than this is not reading them.
+_WINDOW_CHARS = 8_000
+# A window is at most 8k characters; a reply with more items than this is not reading them.
 _MAX_ITEMS_PER_WINDOW = 200
 _CALL_TIMEOUT = 30.0
 _WIRE_ADAPTER = TypeAdapter(WireEntity)
@@ -98,8 +102,57 @@ def _salvage(text: str) -> list[WireEntity]:
     return kept
 
 
-def _windows(units: list, size: int) -> list[list]:
-    return [units[i : i + size] for i in range(0, len(units), size)]
+@dataclass(frozen=True)
+class Piece:
+    """``unit.text[start:end]``: all of a block, or one piece of a long one."""
+
+    unit: TextUnit
+    start: int
+    end: int
+
+
+def _cuts(text: str, size: int) -> list[tuple[int, int]]:
+    """``text`` in pieces of at most ``size`` characters, each ending after a
+    space where one falls in the second half, so a name is rarely split."""
+    spans: list[tuple[int, int]] = []
+    start = 0
+    while len(text) - start > size:
+        space = text.rfind(" ", start + size // 2, start + size)
+        end = space + 1 if space != -1 else start + size
+        spans.append((start, end))
+        start = end
+    spans.append((start, len(text)))
+    return spans
+
+
+def pack_windows(units: list[TextUnit], budget: int) -> list[list[Piece]]:
+    """Consecutive blocks packed into windows of at most ``budget`` characters
+    of text, in reading order."""
+    budget = max(budget, 1)
+    windows: list[list[Piece]] = []
+    current: list[Piece] = []
+    used = 0
+    for unit in units:
+        for start, end in _cuts(unit.text, budget):
+            size = end - start
+            if current and used + size > budget:
+                windows.append(current)
+                current, used = [], 0
+            current.append(Piece(unit, start, end))
+            used += size
+    if current:
+        windows.append(current)
+    return windows
+
+
+def _render(pieces: list[Piece]) -> str:
+    lines = []
+    for piece in pieces:
+        text = piece.unit.text
+        head = "…" if piece.start > 0 else ""
+        tail = "…" if piece.end < len(text) else ""
+        lines.append(f"[B{piece.unit.block_index}] {head}{text[piece.start:piece.end]}{tail}")
+    return "\n".join(lines)
 
 
 class SingleCallExtractionStrategy:
@@ -114,7 +167,7 @@ class SingleCallExtractionStrategy:
         del seed
         budgets = ctx.budgets
         limit = getattr(budgets, "max_llm_windows", 3)
-        all_windows = _windows(doc.units, _WINDOW)
+        all_windows = pack_windows(doc.units, getattr(budgets, "max_window_chars", _WINDOW_CHARS))
         windows = all_windows[:limit]
         session = ExtractionSession(doc.units, enabled=ctx.enabled, norm_ctx=ctx.norm, seed_count=0)
         if not windows:
@@ -125,7 +178,7 @@ class SingleCallExtractionStrategy:
             prompt = (
                 f"Enabled kinds: {kinds}.\n"
                 "Return JSON {\"entities\": [{\"text\", \"block\", \"kind\", \"normalized\"}]}.\n"
-                + session.spotlight(window)
+                + session.spotlight_text(_render(window))
             )
             try:
                 raw = await self._invoke(ctx, prompt)

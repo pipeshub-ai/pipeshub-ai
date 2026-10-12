@@ -73,7 +73,10 @@ class ExtractionSession:
         return [unit.block_index for unit in self.units if unit.block_index not in self.read]
 
     def spotlight(self, units: list[TextUnit]) -> str:
-        body = "\n".join(f"[B{unit.block_index}] {_clip(unit.text)}" for unit in units)
+        return self.spotlight_text("\n".join(f"[B{unit.block_index}] {_clip(unit.text)}" for unit in units))
+
+    def spotlight_text(self, body: str) -> str:
+        """``body`` inside this session's boundary, which marks it as document text."""
         return f"<{self.boundary}>\n{body}\n</{self.boundary}>"
 
 

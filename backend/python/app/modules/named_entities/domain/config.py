@@ -28,6 +28,9 @@ class NamedEntityBudgets(BaseModel):
     max_output_tokens: int = 8_000
     wall_clock_seconds: float = 120.0
     max_llm_windows: int = 3
+    # Characters of record text per single-call window. Blocks are packed up to
+    # this many, and a longer block is read in pieces of at most this size.
+    max_window_chars: int = 8_000
     max_entities: int = 300
     max_per_block: int = 40
     max_mentions_per_entity: int = 25
