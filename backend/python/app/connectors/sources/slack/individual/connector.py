@@ -387,7 +387,11 @@ class RateLimiter:
         .add_filter_field(FilterField(
             name="sync_window",
             display_name="Sync Messages From",
-            description="How far back to sync messages on initial sync",
+            description=(
+                "How far back to sync messages on the first sync. If this filter "
+                "is not set, only the last 30 days are synced; choose an earlier "
+                "date to include older history."
+            ),
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
             default_operator=FilterOperator.LAST_30_DAYS))
