@@ -14,6 +14,10 @@ async def _answer() -> str:
     return "answer"
 
 
+async def _answer_with_loop() -> tuple[str, asyncio.AbstractEventLoop]:
+    return "answer", asyncio.get_running_loop()
+
+
 class TestRunOnLoop:
     async def test_runs_on_the_current_loop_when_no_owner_is_given(self) -> None:
         assert await run_on_loop(None, _answer()) == "answer"
@@ -39,7 +43,7 @@ class TestRunOnLoop:
 
     async def test_returns_a_result_from_a_different_running_loop(self) -> None:
         with worker_loop() as worker:
-            assert await run_on_loop(worker, _answer()) == "answer"
+            assert await run_on_loop(worker, _answer_with_loop()) == ("answer", worker)
 
     async def test_timeout_does_not_cancel_work_on_the_owner_loop(self) -> None:
         with worker_loop() as worker:
