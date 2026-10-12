@@ -404,6 +404,35 @@ describe('Enterprise Search Routes', () => {
     expect(paths).to.include('/:searchId/unshare')
   })
 
+  describe('POST / semantic search scope', () => {
+    const runScopeCheck = (oauthScopes: string[]) => {
+      const router = createSemanticSearchRouter(container)
+      const searchRoute = router.stack.find(
+        (layer: any) => layer.route?.path === '/' && layer.route.methods.post,
+      ) as any
+      // authenticate, requireScopes, validate, handler
+      const requireScopes = searchRoute.route.stack[1].handle
+      const next = sinon.spy()
+      requireScopes({ user: { isOAuth: true, oauthScopes } }, {}, next)
+      return next.firstCall.args[0]
+    }
+
+    it('should admit an OAuth token that has semantic:read', () => {
+      expect(runScopeCheck(['semantic:read'])).to.be.undefined
+    })
+
+    it('should reject an OAuth token that has only semantic:write', () => {
+      const error = runScopeCheck(['semantic:write'])
+      expect(error).to.be.an('error')
+      expect(error.message).to.equal('Insufficient scope. Required: semantic:read')
+    })
+
+    it('should reject an OAuth token with no semantic scopes', () => {
+      const error = runScopeCheck(['kb:read'])
+      expect(error).to.be.an('error')
+    })
+  })
+
   it('should register search archive/unarchive routes', () => {
     const router = createSemanticSearchRouter(container)
     const routes = router.stack
