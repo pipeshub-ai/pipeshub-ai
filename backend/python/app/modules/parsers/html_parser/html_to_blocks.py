@@ -1344,7 +1344,7 @@ class HtmlTableNormalizer:
             tag = _tag_name(child)
             if tag == "table":
                 if self._depth >= _MAX_NESTED_TABLE_DEPTH:
-                    text = child.text(deep=True, strip=True).strip()
+                    text = _table_plain_text(child)
                     if text:
                         parts.append(text)
                 else:
@@ -1393,6 +1393,12 @@ def normalized_table_to_markdown(
     return table_md
 
 
+def _table_plain_text(table_node: LexborNode) -> str:
+    """Text of a table past the nesting cap; the separator keeps adjacent cells
+    from fusing into one token."""
+    return table_node.text(deep=True, separator=" ", strip=True).strip()
+
+
 def _distinct_lines(*texts: str) -> list[str]:
     """The non-empty stripped ``texts``, each once, in order."""
     return list(dict.fromkeys(stripped for text in texts if (stripped := text.strip())))
@@ -1409,8 +1415,10 @@ def _lexbor_subtree_to_markdown(node: LexborNode, depth: int = 0) -> str:
     """
     tag = _tag_name(node)
     if tag == "table":
-        if depth >= _MAX_NESTED_TABLE_DEPTH:
-            return node.text(deep=True, strip=True).strip()
+        # ``depth`` is the level this table would sit at, so a table reached
+        # through cell markup gets the same cap as a direct child table.
+        if depth > _MAX_NESTED_TABLE_DEPTH:
+            return _table_plain_text(node)
         return normalized_table_to_markdown(normalize_html_table(node, depth))
 
     children = list(_direct_children(node))
@@ -1432,13 +1440,7 @@ def _lexbor_subtree_to_markdown(node: LexborNode, depth: int = 0) -> str:
     parts: list[str] = []
     for child in children:
         child_tag = _tag_name(child)
-        if child_tag == "table":
-            piece = (
-                child.text(deep=True, strip=True).strip()
-                if depth >= _MAX_NESTED_TABLE_DEPTH
-                else normalized_table_to_markdown(normalize_html_table(child, depth))
-            )
-        elif child_tag is None:
+        if child_tag is None:
             piece = child.text(deep=False, strip=False).strip()
         else:
             piece = _lexbor_subtree_to_markdown(child, depth)
