@@ -4,7 +4,8 @@
 # Usage: run_sdk_tests.sh <run name> <sdks dir> <reports dir> [language ...]
 #
 # <sdks dir> holds pipeshub-sdk-<language> checkouts. Each suite writes
-# <reports dir>/<run name>-<language>.xml (JUnit) and a .log next to it.
+# <reports dir>/<run name>-<language>.xml (JUnit), and a .log and an .exit (its exit
+# code) next to it.
 # The suites share one app and one set of data; the tests are written to check
 # only what they created, so they can run at the same time.
 # Reads PIPESHUB_API_URL, PIPESHUB_TOKEN_URL, PIPESHUB_CLIENT_ID and
@@ -45,10 +46,14 @@ run_go() {
 
 pids=()
 for lang in "${LANGS[@]}"; do
-  report="$REPORTS_DIR/$RUN_NAME-$lang.xml"
-  rm -f "$report"
-  ( cd "$SDKS_DIR/pipeshub-sdk-$lang" && "run_$lang" "$report" ) \
-    > "$REPORTS_DIR/$RUN_NAME-$lang.log" 2>&1 &
+  base="$REPORTS_DIR/$RUN_NAME-$lang"
+  rm -f "$base.xml" "$base.exit"
+  (
+    cd "$SDKS_DIR/pipeshub-sdk-$lang" && "run_$lang" "$base.xml"
+    status=$?
+    echo "$status" > "$base.exit"
+    exit "$status"
+  ) > "$base.log" 2>&1 &
   pids+=($!)
 done
 

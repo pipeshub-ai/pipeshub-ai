@@ -70,13 +70,69 @@ def test_all_passing_is_ok(tmp_path: Path):
     assert overall_verdict(read_results(tmp_path)) is Verdict.OK
 
 
-def test_previous_run_not_started_is_ok(tmp_path: Path):
+def test_a_previous_run_with_no_results_is_flag(tmp_path: Path):
+    """The previous run starts for every language whose current run passed."""
     write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    (tmp_path / "previous-go.xml").unlink()
 
     results = read_results(tmp_path)
 
-    assert overall_verdict(results) is Verdict.OK
-    assert "not run" in render_summary(results)
+    assert overall_verdict(results) is Verdict.FLAG
+    assert (
+        "go previous (last release): previous suite: the previous run wrote no results"
+        in (render_summary(results))
+    )
+
+
+def test_no_previous_run_after_a_current_failure_is_not_reported(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_report(
+        tmp_path, "current", "go", FAIL.format(name="TestAgents_AgentLifecycle")
+    )
+
+    results = read_results(tmp_path)
+
+    assert results[2].previous is None
+    assert "| go | BLOCK | 0/1 passed | not run (last release) |" in render_summary(
+        results
+    )
+
+
+@pytest.mark.parametrize("run", ["current", "previous"])
+def test_a_suite_that_exits_non_zero_fails_even_with_passing_cases(
+    tmp_path: Path, run: str
+):
+    write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    (tmp_path / f"{run}-typescript.exit").write_text("1\n", encoding="utf-8")
+    (tmp_path / "current-python.exit").write_text("0\n", encoding="utf-8")
+
+    results = read_results(tmp_path)
+
+    expected = Verdict.BLOCK if run == "current" else Verdict.FLAG
+    assert results[0].verdict is expected
+    assert results[1].verdict is Verdict.OK
+    assert f"typescript {run}" in render_summary(results)
+    assert "exited with code 1" in render_summary(results)
+
+
+def test_the_summary_lists_the_failures_an_approval_covers(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    write_report(
+        tmp_path, "previous", "python", FAIL.format(name="test_agents_agent_lifecycle")
+    )
+    write_report(
+        tmp_path, "previous", "go", FAIL.format(name="TestAgents_AgentLifecycle")
+    )
+
+    lines = render_summary(read_results(tmp_path)).splitlines()
+
+    assert (
+        lines[1]
+        == "<!-- sdk-flag-cases: go/agentsagentlifecycle python/agentsagentlifecycle -->"
+    )
 
 
 def test_previous_failure_is_flag(tmp_path: Path):
@@ -114,6 +170,7 @@ def test_missing_current_report_is_block(tmp_path: Path):
 
     assert overall_verdict(results) is Verdict.BLOCK
     assert "| go | BLOCK | not run |" in render_summary(results)
+    assert "- go current: no results" in render_summary(results)
 
 
 def test_block_outranks_flag(tmp_path: Path):
@@ -127,6 +184,15 @@ def test_block_outranks_flag(tmp_path: Path):
     )
 
     assert overall_verdict(read_results(tmp_path)) is Verdict.BLOCK
+
+
+def test_current_passed_prints_nothing_when_no_language_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+):
+    monkeypatch.setattr(sys, "argv", ["report.py", str(tmp_path), "--current-passed"])
+
+    assert report.main() == 0
+    assert capsys.readouterr().out == ""
 
 
 def test_case_missing_from_the_previous_release_is_not_a_failure(tmp_path: Path):
@@ -160,6 +226,8 @@ def test_a_skipped_case_is_read_as_skipped_with_a_reason(tmp_path: Path):
 
 def test_summary_and_slack_name_each_failed_case(tmp_path: Path):
     write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    (tmp_path / "previous-go.xml").unlink()
     write_report(
         tmp_path, "current", "go", FAIL.format(name="TestAgents_AgentLifecycle")
     )
@@ -189,6 +257,8 @@ def test_a_passing_run_has_no_slack_thread(tmp_path: Path):
 
 def test_slack_thread_escapes_control_characters(tmp_path: Path):
     write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    (tmp_path / "previous-go.xml").unlink()
     write_report(
         tmp_path,
         "current",

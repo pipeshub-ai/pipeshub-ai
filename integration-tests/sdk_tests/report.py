@@ -9,7 +9,8 @@ previous-<language>.xml, as written by run_sdk_tests.sh.
 
 Verdicts:
     OK     the generated SDK and the last released SDK both work with the app
-    FLAG   the generated SDK works, the last released SDK does not
+    FLAG   the generated SDK works, the last released SDK does not, or its run
+           produced no results
     BLOCK  the generated SDK does not work, or produced no results
 
 --current-passed prints the languages whose current run passed, one per line;
@@ -21,7 +22,9 @@ verdict.txt, and slack.json: the Slack message and the failures for its thread,
 as chat.postMessage bodies without the channel.
 
 A skipped test counts as a failure: Speakeasy writes a skipped placeholder for a
-case it could not turn into code, so a skip means the case never ran.
+case it could not turn into code, so a skip means the case never ran. A suite
+whose <run>-<language>.exit (from run_sdk_tests.sh) is not 0 fails even when its
+JUnit file has no failed test: vitest, for one, leaves unhandled errors out of it.
 """
 
 from __future__ import annotations
@@ -40,6 +43,8 @@ CURRENT = "current"
 PREVIOUS = "previous"
 # The pull request step finds its own earlier comment by this line.
 COMMENT_MARKER = "<!-- sdk-tests-report -->"
+# Second summary line: the previous-run failures an approval of a FLAG covers.
+FLAG_CASES_PREFIX = "<!-- sdk-flag-cases:"
 
 
 class Verdict(str, Enum):
@@ -54,7 +59,10 @@ MEANING = {
         "This change breaks the last released SDK. It can merge: a person adds the label "
         "`sdk-break-approved` after reading the failures, and adds a changelog note."
     ),
-    Verdict.BLOCK: "An SDK generated from this commit fails against this app. Fix it before merging.",
+    Verdict.BLOCK: (
+        "An SDK generated from this commit fails against this app, or the run could not "
+        "test it. Fix it before merging."
+    ),
 }
 _SLACK_ICONS = {
     Verdict.OK: ":large_green_circle:",
@@ -151,15 +159,32 @@ def read_releases(path: Path | None) -> dict[str, str]:
     return releases
 
 
-def read_results(reports_dir: Path) -> list[LanguageResult]:
-    return [
-        LanguageResult(
-            language,
-            read_junit(reports_dir / f"{CURRENT}-{language}.xml"),
-            read_junit(reports_dir / f"{PREVIOUS}-{language}.xml"),
+def read_suite(reports_dir: Path, run: str, language: str) -> dict[str, Case] | None:
+    """Cases of one suite, with a failed case added when it exited non-zero yet listed none."""
+    cases = read_junit(reports_dir / f"{run}-{language}.xml")
+    exit_file = reports_dir / f"{run}-{language}.exit"
+    code = exit_file.read_text(encoding="utf-8").strip() if exit_file.is_file() else "0"
+    if cases is not None and code != "0" and not _failures(cases):
+        detail = (
+            f"the suite exited with code {code} but reported no failed test; "
+            f"see {run}-{language}.log"
         )
-        for language in LANGUAGES
-    ]
+        cases = {**cases, f"{run}suite": Case(f"{run} suite", Status.FAILED, detail)}
+    return cases
+
+
+def read_results(reports_dir: Path) -> list[LanguageResult]:
+    results = []
+    for language in LANGUAGES:
+        current = read_suite(reports_dir, CURRENT, language)
+        previous = read_suite(reports_dir, PREVIOUS, language)
+        if previous is None and current and not _failures(current):
+            # The previous run starts for every language whose current run passed,
+            # so no results means its checkout, install or suite broke.
+            detail = "the previous run wrote no results; see the job log"
+            previous = {"previoussuite": Case("previous suite", Status.FAILED, detail)}
+        results.append(LanguageResult(language, current, previous))
+    return results
 
 
 def overall_verdict(results: list[LanguageResult]) -> Verdict:
@@ -193,7 +218,13 @@ def _failure_lines(
     results: list[LanguageResult], releases: dict[str, str]
 ) -> list[str]:
     """One line per failed case: language, run, case name, first line of the error."""
-    return [
+    no_current = [
+        f"{result.language} {CURRENT}: no results; generation, the install or the "
+        "suite failed, see the job log"
+        for result in results
+        if result.current is None
+    ]
+    return no_current + [
         f"{result.language} {run}: {case.name}: "
         f"{(case.detail.splitlines() or ['no detail'])[0][:300]}"
         for result in results
@@ -213,8 +244,15 @@ def render_summary(
 ) -> str:
     releases = releases or {}
     verdict = overall_verdict(results)
+    flag_cases = sorted(
+        f"{r.language}/{key}"
+        for r in results
+        for key, case in (r.previous or {}).items()
+        if case.status is not Status.PASSED
+    )
     lines = [
         COMMENT_MARKER,
+        f"{FLAG_CASES_PREFIX} {' '.join(flag_cases)} -->",
         f"## SDK tests: {verdict.value}",
         "",
         MEANING[verdict],
@@ -323,11 +361,10 @@ def main() -> int:
 
     results = read_results(args.reports_dir)
     if args.current_passed:
-        print(
-            "\n".join(
-                r.language for r in results if r.current and not r.current_failures
-            )
-        )
+        # One print per language: no language must mean no output, not an empty line.
+        for r in results:
+            if r.current and not r.current_failures:
+                print(r.language)
         return 0
 
     verdict = overall_verdict(results)
