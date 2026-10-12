@@ -256,10 +256,11 @@ async def create_team(request: Request) -> JSONResponse:
             raise RuntimeError("Failed to create creator permissions")
 
     # The edges lock the creator's and every member's user node, so two creates can
-    # collide. Every write is keyed by team_key, so the re-run completes the same
-    # team: on Neo4j the node may already have committed on its own.
+    # collide. explicit: a failure leaves no team behind on Neo4j either. Every write
+    # is keyed by team_key, so the re-run also completes the same team where the node
+    # committed on its own (NEO4J_CREATE_TRANSACTIONS=false).
     try:
-        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team)
+        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team, explicit=True)
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e

@@ -2656,3 +2656,143 @@ class TestSearchWithFiltersStrictScope:
             mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
         )
         assert "strictScope" not in filters_passed
+
+
+# ============================================================================
+# search_with_filters — flattening group-shaped hits
+#
+# These run the real get_flattened_results so the hit reaches the retrieval
+# service in exactly the shape the search route sees. Only the record fetch is
+# stubbed.
+# ============================================================================
+
+
+def _block_record(vid: str, blocks: list[dict], block_groups: list[dict]) -> dict:
+    return {
+        "id": "rec1",
+        "virtual_record_id": vid,
+        "org_id": "o1",
+        "record_name": "Doc",
+        "origin": "CONNECTOR",
+        "mime_type": "text/plain",
+        "block_containers": {"blocks": blocks, "block_groups": block_groups},
+    }
+
+
+class TestSearchWithFiltersGroupFlattening:
+    async def _search(
+        self, retrieval_service, mock_graph_provider, record: dict, block_index: int
+    ) -> dict:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "CONNECTOR",
+                "recordName": "Doc",
+                "webUrl": "https://example.com/doc",
+                "mimeType": "text/plain",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "hit",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1",
+                    "orgId": "o1",
+                    "isBlockGroup": False,
+                    "blockIndex": block_index,
+                    "origin": "CONNECTOR",
+                    "recordName": "Doc",
+                    "recordId": "rec1",
+                    "mimeType": "text/plain",
+                },
+            }
+        ])
+
+        async def fake_get_record(vid, vid_to_record, blob_store, org_id, vtr_map) -> None:
+            vid_to_record[vid] = record
+
+        with patch(
+            "app.modules.retrieval.retrieval_service.get_record",
+            new=AsyncMock(side_effect=fake_get_record),
+        ):
+            return await retrieval_service.search_with_filters(
+                queries=["test"], user_id="u1", org_id="o1", knowledge_search=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_top_level_code_block_is_returned_as_a_leaf(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A top-level code block is labelled "code" like a code group, but its
+        content is the source string. Unpacking it as (summary, children) raised
+        "too many values to unpack" and failed the whole search."""
+        source = "def handler(event):\n    return process(event)\n"
+        record = _block_record(
+            "vr1",
+            blocks=[{"index": 0, "type": "code", "data": {"text": source}, "parent_index": None}],
+            block_groups=[],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        assert [r["content"] for r in result["searchResults"]] == [source]
+
+    @pytest.mark.asyncio
+    async def test_slack_conversation_group_is_flattened_to_its_messages(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A Slack thread is a "conversation" group. Left unflattened, its
+        (summary, children) tuple reached the Node citation store, which failed
+        the search with "Cast to string failed"."""
+        record = _block_record(
+            "vr1",
+            blocks=[
+                {"index": 0, "type": "text", "data": "Is the deploy blocked?", "parent_index": 0},
+                {"index": 1, "type": "text", "data": "Yes, on the migration.", "parent_index": 0},
+            ],
+            block_groups=[
+                {
+                    "index": 0,
+                    "type": "conversation",
+                    "children": [{"block_index": 0}, {"block_index": 1}],
+                }
+            ],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        contents = [r["content"] for r in result["searchResults"]]
+        assert all(isinstance(c, str) for c in contents), contents
+        assert sorted(contents) == ["Is the deploy blocked?", "Yes, on the migration."]
+
+    @pytest.mark.asyncio
+    async def test_code_group_is_still_flattened_to_its_members(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        record = _block_record(
+            "vr1",
+            blocks=[
+                {"index": 0, "type": "code", "data": {"text": "def a(): pass"}, "parent_index": 0},
+                {"index": 1, "type": "code", "data": {"text": "def b(): pass"}, "parent_index": 0},
+            ],
+            block_groups=[
+                {
+                    "index": 0,
+                    "type": "code",
+                    "children": [{"block_index": 0}, {"block_index": 1}],
+                }
+            ],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        contents = [r["content"] for r in result["searchResults"]]
+        assert sorted(contents) == ["def a(): pass", "def b(): pass"]

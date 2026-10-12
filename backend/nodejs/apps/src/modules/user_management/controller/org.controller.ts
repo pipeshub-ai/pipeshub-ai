@@ -7,7 +7,11 @@ import { Users } from '../schema/users.schema';
 import { UserGroups } from '../schema/userGroup.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OrgLogos } from '../schema/orgLogo.schema';
-import sharp from 'sharp';
+import {
+  detectRasterImageFormat,
+  readImageUpload,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
 import {
@@ -469,26 +473,20 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const logoFile = req.body.fileBuffer;
+      const upload = readImageUpload(req.body as unknown);
       const orgId = req.user?.orgId;
-      if (!logoFile) {
+      if (upload === undefined) {
         throw new BadRequestError('Organisation logo file is required');
       }
 
-      const isSvg = logoFile.mimetype === 'image/svg+xml';
+      const logoBuffer = upload.buffer;
+      // The declared MIME type is client-controlled. Raster vs SVG is decided
+      // from the bytes, so an SVG labelled image/png is never decoded.
+      const rasterFormat = detectRasterImageFormat(logoBuffer);
       let processedBuffer: Buffer;
       let mimeType: string;
 
-      if (isSvg) {
-        // For SVG files, validate for dangerous content and reject if found
-        // This preserves the original buffer without corruption
-        this.validateSVG(logoFile.buffer);
-        // Use original buffer if validation passes - no modification
-        processedBuffer = logoFile.buffer;
-        // Always set mimeType to a safe, hardcoded value (not user-controlled)
-        mimeType = 'image/svg+xml';
-      } else {
-        // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
+      if (rasterFormat !== null) {
         const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
         const INITIAL_JPEG_QUALITY = 100;
         const MIN_JPEG_QUALITY = 10;
@@ -498,12 +496,24 @@ export class OrgController {
 
         do {
           quality -= JPEG_QUALITY_STEP;
-          processedBuffer = await sharp(logoFile.buffer)
+          processedBuffer = await sharp(logoBuffer)
             .jpeg({ quality })
             .toBuffer();
-        } while (processedBuffer.length > MAX_LOGO_SIZE_BYTES && quality > MIN_JPEG_QUALITY);
+        } while (
+          processedBuffer.length > MAX_LOGO_SIZE_BYTES &&
+          quality > MIN_JPEG_QUALITY
+        );
 
         mimeType = 'image/jpeg';
+      } else if (upload.mimetype === 'image/svg+xml') {
+        // SVG is stored as text after a string check. It is not decoded.
+        this.validateSVG(logoBuffer);
+        processedBuffer = logoBuffer;
+        mimeType = 'image/svg+xml';
+      } else {
+        throw new BadRequestError(
+          'Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image',
+        );
       }
 
       const base64Logo = processedBuffer.toString('base64');

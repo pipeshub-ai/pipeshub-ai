@@ -506,7 +506,9 @@ async def resolve_connector_ids_for_search(
       KB IDs are App node IDs whose storage directories hold record files,
       so they are valid connector paths for grep.
     - Empty scope under ``strictScope`` (project chat) → search nothing.
-    - No filters (chatbot "search all" mode) → get all org app IDs.
+    - No filters (chatbot "search all" mode) → get all org app IDs,
+      switched-off connectors included: their records stay searchable,
+      as they do in semantic search.
     """
     scope = requested_scope_ids(filters)
     if scope is not None:
@@ -514,7 +516,7 @@ async def resolve_connector_ids_for_search(
     if filters and filters.get(STRICT_SCOPE_FILTER_KEY):
         return []
     try:
-        org_apps = await graph_provider.get_org_apps(org_id)
+        org_apps = await graph_provider.get_org_apps(org_id, active_only=False)
         return [app["_key"] for app in org_apps if app.get("_key")]
     except Exception:
         return []

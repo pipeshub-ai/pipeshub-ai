@@ -4741,9 +4741,10 @@ def build_message_content_array(
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
                     ),
                 })
-            elif block_type == BlockType.CODE.value:
-                # A code hit is addressed by (file path, symbol id) so the model
-                # can pass it straight to the codegraph tools.
+            elif block_type == BlockType.CODE.value and group_child_results(result) is None:
+                # A code group shares the "code" label; it is rendered by the group
+                # branch below. A code hit is addressed by (file path, symbol id) so
+                # the model can pass it straight to the codegraph tools.
                 current_record_has_blocks = True
                 locator = format_code_locator(
                     current_file_path, result.get("qualified_name", "") or ""

@@ -424,7 +424,8 @@
     "statuses": "状态",
     "sources": "来源",
     "sizes": "大小",
-    "clearFilter": "清除筛选"
+    "clearFilter": "清除筛选",
+    "applyFilters": "应用筛选"
   },
   "form": {
     "leaveBlankToKeep": "留空则保留现有值。",
@@ -1862,7 +1863,53 @@
           "label": "视频",
           "badge": "多模态"
         }
-      }
+      },
+      "fetchingModels": "正在加载模型…",
+      "savedLeaveBlank": "已保存 — 留空则保持不变",
+      "modelPickerEmpty": "没有与搜索匹配的模型。",
+      "modelPickerDefault": "默认",
+      "modelPickerFriendlyName": "{{model}} 的显示名称",
+      "badgeContext": "{{value}} tokens",
+      "badgeVision": "视觉",
+      "badgeReasoning": "推理",
+      "badgeDeprecated": "已弃用",
+      "batchRetry": "重试",
+      "batchRemove": "移除",
+      "rotateCredentials": "轮换凭据",
+      "rotateCredentialsTitle": "轮换凭据",
+      "rotateCredentialsHint": "更新此连接下所有模型的密钥。",
+      "rotateCredentialsPlaceholder": "新的 API 密钥",
+      "rotateCredentialsSave": "更新密钥",
+      "rotateCredentialsFailed": "无法更新密钥",
+      "batchStatus": {
+        "pending": "等待",
+        "checking": "检查中",
+        "healthy": "已保存",
+        "failed": "失败"
+      },
+      "modelPickerSelected": "已选模型（{{count}}）",
+      "modelPickerSelectedHint": "每个模型会单独检查并保存。请在此设置其名称、上下文长度和能力。",
+      "modelPickerFieldFor": "{{model}} 的{{field}}",
+      "modelPickerDefaultFor": "将 {{model}} 设为默认",
+      "modelPickerRemoveFor": "移除 {{model}}",
+      "modelComboboxAddMore": "添加其他模型…",
+      "modelComboboxTypeHint": "输入模型名称并按 Enter。",
+      "modelComboboxOtherGroup": "其他模型",
+      "modelComboboxUseTyped": "使用“{{model}}”",
+      "modelHintManual": "输入模型名称并按 Enter。可添加多个模型一起保存。",
+      "modelHintNeedsFields": "填写上方的连接信息以加载模型列表，或直接输入模型名称。",
+      "modelHintFailed": "无法加载模型：{{message}} 你仍然可以输入模型名称。",
+      "modelHintNoneFound": "提供商没有列出此类型的模型。请输入模型名称。",
+      "modelHintLoaded_one": "共有 {{count}} 个可用模型。可搜索，或输入任意模型名称。",
+      "modelHintLoaded_other": "共有 {{count}} 个可用模型。可搜索，或输入任意模型名称。",
+      "modelComboboxPlaceholder": "选择或输入模型名称",
+      "checkingOne": "正在通过 {{provider}} 检查 {{model}}…",
+      "checkingMany": "正在通过 {{provider}} 检查 {{total}} 个模型…",
+      "checkingProgress": "已检查 {{done}}/{{total}} 个模型…",
+      "checkingHint": "每个模型会收到一次简短的测试调用，通常不到一分钟。",
+      "checkFailedOne": "{{model}} 未通过检查",
+      "checkFailedMany": "{{total}} 个模型中有 {{failed}} 个未通过检查",
+      "checkFailedHint": "打开面板查看原因并重试。"
     },
     "common": {
       "loadingUsers": "正在加载用户...",
@@ -2328,6 +2375,12 @@
         "confirm": "停止同步",
         "confirmFull": "停止完整同步"
       },
+      "disableSyncConfirm": {
+        "title": "要禁用 {{name}} 的同步吗？",
+        "confirm": "禁用同步",
+        "confirming": "正在禁用..."
+      },
+      "disabledSearchNotice": "此连接器中的记录仍可搜索，访问权限保持禁用时的状态。在 {{source}} 中对共享设置所做的更改，在重新启用之前不会同步到 PipesHub。若要移除这些记录，请删除该连接器。",
       "fullSync": {
         "disabledTooltip": "请先停止正在进行的同步，再开始完整同步"
       },

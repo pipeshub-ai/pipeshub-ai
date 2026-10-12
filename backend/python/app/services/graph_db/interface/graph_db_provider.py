@@ -441,13 +441,18 @@ class IGraphDBProvider(ABC):
     # ==================== Transaction Management ====================
 
     @abstractmethod
-    def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         """
         Begin a database transaction.
 
         Args:
             read (List[str]): Collections/tables to read from
             write (List[str]): Collections/tables to write to
+            explicit (bool | None): True asks for a real, all-or-nothing
+                transaction where the backend can run statements outside one
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off). None leaves it to
+                the backend's own setting. Backends that are always
+                transactional ignore it.
 
         Returns:
             str: Transaction ID
@@ -464,10 +469,11 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply
         be re-run (a deadlock, a lock timeout). Backends whose transactions
-        cannot guarantee nothing landed answer False."""
+        cannot guarantee nothing landed answer False. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
         return False
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -3730,6 +3736,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[str]: Record keys, empty when nothing references it
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``virtual_record_ids`` that at least one record holds.
+
+        ``get_records_by_virtual_record_id`` answered for many VRIDs in one
+        round trip, with the same predicate per VRID: not scoped by connector or
+        org, and ``visibility`` choosing live or trashed records. A sweep over
+        many VRIDs asks this instead of one query each.
+
+        Raises on failure rather than answering an empty set, which would read
+        as "nothing references these" and let the caller delete their vectors.
         """
         raise NotImplementedError
 

@@ -80,7 +80,7 @@ class _Neo4jDriver:
         self.transactions: list[tuple[str, str]] = []
         self.statements: list[tuple[str, dict]] = []
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self.transactions.append(("begin", "txn-1"))
         return "txn-1"
 

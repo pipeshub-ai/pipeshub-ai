@@ -424,7 +424,8 @@
     "statuses": "Statuses",
     "sources": "Sources",
     "sizes": "Sizes",
-    "clearFilter": "Clear Filter"
+    "clearFilter": "Clear Filter",
+    "applyFilters": "Apply filters"
   },
   "form": {
     "leaveBlankToKeep": "Leave blank to keep the existing value.",
@@ -1871,7 +1872,53 @@
           "label": "Video",
           "badge": "Multimodal"
         }
-      }
+      },
+      "fetchingModels": "Loading models…",
+      "savedLeaveBlank": "Saved — leave blank to keep",
+      "modelPickerEmpty": "No models match your search.",
+      "modelPickerDefault": "Default",
+      "modelPickerFriendlyName": "Friendly name for {{model}}",
+      "badgeContext": "{{value}} tokens",
+      "badgeVision": "Vision",
+      "badgeReasoning": "Reasoning",
+      "badgeDeprecated": "Deprecated",
+      "batchRetry": "Retry",
+      "batchRemove": "Remove",
+      "rotateCredentials": "Rotate credentials",
+      "rotateCredentialsTitle": "Rotate credentials",
+      "rotateCredentialsHint": "Updates the key for every model that was added with this connection.",
+      "rotateCredentialsPlaceholder": "New API key",
+      "rotateCredentialsSave": "Update key",
+      "rotateCredentialsFailed": "Could not update the key",
+      "batchStatus": {
+        "pending": "Waiting",
+        "checking": "Checking",
+        "healthy": "Saved",
+        "failed": "Failed"
+      },
+      "modelPickerSelected": "Selected models ({{count}})",
+      "modelPickerSelectedHint": "Each model is checked and saved on its own. Set its name, context length, and capabilities here.",
+      "modelPickerFieldFor": "{{field}} for {{model}}",
+      "modelPickerDefaultFor": "Make {{model}} the default",
+      "modelPickerRemoveFor": "Remove {{model}}",
+      "modelComboboxAddMore": "Add another model…",
+      "modelComboboxTypeHint": "Type a model name and press Enter.",
+      "modelComboboxOtherGroup": "Other models",
+      "modelComboboxUseTyped": "Use \"{{model}}\"",
+      "modelHintManual": "Type a model name and press Enter. Add several to save them together.",
+      "modelHintNeedsFields": "Fill in the connection details above to load the model list, or type a model name.",
+      "modelHintFailed": "Couldn't load models: {{message}} You can still type a model name.",
+      "modelHintNoneFound": "The provider listed no models of this type. Type a model name.",
+      "modelHintLoaded_one": "{{count}} model available. Search, or type any model name.",
+      "modelHintLoaded_other": "{{count}} models available. Search, or type any model name.",
+      "modelComboboxPlaceholder": "Select or type a model name",
+      "checkingOne": "Checking {{model}} with {{provider}}…",
+      "checkingMany": "Checking {{total}} models with {{provider}}…",
+      "checkingProgress": "Checked {{done}} of {{total}} models…",
+      "checkingHint": "Each model gets a short test call. This usually takes under a minute.",
+      "checkFailedOne": "{{model}} didn't pass the check",
+      "checkFailedMany": "{{failed}} of {{total}} models didn't pass the check",
+      "checkFailedHint": "Open the panel to see why and retry."
     },
     "common": {
       "loadingUsers": "Loading users...",
@@ -2337,6 +2384,12 @@
         "confirm": "Stop sync",
         "confirmFull": "Stop full sync"
       },
+      "disableSyncConfirm": {
+        "title": "Disable sync for {{name}}?",
+        "confirm": "Disable sync",
+        "confirming": "Disabling..."
+      },
+      "disabledSearchNotice": "Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in {{source}} won't reach PipesHub until you enable it again. To remove the records, delete the connector.",
       "fullSync": {
         "disabledTooltip": "Stop the running sync before starting a full sync"
       },

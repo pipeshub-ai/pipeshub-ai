@@ -3225,6 +3225,7 @@ class TestCreateAgentTransactionOutcome:
         graph.rollback_transaction = AsyncMock()
         # Synchronous on the real providers.
         graph.is_write_conflict = MagicMock(return_value=False)
+        graph.is_transient_error = MagicMock(return_value=False)
         return graph
 
     @staticmethod

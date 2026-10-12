@@ -10,6 +10,21 @@ import {
 } from '../config/scopes.config'
 import { InvalidScopeError } from '../../../libs/errors/oauth.errors'
 
+/**
+ * Split a scope claim into scope names. A missing claim, a non-string, and
+ * a whitespace-only string are all an empty grant — `"".split(" ")` is
+ * `[""]`, which must not be treated as a scope.
+ */
+export function parseScopeString(scope: unknown): string[] {
+  if (typeof scope !== 'string') {
+    return [];
+  }
+  return scope
+    .split(/\s+/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
 @injectable()
 export class ScopeValidatorService {
 
@@ -100,13 +115,7 @@ export class ScopeValidatorService {
    * Parse scope string into array
    */
   parseScopes(scopeString: string): string[] {
-    if (!scopeString || scopeString.trim() === '') {
-      return []
-    }
-    return scopeString
-      .split(/\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
+    return parseScopeString(scopeString);
   }
 
   /**

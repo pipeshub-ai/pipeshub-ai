@@ -85,7 +85,8 @@ class _AutoCommitGraph:
         self.parent_edge = True
         self.writes = 0
 
-    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
+    async def begin_transaction(self, read: list | None = None, write: list | None = None,
+                                explicit: bool | None = None) -> str:
         return "txn"
 
     async def commit_transaction(self, txn: str) -> None:
@@ -97,7 +98,7 @@ class _AutoCommitGraph:
     def is_write_conflict(self, error: BaseException) -> bool:
         return False
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return False
 
     async def get_document(self, key: str, collection: str, *, transaction: str | None = None,

@@ -188,6 +188,11 @@ describe('Team connectors page: turning sync on and off', () => {
     return instance;
   }
 
+  async function confirmDisable() {
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disable sync' }));
+  }
+
   it('enables sync and confirms it', async () => {
     openTypePage();
     const toggle = await screen.findByRole('switch');
@@ -205,6 +210,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync disabled'));
@@ -217,6 +223,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Could not update connector'));
     expect(toasts().map((t) => t.title)).not.toContain('Connector sync disabled');
@@ -229,6 +236,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalled());
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));

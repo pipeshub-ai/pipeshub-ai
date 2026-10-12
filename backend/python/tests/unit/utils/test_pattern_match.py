@@ -333,6 +333,42 @@ class TestResolveConnectorIds:
         )
         assert result == ["app-1", "app-3"]
 
+    @staticmethod
+    def _org_with_switched_off_connector() -> MagicMock:
+        apps = [
+            {"_key": "app-on", "isActive": True},
+            {"_key": "app-off", "isActive": False},
+        ]
+
+        # Same default as both real providers: only active apps unless asked.
+        async def get_org_apps(org_id: str, *, active_only: bool = True) -> list[dict]:
+            return [a for a in apps if a["isActive"] or not active_only]
+
+        graph_provider = MagicMock()
+        graph_provider.get_org_apps = AsyncMock(side_effect=get_org_apps)
+        return graph_provider
+
+    @pytest.mark.asyncio
+    async def test_search_all_includes_switched_off_connector(self) -> None:
+        graph_provider = self._org_with_switched_off_connector()
+
+        result = await resolve_connector_ids_for_search(
+            graph_provider, "org-1", None
+        )
+
+        assert result == ["app-on", "app-off"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_filter_unchanged_by_switched_off_connector(self) -> None:
+        graph_provider = self._org_with_switched_off_connector()
+
+        result = await resolve_connector_ids_for_search(
+            graph_provider, "org-1", {"apps": ["app-on"]}
+        )
+
+        assert result == ["app-on"]
+        graph_provider.get_org_apps.assert_not_called()
+
 
 # ===========================================================================
 # run_pattern_match

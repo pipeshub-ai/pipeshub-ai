@@ -36,6 +36,7 @@ export function FilePreviewFullscreen({
   citations,
   initialCitationId,
   showDownload,
+  onDownload,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -204,6 +205,7 @@ export function FilePreviewFullscreen({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
               title={t('action.download')}

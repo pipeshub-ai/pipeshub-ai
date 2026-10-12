@@ -14,6 +14,14 @@ class GraphQueryError(GraphDBError):
     """
 
 
+class GraphWriteError(GraphDBError):
+    """A provider reported a write as failed (returned False) rather than raising.
+
+    Raised inside a transaction block so the block rolls back: a reported
+    failure would otherwise commit the writes around it.
+    """
+
+
 class PermissionVerificationUnavailableError(Exception):
     """The graph could not adjudicate which retrieved records a user may read.
 

@@ -121,7 +121,7 @@ class InMemoryGraph:
             CollectionNames.PERMISSION.value,
         )
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"
 
     async def commit_transaction(self, txn_id: str) -> None:
@@ -134,7 +134,7 @@ class InMemoryGraph:
     def is_write_conflict(self, error: BaseException) -> bool:
         return False
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return False
 
     async def reset_indexing_status_for_connector(self, connector_id: str, status: str, **_: Any) -> None:  # noqa: ANN401

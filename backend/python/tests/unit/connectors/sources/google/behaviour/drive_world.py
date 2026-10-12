@@ -60,6 +60,7 @@ class FileState:
     content: bytes = b""
     deleted: bool = False
     perm_access: Optional[str] = None
+    export_too_large: bool = False
 
 
 @dataclass
@@ -95,6 +96,42 @@ def _mask(fields: Optional[str], container: str) -> Optional[list[str]]:
     return [f.strip() for f in match.group(1).split(",") if f.strip()]
 
 
+# Top-level properties of each Drive v3 list response. Drive rejects a ``fields``
+# mask that names anything else, so the fake does too.
+LIST_RESPONSE_FIELDS = {
+    "files": frozenset({"kind", "nextPageToken", "incompleteSearch", "files"}),
+    "changes": frozenset({"kind", "nextPageToken", "newStartPageToken", "changes"}),
+    "drives": frozenset({"kind", "nextPageToken", "drives"}),
+}
+
+
+def top_level_fields(fields: str) -> list[str]:
+    names, depth, current = [], 0, ""
+    for ch in fields:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            names.append(current)
+            current = ""
+        else:
+            current += ch
+    names.append(current)
+    return [re.split(r"[(/]", n.strip(), maxsplit=1)[0] for n in names if n.strip()]
+
+
+def _invalid_field_selection(req: ApiRequest, resource: str) -> Optional[tuple[int, dict]]:
+    fields = req.query.get("fields")
+    if not fields:
+        return None
+    allowed = LIST_RESPONSE_FIELDS[resource]
+    for name in top_level_fields(fields):
+        if name not in allowed:
+            return google_error(400, "invalidParameter", f"Invalid field selection {name}")
+    return None
+
+
 def _split_and(q: str) -> list[str]:
     parts, depth, current = [], 0, ""
     tokens = re.split(r"(\(|\)|\s+and\s+)", q)
@@ -121,6 +158,9 @@ class DriveWorld:
         self.perm_page_size = page_size
         self.admin_page_size = page_size
         self.empty_page_at: Optional[int] = None
+        self.incomplete_search = False
+        # Flags only the files.list requests it accepts, e.g. one shared drive.
+        self.incomplete_search_when: Optional[Callable[[ApiRequest], bool]] = None
         self.users: dict[str, DriveUser] = {}
         self.aliases: dict[str, str] = {}
         self.groups: dict[str, dict[str, Any]] = {}
@@ -185,6 +225,43 @@ class DriveWorld:
             meta["owners"] = [{"emailAddress": owner}]
         state = FileState(meta, [dict(p) for p in (perms or [])], content)
         return self._mutate(file_id, lambda: self.files.__setitem__(file_id, state)) or state
+
+    def add_shortcut(self, file_id: str, name: str, *, parent: str, owner: str, target_id: str) -> FileState:
+        target = self.files[target_id]
+        state = self.add_item(
+            file_id,
+            name,
+            parent=parent,
+            owner=owner,
+            mime="application/vnd.google-apps.shortcut",
+            content=b"",
+        )
+        state.meta["shortcutDetails"] = {
+            "targetId": target_id,
+            "targetMimeType": target.meta.get("mimeType"),
+        }
+        return state
+
+    def _for_viewer(self, state: FileState, email: str) -> dict[str, Any]:
+        """Fields Drive computes for the caller: ownedByMe and edit/download capabilities."""
+        meta = dict(state.meta)
+        owners = [owner.get("emailAddress") for owner in meta.get("owners", [])]
+        meta["ownedByMe"] = email in owners
+        role = self.direct_role(meta["id"], email) or self.member_role(meta["id"], email)
+        capabilities = dict(meta.get("capabilities") or {})
+        capabilities["canEdit"] = role in ("owner", "organizer", "fileOrganizer", "writer")
+        capabilities["canDownload"] = role is not None
+        meta["capabilities"] = capabilities
+        if state.export_too_large:
+            meta["exportLinks"] = {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
+                    f"https://docs.google.com/feeds/download/documents/export/Export?id={meta['id']}"
+                ),
+                "application/pdf": (
+                    f"https://docs.google.com/feeds/download/documents/export/Export?id={meta['id']}&fmt=pdf"
+                ),
+            }
+        return meta
 
     def folder(self, file_id: str, name: str, **kwargs: object) -> FileState:
         return self.add_item(file_id, name, mime=FOLDER, content=b"", **kwargs)
@@ -365,14 +442,17 @@ class DriveWorld:
         if req.query.get("alt") == "media":
             return self._media(state.content, req)
         names = [f.strip() for f in req.query["fields"].split(",")] if req.query.get("fields") else None
-        return _project(state.meta, names)
+        return _project(self._for_viewer(state, email), names)
 
     def _files_export(self, req: ApiRequest) -> object:
         email = self._caller(req)
         file_id = self._file_id(req)
         if not self.can_open(file_id, email):
             return google_error(404, "notFound")
-        return self._media(b"exported:" + self.files[file_id].content, req)
+        state = self.files[file_id]
+        if state.export_too_large:
+            return google_error(403, "exportSizeLimitExceeded", "This file is too large to be exported.")
+        return self._media(b"exported:" + state.content, req)
 
     @staticmethod
     def _media(content: bytes, req: ApiRequest) -> HttpResult:
@@ -403,6 +483,8 @@ class DriveWorld:
         raise AssertionError(f"DriveWorld does not understand query term {atom!r}")
 
     def _files_list(self, req: ApiRequest) -> object:
+        if invalid := _invalid_field_selection(req, "files"):
+            return invalid
         email = self._caller(req)
         q = req.query.get("q", "")
         drive_id = req.query.get("driveId") if req.query.get("corpora") == "drive" else None
@@ -426,7 +508,7 @@ class DriveWorld:
                 continue
             if q and not self._matches(q, state, email):
                 continue
-            matches.append(state.meta)
+            matches.append(self._for_viewer(state, email))
         return self._page_files(matches, req)
 
     def _page_files(self, items: list[dict[str, Any]], req: ApiRequest) -> dict[str, Any]:
@@ -434,10 +516,18 @@ class DriveWorld:
         served_empty = token.endswith("!")
         start = int(token.rstrip("!"))
         size = min(int(req.query.get("pageSize") or 100), self.page_size)
+        incomplete = self.incomplete_search or bool(
+            self.incomplete_search_when and self.incomplete_search_when(req)
+        )
         if self.empty_page_at is not None and not served_empty and start == self.empty_page_at * size and start < len(items):
-            return {"files": [], "nextPageToken": f"{start}!"}
+            page: dict[str, Any] = {"files": [], "nextPageToken": f"{start}!"}
+            if incomplete:
+                page["incompleteSearch"] = True
+            return page
         page = items[start:start + size]
         out: dict[str, Any] = {"files": [_project(m, _mask(req.query.get("fields"), "files")) for m in page]}
+        if incomplete:
+            out["incompleteSearch"] = True
         if start + size < len(items):
             out["nextPageToken"] = str(start + size)
         return out
@@ -482,6 +572,8 @@ class DriveWorld:
         return {"startPageToken": str(len(self.log) + 1)}
 
     def _changes_list(self, req: ApiRequest) -> object:
+        if invalid := _invalid_field_selection(req, "changes"):
+            return invalid
         email = self._caller(req)
         base, _, offset = req.query["pageToken"].partition(":")
         drive_id = req.query.get("driveId")
@@ -511,7 +603,8 @@ class DriveWorld:
             if change.drive_id and "driveId" in (req.query.get("fields") or "").split("file(")[0]:
                 item["driveId"] = change.drive_id
             if reachable:
-                item["file"] = _project(state.meta, names)
+                item["file"] = _project(self._for_viewer(state, email), names)
+                item["driveId"] = state.meta.get("driveId")
             changes.append(item)
         out: dict[str, Any] = {"changes": changes}
         if start + size < len(entries):
@@ -521,14 +614,26 @@ class DriveWorld:
         return out
 
     def _drives_list(self, req: ApiRequest) -> object:
+        if invalid := _invalid_field_selection(req, "drives"):
+            return invalid
         email = self._caller(req)
         admin = req.query.get("useDomainAdminAccess") == "true"
         if admin and email != self.admin_email:
             return google_error(403, "forbidden")
-        drives = [
-            {"id": d["id"], "name": d["name"], "createdTime": d["createdTime"]}
-            for d in self.drives.values() if admin or self.drive_role(d["id"], email)
-        ]
+        drives = []
+        for drive in self.drives.values():
+            role = self.drive_role(drive["id"], email)
+            if not admin and not role:
+                continue
+            drives.append({
+                "id": drive["id"],
+                "name": drive["name"],
+                "createdTime": drive["createdTime"],
+                "capabilities": {
+                    "canEdit": role in ("organizer", "fileOrganizer", "writer"),
+                    "canManageMembers": role == "organizer",
+                },
+            })
         if m := re.fullmatch(r"name contains '(.*)'", req.query.get("q", "")):
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
         return paginate(drives, req.query, default_size=self.page_size, key="drives")

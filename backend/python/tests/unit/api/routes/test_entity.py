@@ -1,6 +1,7 @@
 """Unit tests for app.api.routes.entity module."""
 
 import asyncio
+import copy
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -507,11 +508,15 @@ class TestCreateTeam:
         gp.rollback_transaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_conflict_on_the_edge_write_is_retried_into_one_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Neo4j the team node commits before its edges; a retry must finish that team, not add one."""
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_conflict_on_the_edge_write_is_retried_into_one_team(
+        self, monkeypatch: pytest.MonkeyPatch, honours_explicit: bool,
+    ) -> None:
+        """With NEO4J_CREATE_TRANSACTIONS=false the team node commits before its edges;
+        a retry must finish that team, not add one."""
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(conflicts_on=2)
+        graph = _TeamGraph(conflicts_on=2, honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         resp = await create_team(req)
@@ -522,45 +527,80 @@ class TestCreateTeam:
         assert graph.edges == {("permission", "user-key-1", team_key)}
         assert graph.read_back == [team_key]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_failure_on_the_edge_write_leaves_no_team_unless_the_kill_switch_is_off(
+        self, honours_explicit: bool,
+    ) -> None:
+        req = _make_request({"name": "Team"})
+        graph = _TeamGraph(fails_on=2, honours_explicit=honours_explicit)
+        req.app.state.graph_provider = graph
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+
+        assert exc.value.status_code == 500
+        assert graph.explicit_requests == [True]
+        assert graph.edges == set()
+        # With the kill switch off, today's auto-commit keeps the team node without its owner.
+        assert len(graph.teams) == (0 if honours_explicit else 1)
+
 
 class _Conflict(RuntimeError):
     pass
 
 
 class _TeamGraph:
-    """One user's teams on a graph where each statement lands as it runs (Neo4j's
-    default) and the write numbered *conflicts_on* hits another writer."""
+    """One user's teams on Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off: each statement
+    lands as it runs, except inside begin_transaction(explicit=True) while
+    *honours_explicit* (NEO4J_CREATE_TRANSACTIONS) is on. The write numbered
+    *conflicts_on* hits another writer; the one numbered *fails_on* hits an outage."""
 
-    def __init__(self, *, conflicts_on: int | None = None) -> None:
+    def __init__(self, *, conflicts_on: int | None = None, fails_on: int | None = None,
+                 honours_explicit: bool = True) -> None:
         self.logger = MagicMock()
         self.teams: dict[str, dict] = {}
         self.edges: set[tuple[str, str, str]] = set()
         self.read_back: list[str] = []
         self.writes = 0
         self.conflicts_on = conflicts_on
+        self.fails_on = fails_on
+        self.honours_explicit = honours_explicit
+        self.explicit_requests: list[bool | None] = []
+        self._snapshots: dict[str, tuple[dict, set]] = {}
 
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": "user-key-1"}
 
-    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
-        return "txn"
+    async def begin_transaction(self, read: list | None = None, write: list | None = None,
+                                explicit: bool | None = None) -> str:
+        self.explicit_requests.append(explicit)
+        txn = f"txn-{len(self.explicit_requests)}"
+        if explicit and self.honours_explicit:
+            self._snapshots[txn] = (copy.deepcopy(self.teams), set(self.edges))
+        return txn
 
     async def commit_transaction(self, txn: str) -> None:
-        pass
+        self._snapshots.pop(txn, None)
 
     async def rollback_transaction(self, txn: str) -> None:
-        pass  # Nothing to undo: every statement already committed.
+        # Without a real transaction there is nothing to undo: every statement committed.
+        snapshot = self._snapshots.pop(txn, None)
+        if snapshot is not None:
+            self.teams, self.edges = snapshot
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return isinstance(error, _Conflict)
 
-    def is_transient_error(self, error: BaseException) -> bool:
-        return False
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return isinstance(error, _Conflict) and bool(explicit) and self.honours_explicit
 
     def _statement(self) -> None:
         self.writes += 1
         if self.writes == self.conflicts_on:
             raise _Conflict("DeadlockDetected")
+        if self.writes == self.fails_on:
+            raise RuntimeError("connection reset")
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._statement()

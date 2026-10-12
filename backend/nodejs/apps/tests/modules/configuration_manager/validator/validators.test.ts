@@ -9,8 +9,10 @@ import {
   azureBlobConfigSchema,
   providerType,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
   configurationSchema,
   githubAuthConfigSchema,
+  rotateConnectionCredentialsSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -316,6 +318,41 @@ describe('configuration_manager/validator/validators', () => {
         expect(result.data.location).to.equal('us-central1')
         expect(result.data.serviceAccountJson).to.equal('{"type":"service_account"}')
       }
+    })
+  })
+
+  describe('batch and rotate configuration', () => {
+    it('accepts a shared friendly name and drops it before the single-model rule', () => {
+      const result = batchAddModelsRequestSchema.safeParse({
+        body: {
+          modelType: 'llm',
+          provider: 'openAI',
+          configuration: { apiKey: 'sk', modelFriendlyName: 'Shared' },
+          models: [{ model: 'gpt-4o', modelFriendlyName: 'Bee' }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.configuration.modelFriendlyName).to.equal(undefined)
+        expect(result.data.body.configuration.apiKey).to.equal('sk')
+        expect(result.data.body.models[0].modelFriendlyName).to.equal('Bee')
+      }
+    })
+
+    it('rejects an endpoint on credential rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new', endpoint: 'https://attacker.example/v1' } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts a credential-only rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new' } },
+      })
+      expect(result.success).to.be.true
     })
   })
 

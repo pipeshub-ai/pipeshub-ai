@@ -143,6 +143,9 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
+      # (one auto-commit per query while that is off)
+      - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -227,7 +230,7 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}

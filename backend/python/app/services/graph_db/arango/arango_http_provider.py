@@ -1140,13 +1140,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a database transaction - FULLY ASYNC.
 
         Args:
             read: Collections to read from
             write: Collections to write to
+            explicit: ignored; a stream transaction is always all-or-nothing
 
         Returns:
             str: Transaction ID (e.g., "123456789")
@@ -1170,7 +1173,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
             raise
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
@@ -24523,6 +24526,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if vid and row.get("id"):
                 holders.setdefault(vid, []).append(row)
         return holders
+
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.get_virtual_record_ids_in_use`."""
+        wanted = [v for v in dict.fromkeys(virtual_record_ids) if isinstance(v, str) and v]
+        if not wanted:
+            return set()
+        query = f"""
+        FOR vrid IN @virtual_record_ids
+            LET held = FIRST(
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.virtualRecordId == vrid
+                    AND {aql_record_visibility("record", visibility)}
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER held != null
+            RETURN vrid
+        """
+        results = await self.http_client.execute_aql(
+            query, {"virtual_record_ids": wanted}, transaction
+        )
+        return {vrid for vrid in results or [] if vrid}
 
     async def get_records_by_virtual_record_id(
         self,
