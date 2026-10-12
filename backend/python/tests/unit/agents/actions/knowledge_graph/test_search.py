@@ -811,6 +811,20 @@ class TestStrictScope:
         assert "strictScope" not in kwargs["filter_groups"]
 
 
+class TestGrepQuery:
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_is_written_from_the_agent_query_with_the_question_as_context(self, mock_parse) -> None:
+        state = _entity_search_state(_empty_retrieval(), query="Which safeguard was added?", llm=MagicMock())
+        grep = AsyncMock(return_value=[])
+
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(state, "min cache TTL cold-start deploy")
+
+        assert grep.await_args.kwargs["query"] == "min cache TTL cold-start deploy"
+        assert grep.await_args.kwargs["user_query"] == "Which safeguard was added?"
+
+
 class TestUnknownEntityIds:
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

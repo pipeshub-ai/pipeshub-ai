@@ -45,8 +45,10 @@ from app.utils.pattern_match import (
 def _no_cached_grep_generation() -> Iterator[None]:
     from app.utils import pattern_match
 
+    pattern_match._grep_commands_cache.clear()
     pattern_match._grep_llm_cache.clear()
     yield
+    pattern_match._grep_commands_cache.clear()
     pattern_match._grep_llm_cache.clear()
 
 
@@ -2138,6 +2140,34 @@ class TestGenerateGrepCommandViaLlm:
         assert result == ['grep -rci "ttl" .']
 
     @pytest.mark.asyncio
+    async def test_agent_query_leads_and_question_is_context(self) -> None:
+        structured_llm = _mock_structured_llm(
+            return_value=GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .']),
+        )
+        with self._patches(structured_llm):
+            await generate_grep_command_via_llm(
+                query="min cache TTL deploy cold-start",
+                llm=MagicMock(), logger_instance=MagicMock(),
+                user_query="What safeguard did the recommendation service add?",
+            )
+
+        human = structured_llm.ainvoke.call_args.args[0][1].content
+        assert human == (
+            'Search query: "min cache TTL deploy cold-start"\n'
+            'Original question (context only): "What safeguard did the recommendation service add?"'
+        )
+
+    @pytest.mark.parametrize(("query", "user_query", "expected"), [
+        ("ttl floor", None, 'Search query: "ttl floor"'),
+        ("ttl floor", "  ttl floor ", 'Search query: "ttl floor"'),
+        ("  ", "what is the ttl floor?", 'Search query: "what is the ttl floor?"'),
+    ])
+    def test_request_without_a_distinct_question(self, query, user_query, expected) -> None:
+        from app.utils.pattern_match import _grep_generation_request
+
+        assert _grep_generation_request(query, user_query) == expected
+
+    @pytest.mark.asyncio
     async def test_raw_output_is_requested(self) -> None:
         structured_llm = _mock_structured_llm(return_value=None)
         with self._patches(structured_llm), patch(
@@ -3367,6 +3397,37 @@ class TestRunPatternMatchWithLlmGrep:
 
         assert len(result) == 1
         assert result[0]["virtual_record_id"] == "vr-good"
+
+    @pytest.mark.asyncio
+    async def test_commands_are_generated_once_per_search_query(self) -> None:
+        with patch(
+            "app.utils.pattern_match.generate_grep_command_via_llm",
+            new_callable=AsyncMock, return_value=['grep -rci "test" .'],
+        ) as mock_gen, patch(
+            "app.utils.pattern_match.execute_pattern_match_pipeline",
+            new_callable=AsyncMock, return_value=[],
+        ) as pipeline:
+            for user_query in ("question", "question", "another question"):
+                await run_pattern_match_with_llm_grep(
+                    **self._base_kwargs(), llm=MagicMock(), user_query=user_query,
+                )
+
+        assert mock_gen.await_count == 2
+        assert [c.kwargs["grep_command"] for c in pipeline.call_args_list].count('grep -rci "test" .') == 3
+
+    @pytest.mark.asyncio
+    async def test_a_failed_generation_is_not_cached(self) -> None:
+        with patch(
+            "app.utils.pattern_match.generate_grep_command_via_llm",
+            new_callable=AsyncMock, return_value=None,
+        ) as mock_gen, patch(
+            "app.utils.pattern_match.execute_pattern_match_pipeline",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            for _ in range(2):
+                await run_pattern_match_with_llm_grep(**self._base_kwargs(), llm=MagicMock())
+
+        assert mock_gen.await_count == 2
 
     @pytest.mark.asyncio
     async def test_user_query_passed_to_llm(self):

@@ -9,6 +9,7 @@ import shlex
 import time
 from typing import TYPE_CHECKING, Any
 
+from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
@@ -201,7 +202,9 @@ class GrepCommandResult(BaseModel):
 _MAX_LLM_GREP_COMMANDS = 3
 
 _GREP_GENERATION_SYSTEM_PROMPT = """\
-You are generating filesystem search commands to find JSON documents relevant to a user query.
+You are generating filesystem search commands to find JSON documents relevant to a search query.
+Build the commands from the search query. An original question, when given, is context only: \
+use it to disambiguate the search query, not as a source of extra terms.
 
 STEP 1 — Identify core concepts:
 Extract the 1-3 core concepts the user actually cares about. These are the nouns \
@@ -415,11 +418,9 @@ async def generate_grep_command_via_llm(
     from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
     from app.utils.streaming import _apply_structured_output
 
-    effective_query = user_query.strip() if user_query and user_query.strip() else query
-
     messages = [
         SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
-        HumanMessage(content=f'User query: "{effective_query}"'),
+        HumanMessage(content=_grep_generation_request(query, user_query)),
     ]
 
     try:
@@ -460,6 +461,22 @@ async def generate_grep_command_via_llm(
             )
             return valid_commands
     return None
+
+
+def _grep_generation_request(query: str, user_query: str | None) -> str:
+    """The search query the agent wrote, with the user's question as context.
+
+    The agent's query carries the vocabulary it learned from earlier results
+    (often the documents' own terms); the question alone makes every search
+    in a turn grep for the same paraphrase.
+    """
+    search = (query or "").strip()
+    question = (user_query or "").strip()
+    if not search:
+        return f'Search query: "{question}"'
+    if not question or question == search:
+        return f'Search query: "{search}"'
+    return f'Search query: "{search}"\nOriginal question (context only): "{question}"'
 
 
 def _valid_llm_grep_commands(commands: list[str], logger_instance: logging.Logger) -> list[str]:
@@ -567,6 +584,8 @@ def _parse_grep_response(
 
 
 _grep_llm_cache: dict[str, tuple[ConfigurationService, float, BaseChatModel]] = {}
+# The agent often repeats a search query within a turn (retries, other sources).
+_grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
 
 
 async def _grep_generation_llm(
@@ -967,10 +986,15 @@ async def _run_pattern_match_with_llm_grep(
         return []
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
-        llm_grep_cmds = await generate_grep_command_via_llm(
-            query=query, llm=await _grep_generation_llm(config_service, llm),
-            logger_instance=logger_instance, user_query=user_query,
-        )
+        cache_key = (org_id, query.strip(), (user_query or "").strip())
+        llm_grep_cmds = _grep_commands_cache.get(cache_key)
+        if llm_grep_cmds is None:
+            llm_grep_cmds = await generate_grep_command_via_llm(
+                query=query, llm=await _grep_generation_llm(config_service, llm),
+                logger_instance=logger_instance, user_query=user_query,
+            )
+            if llm_grep_cmds:
+                _grep_commands_cache[cache_key] = llm_grep_cmds
 
     common: dict[str, Any] = {
         "query": query,
