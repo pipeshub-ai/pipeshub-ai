@@ -91,11 +91,7 @@ async def classify(
             record_name=body.record_name,
             record_type=body.record_type,
         )
-        metadata = (
-            None
-            if classification is None
-            else semantic_metadata_from_classification(classification, body.block_container.blocks)
-        )
+        metadata = None if classification is None else semantic_metadata_from_classification(classification)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Unexpected error during classification for org '%s'", org_id

@@ -174,7 +174,7 @@ def test_classify_record_name_and_type_default_to_empty() -> None:
     assert call_kwargs["record_type"] == ""
 
 
-def test_classify_without_a_natural_language_reports_the_detected_one() -> None:
+def test_classify_reports_no_language_for_a_record_in_code_and_formats_only() -> None:
     classification = DocumentClassification(
         departments=["Engineering"], category="Technical",
         subcategories=SubCategories(level1="Software", level2="Python", level3="Testing"),
@@ -185,7 +185,10 @@ def test_classify_without_a_natural_language_reports_the_detected_one() -> None:
     block_container = {
         "blocks": [{
             "index": 0, "type": "text", "format": "txt",
-            "data": "The deployment runbook covers the rollback steps for every region.",
+            "data": (
+                "apiVersion: v1, kind: Service, metadata.name: payments, metadata.namespace: prod, "
+                "metadata.labels.app: payments, spec.selector.app: payments, spec.type: ClusterIP"
+            ),
         }],
         "block_groups": [],
     }
@@ -196,7 +199,7 @@ def test_classify_without_a_natural_language_reports_the_detected_one() -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["classification"]["languages"] == ["English"]
+    assert response.json()["classification"]["languages"] == []
 
 
 # ---------------------------------------------------------------------------

@@ -9,11 +9,8 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
-from app.models.blocks import Block, BlockType, SemanticMetadata
-from app.modules.entity_resolution.languages import (
-    canonical_language,
-    detect_written_language,
-)
+from app.models.blocks import Block, SemanticMetadata
+from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
@@ -198,31 +195,10 @@ class DocumentClassification(BaseModel):
         return list(dict.fromkeys(n for n in names if n))
 
 
-_LANGUAGE_SAMPLE_CHARS = 2000
-
-
-def _written_language(blocks: list[Block]) -> list[str]:
-    """The language the record's text is written in, for a classification that
-    named none (it listed only code or formats, or nothing)."""
-    parts: list[str] = []
-    size = 0
-    # Text blocks only: an image block's data can be a base64 data URI.
-    for block in blocks:
-        if block.type == BlockType.TEXT and isinstance(block.data, str):
-            parts.append(block.data)
-            size += len(block.data) + 1
-            if size >= _LANGUAGE_SAMPLE_CHARS:
-                break
-    name = detect_written_language(" ".join(parts)[:_LANGUAGE_SAMPLE_CHARS])
-    return [name] if name else []
-
-
-def semantic_metadata_from_classification(
-    classification: DocumentClassification, blocks: list[Block],
-) -> SemanticMetadata:
+def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
     return SemanticMetadata(
         departments=classification.departments,
-        languages=classification.languages or _written_language(blocks),
+        languages=classification.languages,
         topics=classification.topics,
         summary=classification.summary,
         categories=[classification.category],
@@ -252,7 +228,7 @@ class DocumentExtraction(Transformer):
         if document_classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = semantic_metadata_from_classification(document_classification, blocks)
+        record.semantic_metadata = semantic_metadata_from_classification(document_classification)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 
