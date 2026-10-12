@@ -24,6 +24,24 @@ def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) ->
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _client_with_open_driver(run=None):
+    """A Neo4j client whose driver is already open. ``run`` is session.run."""
+    result = MagicMock()
+    result.consume = AsyncMock()
+    session = AsyncMock()
+    session.run = run if run is not None else AsyncMock(return_value=result)
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = session
+    ctx.__aexit__.return_value = False
+    driver = MagicMock()
+    driver.session.return_value = ctx
+    client = MagicMock()
+    client.driver = driver
+    client.database = "neo4j"
+    client.connect = MagicMock()
+    return client, session
+
+
 def _make_container():
     """Build a mock ConnectorAppContainer with common providers."""
     container = MagicMock()
@@ -1438,22 +1456,19 @@ class TestGraphDbHealthCheck:
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_healthy(self):
-        """Neo4j health probe returns 200 when the pooled provider answers RETURN 1."""
+        """Neo4j health probe returns 200 when the open driver answers RETURN 1."""
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_provider = MagicMock()
-        mock_provider.client = object()
-        mock_provider.execute_query = AsyncMock(return_value=[{"n": 1}])
-        request.app.state.graph_provider = mock_provider
+        client, session = _client_with_open_driver()
+        request.app.state.graph_provider = MagicMock(client=client)
 
         with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 200
-        mock_provider.execute_query.assert_awaited_once_with(
-            "RETURN 1 AS n", timeout_seconds=3.0
-        )
+        session.run.assert_awaited_once_with("RETURN 1 AS n")
+        client.connect.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_no_client(self):
@@ -1471,22 +1486,39 @@ class TestGraphDbHealthCheck:
         assert body["error"] == "Neo4j unavailable"
 
     @pytest.mark.asyncio
+    async def test_graph_db_health_neo4j_no_driver_does_not_connect(self):
+        """A client with no driver returns 503 and does not open a new one."""
+        from app.connectors_main import graph_db_health_check
+
+        request, _records = _request_with_service_logger()
+        client = MagicMock()
+        client.driver = None
+        client.connect = AsyncMock()
+        request.app.state.graph_provider = MagicMock(client=client)
+
+        with patch("app.connectors_main.os.getenv", return_value="neo4j"):
+            response = await graph_db_health_check(request)
+
+        assert response.status_code == 503
+        body = json.loads(response.body)
+        assert body["error"] == "Neo4j unavailable"
+        client.connect.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_graph_db_health_neo4j_probe_timeout(self):
         """A probe that exceeds the wait_for budget returns 503, not a hang."""
         from app.connectors_main import graph_db_health_check
 
         request, records = _request_with_service_logger()
-        mock_provider = MagicMock()
-        mock_provider.client = object()
+        client, _session = _client_with_open_driver()
+        request.app.state.graph_provider = MagicMock(client=client)
 
-        async def _hang(*_a, **_k):
-            await asyncio.sleep(30)
-
-        mock_provider.execute_query = _hang
-        request.app.state.graph_provider = mock_provider
+        def _expire(awaitable, timeout):
+            awaitable.close()
+            raise TimeoutError()
 
         with patch("app.connectors_main.os.getenv", return_value="neo4j"), \
-             patch("app.connectors_main.asyncio.wait_for", side_effect=TimeoutError()):
+             patch("app.connectors_main.asyncio.wait_for", side_effect=_expire):
             response = await graph_db_health_check(request)
 
         assert response.status_code == 503
@@ -1614,10 +1646,10 @@ class TestGraphDbHealthNeo4jUnhealthy:
         from app.connectors_main import graph_db_health_check
 
         request = MagicMock()
-        mock_provider = MagicMock()
-        mock_provider.client = object()
-        mock_provider.execute_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
-        request.app.state.graph_provider = mock_provider
+        client, _session = _client_with_open_driver(
+            AsyncMock(side_effect=RuntimeError("neo4j down"))
+        )
+        request.app.state.graph_provider = MagicMock(client=client)
 
         with patch("app.connectors_main.os.getenv", return_value="neo4j"):
             response = await graph_db_health_check(request)
@@ -1704,10 +1736,11 @@ class TestHealthProbesReturnFixedText:
         from app.connectors_main import graph_db_health_check
 
         request, records = _request_with_service_logger()
-        mock_provider = MagicMock()
-        mock_provider.client = object()
-        mock_provider.execute_query = AsyncMock(side_effect=error_type(SENTINEL))
-        request.app.state.graph_provider = mock_provider
+        client, _session = _client_with_open_driver(
+            AsyncMock(side_effect=error_type(SENTINEL))
+        )
+        driver = client.driver
+        request.app.state.graph_provider = MagicMock(client=client)
         neo4j_exceptions = types.ModuleType("neo4j.exceptions")
         neo4j_exceptions.AuthError = _FakeNeo4jAuthError
         neo4j_exceptions.ServiceUnavailable = _FakeNeo4jServiceUnavailable
@@ -1725,9 +1758,8 @@ class TestHealthProbesReturnFixedText:
             assert _traceback_text(records) == SENTINEL
         else:
             assert _line_without_traceback(records, logging.ERROR) == f"{expected}: {SENTINEL}"
-        mock_provider.execute_query.assert_awaited_once_with(
-            "RETURN 1 AS n", timeout_seconds=3.0
-        )
+        assert client.driver is driver
+        client.connect.assert_not_called()
 
     async def test_vector_db_exception(self):
         from types import SimpleNamespace

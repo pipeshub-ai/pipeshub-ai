@@ -1083,16 +1083,14 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             )
 
     # ── Neo4j ─────────────────────────────────────────────────────────────────
-    # Probe the pooled provider with RETURN 1 (under Node's health budget). A
-    # fresh Bolt driver + verify_connectivity() per poll can take 5–8s under
-    # write load and falsely trip the Node timeout; pool acquisition can also
-    # wait up to ~30s without an outer deadline.
+    # One RETURN 1 on the driver already open. execute_query can connect and
+    # rebuild that driver; a 3s wait_for cancelled mid-handshake would leave
+    # the new driver installed. A fresh Bolt handshake can also take longer
+    # than Node's 5s budget while Neo4j is still up.
     if data_store == "neo4j":
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
         # Under Node's 5s graph timeout, which is also the Helm probe budget.
-        # A saturated pool returns 503 here instead of holding the health
-        # response until kubelet gives up.
         neo4j_probe_timeout_sec = 3.0
 
         try:
@@ -1101,9 +1099,11 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 container = request.app.container  # type: ignore[attr-defined]
                 graph_provider = await container.graph_provider()
 
-            if getattr(graph_provider, "client", None) is None:
+            client = getattr(graph_provider, "client", None)
+            driver = getattr(client, "driver", None) if client is not None else None
+            if driver is None:
                 request.app.container.logger().error(  # type: ignore[attr-defined]
-                    "Neo4j health check failed: provider has no client"
+                    "Neo4j health check failed: provider has no driver"
                 )
                 return JSONResponse(
                     status_code=503,
@@ -1114,13 +1114,14 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     },
                 )
 
-            await asyncio.wait_for(
-                graph_provider.execute_query(
-                    "RETURN 1 AS n",
-                    timeout_seconds=neo4j_probe_timeout_sec,
-                ),
-                timeout=neo4j_probe_timeout_sec,
-            )
+            database = getattr(client, "database", None)
+
+            async def _ping() -> None:
+                async with driver.session(database=database) as session:
+                    result = await session.run("RETURN 1 AS n")
+                    await result.consume()
+
+            await asyncio.wait_for(_ping(), timeout=neo4j_probe_timeout_sec)
             return JSONResponse(
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
