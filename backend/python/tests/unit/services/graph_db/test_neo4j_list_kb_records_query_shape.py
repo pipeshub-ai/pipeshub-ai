@@ -76,3 +76,12 @@ async def test_root_branch_survives_a_kb_with_no_folders(provider: Neo4jProvider
         # The OPTIONAL MATCH must carry its own predicate; a WHERE after the
         # barrier would filter the aggregated row away instead of the match.
         assert "collect(DISTINCT folderRecord)" in with_clause
+
+
+@pytest.mark.asyncio
+async def test_negative_bounds_do_not_slice_from_the_end(provider: Neo4jProvider) -> None:
+    """`rows[0..-5]` is every row but the last five; SKIP/LIMIT used to reject it."""
+    await provider.list_kb_records("kb-1", "user-1", "org-1", skip=-20, limit=-5)
+    calls = provider.client.execute_query.await_args_list
+    params = next(c.kwargs.get("parameters") or c.args[1] for c in calls if "$skip" in (c.args[0] if c.args else c.kwargs["query"]))
+    assert (params["skip"], params["limit"]) == (0, 0)

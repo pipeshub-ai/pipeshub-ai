@@ -14982,8 +14982,9 @@ class Neo4jProvider(IGraphDBProvider):
                 "kb_id": kb_id,
                 "org_id": org_id,
                 "user_permission": user_permission,
-                "skip": skip,
-                "limit": limit
+                # A list slice reads a negative bound from the end; SKIP/LIMIT rejected it.
+                "skip": max(skip, 0),
+                "limit": max(limit, 0),
             }
 
             if search:
