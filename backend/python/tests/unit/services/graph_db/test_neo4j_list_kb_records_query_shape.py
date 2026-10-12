@@ -85,3 +85,20 @@ async def test_negative_bounds_do_not_slice_from_the_end(provider: Neo4jProvider
     calls = provider.client.execute_query.await_args_list
     params = next(c.kwargs.get("parameters") or c.args[1] for c in calls if "$skip" in (c.args[0] if c.args else c.kwargs["query"]))
     assert (params["skip"], params["limit"]) == (0, 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,args", [
+    ("get_kb_children", ("kb-1",)),
+    ("get_folder_children", ("kb-1", "folder-1")),
+])
+async def test_folders_sharing_a_name_keep_their_page_order(provider: Neo4jProvider, method: str, args: tuple) -> None:
+    """A failed restore rename leaves two folders with one name; sorting by name
+    alone let them swap across a page boundary."""
+    provider.client.execute_query = AsyncMock(return_value=[])
+    provider.get_document = AsyncMock(return_value={"id": "kb-1", "_key": "kb-1"})
+    await getattr(provider, method)(*args, skip=0, limit=10)
+    queries = [c.args[0] if c.args else c.kwargs["query"] for c in provider.client.execute_query.await_args_list]
+    folder_sorts = [line.strip() for q in queries for line in q.splitlines() if "recordName ASC" in line and "ORDER BY" in line]
+    assert folder_sorts
+    assert all(s.endswith(".id") for s in folder_sorts), folder_sorts

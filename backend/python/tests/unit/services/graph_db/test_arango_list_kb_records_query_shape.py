@@ -34,3 +34,20 @@ async def test_listing_uses_keyed_lookups_and_fetches_files_after_limit() -> Non
     assert "FOR f IN kbFolders FILTER" not in main_query
     assert "all_files" not in main_query
     assert main_query.index("LIMIT @skip, @limit") < main_query.index("@@is_of_type")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,args", [
+    ("get_kb_children", ("kb1",)),
+    ("get_folder_children", ("kb1", "folder1")),
+])
+async def test_folders_sharing_a_name_keep_their_page_order(method: str, args: tuple) -> None:
+    """A failed restore rename leaves two folders with one name; sorting by name
+    alone let them swap across a page boundary."""
+    provider = ArangoHTTPProvider(logger=MagicMock(), config_service=MagicMock())
+    provider.execute_query = AsyncMock(return_value=[])
+    await getattr(provider, method)(*args, skip=0, limit=10)
+    queries = [c.args[0] for c in provider.execute_query.await_args_list]
+    folder_sorts = [line.strip() for q in queries for line in q.splitlines() if "recordName ASC" in line and "SORT" in line]
+    assert folder_sorts
+    assert all(s.endswith("._key") for s in folder_sorts), folder_sorts

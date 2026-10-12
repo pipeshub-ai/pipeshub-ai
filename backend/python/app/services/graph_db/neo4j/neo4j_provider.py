@@ -15266,7 +15266,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH folder_record, current_level,
                  sum(CASE WHEN child_record.mimeType = "application/vnd.folder" THEN 1 ELSE 0 END) AS direct_subfolders,
                  sum(CASE WHEN child_record IS NOT NULL AND (child_record.isDeleted IS NULL OR child_record.isDeleted <> true) AND NOT child_record.mimeType = "application/vnd.folder" THEN 1 ELSE 0 END) AS direct_records
-            ORDER BY folder_record.recordName ASC
+            ORDER BY folder_record.recordName ASC, folder_record.id
             RETURN {{
                 id: folder_record.id,
                 name: folder_record.recordName,
@@ -15482,7 +15482,7 @@ class Neo4jProvider(IGraphDBProvider):
             WITH subfolder_record, subfolder_file, current_level,
                  sum(CASE WHEN child_file IS NOT NULL AND child_file.isFile = false THEN 1 ELSE 0 END) AS direct_subfolders,
                  sum(CASE WHEN child_record IS NOT NULL AND (child_record.isDeleted IS NULL OR child_record.isDeleted <> true) AND (child_file IS NULL OR child_file.isFile <> false) THEN 1 ELSE 0 END) AS direct_records
-            ORDER BY subfolder_record.recordName ASC
+            ORDER BY subfolder_record.recordName ASC, subfolder_record.id
             RETURN {{
                 id: subfolder_record.id,
                 name: subfolder_record.recordName,
