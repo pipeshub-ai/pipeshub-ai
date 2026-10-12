@@ -519,6 +519,7 @@ async def resolve_connector_ids_for_search(
         org_apps = await graph_provider.get_org_apps(org_id, active_only=False)
         return [app["_key"] for app in org_apps if app.get("_key")]
     except Exception:
+        logger.warning("pattern_match: org app lookup failed, grep searches nothing", exc_info=True)
         return []
 
 
@@ -814,22 +815,25 @@ async def run_pattern_match_with_llm_grep(
     Bounded by ``_PATTERN_MATCH_TOTAL_BUDGET`` as a whole: callers await it
     after semantic search, so without one bound the LLM call, its pipelines
     and the keyword fallback would each add their own timeout to the answer.
+    When the budget runs out, what the finished LLM commands found is kept.
     """
+    found: dict[str, dict[str, Any]] = {}
     try:
         return await asyncio.wait_for(
             _run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
+                found=found,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
     except asyncio.TimeoutError:
         logger_instance.warning(
-            "pattern_match: total budget of %.0fs exceeded, returning no matches",
-            _PATTERN_MATCH_TOTAL_BUDGET,
+            "pattern_match: total budget of %.0fs exceeded, returning %d match(es) found so far",
+            _PATTERN_MATCH_TOTAL_BUDGET, len(found),
         )
-        return []
+        return list(found.values())
 
 
 async def _run_pattern_match_with_llm_grep(
@@ -843,7 +847,10 @@ async def _run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None,
     user_query: str | None,
+    found: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """*found* collects the best hit per record as each LLM command finishes,
+    so the caller still has them if the total budget cancels this."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
     llm_grep_cmds: list[str] | None = None
@@ -863,28 +870,33 @@ async def _run_pattern_match_with_llm_grep(
         "logger_instance": logger_instance,
     }
     if llm_grep_cmds:
-        results_lists = await asyncio.gather(
-            *(
-                execute_pattern_match_pipeline(
+        async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
+            try:
+                return cmd, await execute_pattern_match_pipeline(
                     **common, grep_command=cmd, skip_grep_validation=True,
                 )
-                for cmd in llm_grep_cmds
-            ),
-            return_exceptions=True,
-        )
-        best: dict[str, dict[str, Any]] = {}
-        for cmd, result in zip(llm_grep_cmds, results_lists):
-            if isinstance(result, BaseException):
-                logger_instance.warning(
-                    "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
-                )
-                continue
-            for rec in result:
-                vrid = rec.get("virtual_record_id")
-                if vrid and (vrid not in best or _record_rank(rec) > _record_rank(best[vrid])):
-                    best[vrid] = rec
-        if best:
-            return list(best.values())
+            except Exception as exc:
+                return cmd, exc
+
+        tasks = [asyncio.ensure_future(_pipeline(cmd)) for cmd in llm_grep_cmds]
+        try:
+            for next_done in asyncio.as_completed(tasks):
+                cmd, result = await next_done
+                if isinstance(result, BaseException):
+                    logger_instance.warning(
+                        "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
+                    )
+                    continue
+                for rec in result:
+                    vrid = rec.get("virtual_record_id")
+                    if vrid and (vrid not in found or _record_rank(rec) > _record_rank(found[vrid])):
+                        found[vrid] = rec
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if found:
+            return list(found.values())
         logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
 
     return await execute_pattern_match_pipeline(
@@ -1053,6 +1065,9 @@ async def run_pattern_match(
         try:
             parsed = json.loads(output)
         except (json.JSONDecodeError, TypeError):
+            logger_instance.warning(
+                "pattern_match: unreadable grep output for cid=%s: %r", connector_id, str(output)[:200],
+            )
             return None
         return parsed.get("records", []) if isinstance(parsed, dict) else None
 
