@@ -40,7 +40,11 @@ from http import HTTPStatus
 # would be actively wrong.
 _CONTENT_FILTER_HINTS = (
     "content_filter",
-    "content filter",
+    # The SDKs' wording for a filtered finish (langchain-openai's Azure model,
+    # openai's ContentFilterFinishReasonError); anchored, so a bare mention of
+    # "content filter" elsewhere in an error is not a refusal.
+    "due to a content filter",
+    "rejected by the content filter",
     "content management policy",
     "content policy",
     "content_policy",
