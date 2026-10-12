@@ -891,8 +891,19 @@ class ReposSync:
             # the current branch is a file that is really gone.
             c.runtime.forget_repo_lookup(repo_id)
             fresh_res = await c.runtime.get_repo_by_id(repo_id)
-            fresh = fresh_res.data if fresh_res.success else None
-            if fresh is not None and (fresh.owner.login, fresh.name, fresh.default_branch) != (
+            if not fresh_res.success or not fresh_res.data:
+                # A failed lookup (rate limit, auth, 5xx) proves nothing about
+                # the file. Report it, so indexing can retry, not the 404.
+                raise_for_stream_fetch(
+                    success=fresh_res.success,
+                    has_payload=bool(fresh_res.data),
+                    connector=c.display_name,
+                    status=fresh_res.status_code,
+                    retry_after=fresh_res.retry_after_seconds,
+                    message=fresh_res.error,
+                )
+            fresh = fresh_res.data
+            if (fresh.owner.login, fresh.name, fresh.default_branch) != (
                 repo.owner.login, repo.name, repo.default_branch,
             ):
                 repo = fresh

@@ -321,3 +321,28 @@ class TestRenamedDefaultBranch:
 
         assert raised.value.status_code == 404
         assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
+
+    async def test_a_failed_second_lookup_is_reported_instead_of_the_404(self) -> None:
+        # The 404 may be the stale branch; a rate-limited lookup cannot say.
+        # The stream must answer 429 so indexing retries, not 404, which is final.
+        gh = CountingGitHub(files=0)
+        c = _connector(gh)
+        await c.runtime.get_repo_by_id(10)
+        self._branch_aware(gh, "develop")
+
+        async def rate_limited(repo_id: int) -> GitHubResponse:
+            gh.calls["get_repo_by_id"] += 1
+            return GitHubResponse(success=False, error="rate limited", status_code=429, retry_after_seconds=600)
+
+        async def no_retries(method: Callable[..., Awaitable[GitHubResponse]], *args: object, **kwargs: object) -> GitHubResponse:
+            return await method(*args, **kwargs)
+
+        gh.get_repo_by_id = rate_limited  # type: ignore[method-assign]
+        c.runtime.ds_call = no_retries  # type: ignore[method-assign]
+
+        with pytest.raises(HTTPException) as raised:
+            await c.repos.fetch_code_file_content(_code_record("src/f0.py"))
+
+        assert raised.value.status_code == 429
+        assert raised.value.headers == {"Retry-After": "600"}
+        assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
