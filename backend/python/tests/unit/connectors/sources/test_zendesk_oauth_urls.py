@@ -20,11 +20,8 @@ from app.connectors.core.base.token_service.oauth_service import OAuthToken
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
 )
-from app.utils.oauth_config import (
-    ZENDESK_OAUTH_URL_ERROR,
-    check_zendesk_oauth_settings,
-    get_oauth_config,
-)
+from app.connectors.sources.zendesk.oauth_urls import ZENDESK_OAUTH_URL_ERROR
+from app.utils.oauth_config import check_oauth_url_settings, get_oauth_config
 
 _ROUTER = "app.connectors.api.router"
 AUTHORIZE = "https://acme.zendesk.com/oauth/authorizations/new"
@@ -98,7 +95,7 @@ class TestSaving:
     )
     def test_refused(self, field: dict[str, str]) -> None:
         with pytest.raises(ValueError):
-            check_zendesk_oauth_settings("Zendesk", {"subdomain": "acme", **field})
+            check_oauth_url_settings("Zendesk", {"subdomain": "acme", **field})
 
     @pytest.mark.parametrize(
         "settings",
@@ -109,10 +106,10 @@ class TestSaving:
         ],
     )
     def test_accepted(self, settings: dict[str, str]) -> None:
-        check_zendesk_oauth_settings("Zendesk", settings)
+        check_oauth_url_settings("Zendesk", settings)
 
     def test_other_connectors_are_untouched(self) -> None:
-        check_zendesk_oauth_settings("Jira", {"tokenUrl": "http://evil.example"})
+        check_oauth_url_settings("Jira", {"tokenUrl": "http://evil.example"})
 
     async def test_saving_credentials_with_an_http_token_url_is_refused(self) -> None:
         config_service = AsyncMock()
