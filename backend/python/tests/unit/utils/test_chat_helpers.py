@@ -6306,7 +6306,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6317,7 +6317,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]

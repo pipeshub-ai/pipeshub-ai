@@ -98,3 +98,50 @@ async def test_record_summary_hit_does_not_read_reconciliation_metadata() -> Non
     (result,), _ = await flatten(store, [summary], {"v1": graph_record("r1")})
     assert result["content"] == "What the record is about"
     assert store.recon_reads == 0
+
+
+def _moved_rows_record() -> dict[str, Any]:
+    """The table after a reconciled update put a new row first: row-1 is now at 2."""
+    record = _table_record()
+    rows = record["block_containers"]["blocks"]
+    new_row = {"id": "row-new", "index": 0, "type": "table_row", "parent_index": 0,
+               "data": {"row_natural_language_text": "new row"}}
+    shifted = [{**row, "index": row["index"] + 1} for row in rows]
+    record["block_containers"]["blocks"] = [new_row, *shifted]
+    record["block_containers"]["block_groups"][0]["children"] = {"block_ranges": [{"start": 0, "end": 2}]}
+    return record
+
+
+async def test_kept_point_whose_position_moved_is_located_by_its_id() -> None:
+    store = InMemoryBlobStore(
+        {"v1": _moved_rows_record()},
+        recon={"v1": {"block_id_to_index": {"row-new": 0, "row-0": 1, "row-1": 2}, "hash_to_block_ids": {}}},
+    )
+    (table,), _ = await flatten(store, [hit("v1", 1, blockId="row-1")], {"v1": graph_record("r1")})
+    assert [row["content"] for row in table["content"][1]] == ["row 1"]
+
+
+async def test_kept_group_point_whose_position_moved_is_located_by_its_id() -> None:
+    first = {"id": "table-new", "index": 0, "type": "table", "data": {"table_summary": "Inserted"},
+             "table_metadata": {"num_of_cells": 2}, "children": {"block_ranges": [{"start": 0, "end": 0}]}}
+    record = _table_record()
+    moved = {**record["block_containers"]["block_groups"][0], "index": 1}
+    record["block_containers"]["block_groups"] = [first, moved]
+    store = InMemoryBlobStore(
+        {"v1": record},
+        recon={"v1": {"block_id_to_index": {"table-new": 0, "table-0": 1}, "hash_to_block_ids": {}}},
+    )
+    (table,), _ = await flatten(
+        store, [hit("v1", group=True, blockId="table-0", blockGroupIndex=0)], {"v1": graph_record("r1")},
+    )
+    assert table["block_group_index"] == 1
+    assert table["content"][0] == "Offices"
+
+
+async def test_position_from_reconciliation_holding_another_block_is_skipped() -> None:
+    store = InMemoryBlobStore(
+        {"v1": _table_record()},
+        recon={"v1": {"block_id_to_index": {"row-gone": 1}, "hash_to_block_ids": {}}},
+    )
+    results, _ = await flatten(store, [hit("v1", blockId="row-gone")], {"v1": graph_record("r1")})
+    assert results == []
