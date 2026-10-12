@@ -18789,6 +18789,34 @@ class TestEnsureEdgeDefinitionsUpToDate:
         assert "users" in payload["from"], "must merge, not replace"
 
     @pytest.mark.asyncio
+    async def test_an_added_definition_drops_the_cached_edge_collections(self, connected_provider) -> None:
+        connected_provider._edge_collections_by_graph["knowledge_graph"] = ["permission"]
+        connected_provider.http_client.get_graph = AsyncMock(return_value={
+            "graph": {"edgeDefinitions": [{"collection": "permission", "from": ["users"], "to": ["records"]}]}
+        })
+        connected_provider.http_client.has_collection = AsyncMock(return_value=True)
+        connected_provider.http_client.base_url = "http://localhost:8529"
+        connected_provider.http_client.database = "test_db"
+        post_ctx = MagicMock()
+        post_ctx.__aenter__ = AsyncMock(return_value=MagicMock(status=202))
+        post_ctx.__aexit__ = AsyncMock(return_value=False)
+        session = MagicMock()
+        session.post = MagicMock(return_value=post_ctx)
+        connected_provider.http_client._get_session = AsyncMock(return_value=session)
+
+        with patch(
+            "app.services.graph_db.arango.arango_http_provider.EDGE_DEFINITIONS",
+            [
+                {"edge_collection": "permission", "from_vertex_collections": ["users"], "to_vertex_collections": ["records"]},
+                {"edge_collection": "mentionsEntity", "from_vertex_collections": ["records"], "to_vertex_collections": ["namedEntities"]},
+            ],
+        ):
+            await connected_provider._ensure_edge_definitions_up_to_date("knowledge_graph")
+
+        session.post.assert_called_once()
+        assert "knowledge_graph" not in connected_provider._edge_collections_by_graph
+
+    @pytest.mark.asyncio
     async def test_no_change_when_both_sides_already_superset(self, connected_provider):
         connected_provider.http_client.get_graph = AsyncMock(return_value={
             "graph": {"edgeDefinitions": [
