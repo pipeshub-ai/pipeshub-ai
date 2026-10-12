@@ -63,9 +63,7 @@ class AgenticExtractionStrategy:
         session = ExtractionSession(
             doc.units, enabled=ctx.enabled, norm_ctx=ctx.norm, seed_count=len(seed)
         )
-        first = doc.units[:_WINDOW]
-        for unit in first:
-            session.read.add(unit.block_index)
+        first = session.show(doc.units[:_WINDOW])
         tools = build_tools(session)
         registry = ToolRegistry()
         for tool in tools:
@@ -91,14 +89,14 @@ class AgenticExtractionStrategy:
 
             async def _pre(hook_ctx, next_fn) -> None:
                 state["staged"] = len(session.staging)
-                state["read"] = len(session.read)
+                state["read"] = sum(session.shown.values())
                 state["rejected"] = session.staging.rejected
                 await next_fn()
 
             async def _post(hook_ctx, next_fn) -> None:
                 # Reading unseen blocks is progress; re-reading is not. A submit that only
                 # came back rejected told the model what to fix, so it earns two more turns.
-                grew = len(session.staging) > state["staged"] or len(session.read) > state["read"]
+                grew = len(session.staging) > state["staged"] or sum(session.shown.values()) > state["read"]
                 rejected = session.staging.rejected > state["rejected"]
                 corrected = not grew and rejected and state["feedback"] < _FEEDBACK_TURNS
                 if grew:
@@ -149,7 +147,7 @@ class AgenticExtractionStrategy:
                 record_type=doc.record_type,
                 reference=_reference_label(ctx.norm.reference_time_ms, ctx.norm.tz),
                 kinds=sorted(kind.value for kind in ctx.enabled),
-                spotlight=session.spotlight(first),
+                spotlight=first,
                 deterministic_summary=_summary(seed),
                 window_count=windows,
             )

@@ -187,3 +187,50 @@ async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch):
     assert elapsed >= 0.5
     assert gaps, "the loop never ran while the submit was staged"
     assert max(gaps) < elapsed / 2
+
+
+def _session(*texts: str) -> ExtractionSession:
+    units = [TextUnit(index, "b", text) for index, text in enumerate(texts)]
+    return ExtractionSession(
+        units, enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
+    )
+
+
+async def test_a_long_block_is_read_in_parts_to_its_end() -> None:
+    """The agent used to see only a block's first 3,000 characters, with no way
+    to read on, and the block counted as read."""
+    block = "a" * 3_000 + "b" * 3_000 + "Globex " + "c" * 100
+    session = _session(block)
+    reader = ReadBlocksTool(session)
+
+    first = (await reader.execute(start=0)).data
+    assert "read_blocks(start=0, offset=3000)" in first
+    assert "Globex" not in first
+    assert session.unread() == [0]
+
+    second = (await reader.execute(start=0, offset=3000)).data
+    assert "read_blocks(start=0, offset=6000)" in second
+    assert session.unread() == [0]
+
+    third = (await reader.execute(start=0, offset=6000)).data
+    assert "Globex" in third
+    assert "continues" not in third
+    assert session.unread() == []
+
+
+async def test_jumping_ahead_in_a_block_does_not_count_it_as_read() -> None:
+    session = _session("a" * 9_000)
+
+    await ReadBlocksTool(session).execute(start=0, offset=6000)
+
+    assert session.unread() == [0]
+
+
+async def test_finish_names_where_a_partly_read_block_continues() -> None:
+    session = _session("a" * 5_000, "short")
+    await ReadBlocksTool(session).execute(start=0, count=2)
+
+    refused = await FinishTool(session).execute(reason="done")
+
+    assert refused.success is False
+    assert "0 (from offset 3000)" in refused.error

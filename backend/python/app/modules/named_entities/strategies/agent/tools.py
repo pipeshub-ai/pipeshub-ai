@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _WINDOW = 5
-# A window of _WINDOW blocks stays under 16k characters. The model sees the head of
-# a longer block; search_document and exact grounding still cover all of it.
+# A window of _WINDOW blocks stays under 16k characters. A longer block is shown
+# 3,000 characters at a time, each part pointing at the read that continues it.
 _MAX_UNIT_CHARS = 3_000
 _MAX_HITS = 20
 _MAX_RETRIES = 2
@@ -55,7 +55,10 @@ class ExtractionSession:
         self.norm_ctx = norm_ctx
         self.staging = StagingSet()
         self.grounder = Grounder(units)
+        # Blocks shown to their end, and how far each block has been shown
+        # without a gap, so a long block read only in part still counts as unread.
         self.read: set[int] = set()
+        self.shown: dict[int, int] = {}
         self.boundary = secrets.token_hex(4)
         self.seed_count = seed_count
         self.retries: dict[tuple, int] = {}
@@ -72,16 +75,26 @@ class ExtractionSession:
     def unread(self) -> list[int]:
         return [unit.block_index for unit in self.units if unit.block_index not in self.read]
 
-    def spotlight(self, units: list[TextUnit]) -> str:
-        return self.spotlight_text("\n".join(f"[B{unit.block_index}] {_clip(unit.text)}" for unit in units))
+    def show(self, units: list[TextUnit], offset: int = 0) -> str:
+        """Spotlight ``units``, the first from character ``offset``, at most
+        ``_MAX_UNIT_CHARS`` of each, and record what the model has now seen."""
+        lines = []
+        for position, unit in enumerate(units):
+            text = unit.text
+            start = min(max(offset, 0), len(text)) if position == 0 else 0
+            end = min(len(text), start + _MAX_UNIT_CHARS)
+            if start <= self.shown.get(unit.block_index, 0):
+                self.shown[unit.block_index] = max(self.shown.get(unit.block_index, 0), end)
+            if self.shown.get(unit.block_index, 0) >= len(text):
+                self.read.add(unit.block_index)
+            head = "…" if start else ""
+            tail = f"…[continues: read_blocks(start={unit.block_index}, offset={end})]" if end < len(text) else ""
+            lines.append(f"[B{unit.block_index}] {head}{text[start:end]}{tail}")
+        return self.spotlight_text("\n".join(lines))
 
     def spotlight_text(self, body: str) -> str:
         """``body`` inside this session's boundary, which marks it as document text."""
         return f"<{self.boundary}>\n{body}\n</{self.boundary}>"
-
-
-def _clip(text: str) -> str:
-    return text if len(text) <= _MAX_UNIT_CHARS else text[:_MAX_UNIT_CHARS] + "…[truncated]"
 
 
 class _NerTool(Tool):
@@ -119,22 +132,26 @@ class ReadBlocksTool(_NerTool):
             session,
             "read_blocks",
             "Read a window of document blocks",
-            "Return spotlighted block text. count is at most 5.",
+            "Return spotlighted block text. count is at most 5. A block longer than 3,000 "
+            "characters is shown in parts; continue it with the offset its text ends with.",
             [
                 ToolParameter("start", ParameterType.INTEGER, "First block index to read", required=True),
                 ToolParameter("count", ParameterType.INTEGER, "How many blocks, max 5", required=False),
+                ToolParameter(
+                    "offset", ParameterType.INTEGER, "Character offset in the first block, to continue it",
+                    required=False,
+                ),
             ],
         )
 
-    async def execute(self, start: int = 0, count: int = _WINDOW, **_: object) -> ToolOutput:
+    async def execute(self, start: int = 0, count: int = _WINDOW, offset: int = 0, **_: object) -> ToolOutput:
         count = max(1, min(int(count or _WINDOW), _WINDOW))
         start = int(start)
         chosen = [unit for unit in self._session.units if unit.block_index >= start][:count]
-        for unit in chosen:
-            self._session.read.add(unit.block_index)
         if not chosen:
             return ToolOutput(success=True, data="No blocks at that index.")
-        return ToolOutput(success=True, data=self._session.spotlight(chosen))
+        first_offset = int(offset or 0) if chosen[0].block_index == start else 0
+        return ToolOutput(success=True, data=self._session.show(chosen, first_offset))
 
 
 class SearchDocumentTool(_NerTool):
@@ -319,10 +336,13 @@ class FinishTool(_NerTool):
     async def execute(self, reason: str = "", **_: object) -> ToolOutput:
         unread = self._session.unread()
         if unread:
-            preview = unread[:8]
+            preview = [
+                f"{index} (from offset {self._session.shown[index]})" if self._session.shown.get(index) else str(index)
+                for index in unread[:8]
+            ]
             return ToolOutput(
                 success=False,
-                error=f"blocks {preview} not yet reviewed",
+                error=f"blocks {', '.join(preview)} not yet reviewed",
             )
         self._session.finished = True
         return ToolOutput(success=True, data={"reason": reason or "done", "accepted": len(self._session.staging)})
