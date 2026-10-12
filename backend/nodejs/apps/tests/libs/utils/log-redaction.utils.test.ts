@@ -184,6 +184,29 @@ describe('log-redaction.utils', () => {
       })
     }
 
+    for (const [url, secret] of [
+      ['/cb?page%3D1%2526code%3DSECRETTOKEN', 'SECRETTOKEN'],
+      ['https://user:hunter2%40host%3Fcode%3D4%252F0Aea%2526TAIL', 'TAIL'],
+      [`/login?returnTo=${encodeURIComponent('https://user:hunter2%40host%3Fcode%3DSECRET')}`, 'SECRET'],
+    ]) {
+      it(`does not let a re-split separator carry a secret out: ${secret}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(decodeURIComponent(decodeURIComponent(decodeURIComponent(out)))).to.not.contain(secret)
+        expect(out).to.not.contain('hunter2')
+      })
+    }
+
+    it('does not let a re-split separator carry a secret out of a parsed query', () => {
+      for (const raw of [
+        'page%3D1%2526code%3DSECRETTOKEN',
+        `returnTo=${encodeURIComponent('https://user:hunter2%40host%3Fcode%3DSECRETTOKEN')}`,
+      ]) {
+        const logged = JSON.stringify(redactQueryForLog(querystring.parse(raw)))
+        expect(decodeURIComponent(decodeURIComponent(logged))).to.not.contain('SECRETTOKEN')
+        expect(logged).to.not.contain('hunter2')
+      }
+    })
+
     it('keeps a nested code with an encoded `&` whole inside an encoded name', () => {
       const url = '/login?returnTo%3D%2Fcb%3Fcode%3D4%252F0Aea%2526CODEWITHAMP'
       const out = redactSensitiveQueryParams(url)
@@ -312,6 +335,68 @@ describe('log-redaction.utils', () => {
       const out = redactSensitiveQueryParams('not a url?code=secret')
       expect(out).to.not.contain('secret')
       expect(out.startsWith('not a url?')).to.equal(true)
+    })
+  })
+
+  describe('redactSensitiveQueryParams under any mix of encodings', () => {
+    const SECRET = 'SECRETX'
+    const decodeAll = (text: string): string => {
+      let out = text
+      for (let i = 0; i < 12; i += 1) {
+        let next: string
+        try {
+          next = decodeURIComponent(out)
+        } catch {
+          next = out.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+            try {
+              return decodeURIComponent(run)
+            } catch {
+              return run
+            }
+          })
+        }
+        if (next === out) break
+        out = next
+      }
+      return out
+    }
+    const encodeChar = (ch: string, level: number): string => {
+      let out = ch
+      for (let i = 0; i < level; i += 1) out = i === 0 ? encodeURIComponent(out) : out.replace(/%/g, '%25')
+      return out
+    }
+    const templates = [
+      `/cb?code=${SECRET}&page=1`,
+      `/cb?page=1&code=${SECRET}`,
+      `/login?returnTo=/cb?code=${SECRET}`,
+      `https://app.example.com/cb#access_token=${SECRET}`,
+      `https://user:${SECRET}@host.example/x?page=1`,
+    ]
+    const SEPARATORS = ['=', '&', '?', '#', '@', ':']
+
+    it('never leaves the secret readable at any decoding depth', () => {
+      let checked = 0
+      for (const template of templates) {
+        const present = SEPARATORS.filter((ch) => template.includes(ch))
+        const combos = 3 ** present.length
+        for (let combo = 0; combo < combos; combo += 1) {
+          let variant = template.replace(/^(https:\/\/)/, '\u0000')
+          let rest = combo
+          for (const ch of present) {
+            const level = rest % 3
+            rest = Math.floor(rest / 3)
+            variant = variant.split(ch).join(encodeChar(ch, level))
+          }
+          variant = variant.replace('\u0000', 'https://')
+          for (let wrap = 0; wrap < 3; wrap += 1) {
+            const input = wrap === 0 ? variant : encodeChar(variant, wrap)
+            const out = redactSensitiveQueryParams(input)
+            expect(decodeAll(out), `input ${input} -> ${out}`).to.not.contain(SECRET)
+            checked += 1
+          }
+        }
+      }
+      expect(checked).to.be.greaterThan(500)
     })
   })
 

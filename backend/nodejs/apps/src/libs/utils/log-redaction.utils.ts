@@ -214,6 +214,7 @@ function redactEmbedded(value: string, depth: number): string {
   if (/[?#]/.test(value)) return redactUrl(value, depth);
   // A decoded `scheme://user:password@host` may have no query of its own.
   const text = redactUserinfo(value);
+  if (text !== value && /[?#]/.test(text)) return redactUrl(text, depth);
   if (text.includes('=')) {
     const redacted = redactParams(new URLSearchParams(text), depth);
     return redacted ? redacted.toString() : text;
@@ -244,10 +245,12 @@ const AUTHORITY = /^([a-z][a-z0-9+.-]*:\/\/)([^/?#]*)/i;
 function redactUserinfo(url: string): string {
   const match = AUTHORITY.exec(url);
   if (!match) return url;
-  const authority = decodeLayers(match[2] ?? '');
+  // Decode only until the `@` shows, then only the userinfo until its `:`
+  // shows, so an encoded `?` or `&` further on is not turned into syntax.
+  const authority = decodeLayers(match[2] ?? '', /@/);
   const at = authority.lastIndexOf('@');
   if (at === -1) return url;
-  const userinfo = authority.slice(0, at);
+  const userinfo = decodeLayers(authority.slice(0, at), /:/);
   const colon = userinfo.indexOf(':');
   if (colon === -1) return url;
   const scheme = match[1] ?? '';
@@ -315,7 +318,74 @@ export function redactSensitiveQueryParams(url: string): string {
   if (typeof url !== 'string' || url === '') {
     return url;
   }
-  return redactUrl(url, 0);
+  const redacted = redactUrl(url, 0);
+  return hasResidualSecret(redacted) ? redactWholly(url) : redacted;
+}
+
+// The safety net below the structural pass. However a URL was encoded, a
+// secret only matters if some decoding of the logged text shows it as a
+// sensitive `name=value` or a `user:password@` URL. So the output is decoded
+// layer by layer, and if any layer still shows one, the text is replaced
+// wholesale instead of trusting the parse that missed it.
+const MAX_SCAN_LAYERS = 10;
+const PASSWORD_URL =
+  /[a-z][a-z0-9+.-]*:\/\/[^\s/?#@]*:(?!REDACTED@)[^\s/?#@]+@/i;
+
+// Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is still clean.
+const isRedactedValue = (value: string): boolean => {
+  const bare = value.replace(/=+$/, '');
+  return (
+    bare === '' ||
+    bare === REDACTED ||
+    bare === 'REDACTED' ||
+    /^%5BREDACTED%5D$/i.test(bare)
+  );
+};
+
+// Every `name=` in a segment counts, not just the first: in
+// `returnTo=code=<code>` or `code=[REDACTED]=<code>` the secret follows a
+// later `=`. A value runs to the next `?`, `&`, `#` or `;`.
+function showsSecretPair(layer: string): boolean {
+  for (const segment of layer.split(/[\s?&#;]/)) {
+    const parts = segment.split('=');
+    for (let k = 0; k < parts.length - 1; k += 1) {
+      const name = parts[k] ?? '';
+      if (
+        name !== '' &&
+        isSensitiveQueryKey(name) &&
+        !isRedactedValue(parts.slice(k + 1).join('='))
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasResidualSecret(text: string): boolean {
+  let layer = text;
+  for (let i = 0; i < MAX_SCAN_LAYERS; i += 1) {
+    if (PASSWORD_URL.test(layer)) return true;
+    if (showsSecretPair(layer)) return true;
+    const next = decodeEscapes(layer);
+    if (next === layer) return false;
+    layer = next;
+  }
+  return false;
+}
+
+/**
+ * The fallback when the parse missed a secret: keep the scheme and host of an
+ * absolute URL, or the path of a relative one, and replace everything else.
+ */
+function redactWholly(url: string): string {
+  const absolute = AUTHORITY.exec(url);
+  if (absolute) {
+    const host = (absolute[2] ?? '').split(/@|%(?:25)*40/i).pop() ?? '';
+    return `${absolute[1] ?? ''}${host.split('%')[0] ?? ''}/${REDACTED}`;
+  }
+  if (url.startsWith('/')) return `${url.split(/[?#%]/)[0] ?? ''}?${REDACTED}`;
+  return REDACTED;
 }
 
 const redactUrlValue = (value: unknown): unknown => {
@@ -351,7 +421,10 @@ export function redactHeadersForLog(
 /** A parsed query object (Express `req.query`) fit to log. */
 export function redactQueryForLog(query: unknown, depth = 0): unknown {
   if (depth > MAX_NESTING) return REDACTED;
-  if (typeof query === 'string') return redactEmbedded(query, 1);
+  if (typeof query === 'string') {
+    const redacted = redactEmbedded(query, 1);
+    return hasResidualSecret(redacted) ? REDACTED : redacted;
+  }
   if (Array.isArray(query)) {
     return query.map((item) => redactQueryForLog(item, depth + 1));
   }
@@ -363,8 +436,18 @@ export function redactQueryForLog(query: unknown, depth = 0): unknown {
     // and one holding several pairs is logged with those pairs redacted.
     if (isSensitiveQueryKey(key)) {
       out[paramName(key)] = REDACTED;
+      continue;
+    }
+    const name = redactParamName(key, 1);
+    const logged = redactQueryForLog(value, depth + 1);
+    // The parser may have split a secret across the name and its value.
+    const pair = `${name}=${typeof logged === 'string' ? logged : ''}`;
+    if (hasResidualSecret(name)) {
+      out[REDACTED] = REDACTED;
+    } else if (hasResidualSecret(pair)) {
+      out[name] = REDACTED;
     } else {
-      out[redactParamName(key, 1)] = redactQueryForLog(value, depth + 1);
+      out[name] = logged;
     }
   }
   return out;

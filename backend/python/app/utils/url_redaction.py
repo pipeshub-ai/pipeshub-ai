@@ -117,8 +117,11 @@ def _redact_userinfo(url: str) -> str:
     match = _AUTHORITY.match(url)
     if not match:
         return url
-    authority = _decode_layers(match.group(2))
+    # Decode only until the `@` shows, then only the userinfo until its `:`
+    # shows, so an encoded `?` or `&` further on is not turned into syntax.
+    authority = _decode_layers(match.group(2), stop="@")
     userinfo, at, host = authority.rpartition("@")
+    userinfo = _decode_layers(userinfo, stop=":")
     if not at or ":" not in userinfo:
         return url
     user = userinfo.split(":", 1)[0]
@@ -178,6 +181,8 @@ def _redact_embedded(value: str, depth: int) -> str:
         return _redact_segments(value, depth)
     # A decoded `scheme://user:password@host` may have no query of its own.
     text = _redact_userinfo(value)
+    if text != value and ("?" in text or "#" in text):
+        return _redact_segments(text, depth)
     if "=" in text:
         return _redact_pairs(text, depth)
     if _ENCODED_URL_SYNTAX.search(text):
@@ -218,4 +223,56 @@ def redact_sensitive_query_params(url: str) -> str:
     """
     if not url:
         return url
-    return _redact_segments(url, 0)
+    redacted = _redact_segments(url, 0)
+    return _redact_wholly(url) if _has_residual_secret(redacted) else redacted
+
+
+# The safety net below the structural pass. However a URL was encoded, a
+# secret only matters if some decoding of the logged text shows it as a
+# sensitive `name=value` or a `user:password@` URL. So the output is decoded
+# layer by layer, and if any layer still shows one, the text is replaced
+# wholesale instead of trusting the parse that missed it.
+_MAX_SCAN_LAYERS = 10
+_PASSWORD_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/?#@]*:(?!REDACTED@)[^\s/?#@]+@", re.IGNORECASE)
+_REDACTED_VALUES = frozenset({"", REDACTED, "REDACTED", "%5BREDACTED%5D", "%5bredacted%5d"})
+
+
+def _shows_secret_pair(layer: str) -> bool:
+    """Every ``name=`` in a segment counts, not just the first: in
+    ``returnTo=code=<code>`` or ``code=[REDACTED]=<code>`` the secret follows a
+    later ``=``. A value runs to the next ``?``, ``&``, ``#`` or ``;``."""
+    for segment in re.split(r"[\s?&#;]", layer):
+        parts = segment.split("=")
+        for k in range(len(parts) - 1):
+            name = parts[k]
+            # Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is clean.
+            value = "=".join(parts[k + 1 :]).rstrip("=")
+            if name and is_sensitive_query_key(name) and value not in _REDACTED_VALUES:
+                return True
+    return False
+
+
+def _has_residual_secret(text: str) -> bool:
+    layer = text
+    for _ in range(_MAX_SCAN_LAYERS):
+        if _PASSWORD_URL.search(layer):
+            return True
+        if _shows_secret_pair(layer):
+            return True
+        decoded = unquote(layer)
+        if decoded == layer:
+            return False
+        layer = decoded
+    return False
+
+
+def _redact_wholly(url: str) -> str:
+    """The fallback when the parse missed a secret: keep the scheme and host
+    of an absolute URL, or the path of a relative one, and replace the rest."""
+    match = _AUTHORITY.match(url)
+    if match:
+        host = re.split(r"@|%(?:25)*40", match.group(2), flags=re.IGNORECASE)[-1]
+        return f"{match.group(1)}{host.split('%')[0]}/{REDACTED}"
+    if url.startswith("/"):
+        return f"{re.split(r'[?#%]', url)[0]}?{REDACTED}"
+    return REDACTED

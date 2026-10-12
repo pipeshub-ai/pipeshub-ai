@@ -1,6 +1,7 @@
 """Tests for app.utils.url_redaction."""
 
-from urllib.parse import unquote
+import itertools
+from urllib.parse import quote, unquote
 
 import pytest
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
@@ -127,6 +128,19 @@ class TestRedactSensitiveQueryParams:
         assert "FAKE" not in out
         assert "/x?" in out
 
+    @pytest.mark.parametrize(
+        ("url", "secret"),
+        [
+            ("/cb?page%3D1%2526code%3DSECRETTOKEN", "SECRETTOKEN"),
+            ("https://user:hunter2%40host%3Fcode%3D4%252F0Aea%2526TAIL", "TAIL"),
+            ("/login?returnTo=https%3A%2F%2Fuser%3Ahunter2%2540host%253Fcode%253DSECRET", "SECRET"),
+        ],
+    )
+    def test_a_re_split_separator_does_not_carry_a_secret_out(self, url: str, secret: str) -> None:
+        out = redact_sensitive_query_params(url)
+        assert secret not in _decode_all(out)
+        assert "hunter2" not in _decode_all(out)
+
     def test_an_encoded_sensitive_name_is_logged_trimmed(self) -> None:
         assert redact_sensitive_query_params("/cb?code%253DSECRET&page=1") == "/cb?code=[REDACTED]&page=1"
 
@@ -178,3 +192,49 @@ class TestRedactSensitiveQueryParams:
             value = f"/x?next={value.replace('%', '%25').replace('=', '%3D').replace('?', '%3F').replace('&', '%26')}"
         # Must terminate; the innermost layers are past the bound and stay opaque.
         assert isinstance(redact_sensitive_query_params(value), str)
+
+
+def _decode_all(text: str) -> str:
+    for _ in range(12):
+        decoded = unquote(text)
+        if decoded == text:
+            break
+        text = decoded
+    return text
+
+
+def _encode_char(ch: str, level: int) -> str:
+    out = ch
+    for i in range(level):
+        out = quote(out, safe="") if i == 0 else out.replace("%", "%25")
+    return out
+
+
+_SECRET = "SECRETX"
+_TEMPLATES = [
+    f"/cb?code={_SECRET}&page=1",
+    f"/cb?page=1&code={_SECRET}",
+    f"/login?returnTo=/cb?code={_SECRET}",
+    f"https://app.example.com/cb#access_token={_SECRET}",
+    f"https://user:{_SECRET}@host.example/x?page=1",
+]
+_SEPARATORS = ["=", "&", "?", "#", "@", ":"]
+
+
+def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
+    """Every separator encoded zero, one or two times, and the whole string up
+    to twice more: no decoding of the output may show the secret."""
+    checked = 0
+    for template in _TEMPLATES:
+        present = [ch for ch in _SEPARATORS if ch in template]
+        for combo in itertools.product(range(3), repeat=len(present)):
+            variant = template.replace("https://", "\0", 1)
+            for ch, level in zip(present, combo):
+                variant = variant.replace(ch, _encode_char(ch, level))
+            variant = variant.replace("\0", "https://", 1)
+            for wrap in range(3):
+                url = variant if wrap == 0 else _encode_char(variant, wrap)
+                out = redact_sensitive_query_params(url)
+                assert _SECRET not in _decode_all(out), f"{url} -> {out}"
+                checked += 1
+    assert checked > 500
