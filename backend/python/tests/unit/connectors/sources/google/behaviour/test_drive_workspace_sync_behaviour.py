@@ -1407,6 +1407,43 @@ async def test_a_file_whose_name_has_no_extension_is_checked_by_its_stored_one(w
     assert ws.names() == {"Quarterly Report"}
 
 
+def deep_selected_folder(ws: Workspace, top_parent: str, **owner: str) -> None:
+    ws.world.folder("new", "New folder", parent=top_parent, **owner)
+    ws.world.folder("nested", "nested folder 2", parent="new", **owner)
+    ws.world.folder("pick", "test", parent="nested", **owner)
+    ws.world.folder("sub-1", "subfolder 1", parent="pick", **owner)
+    ws.world.add_item("deep", "deep.txt", parent="sub-1", **owner)
+    ws.world.add_item("mine", "mine.txt", parent="root-alice", owner=ALICE)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+
+
+async def assert_full_resync_keeps_the_path_to_the_selected_folder(ws: Workspace, group_id: str) -> None:
+    await ws.sync()
+    assert {"New folder", "nested folder 2", "test"} <= ws.names()
+
+    ws.sync_points.sync_points.clear()
+    await ws.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "deep.txt"} <= ws.names()
+    assert ws.records.deleted == []
+    assert ws.records.records["pick"].parent_external_record_id == "nested"
+    assert ws.records.records["nested"].parent_external_record_id == "new"
+    assert {ws.records.records[i].external_record_group_id for i in ("new", "nested")} == {group_id}
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_my_drive_folder(ws: Workspace) -> None:
+    deep_selected_folder(ws, "root-alice", owner=ALICE)
+
+    await assert_full_resync_keeps_the_path_to_the_selected_folder(ws, "root-alice")
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_shared_drive_folder(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    deep_selected_folder(ws, "sd-1")
+
+    await assert_full_resync_keeps_the_path_to_the_selected_folder(ws, "sd-1")
+
+
 async def test_filters_that_did_not_change_remove_nothing_on_later_syncs(ws: Workspace) -> None:
     selected_tree(ws)
     await ws.sync()
