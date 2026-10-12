@@ -108,3 +108,9 @@ def test_a_span_too_long_to_be_an_entity_is_dropped():
     url = "https://example.com/" + "a" * 5000
     raw = RawMention(EntityKind.URL, url, 0, "b0", 0, len(url), "pattern")
     assert mentions_to_entities([raw], NormalizationContext(tz="UTC")) == []
+
+
+def test_a_link_that_cannot_be_made_canonical_is_not_stored_as_raw_text() -> None:
+    surface = "https://[tenant].sharepoint.com/sites?token=abc"
+    raw = RawMention(EntityKind.URL, surface, 0, "b0", 0, len(surface), "pattern")
+    assert mentions_to_entities([raw], NormalizationContext(tz="UTC")) == []

@@ -395,3 +395,22 @@ def test_an_ordinal_day_is_a_day_not_its_month():
 
 def test_an_amount_too_long_to_be_money_is_not_stored():
     assert normalize_money("$" + "9" * 400) is None
+
+
+@pytest.mark.parametrize(("kind", "surface"), [
+    (EntityKind.DATE, "9999-12-31"),
+    (EntityKind.DATE, "December 9999"),
+    (EntityKind.DATE_RANGE, "Q4 9999"),
+    (EntityKind.DATE_TIME, "9999-12-31T23:59:59"),
+    (EntityKind.URL, "https://[tenant].example.com"),
+])
+def test_a_span_whose_value_cannot_be_built_states_none(kind: EntityKind, surface: str) -> None:
+    from app.modules.named_entities.normalizers import normalize_value
+
+    assert normalize_value(kind, surface, NormalizationContext(tz="UTC")) is None
+
+
+def test_an_out_of_range_date_does_not_fail_the_other_spans() -> None:
+    text = "Valid until 9999-12-31, signed 2026-03-01."
+    found = _deterministic([TextUnit(0, "b", text)], default_enabled_kinds(), NormalizationContext())
+    assert [m.surface for m in found if m.kind is EntityKind.DATE] == ["2026-03-01"]

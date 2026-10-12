@@ -23,7 +23,12 @@ _TEMPORAL = {EntityKind.DATE, EntityKind.DATE_RANGE, EntityKind.DATE_TIME, Entit
 def normalize_value(kind: EntityKind, surface: str, ctx: NormalizationContext) -> TypedValue | None:
     """The value stated by the grounded text. A model's hint never sets it: the
     text is the evidence, and a hint can name a value the document does not."""
-    value = _parse(kind, (surface or "").strip(), ctx)
+    try:
+        value = _parse(kind, (surface or "").strip(), ctx)
+    except (ValueError, ArithmeticError):
+        # "9999-12-31" ends past the calendar and "https://[tenant].example.com" is
+        # no host: the span states no value, and the rest of the record still counts.
+        return None
     spec = spec_for(kind)
     if value is None or spec is None or value.value_type not in spec.value_types:
         return None

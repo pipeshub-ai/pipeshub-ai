@@ -60,8 +60,9 @@ def mentions_to_entities(
         if spec is None:
             continue
         value = normalize_value(raw.kind, raw.surface, ctx)
-        if value is None and spec.source is EntitySource.VALUE:
-            # A date or amount whose text states none is not stored under a name key.
+        if value is None and (spec.source is EntitySource.VALUE or raw.kind is EntityKind.URL):
+            # A date or amount whose text states none is not stored under a name key,
+            # and a link that cannot be made canonical is never stored as its raw text.
             continue
         display = canonical_name(raw.surface, organization=raw.kind is EntityKind.ORGANIZATION)
         if raw.kind is EntityKind.URL and isinstance(value, ContactValue):
