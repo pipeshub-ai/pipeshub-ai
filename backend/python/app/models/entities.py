@@ -27,7 +27,7 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.utils.jinja_templates import compiled_template
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import format_epoch_ms_for_llm, get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
@@ -320,7 +320,9 @@ class Record(BaseModel):
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
-        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # UTC as before, then the user's local time with its weekday, which
+        # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
+        return format_epoch_ms_for_llm(epoch_ms)
 
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""

@@ -74,6 +74,23 @@ def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
     )
 
 
+# 2026-07-27 03:00:00 UTC, a Monday; Sunday 8:00 PM in California.
+_MON_0300_UTC = 1785121200000
+
+
+def _record_header_created_at() -> str:
+    """The `Created At:` line a tool renders for a record, as the model sees it."""
+    from app.config.constants.arangodb import OriginTypes
+    from app.models.entities import Record, RecordType
+
+    record = Record(
+        record_name="r", record_type=RecordType.FILE, external_record_id="e", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id="c",
+        source_created_at=_MON_0300_UTC,
+    )
+    return next(line for line in record.to_llm_context().splitlines() if line.startswith("Created At:"))
+
+
 class TestModeInstructions:
     def test_known_mode_appends_addendum_to_base_instructions(self) -> None:
         result = _with_mode_instructions("Base prompt.", INTERNAL_SEARCH_POLICY)
@@ -287,6 +304,39 @@ class TestRunChatStream:
         assert len(events) == 1
         assert events[0].startswith("event: complete\n")
         assert json.loads(events[0].split("data: ", 1)[1].strip()) == {"answer": "42"}
+
+    async def test_record_dates_in_the_run_use_the_users_time_zone(self) -> None:
+        """Tools run inside the run's task render record dates in the user's
+        zone, weekday included; nothing outside the run is affected."""
+        seen: dict[str, str] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            # As a tool would: in a task started by the run.
+            seen["header"] = await asyncio.create_task(asyncio.to_thread(_record_header_created_at))
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "timezone": "America/Los_Angeles",
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
 
     async def test_sql_and_slack_flags_come_from_one_connector_query(self) -> None:
         """Both flags are derived from a single `get_user_connector_instances`

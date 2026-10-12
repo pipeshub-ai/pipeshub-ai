@@ -1894,6 +1894,40 @@ class TestAppRole:
         assert ar.source_role_id == "role-1"
 
 
+class TestRecordHeaderWeekdays:
+    """Record headers carry each date's weekday, worked out in code.
+
+    Answers are asked for dates like "Mon, Jul 27, 3:45 PM PDT", but the
+    header gave only "2026-07-27 03:00:00 UTC", so the model guessed the
+    weekday. Monday 03:00 UTC is Sunday evening in California, so the weekday
+    is taken in the user's time zone when the run has one.
+    """
+
+    MON_0300_UTC = 1785121200000  # 2026-07-27 03:00:00 UTC, a Monday
+    TUE_1500_UTC = 1785250800000  # 2026-07-28 15:00:00 UTC
+
+    def _ctx(self) -> str:
+        return Record(**_record_kwargs(
+            source_created_at=self.MON_0300_UTC, source_updated_at=self.TUE_1500_UTC,
+        )).to_llm_context()
+
+    def test_header_dates_carry_their_weekday(self) -> None:
+        ctx = self._ctx()
+        assert "Created At: 2026-07-27 03:00:00 UTC (Mon, Jul 27, 2026, 3:00 AM UTC)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 3:00 PM UTC)" in ctx
+
+    def test_weekday_is_taken_in_the_users_time_zone(self) -> None:
+        from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+
+        token = set_llm_time_zone("America/Los_Angeles")
+        try:
+            ctx = self._ctx()
+        finally:
+            reset_llm_time_zone(token)
+        assert "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 8:00 AM PDT)" in ctx
+
+
 # ============================================================================
 # Record.to_llm_context edge cases (lines 232->235 branch, mime_type)
 # ============================================================================

@@ -74,6 +74,7 @@ from app.modules.demo_data.chat import (
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
+from app.utils.time_conversion import set_llm_time_zone
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -476,6 +477,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     )
 
     async def _produce() -> None:
+        # Record headers rendered by tools show dates in the user's zone,
+        # weekday included. Set inside this task so it reaches every tool
+        # call of the run and nothing outside it.
+        set_llm_time_zone(context.timezone)
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
