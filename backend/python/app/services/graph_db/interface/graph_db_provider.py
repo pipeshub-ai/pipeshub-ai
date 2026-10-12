@@ -6927,8 +6927,15 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def get_due_named_entity_persist_retries(self, limit: int) -> list[dict]:
-        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``."""
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
+        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``.
+        ``reextract`` selects the re-extraction jobs instead of the write retries."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
+        """Queue ``record_id`` to have its named entities extracted again from its
+        stored blocks, due now. A normal write of the record drops it."""
         raise NotImplementedError
 
     @abstractmethod

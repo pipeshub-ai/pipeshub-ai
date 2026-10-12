@@ -37,7 +37,29 @@ def _reference_ms(record) -> int | None:
     return getattr(record, "source_updated_at", None) or getattr(record, "source_created_at", None)
 
 
-async def extract_named_entities(ctx, *, config_service, client=None, enabled: bool) -> NamedEntityExtraction:
+# A re-extraction reads up to this many single-call windows (about 200k
+# characters at the default window size). One that still stops short is not
+# queued again, so a record too long for it settles instead of looping.
+REEXTRACT_MAX_WINDOWS = 50
+
+
+def needs_reextract(extraction: NamedEntityExtraction) -> bool:
+    """A written extraction that left text unread: the call budget ran out, or
+    the agent stopped with blocks it had not read. Failed calls are not a reason:
+    a re-extraction would fail the same way, and the last good entities stay."""
+    stats = extraction.stats
+    if extraction.status != "PARTIAL" or stats.windows_run >= REEXTRACT_MAX_WINDOWS:
+        return False
+    if stats.windows_total > stats.windows_run:
+        return True
+    return extraction.strategy == "agent" and extraction.termination_reason != "llm_error"
+
+
+async def extract_named_entities(
+    ctx, *, config_service, client=None, enabled: bool, reextract: bool = False,
+) -> NamedEntityExtraction:
+    """``reextract``: the completion of a record's earlier extraction, run locally
+    in single calls with ``REEXTRACT_MAX_WINDOWS`` windows."""
     record = ctx.record
     if not enabled:
         return NamedEntityExtraction(status="SKIPPED", termination_reason="empty", strategy="deterministic")
@@ -45,6 +67,10 @@ async def extract_named_entities(ctx, *, config_service, client=None, enabled: b
     if not blocks:
         return NamedEntityExtraction(status="SKIPPED", termination_reason="empty", strategy="deterministic")
     config = await load_named_entity_config(config_service)
+    budgets = config.budgets
+    if reextract:
+        budgets = budgets.model_copy(update={"max_llm_windows": REEXTRACT_MAX_WINDOWS})
+        client = None
     if client is not None:
         return await client.extract_entities(
             block_container=record.block_containers,
@@ -54,7 +80,7 @@ async def extract_named_entities(ctx, *, config_service, client=None, enabled: b
             reference_time_ms=_reference_ms(record),
             tz=config.tz,
             enabled_kinds=[kind.value for kind in config.enabled()],
-            budgets=config.budgets.model_dump(),
+            budgets=budgets.model_dump(),
         )
     llm = transport = None
     provider = model = "indexing"
@@ -70,11 +96,13 @@ async def extract_named_entities(ctx, *, config_service, client=None, enabled: b
         reference_time_ms=_reference_ms(record),
         tz=config.tz,
         enabled=config.enabled(),
-        budgets=config.budgets,
+        budgets=budgets,
         llm=llm,
         transport=transport,
         provider_name=provider,
         model_name=model,
+        # The agent reads in turns and can stop short again; single calls read it all.
+        supports_tools=False if reextract else None,
     )
     return await NamedEntityExtractor().extract(request)
 

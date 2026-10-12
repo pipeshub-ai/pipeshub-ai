@@ -30,6 +30,7 @@ from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_l
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
 from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.named_entity_completion import run_named_entity_completion_loop
 from app.modules.indexing.named_entity_persist_retry import retry_pending_named_entity_persists
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
@@ -1805,6 +1806,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_named_entity_sweep_loop(app_container, graph_provider),
             worker_loop,
         )
+        # On the worker loop: it measures and uses that loop's indexing LLM slots.
+        app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_completion_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1820,6 +1826,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.named_entity_sweep_task = asyncio.create_task(
             run_named_entity_sweep_loop(app_container, graph_provider)
+        )
+        app.state.named_entity_completion_task = asyncio.create_task(
+            run_named_entity_completion_loop(app_container, graph_provider)
         )
 
     yield
@@ -1947,6 +1956,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             pass
         except Exception as e:
             logger.error(f"❌ Error during named entity sweep future shutdown: {str(e)}")
+
+    completion_task = getattr(app.state, "named_entity_completion_task", None)
+    if completion_task:
+        if not completion_task.done():
+            completion_task.cancel()
+        try:
+            await completion_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion shutdown: {str(e)}")
+
+    completion_future = getattr(app.state, "named_entity_completion_future", None)
+    if completion_future:
+        if not completion_future.done():
+            completion_future.cancel()
+        try:
+            await asyncio.wrap_future(completion_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion future shutdown: {str(e)}")
 
     # Stop message consumers
     try:

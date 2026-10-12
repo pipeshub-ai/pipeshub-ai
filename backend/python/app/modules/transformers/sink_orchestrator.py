@@ -27,7 +27,9 @@ from app.exceptions.indexing_exceptions import IndexingError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.models.entities import Record
     from app.modules.entity_resolution import EntityResolver
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 
 class SinkOrchestrator(Transformer):
@@ -545,8 +547,9 @@ class SinkOrchestrator(Transformer):
                     exc,
                 )
 
-    async def extract_named_entities(self, ctx: TransformContext, *, client=None):
-        """Bounded extraction. A failure returns FAILED and does not raise."""
+    async def extract_named_entities(self, ctx: TransformContext, *, client=None, reextract: bool = False):
+        """Bounded extraction. A failure returns FAILED and does not raise.
+        ``reextract``: completing an earlier extraction that left text unread."""
         import time
 
         from app.modules.named_entities.domain.models import NamedEntityExtraction
@@ -559,7 +562,7 @@ class SinkOrchestrator(Transformer):
         try:
             enabled = await is_named_entity_extraction_enabled(self.config_service)
             extraction = await extract_named_entities(
-                ctx, config_service=self.config_service, client=client, enabled=enabled
+                ctx, config_service=self.config_service, client=client, enabled=enabled, reextract=reextract,
             )
             strategy = extraction.strategy
             return extraction
@@ -621,7 +624,24 @@ class SinkOrchestrator(Transformer):
             outcome, error = "failed", type(exc).__name__
         if outcome == "failed":
             await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
+        elif outcome == "written":
+            await self._schedule_named_entity_reextract(ctx.record, extraction)
         return outcome
+
+    async def _schedule_named_entity_reextract(self, record: "Record", extraction: "NamedEntityExtraction") -> None:
+        """After the write: the write itself drops any pending job for the record."""
+        from app.modules.named_entities.stage import needs_reextract
+
+        if not needs_reextract(extraction):
+            return
+        try:
+            await self.graph_provider.schedule_named_entity_reextract(record.org_id, record.id)
+            self.logger.info("Named entities of record %s left text unread; queued to extract again", record.id)
+        except Exception as exc:
+            # The record keeps the entities just written until it is next indexed.
+            self.logger.warning(
+                "Named-entity re-extraction for record %s could not be queued: %s", record.id, type(exc).__name__
+            )
 
     async def _schedule_named_entity_retry(self, record, error: str, attempts_so_far: int = 0) -> None:
         try:

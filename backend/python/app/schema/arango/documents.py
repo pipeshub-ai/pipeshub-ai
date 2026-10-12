@@ -958,6 +958,9 @@ named_entity_persist_retry_schema = {
             "attempts": {"type": "number"},
             "dueAt": {"type": "number"},
             "lastError": {"type": ["string", "null"]},
+            # The job extracts again from the stored blocks instead of re-writing
+            # the stored extraction (app.modules.indexing.named_entity_completion).
+            "reextract": {"type": ["boolean", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },

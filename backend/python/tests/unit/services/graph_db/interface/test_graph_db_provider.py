@@ -483,6 +483,7 @@ class TestAbstractMethodInventory:
         "schedule_named_entity_persist_retry",
         "get_due_named_entity_persist_retries",
         "clear_named_entity_persist_retry",
+        "schedule_named_entity_reextract",
     ]
 
     def test_all_expected_methods_are_abstract(self):

@@ -718,6 +718,70 @@ async def test_a_retry_rescheduled_after_it_was_read_does_not_land(graph) -> Non
     assert await _names(provider, record) == []
 
 
+async def _due(provider: IGraphDBProvider, record: str, *, reextract: bool, hours: int = 0) -> list[dict]:
+    at = get_epoch_timestamp_in_ms() + hours * HOUR_MS
+    rows = await provider._named_entity_graph().due_persist_retries(at, 50, reextract=reextract)
+    return [row for row in rows if row["recordId"] == record]
+
+
+async def test_a_reextraction_is_due_now_and_read_only_as_one(graph) -> None:
+    provider, org_id, _backend = graph
+    record = f"{org_id}-rec"
+    await provider.schedule_named_entity_reextract(org_id, record)
+
+    (row,) = await _due(provider, record, reextract=True)
+    assert (row["orgId"], row["attempts"]) == (org_id, 0)
+    # The persist-retry worker never takes it: it would only write the stored extraction again.
+    assert await _due(provider, record, reextract=False, hours=10) == []
+
+
+async def test_a_normal_write_drops_a_pending_reextraction(graph) -> None:
+    provider, org_id, _backend = graph
+    (record,) = await _records(provider, org_id, 1)
+    await provider.schedule_named_entity_reextract(org_id, record)
+
+    await _writer(provider).write(org_id, record, [_org(org_id, "Globex")])
+
+    assert await _due(provider, record, reextract=True) == []
+
+
+async def test_a_reextraction_lands_while_it_is_still_pending_and_ends(graph) -> None:
+    provider, org_id, _backend = graph
+    (record,) = await _records(provider, org_id, 1)
+    await provider.schedule_named_entity_reextract(org_id, record)
+    (row,) = await _due(provider, record, reextract=True)
+
+    await _writer(provider).write(org_id, record, [_org(org_id, "Acme")], retry_due=row["dueAt"])
+
+    assert await _names(provider, record) == ["Acme"]
+    assert await _due(provider, record, reextract=True) == []
+
+
+async def test_a_reextraction_queued_on_a_pending_retry_keeps_its_count_and_is_due_now(graph) -> None:
+    provider, org_id, _backend = graph
+    record = f"{org_id}-rec"
+    await provider.schedule_named_entity_persist_retry(org_id, record, "DeadlockDetected")
+    await provider.schedule_named_entity_persist_retry(org_id, record, "DeadlockDetected")
+
+    await provider.schedule_named_entity_reextract(org_id, record)
+
+    (row,) = await _due(provider, record, reextract=True)
+    assert row["attempts"] == 2
+
+
+async def test_a_failed_reextraction_backs_off_and_stays_a_reextraction(graph) -> None:
+    provider, org_id, _backend = graph
+    record = f"{org_id}-rec"
+    await provider.schedule_named_entity_reextract(org_id, record)
+
+    assert await provider.schedule_named_entity_persist_retry(org_id, record, "extract_failed") == 1
+
+    assert await _due(provider, record, reextract=True) == []  # backed off
+    (row,) = await _due(provider, record, reextract=True, hours=10)
+    assert row["attempts"] == 1
+    assert await _due(provider, record, reextract=False, hours=10) == []
+
+
 async def test_a_retry_that_deadlocks_after_its_claim_lands_on_the_next_attempt(graph, monkeypatch) -> None:
     """On Neo4j without explicit transactions the claim commits at once; on ArangoDB it
     rolls back with the failed attempt. Either way the next attempt must land."""

@@ -455,9 +455,33 @@ SET r.attempts = before + 1,
 RETURN r.attempts AS attempts
 """
 
+# A re-extraction (``reextract``) is a pending job on the same marker: the record's
+# stored extraction left text unread, so its entities are extracted again from its
+# stored blocks. It is due now, keeps a pending failure count, and, like a retry, is
+# dropped by any normal write of the record (that write extracted afresh).
+SCHEDULE_REEXTRACT_AQL = f"""
+LET old = DOCUMENT("{_RETRIES}", @recordId)
+UPSERT {{ _key: @recordId }}
+INSERT {{ _key: @recordId, orgId: @orgId, recordId: @recordId, attempts: 0, dueAt: @now, reextract: true,
+         createdAtTimestamp: @now, updatedAtTimestamp: @now }}
+UPDATE {{ reextract: true, dueAt: MIN([old.dueAt, @now]), updatedAtTimestamp: @now }}
+IN {_RETRIES}
+RETURN NEW.dueAt
+"""
+
+SCHEDULE_REEXTRACT_CYPHER = f"""
+MERGE (r:{_RETRY_LABEL} {{id: $recordId}})
+ON CREATE SET r.orgId = $orgId, r.recordId = $recordId, r.attempts = 0, r.dueAt = $now,
+              r.createdAtTimestamp = $now
+SET r.reextract = true,
+    r.dueAt = CASE WHEN r.dueAt < $now THEN r.dueAt ELSE $now END,
+    r.updatedAtTimestamp = $now
+RETURN r.dueAt AS dueAt
+"""
+
 DUE_RETRIES_AQL = f"""
 FOR r IN {_RETRIES}
-  FILTER r.dueAt <= @now
+  FILTER r.dueAt <= @now AND (r.reextract == true) == @reextract
   SORT r.dueAt
   LIMIT @limit
   RETURN {{ recordId: r._key, orgId: r.orgId, attempts: r.attempts, dueAt: r.dueAt }}
@@ -465,7 +489,7 @@ FOR r IN {_RETRIES}
 
 DUE_RETRIES_CYPHER = f"""
 MATCH (r:{_RETRY_LABEL})
-WHERE r.dueAt <= $now
+WHERE r.dueAt <= $now AND coalesce(r.reextract, false) = $reextract
 RETURN r.id AS recordId, r.orgId AS orgId, r.attempts AS attempts, r.dueAt AS dueAt
 ORDER BY r.dueAt
 LIMIT $limit
@@ -881,8 +905,12 @@ class NamedEntityGraph:
         rows = await self._write(SCHEDULE_RETRY_CYPHER, binds) or []
         return int(rows[0].get("attempts") or 0) if rows else 0
 
-    async def due_persist_retries(self, now: int, limit: int) -> list[dict[str, Any]]:
-        binds = {"now": now, "limit": max(1, limit)}
+    async def schedule_reextract(self, org_id: str, record_id: str, now: int) -> None:
+        binds = {"orgId": org_id, "recordId": record_id, "now": now}
+        await self._write(SCHEDULE_REEXTRACT_AQL if self._dialect == "arango" else SCHEDULE_REEXTRACT_CYPHER, binds)
+
+    async def due_persist_retries(self, now: int, limit: int, *, reextract: bool = False) -> list[dict[str, Any]]:
+        binds = {"now": now, "limit": max(1, limit), "reextract": reextract}
         statement = DUE_RETRIES_AQL if self._dialect == "arango" else DUE_RETRIES_CYPHER
         return list(await self._execute(statement, binds) or [])
 
@@ -1031,10 +1059,17 @@ class NamedEntityGraphMixin:
             attempts_so_far,
         )
 
-    async def get_due_named_entity_persist_retries(self, limit: int) -> list[dict]:
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
         from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-        return await self._named_entity_graph().due_persist_retries(get_epoch_timestamp_in_ms(), limit)
+        return await self._named_entity_graph().due_persist_retries(
+            get_epoch_timestamp_in_ms(), limit, reextract=reextract,
+        )
+
+    async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
+        from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+        await self._named_entity_graph().schedule_reextract(org_id, record_id, get_epoch_timestamp_in_ms())
 
     async def clear_named_entity_persist_retry(
         self, record_id: str, due_at: int | None, transaction: str | None = None,
