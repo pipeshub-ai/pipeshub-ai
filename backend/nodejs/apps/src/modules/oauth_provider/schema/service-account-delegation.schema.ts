@@ -64,7 +64,9 @@ const ServiceAccountDelegationSchema = new Schema<IServiceAccountDelegation>(
  * safe choice: revoking a delegation has to mean the pair cannot be granted
  * again by accident *and* cannot linger in a state some query forgets to
  * filter. A uniqueness rule over a soft-delete flag is the usual source of
- * both bugs. The audit log keeps the history that the row no longer does.
+ * both bugs. The grant and the revocation are each written to the delegation
+ * log first, so withdrawing a permission does not take the record of it — who
+ * granted it, to whom, and why — along with the row.
  */
 ServiceAccountDelegationSchema.index(
   { orgId: 1, serviceAccountId: 1, subjectUserId: 1 },

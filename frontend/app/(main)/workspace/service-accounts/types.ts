@@ -125,11 +125,13 @@ export interface GrantDelegationPayload {
 }
 
 /**
- * One attempt by a service account to act as someone, successful or not.
+ * One thing that happened to this service account's delegation.
  *
- * Refusals are recorded as deliberately as successes: an account repeatedly
- * asking for people it may not act as is the clearest sign a credential has
- * been taken.
+ * Two kinds share the log. `issued` and `refused` are the exchange itself;
+ * refusals are kept as deliberately as successes, because an account
+ * repeatedly asking for people it may not act as is the clearest sign a
+ * credential has been taken. `granted` and `revoked` are the allow-list, so
+ * withdrawing a permission does not erase the record of who gave it.
  */
 export interface DelegationEvent {
   id: string;
@@ -138,8 +140,13 @@ export interface DelegationEvent {
   subjectUserId?: string;
   subjectEmail?: string;
   requestedSubject: string;
-  outcome: 'issued' | 'refused';
+  outcome: 'issued' | 'refused' | 'granted' | 'revoked';
   refusedReason?: string;
+  /** The administrator behind a `granted` or `revoked` entry. */
+  actedBy?: string;
+  actedByEmail?: string;
+  /** The reason given when the permission was granted. */
+  note?: string;
   scopes: string[];
   jti?: string;
   expiresAt?: string;

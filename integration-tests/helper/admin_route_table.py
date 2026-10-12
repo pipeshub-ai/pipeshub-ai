@@ -160,6 +160,14 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", "/api/v1/service-tokens", admin="invalid"),
     AdminRoute("GET", "/api/v1/service-tokens/scopes"),
     AdminRoute("DELETE", "/api/v1/service-tokens/:tokenId", admin="invalid"),
+    # Delegation: who a service account may act as. The admin check runs
+    # before each route's validator, so the writes use ``invalid`` the same
+    # way the service-token writes above do.
+    AdminRoute("GET", "/api/v1/service-account-delegations"),
+    AdminRoute("POST", "/api/v1/service-account-delegations", admin="invalid"),
+    AdminRoute("GET", "/api/v1/service-account-delegations/events"),
+    AdminRoute("DELETE", "/api/v1/service-account-delegations/:subjectUserId",
+               admin="invalid"),
     # tokens_manager/routes/connectors.routes.ts
     _no_admin("POST", "/api/v1/connectors/vector-store/cleanup",
               "drops and recreates the org's vector collection"),

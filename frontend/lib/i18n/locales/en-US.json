@@ -3738,10 +3738,13 @@
         "grantErrorTitle": "Could not grant the permission",
         "loadErrorTitle": "Could not load delegation settings",
         "logTitle": "Recent activity",
-        "logHelp": "Every time this service account asked to act as someone, including the times it was refused.",
+        "logHelp": "Every change to this list, and every time the service account asked to act as someone — including the times it was refused.",
         "logNone": "Nothing recorded yet.",
         "outcomeIssued": "Allowed",
-        "outcomeRefused": "Refused"
+        "outcomeRefused": "Refused",
+        "outcomeGranted": "Permission added",
+        "outcomeRevoked": "Permission removed",
+        "byAdmin": "by {{admin}}"
       }
     }
   },

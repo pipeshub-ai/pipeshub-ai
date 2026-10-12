@@ -54,6 +54,11 @@ export interface DelegationEventListItem {
   requestedSubject: string;
   outcome: DelegationOutcome;
   refusedReason?: string;
+  /** The administrator behind a `granted` or `revoked` record. */
+  actedBy?: string;
+  actedByEmail?: string;
+  /** The reason given when the permission was granted. */
+  note?: string;
   scopes: string[];
   jti?: string;
   expiresAt?: Date;
@@ -117,8 +122,8 @@ export class DelegationService {
       throw new NotFoundError('Service account not found');
     }
     const account = await Users.findOne({
-      _id: serviceAccountId,
-      orgId,
+      _id: { $eq: serviceAccountId },
+      orgId: { $eq: orgId },
       kind: 'service',
       isDeleted: false,
     })
@@ -143,16 +148,31 @@ export class DelegationService {
    */
   async resolveSubject(
     orgId: string,
-    requestedSubject: string,
+    requestedSubject: unknown,
   ): Promise<SubjectResolution> {
+    // `unknown` rather than `string` because this is reachable from the token
+    // endpoint, where the value is whatever was in the request body. The
+    // validators refuse a non-string, but a request that somehow carried one
+    // should be refused here rather than crash on `.trim()` and surface as a
+    // server error.
+    if (typeof requestedSubject !== 'string') {
+      return { ok: false, refusedReason: 'subject_missing' };
+    }
     const trimmed = requestedSubject.trim();
     if (trimmed === '') {
       return { ok: false, refusedReason: 'subject_missing' };
     }
 
+    // Each value is wrapped in `$eq` so it can only ever be compared as a
+    // value. Mongo reads a bare object as a set of operators, so an input that
+    // arrived as `{ $ne: null }` rather than a string would otherwise become a
+    // query that matches somebody. The route validators already refuse that,
+    // but a query should not depend on a check three frames up to be safe —
+    // and this one is reachable from the token endpoint, where the subject is
+    // whatever the caller typed. Matches `oauth_token.service.ts:200`.
     const query = Types.ObjectId.isValid(trimmed)
-      ? { _id: trimmed, orgId }
-      : { email: trimmed.toLowerCase(), orgId };
+      ? { _id: { $eq: trimmed }, orgId: { $eq: orgId } }
+      : { email: { $eq: trimmed.toLowerCase() }, orgId: { $eq: orgId } };
 
     const user = await Users.findOne(query)
       .select('email fullName role kind isDeleted isDisabled')
@@ -204,9 +224,9 @@ export class DelegationService {
     subjectUserId: string,
   ): Promise<boolean> {
     const row = await ServiceAccountDelegation.findOne({
-      orgId,
-      serviceAccountId,
-      subjectUserId,
+      orgId: { $eq: orgId },
+      serviceAccountId: { $eq: serviceAccountId },
+      subjectUserId: { $eq: subjectUserId },
     })
       .select('_id')
       .lean()
@@ -219,7 +239,7 @@ export class DelegationService {
     orgId: string,
     actingUserId: string,
     serviceAccountId: string,
-    requestedSubject: string,
+    requestedSubject: unknown,
     reason?: string,
   ): Promise<DelegationListItem> {
     const account = await this.requireServiceAccount(orgId, serviceAccountId);
@@ -232,8 +252,8 @@ export class DelegationService {
     }
 
     const existing = await ServiceAccountDelegation.countDocuments({
-      orgId,
-      serviceAccountId,
+      orgId: { $eq: orgId },
+      serviceAccountId: { $eq: serviceAccountId },
     });
     if (existing >= MAX_DELEGATIONS_PER_SERVICE_ACCOUNT) {
       throw new BadRequestError(
@@ -256,15 +276,27 @@ export class DelegationService {
       // account already holds is not an error worth failing a script over, so
       // return what is already there.
       const already = await ServiceAccountDelegation.findOne({
-        orgId,
-        serviceAccountId,
-        subjectUserId: subject.userId,
+        orgId: { $eq: orgId },
+        serviceAccountId: { $eq: serviceAccountId },
+        subjectUserId: { $eq: subject.userId },
       }).exec();
       if (already) {
         return this.toListItem(already, subject);
       }
       throw error;
     }
+
+    // Written before the method returns so the log holds the grant even if
+    // nothing ever uses it. This is the record that survives revocation.
+    await this.recordEvent({
+      orgId,
+      serviceAccountId: account.id,
+      subjectUserId: subject.userId,
+      requestedSubject: subject.email,
+      outcome: 'granted',
+      actedBy: actingUserId,
+      note: reason,
+    });
 
     this.logger.info('Delegation granted', {
       orgId,
@@ -327,8 +359,8 @@ export class DelegationService {
     await this.requireServiceAccount(orgId, serviceAccountId);
 
     const rows = await ServiceAccountDelegation.find({
-      orgId,
-      serviceAccountId,
+      orgId: { $eq: orgId },
+      serviceAccountId: { $eq: serviceAccountId },
     })
       .sort({ createdAt: -1 })
       .lean()
@@ -390,13 +422,22 @@ export class DelegationService {
     }
 
     const removed = await ServiceAccountDelegation.findOneAndDelete({
-      orgId,
-      serviceAccountId,
-      subjectUserId,
+      orgId: { $eq: orgId },
+      serviceAccountId: { $eq: serviceAccountId },
+      subjectUserId: { $eq: subjectUserId },
     }).exec();
     if (!removed) {
       throw new NotFoundError('Delegation not found');
     }
+
+    await this.recordEvent({
+      orgId,
+      serviceAccountId,
+      subjectUserId,
+      requestedSubject: subjectUserId,
+      outcome: 'revoked',
+      actedBy: actingUserId,
+    });
 
     this.logger.info('Delegation revoked', {
       orgId,
@@ -419,8 +460,8 @@ export class DelegationService {
     serviceAccountId: string,
   ): Promise<void> {
     const result = await ServiceAccountDelegation.deleteMany({
-      orgId,
-      serviceAccountId,
+      orgId: { $eq: orgId },
+      serviceAccountId: { $eq: serviceAccountId },
     }).exec();
     if (result.deletedCount > 0) {
       this.logger.info('Removed every delegation held by a service account', {
@@ -439,6 +480,8 @@ export class DelegationService {
     requestedSubject: string;
     outcome: DelegationOutcome;
     refusedReason?: string;
+    actedBy?: string;
+    note?: string;
     scopes?: string[];
     accessTokenId?: string;
     jti?: string;
@@ -455,6 +498,11 @@ export class DelegationService {
         requestedSubject: event.requestedSubject.slice(0, 320),
         outcome: event.outcome,
         refusedReason: event.refusedReason,
+        actedBy:
+          event.actedBy === undefined
+            ? undefined
+            : new Types.ObjectId(event.actedBy),
+        note: event.note,
         scopes: event.scopes ?? [],
         accessTokenId:
           event.accessTokenId === undefined
@@ -486,13 +534,13 @@ export class DelegationService {
       DELEGATION_EVENT_MAX_PAGE_SIZE,
     );
 
-    const query: Record<string, unknown> = { orgId };
+    const query: Record<string, unknown> = { orgId: { $eq: orgId } };
     if (options.serviceAccountId !== undefined) {
       if (!Types.ObjectId.isValid(options.serviceAccountId)) {
         throw new NotFoundError('Service account not found');
       }
       await this.requireServiceAccount(orgId, options.serviceAccountId);
-      query.serviceAccountId = options.serviceAccountId;
+      query.serviceAccountId = { $eq: options.serviceAccountId };
     }
 
     const events = await DelegationEvent.find(query)
@@ -509,6 +557,9 @@ export class DelegationService {
       userIds.add(String(event.serviceAccountId));
       if (event.subjectUserId) {
         userIds.add(String(event.subjectUserId));
+      }
+      if (event.actedBy) {
+        userIds.add(String(event.actedBy));
       }
     }
     const users = await Users.find({ _id: { $in: [...userIds] } })
@@ -530,6 +581,11 @@ export class DelegationService {
       requestedSubject: event.requestedSubject,
       outcome: event.outcome,
       refusedReason: event.refusedReason,
+      actedBy: event.actedBy ? String(event.actedBy) : undefined,
+      actedByEmail: event.actedBy
+        ? emailById.get(String(event.actedBy))
+        : undefined,
+      note: event.note,
       scopes: event.scopes,
       jti: event.jti,
       expiresAt: event.expiresAt,

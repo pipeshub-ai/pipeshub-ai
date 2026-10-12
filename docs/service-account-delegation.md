@@ -19,9 +19,11 @@ service account opens a panel with two halves:
   person has since left, been disabled or become an administrator stays
   visible and is marked, rather than quietly disappearing — the screen should
   not disagree with what the system does.
-- **The log.** Every attempt this account made to act as someone, including
-  the ones that were refused. A run of refusals is what a stolen credential
-  looks like, so refusals are recorded as deliberately as successes.
+- **The log.** Every change to the list, and every attempt this account made
+  to act as someone — including the ones that were refused. A run of refusals
+  is what a stolen credential looks like, so refusals are recorded as
+  deliberately as successes. Grants and revocations are recorded too, so
+  withdrawing a permission does not erase who gave it, to whom, and why.
 
 Administrators cannot be named. Service accounts are held to member rights so
 that no machine credential carries admin, and a delegated admin token would
@@ -32,13 +34,11 @@ walk around that rule by construction.
 Exchange the service token for a short-lived token for one person, following
 [RFC 8693](https://www.rfc-editor.org/rfc/rfc8693):
 
-```http
-POST /api/v1/oauth2/token
-Content-Type: application/x-www-form-urlencoded
-
-grant_type=urn:ietf:params:oauth:grant-type:token-exchange
-&subject_token=phsvc_…
-&requested_subject=person@example.com
+```bash
+curl -X POST https://your-instance/api/v1/oauth2/token \
+  --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+  --data-urlencode "subject_token=$PIPESHUB_SERVICE_TOKEN" \
+  --data-urlencode 'requested_subject=person@example.com'
 ```
 
 ```json
@@ -86,7 +86,7 @@ administrator can read.
 | Lifetime | 5 minutes, and no refresh token |
 | Scopes | At most what the service token holds; `agent:execute` never |
 | Allow-list | Named people only, at most 200 per account |
-| Audit | Every attempt kept for 400 days |
+| Audit | Every grant, revocation and attempt kept for 400 days |
 | Chaining | A delegated token cannot be exchanged again |
 
 Disabling a service account revokes the tokens it obtained to act as other

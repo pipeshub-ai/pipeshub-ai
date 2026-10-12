@@ -31,6 +31,23 @@ export const DELEGATED_TOKEN_LIFETIME_SECONDS = 300;
 export const ACCESS_TOKEN_TYPE =
   'urn:ietf:params:oauth:token-type:access_token';
 
+/**
+ * The label stored against a delegated token.
+ *
+ * `OAuthAccessToken.name` is capped at 100 characters while an address may be
+ * up to 320, so a long one would fail validation inside `generateTokens` and
+ * the exchange would break for that person alone — with nothing in the audit
+ * log to say why, because the record is written after the token exists.
+ */
+const TOKEN_NAME_MAX = 100;
+
+export function delegatedTokenName(email: string): string {
+  const label = `Delegated to ${email}`;
+  return label.length <= TOKEN_NAME_MAX
+    ? label
+    : `${label.slice(0, TOKEN_NAME_MAX - 1)}\u2026`;
+}
+
 /** One description for every refusal about the subject. See TokenExchangeError. */
 const SUBJECT_REFUSED_MESSAGE =
   'This service account may not act as the requested subject.';
@@ -126,7 +143,9 @@ export class TokenExchangeService {
 
     const scopes = this.resolveScopes(request.scope, actor.scopes);
 
-    const app = await OAuthApp.findOne({ clientId: actor.clientId }).exec();
+    const app = await OAuthApp.findOne({
+      clientId: { $eq: actor.clientId },
+    }).exec();
     if (!app) {
       // The service token verified against a client that no longer exists.
       throw new TokenExchangeError(
@@ -146,7 +165,7 @@ export class TokenExchangeService {
       {
         accessTokenLifetimeOverrideSeconds: DELEGATED_TOKEN_LIFETIME_SECONDS,
         actorUserId: actor.serviceAccountId,
-        name: `Delegated to ${subject.email}`,
+        name: delegatedTokenName(subject.email),
       },
     );
 
@@ -231,9 +250,13 @@ export class TokenExchangeService {
       );
     }
 
+    // Values from a token this service signed and verified, but wrapped the
+    // same way as the ones next door: the guarantee that a query compares
+    // values should be visible at the query, not inferred from how far
+    // upstream the data came from.
     const account = await Users.findOne({
-      _id: payload.userId,
-      orgId: payload.orgId,
+      _id: { $eq: payload.userId },
+      orgId: { $eq: payload.orgId },
       kind: 'service',
       isDeleted: false,
     })

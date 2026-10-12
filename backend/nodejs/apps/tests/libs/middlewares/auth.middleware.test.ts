@@ -670,7 +670,10 @@ describe('AuthMiddleware', () => {
       })
 
       const appLookup = sinon.stub(OAuthApp, 'findOne')
-      sinon.stub(Users, 'findOne').returns(
+      const users = sinon.stub(Users, 'findOne')
+      // First the person the token speaks as, then the service account behind
+      // it — both re-read on every request, so neither can go stale.
+      users.onFirstCall().returns(
         createMockQuery({
           email: 'person@example.com',
           fullName: 'A Person',
@@ -678,6 +681,7 @@ describe('AuthMiddleware', () => {
           kind: 'human',
         }),
       )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: false }))
 
       const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
       const res = createMockResponse()
@@ -693,6 +697,121 @@ describe('AuthMiddleware', () => {
       // reason this works — so the app lookup is never even reached.
       expect(appLookup.called).to.equal(false)
       expect(req.user.email).to.equal('person@example.com')
+      expect(req.user.role).to.equal('member')
+    })
+
+    it('refuses a delegated token once its subject becomes an administrator', async () => {
+      // Delegation refuses administrators when the token is minted, but the
+      // token then lives for five minutes and the middleware reads the live
+      // record. Without this the promotion would hand a machine credential
+      // admin rights for the rest of that window — the exact thing service
+      // accounts exist to prevent.
+      //
+      // Refused rather than downgraded on purpose: the Python services ask
+      // `/api/v1/users/me/role`, which re-reads the user document rather than
+      // trusting the request, so a clamp here would leave the two halves
+      // disagreeing. There is no value to clamp to that both would honour.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      sinon.stub(Users, 'findOne').returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'admin',
+          kind: 'human',
+        }),
+      )
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('administrator')
+    })
+
+    it('refuses a delegated token once its service account is disabled', async () => {
+      // The person named in the token is a colleague in good standing, so the
+      // disabled-account check above passes. Checking the actor here is what
+      // makes disabling a service account take effect at once, and closes the
+      // race where an exchange inserts its token just after the revocation
+      // sweep has run.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: true }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('no longer active')
+    })
+
+    it('refuses a delegated token whose service account has been deleted', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      // The `kind: 'service'` and `isDeleted: false` clauses are part of the
+      // query, so a deleted account simply is not found.
+      users.onSecondCall().returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('no longer active')
     })
 
     it('refuses a token minted for an identity the app no longer acts as', async () => {

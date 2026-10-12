@@ -3653,10 +3653,13 @@
         "grantErrorTitle": "Berechtigung konnte nicht erteilt werden",
         "loadErrorTitle": "Delegationseinstellungen konnten nicht geladen werden",
         "logTitle": "Letzte Aktivität",
-        "logHelp": "Jedes Mal, wenn dieses Dienstkonto für jemanden handeln wollte, einschließlich der abgelehnten Versuche.",
+        "logHelp": "Jede Änderung an dieser Liste und jedes Mal, wenn das Dienstkonto für jemanden handeln wollte – einschließlich der abgelehnten Versuche.",
         "logNone": "Noch nichts aufgezeichnet.",
         "outcomeIssued": "Erlaubt",
-        "outcomeRefused": "Abgelehnt"
+        "outcomeRefused": "Abgelehnt",
+        "outcomeGranted": "Berechtigung hinzugefügt",
+        "outcomeRevoked": "Berechtigung entfernt",
+        "byAdmin": "von {{admin}}"
       }
     }
   },

@@ -130,9 +130,24 @@ describe('DelegationService', () => {
 
       await service.resolveSubject(orgId, '  Person@Example.COM ');
 
+      // Wrapped in `$eq` so the address can only ever be compared as a value.
+      // A bare object would be read by Mongo as a set of operators.
       expect(stub.firstCall.args[0]).to.deep.include({
-        email: 'person@example.com',
+        email: { $eq: 'person@example.com' },
       });
+    });
+
+    it('refuses a value that is not a string instead of crashing on it', async () => {
+      // Reachable from the token endpoint, where the subject is whatever was
+      // in the request body. The validators refuse a non-string first; this is
+      // what happens if one ever gets past them.
+      const { service } = makeService();
+      const result = await service.resolveSubject(orgId, {
+        $ne: null,
+      } as unknown as string);
+
+      expect(result.ok).to.equal(false);
+      expect(result.refusedReason).to.equal('subject_missing');
     });
   });
 
@@ -220,6 +235,58 @@ describe('DelegationService', () => {
       } catch (error) {
         expect((error as Error).message).to.contain('Service account not found');
       }
+    });
+  });
+
+  describe('the allow-list is audited, not only the exchange', () => {
+    it('records who granted a permission and why', async () => {
+      // Revoking deletes the row, taking the administrator and their reason
+      // with it. Without this record the log could say an exchange was
+      // permitted but never why.
+      stubUsers(SERVICE_ACCOUNT, {
+        _id: subjectId,
+        email: 'person@example.com',
+        kind: 'human',
+        role: 'member',
+      });
+      sinon.stub(ServiceAccountDelegation, 'countDocuments').resolves(0 as any);
+      sinon.stub(ServiceAccountDelegation, 'create').resolves({
+        _id: new mongoose.Types.ObjectId(),
+        serviceAccountId: accountId,
+        subjectUserId: subjectId,
+        grantedBy: adminId,
+        createdAt: new Date(),
+      } as any);
+      const created = sinon.stub(DelegationEvent, 'create').resolves({} as any);
+      const { service } = makeService();
+
+      await service.grant(
+        orgId,
+        adminId,
+        accountId,
+        'person@example.com',
+        'nightly digest',
+      );
+
+      const record = created.firstCall.args[0] as Record<string, unknown>;
+      expect(record.outcome).to.equal('granted');
+      expect(String(record.actedBy)).to.equal(adminId);
+      expect(record.note).to.equal('nightly digest');
+    });
+
+    it('records a revocation too', async () => {
+      stubUsers(SERVICE_ACCOUNT);
+      sinon.stub(ServiceAccountDelegation, 'findOneAndDelete').returns({
+        exec: async () => ({ _id: new mongoose.Types.ObjectId() }),
+      } as any);
+      const created = sinon.stub(DelegationEvent, 'create').resolves({} as any);
+      const { service } = makeService();
+
+      await service.revoke(orgId, adminId, accountId, subjectId);
+
+      const record = created.firstCall.args[0] as Record<string, unknown>;
+      expect(record.outcome).to.equal('revoked');
+      expect(String(record.actedBy)).to.equal(adminId);
     });
   });
 

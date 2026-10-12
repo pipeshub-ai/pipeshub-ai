@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Badge,
   Box,
@@ -14,12 +14,35 @@ import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConfirmationDialog, FormField, WorkspaceRightPanel } from '../../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { DelegationsApi } from '../api';
 import type { Delegation, DelegationEvent, ServiceAccount } from '../types';
 
 const MONO: React.CSSProperties = {
   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
   wordBreak: 'break-all',
+};
+
+/**
+ * How each kind of entry reads. Grants and revocations share the log with the
+ * exchange itself, so that withdrawing a permission does not erase the record
+ * of who gave it.
+ */
+const OUTCOME_LABEL: Record<DelegationEvent['outcome'], string> = {
+  issued: 'workspace.serviceAccounts.delegations.outcomeIssued',
+  refused: 'workspace.serviceAccounts.delegations.outcomeRefused',
+  granted: 'workspace.serviceAccounts.delegations.outcomeGranted',
+  revoked: 'workspace.serviceAccounts.delegations.outcomeRevoked',
+};
+
+const OUTCOME_COLOUR: Record<
+  DelegationEvent['outcome'],
+  'green' | 'red' | 'blue' | 'gray'
+> = {
+  issued: 'green',
+  refused: 'red',
+  granted: 'blue',
+  revoked: 'gray',
 };
 
 /** How many log entries the panel shows. Enough to spot a pattern. */
@@ -57,6 +80,7 @@ export function ServiceAccountDelegationsPanel({
 }: ServiceAccountDelegationsPanelProps) {
   const { t, i18n } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const isMobile = useIsMobile();
 
   const [delegations, setDelegations] = useState<Delegation[]>([]);
   const [events, setEvents] = useState<DelegationEvent[]>([]);
@@ -69,17 +93,34 @@ export function ServiceAccountDelegationsPanel({
 
   const accountId = account?.id ?? null;
 
+  /**
+   * Which account the lists on screen belong to.
+   *
+   * Everything here is scoped to one service account, and two of them can be
+   * in flight at once: closing account A's panel and opening account B's
+   * leaves A's entries on screen while B loads, and a slow request for A can
+   * land after B's and replace them. Clicking a row then sends B's account id
+   * with A's person — revoking a delegation nobody asked about.
+   *
+   * So a response is only applied when it is still the account being shown,
+   * and the lists are emptied the moment the account changes.
+   */
+  const shownFor = useRef<string | null>(null);
+
   const refresh = useCallback(async () => {
     if (!accountId) return;
+    const requestedFor = accountId;
     setIsLoading(true);
     try {
       const [list, log] = await Promise.all([
-        DelegationsApi.list(accountId),
-        DelegationsApi.events(accountId, EVENT_LIMIT),
+        DelegationsApi.list(requestedFor),
+        DelegationsApi.events(requestedFor, EVENT_LIMIT),
       ]);
+      if (shownFor.current !== requestedFor) return;
       setDelegations(list.delegations ?? []);
       setEvents(log.events ?? []);
     } catch (err: unknown) {
+      if (shownFor.current !== requestedFor) return;
       addToast({
         variant: 'error',
         title: t('workspace.serviceAccounts.delegations.loadErrorTitle'),
@@ -87,12 +128,20 @@ export function ServiceAccountDelegationsPanel({
         duration: 4000,
       });
     } finally {
-      setIsLoading(false);
+      if (shownFor.current === requestedFor) {
+        setIsLoading(false);
+      }
     }
   }, [accountId, addToast, t]);
 
   useEffect(() => {
     if (!open || !accountId) return;
+    shownFor.current = accountId;
+    // Cleared rather than left in place, so the previous account's people are
+    // never on screen under this account's name.
+    setDelegations([]);
+    setEvents([]);
+    setRevokeTarget(null);
     setSubject('');
     setReason('');
     void refresh();
@@ -287,7 +336,10 @@ export function ServiceAccountDelegationsPanel({
                   size="2"
                   variant="ghost"
                   color="red"
-                  style={{ cursor: 'pointer' }}
+                  style={{
+                    cursor: 'pointer',
+                    ...(isMobile ? { minWidth: 44, minHeight: 44 } : null),
+                  }}
                   aria-label={t('workspace.serviceAccounts.delegations.revoke')}
                   onClick={() => setRevokeTarget(delegation)}
                 >
@@ -322,13 +374,8 @@ export function ServiceAccountDelegationsPanel({
                     borderBottom: '1px solid var(--olive-3)',
                   }}
                 >
-                  <Badge
-                    color={event.outcome === 'issued' ? 'green' : 'red'}
-                    size="1"
-                  >
-                    {event.outcome === 'issued'
-                      ? t('workspace.serviceAccounts.delegations.outcomeIssued')
-                      : t('workspace.serviceAccounts.delegations.outcomeRefused')}
+                  <Badge color={OUTCOME_COLOUR[event.outcome]} size="1">
+                    {t(OUTCOME_LABEL[event.outcome])}
                   </Badge>
                   <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
                     <Text size="1">
@@ -337,6 +384,18 @@ export function ServiceAccountDelegationsPanel({
                     {event.refusedReason && (
                       <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
                         {event.refusedReason}
+                      </Text>
+                    )}
+                    {event.actedByEmail && (
+                      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                        {t('workspace.serviceAccounts.delegations.byAdmin', {
+                          admin: event.actedByEmail,
+                        })}
+                      </Text>
+                    )}
+                    {event.note && (
+                      <Text size="1" style={{ color: 'var(--slate-11)' }}>
+                        {event.note}
                       </Text>
                     )}
                   </Flex>

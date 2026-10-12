@@ -13,18 +13,25 @@ import mongoose, { Document, Schema, Model, Types } from 'mongoose';
 export const DELEGATION_EVENT_RETENTION_DAYS = 400;
 
 /**
- * Whether the exchange produced a token.
+ * What happened.
  *
- * Refusals are recorded as deliberately as successes. A service account
- * repeatedly asking to act as someone it may not act as is the single clearest
- * signal that a credential has been taken, and a log that only holds successes
- * is blind to exactly that.
+ * Two kinds of record share this log on purpose. `issued` and `refused` are
+ * the exchange: refusals are kept as deliberately as successes, because a
+ * service account repeatedly asking for someone it may not act as is the
+ * clearest signal a credential has been taken.
+ *
+ * `granted` and `revoked` are the allow-list itself. Without them the log
+ * could say that an exchange was permitted but never why — the row that
+ * permitted it is deleted on revocation, taking the administrator who granted
+ * it and their reason with it. "Who allowed this, and when" is the first
+ * question anyone reviewing a delegation asks, and it should still have an
+ * answer after the permission is withdrawn.
  */
-export type DelegationOutcome = 'issued' | 'refused';
+export type DelegationOutcome = 'issued' | 'refused' | 'granted' | 'revoked';
 
 export interface IDelegationEvent extends Document {
   orgId: Types.ObjectId;
-  /** The service account that asked. */
+  /** The service account the record is about. */
   serviceAccountId: Types.ObjectId;
   /** Who it asked to act as. Absent when the request named nobody resolvable. */
   subjectUserId?: Types.ObjectId;
@@ -33,6 +40,10 @@ export interface IDelegationEvent extends Document {
   outcome: DelegationOutcome;
   /** Machine-readable refusal cause, e.g. `not_on_allow_list`. */
   refusedReason?: string;
+  /** The administrator who granted or withdrew the permission. */
+  actedBy?: Types.ObjectId;
+  /** The reason they gave, on a `granted` record. */
+  note?: string;
   /** Scopes on the issued token. Empty on a refusal. */
   scopes: string[];
   /** The issued token's id, so a reader can tie a record to a revocation. */
@@ -62,11 +73,13 @@ const DelegationEventSchema = new Schema<IDelegationEvent>(
     requestedSubject: { type: String, required: true, maxlength: 320 },
     outcome: {
       type: String,
-      enum: ['issued', 'refused'],
+      enum: ['issued', 'refused', 'granted', 'revoked'],
       required: true,
       index: true,
     },
     refusedReason: { type: String, maxlength: 120 },
+    actedBy: { type: Schema.Types.ObjectId, ref: 'users' },
+    note: { type: String, maxlength: 280 },
     scopes: { type: [String], default: [] },
     accessTokenId: { type: Schema.Types.ObjectId, ref: 'oauthAccessToken' },
     jti: { type: String, index: true },

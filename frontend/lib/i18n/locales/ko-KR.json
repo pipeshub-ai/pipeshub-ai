@@ -3727,10 +3727,13 @@
         "grantErrorTitle": "권한을 부여하지 못했습니다",
         "loadErrorTitle": "위임 설정을 불러오지 못했습니다",
         "logTitle": "최근 활동",
-        "logHelp": "이 서비스 계정이 누군가를 대신하겠다고 요청한 모든 기록으로, 거부된 경우도 포함됩니다.",
+        "logHelp": "이 목록의 모든 변경과, 이 서비스 계정이 누군가를 대신하겠다고 요청한 모든 기록으로, 거부된 경우도 포함됩니다.",
         "logNone": "아직 기록이 없습니다.",
         "outcomeIssued": "허용됨",
-        "outcomeRefused": "거부됨"
+        "outcomeRefused": "거부됨",
+        "outcomeGranted": "권한 추가됨",
+        "outcomeRevoked": "권한 제거됨",
+        "byAdmin": "{{admin}}"
       }
     }
   },

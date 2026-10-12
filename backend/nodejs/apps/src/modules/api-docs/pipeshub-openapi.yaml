@@ -1598,12 +1598,19 @@ components:
       properties:
         grant_type:
           type: string
-          enum: [authorization_code, client_credentials, refresh_token]
+          enum:
+            - authorization_code
+            - client_credentials
+            - refresh_token
+            - urn:ietf:params:oauth:grant-type:token-exchange
           description: |
             OAuth grant type:
             - `authorization_code`: Exchange auth code for tokens
             - `client_credentials`: Machine-to-machine auth
             - `refresh_token`: Get new access token using refresh token
+            - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+              delegation (RFC 8693). Exchanges a service token for a
+              short-lived token that acts as one named person.
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -1629,6 +1636,26 @@ components:
             PKCE code verifier (RFC 7636). Required if code_challenge was used.
             Must be 43-128 characters from [A-Za-z0-9-._~]
           pattern: '^[A-Za-z0-9\-._~]{43,128}$'
+        subject_token:
+          type: string
+          maxLength: 8192
+          description: |
+            The service token being exchanged (token-exchange grant only).
+            This is the only authentication the grant has: no `client_id` or
+            `client_secret` is sent, because the service token already carries
+            a verified identity and the scopes that bound it.
+        subject_token_type:
+          type: string
+          description: |
+            Optional. Must be `urn:ietf:params:oauth:token-type:access_token`
+            when sent (token-exchange grant only).
+        requested_subject:
+          type: string
+          maxLength: 320
+          description: |
+            The person to act as, by user id or email address (token-exchange
+            grant only). Must be on the service account's allow-list, and must
+            not be an administrator.
       required:
         - grant_type
 
@@ -1658,6 +1685,97 @@ components:
         id_token:
           type: string
           description: OpenID Connect ID token (JWT) if openid scope was requested
+        issued_token_type:
+          type: string
+          description: |
+            The type of the issued token (RFC 8693 Section 2.2.1). Returned by
+            the token-exchange grant, where it is always
+            `urn:ietf:params:oauth:token-type:access_token`.
+          example: "urn:ietf:params:oauth:token-type:access_token"
+
+    ServiceAccountDelegation:
+      type: object
+      description: |
+        One entry on a service account's allow-list: permission for it to act
+        as one named person for a few minutes at a time.
+      properties:
+        id:
+          type: string
+        serviceAccountId:
+          type: string
+        subjectUserId:
+          type: string
+        subjectEmail:
+          type: string
+        subjectFullName:
+          type: string
+        inactive:
+          type: boolean
+          description: |
+            True when the person can no longer be acted as. The entry is still
+            returned, because the exchange refuses it and a review screen
+            should not disagree with the system.
+        inactiveReason:
+          type: string
+        grantedBy:
+          type: string
+        reason:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+
+    DelegationEvent:
+      type: object
+      description: One attempt by a service account to act as someone.
+      properties:
+        id:
+          type: string
+        serviceAccountId:
+          type: string
+        serviceAccountEmail:
+          type: string
+        subjectUserId:
+          type: string
+        subjectEmail:
+          type: string
+        requestedSubject:
+          type: string
+          description: What was asked for, verbatim, even where it resolved to nobody
+        outcome:
+          type: string
+          enum: [issued, refused, granted, revoked]
+          description: |
+            `issued` and `refused` are the token exchange; `granted` and
+            `revoked` are changes to the allow-list, kept so that withdrawing
+            a permission does not erase the record of who gave it.
+        refusedReason:
+          type: string
+          description: |
+            Machine-readable cause, e.g. `not_on_allow_list`, `subject_is_admin`,
+            `subject_not_found`. Only ever returned here, never to the caller
+            of the token endpoint.
+        scopes:
+          type: array
+          items:
+            type: string
+        actedBy:
+          type: string
+          description: The administrator behind a `granted` or `revoked` entry
+        actedByEmail:
+          type: string
+        note:
+          type: string
+          description: The reason given when the permission was granted
+        jti:
+          type: string
+          description: The issued token's id, as it appears in later logs
+        expiresAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
 
     OAuthRevokeRequest:
       type: object
@@ -16918,6 +17036,196 @@ paths:
             Bearer token is an OAuth access token or personal access token
             rather than a user session, or the client is not authorized /
             the redirect URI is invalid.
+
+  /service-account-delegations:
+    get:
+      tags:
+        - OAuth Provider
+      summary: List who a service account may act as
+      description: |
+        The service account's allow-list. Administrator only.
+
+        Entries whose person has since left, been disabled or become an
+        administrator are returned with `inactive: true` and a reason, rather
+        than hidden: the token exchange already refuses them, and a review
+        screen should not disagree with what the system does.
+      operationId: listServiceAccountDelegations
+      parameters:
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+          description: The service account whose allow-list to read
+      responses:
+        '200':
+          description: The allow-list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegations:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ServiceAccountDelegation'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such service account in this organisation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    post:
+      tags:
+        - OAuth Provider
+      summary: Allow a service account to act as one named person
+      description: |
+        Administrator only. Granting the same person twice returns the
+        existing entry rather than failing.
+
+        Administrators cannot be named: service accounts are held to member
+        rights, and a delegated administrator token would bypass that rule by
+        construction. Nor can another service account, which would chain
+        machine identities together.
+      operationId: grantServiceAccountDelegation
+      requestBody:
+        description: "Request payload"
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - serviceAccountId
+                - subject
+              properties:
+                serviceAccountId:
+                  type: string
+                subject:
+                  type: string
+                  maxLength: 320
+                  description: The person, by user id or email address
+                reason:
+                  type: string
+                  maxLength: 280
+                  description: Why the grant exists; shown to whoever reviews it later
+      responses:
+        '201':
+          description: The service account may now act as this person
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  delegation:
+                    $ref: '#/components/schemas/ServiceAccountDelegation'
+        '400':
+          description: |
+            The person is an administrator, a service account, disabled, not in
+            this organisation, or the allow-list is already at its limit
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /service-account-delegations/events:
+    get:
+      tags:
+        - OAuth Provider
+      summary: Read the delegation log
+      description: |
+        Every attempt a service account made to act as someone, newest first,
+        including the ones that were refused. Administrator only.
+
+        Refusals are recorded as deliberately as successes: a run of them is
+        the clearest sign a credential has been taken. The token endpoint
+        returns the same wording for every refusal about who was asked for, so
+        this log is the only place the actual cause appears.
+
+        Omit `serviceAccountId` to read across the whole organisation.
+      operationId: listServiceAccountDelegationEvents
+      parameters:
+        - name: serviceAccountId
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 100
+      responses:
+        '200':
+          description: The log
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DelegationEvent'
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /service-account-delegations/{subjectUserId}:
+    delete:
+      tags:
+        - OAuth Provider
+      summary: Stop a service account acting as this person
+      description: |
+        Administrator only. Tokens already issued under the entry are not
+        revoked and do not need to be: they last five minutes, so the window
+        is bounded by the lifetime rather than by anyone remembering to clean
+        up.
+      operationId: revokeServiceAccountDelegation
+      parameters:
+        - name: subjectUserId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: serviceAccountId
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Removed
+        '403':
+          description: Not an organisation administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such delegation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth2/token:
     post:

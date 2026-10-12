@@ -258,6 +258,54 @@ export class AuthMiddleware {
       throw new UnauthorizedError('This account is disabled');
     }
 
+    // A delegated token speaks as a person, and the rules that let it be
+    // issued have to keep holding for as long as it works — not only at the
+    // moment it was signed. Five minutes is plenty of time for a promotion or
+    // a switched-off service account to matter, and nothing else here would
+    // notice: every check below is about the person named in `userId`, who is
+    // a colleague in good standing.
+    //
+    // These refuse the token outright rather than downgrading it. Clamping
+    // `req.user.role` would fix Node and leave the Python services wrong,
+    // because they ask `GET /api/v1/users/me/role`, which re-reads the user
+    // document (`users.routes.ts:319`) instead of trusting the request. There
+    // is no value to clamp that both halves would agree on, so the only
+    // answer that fails closed is no token at all.
+    if (payload.act?.sub !== undefined) {
+      if (user.role === 'admin') {
+        // The subject was promoted after this token was issued. Delegation
+        // refuses administrators at mint time precisely so that no machine
+        // credential carries admin rights; honouring this token would hand
+        // out exactly that, for the rest of its lifetime.
+        throw new UnauthorizedError(
+          'This token acts for someone who is now an administrator',
+        );
+      }
+      if (user.kind === 'service') {
+        throw new UnauthorizedError('This token acts for a service account');
+      }
+
+      const actor = await Users.findOne({
+        _id: { $eq: payload.act.sub },
+        orgId: { $eq: orgId },
+        kind: 'service',
+        isDeleted: false,
+      })
+        .select('isDisabled')
+        .lean()
+        .exec();
+
+      // Also closes the race the issuing path cannot: an exchange that read
+      // the service account as enabled can still insert its token after the
+      // disable has swept the existing ones. Checking here, on every request,
+      // means the sweep never had to win.
+      if (!actor || actor.isDisabled === true) {
+        throw new UnauthorizedError(
+          'The service account behind this token is no longer active',
+        );
+      }
+    }
+
     email = user.email;
     if (!fullName) {
       fullName = user.fullName;

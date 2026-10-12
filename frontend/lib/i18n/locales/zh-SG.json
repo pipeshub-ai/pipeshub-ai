@@ -3727,10 +3727,13 @@
         "grantErrorTitle": "无法授予权限",
         "loadErrorTitle": "无法加载委托设置",
         "logTitle": "近期活动",
-        "logHelp": "此服务账号每次请求代表他人的记录，包括被拒绝的请求。",
+        "logHelp": "此列表的每次变更，以及此服务账号每次请求代表他人的记录，包括被拒绝的请求。",
         "logNone": "尚无记录。",
         "outcomeIssued": "已允许",
-        "outcomeRefused": "已拒绝"
+        "outcomeRefused": "已拒绝",
+        "outcomeGranted": "已添加权限",
+        "outcomeRevoked": "已移除权限",
+        "byAdmin": "由 {{admin}}"
       }
     }
   },

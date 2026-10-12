@@ -3680,10 +3680,13 @@
         "grantErrorTitle": "No se pudo conceder el permiso",
         "loadErrorTitle": "No se pudo cargar la configuración de delegación",
         "logTitle": "Actividad reciente",
-        "logHelp": "Cada vez que esta cuenta de servicio pidió actuar en nombre de alguien, incluidas las veces que se rechazó.",
+        "logHelp": "Cada cambio en esta lista y cada vez que la cuenta de servicio pidió actuar en nombre de alguien, incluidas las veces que se rechazó.",
         "logNone": "Todavía no hay nada registrado.",
         "outcomeIssued": "Permitido",
-        "outcomeRefused": "Rechazado"
+        "outcomeRefused": "Rechazado",
+        "outcomeGranted": "Permiso añadido",
+        "outcomeRevoked": "Permiso quitado",
+        "byAdmin": "por {{admin}}"
       }
     }
   },

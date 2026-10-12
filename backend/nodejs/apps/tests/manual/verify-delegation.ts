@@ -156,6 +156,53 @@ async function main(): Promise<void> {
       'subject_not_found',
   );
 
+  // A value that arrived as an object rather than a string must never be read
+  // as a set of Mongo operators. The route validators refuse one before it
+  // gets here, so these call the service directly: the point is that the
+  // queries are safe on their own, without relying on a check three frames up.
+  //
+  // "Never matches" is the property being tested, and both a clean refusal and
+  // a thrown cast error satisfy it. Which one happens depends on the field:
+  // `$eq` keeps the value a value, and Mongoose's own casting then refuses an
+  // object on an ObjectId path rather than querying with it.
+  console.log('\nqueries treat input as values, not operators');
+  const injection = { $ne: null } as unknown as string;
+
+  const neverMatches = async (
+    name: string,
+    run: () => Promise<boolean>,
+  ): Promise<void> => {
+    try {
+      check(name, (await run()) === false, 'it matched something');
+    } catch {
+      check(name, true);
+    }
+  };
+
+  check(
+    'an operator object cannot stand in for a subject',
+    (await service.resolveSubject(org, injection)).ok === false,
+  );
+  await service.grant(org, adminId, accountId, 'person@example.com');
+  await neverMatches('nor for a service account id', () =>
+    service.isDelegationAllowed(org, injection, person._id.toString()),
+  );
+  await neverMatches('nor for the person on a real delegation', () =>
+    service.isDelegationAllowed(org, accountId, injection),
+  );
+  await neverMatches('nor for both at once', () =>
+    service.isDelegationAllowed(org, injection, injection),
+  );
+  check(
+    'and the real pair still matches, so the check is not vacuous',
+    (await service.isDelegationAllowed(
+      org,
+      accountId,
+      person._id.toString(),
+    )) === true,
+  );
+  await service.revoke(org, adminId, accountId, person._id.toString());
+
   console.log('\ngrant and the allow-list');
   const granted = await service.grant(
     org,
@@ -275,7 +322,33 @@ async function main(): Promise<void> {
     refusedReason: 'subject_is_admin',
   });
   const events = await service.listEvents(org);
-  check('both attempts are recorded', events.length === 2, `got ${events.length}`);
+  const exchanges = events.filter(
+    (e) => e.outcome === 'issued' || e.outcome === 'refused',
+  );
+  check(
+    'both attempts are recorded',
+    exchanges.length === 2,
+    `got ${exchanges.length}`,
+  );
+
+  // The allow-list changes share the log, so a revoked permission still has a
+  // record of who granted it.
+  const grants = events.filter((e) => e.outcome === 'granted');
+  const revocations = events.filter((e) => e.outcome === 'revoked');
+  check('grants are recorded', grants.length > 0);
+  check('revocations are recorded', revocations.length > 0);
+  check(
+    'a grant names the administrator who made it',
+    grants.every((e) => e.actedBy === adminId),
+  );
+  check(
+    'and resolves their address for the reader',
+    grants.some((e) => e.actedByEmail === 'boss@example.com'),
+  );
+  check(
+    'a grant keeps the reason that was given',
+    grants.some((e) => e.note === 'nightly digest'),
+  );
   check(
     'the refusal is recorded with its cause',
     events.some(
@@ -355,9 +428,15 @@ async function main(): Promise<void> {
       serviceAccountId: account._id,
     })) === 0,
   );
+  const survived = await DelegationEvent.countDocuments({});
   check(
     'but the log survives, which is the point of keeping it',
-    (await DelegationEvent.countDocuments({})) === 2,
+    survived >= 4,
+    `only ${survived} records left`,
+  );
+  check(
+    'including who granted a permission that no longer exists',
+    (await DelegationEvent.countDocuments({ outcome: 'granted' })) > 0,
   );
 
   await mongoose.connection.db!.dropDatabase();

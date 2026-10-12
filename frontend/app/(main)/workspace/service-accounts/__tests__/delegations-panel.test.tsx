@@ -20,6 +20,18 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import en from '@/lib/i18n/locales/en-US.json';
 
+// jsdom has no matchMedia; useIsMobile needs it to resolve the touch-target size.
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  writable: true,
+  value: (query: string) => ({
+    matches: false,
+    media: query,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  }),
+});
+
 vi.mock('@/lib/store/toast-store', () => {
   const addToast = vi.fn();
   const state = { addToast };
@@ -165,6 +177,54 @@ describe('ServiceAccountDelegationsPanel', () => {
     // The cause of a refusal is on screen, because that is the signal worth
     // noticing.
     expect(screen.getByText('subject_is_admin')).toBeTruthy();
+  });
+
+  it('never shows one account’s people under another account’s name', async () => {
+    // Two accounts can be in flight at once. If the first account's list is
+    // still on screen when the second opens, clicking a row sends the second
+    // account's id with the first account's person, and revokes a delegation
+    // nobody asked about.
+    listDelegations.mockResolvedValueOnce({
+      delegations: [
+        {
+          id: 'd1',
+          serviceAccountId: 'account-1',
+          subjectUserId: 'u1',
+          subjectEmail: 'person@example.com',
+          subjectFullName: 'A Person',
+          inactive: false,
+          grantedBy: 'admin-1',
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    });
+
+    const { rerender } = render(
+      <Theme>
+        <ServiceAccountDelegationsPanel
+          open
+          account={ACCOUNT}
+          onOpenChange={vi.fn()}
+        />
+      </Theme>
+    );
+    await waitFor(() => expect(screen.getByText('A Person')).toBeTruthy());
+
+    // The second account's list never resolves, so anything still on screen
+    // is left over from the first.
+    listDelegations.mockImplementation(() => new Promise(() => {}));
+    listEvents.mockImplementation(() => new Promise(() => {}));
+    rerender(
+      <Theme>
+        <ServiceAccountDelegationsPanel
+          open
+          account={{ ...ACCOUNT, id: 'account-2', fullName: 'Other sync' }}
+          onOpenChange={vi.fn()}
+        />
+      </Theme>
+    );
+
+    await waitFor(() => expect(screen.queryByText('A Person')).toBeNull());
   });
 
   it('will not grant until a person has been named', async () => {
