@@ -28,6 +28,10 @@ def _trigger(events: str) -> re.Pattern[str]:
 
 
 _PRIVILEGED_TRIGGER = _trigger("pull_request_target|workflow_run")
+# Any index into pull_requests: the runner turns `[ 0 ]`, `['0']`, `['0e0']` and `['']`
+# into element 0, and _dotted() has made some of those `.0` already. Matching any
+# index or digit-led property is simpler than mirroring its number parsing, and fails closed.
+_ANY_INDEX = r"(?:\s*\[[^\]]*\]|\.[\d-][\w-]*)"
 # Read after _dotted(): expression property names are case-insensitive. head.repo
 # counts too, since checking out that repository on pull_request_target is the fork.
 # merge_commit_sha is refs/pull/<n>/merge, and workflow_run carries the head of the
@@ -35,7 +39,7 @@ _PRIVILEGED_TRIGGER = _trigger("pull_request_target|workflow_run")
 _PR_HEAD_REF = re.compile(
     r"github\.event\.pull_request\.(?:head\.(?:sha|ref|repo)|merge_commit_sha)\b"
     r"|github\.event\.workflow_run\.(?:head_sha|head_branch|head_repository|head_commit"
-    r"|pull_requests(?:\[\d+\])?\.head\.(?:sha|ref|repo))\b"
+    rf"|pull_requests{_ANY_INDEX}?\.head\.(?:sha|ref|repo))\b"
     r"|github\.head_ref\b|refs/pull/",
     re.IGNORECASE,
 )
@@ -43,7 +47,7 @@ _PR_HEAD_REF = re.compile(
 # Matched inside expressions only, where `github` is always the context.
 _HEAD_HOLDING_OBJECT = re.compile(
     r"(?<![\w.])github(?:\.event(?:\.pull_request(?:\.head)?"
-    r"|\.workflow_run(?:\.pull_requests(?:\[\d+\])?(?:\.head)?)?)?)?(?![\w.\[])",
+    rf"|\.workflow_run(?:\.pull_requests{_ANY_INDEX}?(?:\.head)?)?)?)?(?![\w.\[])",
     re.IGNORECASE,
 )
 
@@ -588,6 +592,15 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "ref: ${{ github.event.workflow_run.head_repository.full_name }}\n",
             "ref: ${{ github.event.workflow_run.pull_requests[0].head.sha }}\n",
             "ref: ${{ github.event.workflow_run.pull_requests[0]['head']['sha'] }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests[ 0 ].head.sha }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests[\u00a00].head.ref }}\n",
+            "ref: |\n            ${{ github.event.workflow_run.pull_requests[\n            0\n            ].head.sha }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests['0'].head.sha }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests['0e0'].head.repo }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests[''].head.sha }}\n",
+            "ref: ${{ github.event.workflow_run.pull_requests['1'].head.sha }}\n",
+            "ref: ${{ toJSON(github.event.workflow_run.pull_requests[ 0 ].head) }}\n",
+            "ref: ${{ toJSON(github.event.workflow_run.pull_requests['0']) }}\n",
             "ref: ${{ toJSON(github.event.pull_request.head) }}\n",
             "ref: ${{ toJSON(github.event.pull_request) }}\n",
             "ref: ${{ toJSON(github.event.workflow_run) }}\n",
@@ -611,6 +624,8 @@ class TestUngatedSecretJobs(unittest.TestCase):
             "github.event.pull_request.number",
             "github.event.workflow_run.conclusion",
             "github.event.workflow_run.pull_requests[0].number",
+            "github.event.workflow_run.pull_requests[ 0 ].number",
+            "github.event.workflow_run.pull_requests['0'].base.sha",
             "github.repository",
         ):
             with self.subTest(unflagged=unflagged):
