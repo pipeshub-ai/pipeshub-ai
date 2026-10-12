@@ -52,6 +52,18 @@ export function containsHTMLTag(value: string): boolean {
   );
 }
 
+/** Script tags written in an encoded form, which the check refuses as well. */
+const ENCODED_SCRIPT_TAGS = ['&lt;script', '%3cscript', '&#60;script', '&#x3c;script'];
+
+/**
+ * True when the string holds a script tag in an encoded form such as
+ * `&lt;script`. Used both to refuse a value and to explain the refusal.
+ */
+export function containsEncodedScriptTag(value: string): boolean {
+  const normalized = value.toLowerCase();
+  return ENCODED_SCRIPT_TAGS.some((tag) => normalized.includes(tag));
+}
+
 /**
  * Checks if a string contains potentially dangerous XSS patterns
  * @param value - The string to check
@@ -132,12 +144,7 @@ export function containsXSSPattern(value: string | undefined | null): boolean {
   }
 
   // Check for encoded script tags (common obfuscation techniques)
-  if (
-    normalized.includes('&lt;script') ||
-    normalized.includes('%3cscript') ||
-    normalized.includes('&#60;script') ||
-    normalized.includes('&#x3c;script')
-  ) {
+  if (containsEncodedScriptTag(normalized)) {
     return true;
   }
 

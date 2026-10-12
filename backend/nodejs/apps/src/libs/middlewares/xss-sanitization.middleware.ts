@@ -3,6 +3,7 @@ import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
 import {
+  containsEncodedScriptTag,
   containsHTMLTag,
   containsXSSPattern,
   XSS_CHECK_MAX_LENGTH,
@@ -96,6 +97,13 @@ function xssRejectionMessage(value: string, field: string): string {
       `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
       `Text in angle brackets, such as <id>, counts as an HTML tag. ` +
       `Please remove any HTML tags and try again.`
+    );
+  }
+  if (containsEncodedScriptTag(value)) {
+    return (
+      `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+      `A script tag written in an encoded form, such as &lt;script or %3Cscript, counts. ` +
+      `Please remove it and try again.`
     );
   }
   return (

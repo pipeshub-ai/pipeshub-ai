@@ -890,6 +890,18 @@ describe('XSS Sanitization Middleware', () => {
       expect(body.error.message).not.to.include('<id>')
     })
 
+    it('names an encoded script tag rather than tags or javascript: links', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        query: '&lt;script&gt;alert(1)&lt;/script&gt;',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"query"')
+      expect(body.error.message).to.include('&lt;script')
+      expect(body.error.message).not.to.include('<id>')
+      expect(body.error.message).not.to.include('javascript:')
+    })
+
     it('says an over-long value is too long rather than that it holds HTML', async () => {
       const { status, body } = await post('/api/v1/search', {
         text: 'a'.repeat(100001),
