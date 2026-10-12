@@ -16,6 +16,9 @@ from app.agents.actions.storage_search.storage_search import (
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
 from app.utils.pattern_match import (
     _MAX_GREP_OUTPUT_CHARS,
+    _fuse_ranked,
+    _merge_command_hits,
+    keyword_match_rank,
     _MAX_GREP_STDOUT_BYTES,
     _cap_grep_output,
     _ensure_null_delimited_pipeline,
@@ -78,6 +81,42 @@ class TestRanking:
     def test_inverted_filter_stage_is_not_a_search_term(self):
         regexes = _grep_search_regexes('grep -rci "billion" . | grep -v \':0$\' | head -200')
         assert [r.pattern for r in regexes] == ["billion"]
+
+
+class TestRankFusion:
+    def test_a_record_two_commands_rank_beats_one_a_broad_command_ranks_first(self) -> None:
+        found: dict = {}
+        _fuse_ranked(found, [
+            {"virtual_record_id": "broad-only", "grep_rank": 0, "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "grep_rank": 1, "matched_terms": "2", "match_count": "3"},
+        ])
+        _fuse_ranked(found, [{"virtual_record_id": "both", "grep_rank": 0, "matched_terms": "2", "match_count": "2"}])
+
+        order = sorted(found.values(), key=keyword_match_rank, reverse=True)
+
+        assert [r["virtual_record_id"] for r in order] == ["both", "broad-only"]
+        assert found["both"]["match_count"] == "3"
+
+    @staticmethod
+    def _merged_order(monkeypatch: pytest.MonkeyPatch, mode: str | None) -> list[str]:
+        if mode is None:
+            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("HIGH_ACCURACY_MODE", mode)
+        found: dict = {}
+        _merge_command_hits(found, [
+            {"virtual_record_id": "broad-only", "grep_rank": 0, "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "grep_rank": 1, "matched_terms": "2", "match_count": "3"},
+        ])
+        _merge_command_hits(found, [{"virtual_record_id": "both", "grep_rank": 0, "matched_terms": "2", "match_count": "2"}])
+        return [r["virtual_record_id"] for r in sorted(found.values(), key=keyword_match_rank, reverse=True)]
+
+    def test_commands_are_fused_only_in_high_accuracy_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._merged_order(monkeypatch, "true") == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("mode", [None, "false", "1", ""])
+    def test_otherwise_the_best_match_counts_rank_first(self, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
+        assert self._merged_order(monkeypatch, mode) == ["broad-only", "both"]
 
 
 def test_hint_shows_matched_text():

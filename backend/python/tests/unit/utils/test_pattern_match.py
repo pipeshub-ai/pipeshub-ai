@@ -3293,7 +3293,7 @@ class TestRunPatternMatchWithLlmGrep:
                 run_pattern_match_with_llm_grep(**self._base_kwargs(), llm=MagicMock()), timeout=5,
             )
 
-        assert result == [{"virtual_record_id": "vr-fast"}]
+        assert [r["virtual_record_id"] for r in result] == ["vr-fast"]
         assert slow_cancelled.is_set()
 
     @pytest.mark.asyncio
@@ -3367,7 +3367,7 @@ class TestRunPatternMatchWithLlmGrep:
             result = await run_pattern_match_with_llm_grep(
                 **self._base_kwargs(), llm=MagicMock(),
             )
-        assert result == expected
+        assert [r["virtual_record_id"] for r in result] == ["vr-2"]
         mock_pipeline.assert_called_once()
         assert mock_pipeline.call_args.kwargs["grep_command"] == 'grep -rci "MCP" .'
         assert mock_pipeline.call_args.kwargs["skip_grep_validation"] is True
