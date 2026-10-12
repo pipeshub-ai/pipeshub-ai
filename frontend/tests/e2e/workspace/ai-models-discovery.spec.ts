@@ -140,7 +140,7 @@ test('an admin picks models, sets a flag per model, and retries the one that fai
   expect(first.configuration).toEqual({ apiKey: 'sk-test' });
   const sent = new Map(first.models.map((item) => [item.model, item]));
   expect(sent.get('gpt-4o')).toMatchObject({ isMultimodal: true, contextLength: 128000 });
-  expect(sent.get('gpt-4o-mini')).toMatchObject({ isReasoning: true });
+  expect(sent.get('gpt-4o-mini')).toMatchObject({ isMultimodal: true, isReasoning: true });
   expect(sent.get('o3')).toMatchObject({ isReasoning: true });
 
   await expect(page.getByRole('switch', { name: 'Reasoning for gpt-4o' })).toHaveCount(0);
