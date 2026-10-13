@@ -774,3 +774,16 @@ class TestAGroupContinues:
         claimed = re.search(r"showed the (\d+) block\(s\) most relevant to the question, of 400", text)
         assert claimed is not None and int(claimed.group(1)) == len(shown)
         assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
+
+    @pytest.mark.asyncio
+    async def test_a_child_that_could_not_be_clipped_is_not_skipped(self) -> None:
+        from app.utils.render_budget import RenderBudget
+
+        record = self._list(image=False)
+        record["block_containers"]["blocks"][0]["data"] = "gl para 0 " + "x" * 70_000
+        context = _context(query="")
+        with patch.object(RenderBudget, "take", return_value=None):
+            text = await _fetch(context, [record])
+
+        assert "start_block=0 to read it on its own" in text
+        assert _outcome(context, "rec-gl")["blocksRendered"] == 0

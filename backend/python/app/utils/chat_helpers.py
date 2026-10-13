@@ -4614,7 +4614,12 @@ def record_to_message_content(
                         template, parent_index, label, _without_pixels(unfit_unit), record_file_path,
                     )
                     emitted = render_budget.take(f"{clipped_text}\n\n")
-                    content.append({"type": "text", "text": emitted or ""})
+                    if not emitted:
+                        if _truncated_at is None:
+                            _truncated_at = unfit_unit[0]["block_index"]
+                        render_budget.stop_at(unfit_unit[0]["block_index"])
+                        break
+                    content.append({"type": "text", "text": emitted})
                     _renderable_rendered += 1
                     render_budget.count_block()
                     render_budget.stop_at(unfit_unit[0]["block_index"] + 1)
