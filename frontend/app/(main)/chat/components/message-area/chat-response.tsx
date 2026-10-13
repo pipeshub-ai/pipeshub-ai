@@ -620,6 +620,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 payload={pendingAskUserQuestion.payload}
                 initialAnswers={pendingAskUserQuestion.answers}
                 status={pendingAskUserQuestion.status}
+                sentAnswers={pendingAskUserQuestion.sentAnswers}
                 onAnswersChange={(nextAnswers) => {
                   const sid = useChatStore.getState().activeSlotId;
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;

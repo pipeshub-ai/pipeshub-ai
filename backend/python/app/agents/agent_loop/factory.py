@@ -1132,8 +1132,10 @@ class PipesHubAgentFactory:
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
+        seen_call_ids: set[str] = set()
         for turn in previous_conversations:
             messages = _convert_conversation_turn(turn)
+            _dedupe_tool_call_ids(messages, seen_call_ids)
 
             if (
                 turn.get("role") == "user_query"
@@ -1238,8 +1240,33 @@ def _is_empty_fallback_assistant(msg: Message) -> bool:
     )
 
 
+def _turn_asked_user_question(turn: dict[str, Any]) -> bool:
+    return any(
+        "ask_user_question" in str(row.get("tool_name") or "")
+        for row in turn.get("tool_results") or []
+    )
+
+
 def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
-    """Original user goal when this request is an ask_user_question resume."""
+    """User text that opened the unanswered card — not a later regular chat.
+
+    Resume after chatting on used to take the latest user_query, so the model
+    regenerated that later reply and the UI painted it onto the card.
+    """
+    card_goal = fallback
+    last_user: str | None = None
+    saw_card = False
+    for turn in previous_conversations or []:
+        role = turn.get("role")
+        content = str(turn.get("content") or "").strip()
+        if role == "user_query":
+            if content and not is_ask_user_question_resume_query(content):
+                last_user = content
+        elif role == "bot_response" and _turn_asked_user_question(turn) and last_user:
+            card_goal = last_user
+            saw_card = True
+    if saw_card:
+        return card_goal
     for turn in reversed(previous_conversations or []):
         if turn.get("role") != "user_query":
             continue
@@ -1247,6 +1274,25 @@ def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fa
         if content and not is_ask_user_question_resume_query(content):
             return content
     return fallback
+
+
+def _find_ask_user_question_call(
+    messages: list[Message],
+    start: int,
+    end: int,
+) -> tuple[int | None, str | None]:
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i in range(start, end):
+        msg = messages[i]
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" in (call.name or ""):
+                keep_through = i
+                tool_call_id = call.id
+                break
+    return keep_through, tool_call_id
 
 
 async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
@@ -1260,30 +1306,29 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
     History replay already has the first request's tool result (the
     questions payload) plus the empty-answer fallback AssistantMessage.
     Appending a second ToolMessage after that text is invalid, so the
-    tail after the parked tool-call AssistantMessage is dropped first.
+    questions payload is replaced by the answers and the fallback tail is
+    dropped. A turn replays as one AssistantMessage carrying every call it
+    made, so the results of the other calls stay right after it.
+
+    A card left unanswered before later chat is still that older call.
+    Continuing from the later turn made the model repeat that chat; the
+    follow-up belongs under the card, so later turns stay out of this run.
     """
     ctx = agent.context
     if ctx is None:
         return
     messages = await ctx.messages()
-    # Only the newest user turn can still be parked on a card. Binding to an
-    # older turn's call — a card the user left unanswered before chatting on —
-    # would truncate every turn since; the synthetic branch below keeps them.
     turn_start = 0
     for i, msg in enumerate(messages):
         if isinstance(msg, UserMessage):
             turn_start = i
-    keep_through: int | None = None
-    tool_call_id: str | None = None
-    for i in range(turn_start, len(messages)):
-        msg = messages[i]
-        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
-            continue
-        for call in reversed(msg.tool_calls):
-            if "ask_user_question" in (call.name or ""):
-                keep_through = i
-                tool_call_id = call.id
-                break
+    keep_through, tool_call_id = _find_ask_user_question_call(
+        messages, turn_start, len(messages),
+    )
+    if tool_call_id is None:
+        keep_through, tool_call_id = _find_ask_user_question_call(
+            messages, 0, turn_start,
+        )
     if tool_call_id is None:
         trimmed = list(messages)
         while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
@@ -1301,9 +1346,15 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
             )],
         ))
     else:
+        tool_block_end = keep_through + 1
+        while tool_block_end < len(messages) and isinstance(messages[tool_block_end], ToolMessage):
+            tool_block_end += 1
         await ctx.clear()
         for msg in messages[: keep_through + 1]:
             await ctx.add(msg)
+        for msg in messages[keep_through + 1 : tool_block_end]:
+            if msg.tool_call_id != tool_call_id:
+                await ctx.add(msg)
     await ctx.add(ToolMessage(
         content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
         tool_call_id=tool_call_id,
@@ -1313,6 +1364,32 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
 def _scrub_legacy_system_note(text: str) -> str:
     text = text.replace(_V1_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
     return text.replace(_V2_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
+
+
+def _dedupe_tool_call_ids(messages: list[Message], seen: set[str]) -> None:
+    """Rename a replayed call whose id an earlier turn already used.
+
+    Node falls back to one fixed id for every saved `ask_user_question`, and a
+    provider rejects two calls sharing an id. `seen` carries the ids across turns.
+    """
+    assigned: dict[str, list[str]] = {}
+    used: dict[str, int] = {}
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for call in msg.tool_calls or []:
+                original = call.id
+                if original in seen:
+                    n = 2
+                    while f"{original}_{n}" in seen:
+                        n += 1
+                    call.id = f"{original}_{n}"
+                seen.add(call.id)
+                assigned.setdefault(original, []).append(call.id)
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
+            ids = assigned[msg.tool_call_id]
+            nth = used.get(msg.tool_call_id, 0)
+            used[msg.tool_call_id] = nth + 1
+            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
 
 
 def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:

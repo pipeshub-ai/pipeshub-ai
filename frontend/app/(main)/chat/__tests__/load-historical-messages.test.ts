@@ -843,3 +843,95 @@ describe('loadHistoricalMessages', () => {
     expect(unansweredAskUserQuestion).toBeNull();
   });
 });
+
+
+describe('an agent that re-asks a question the user already answered', () => {
+  const question = (uuid: string, text: string, labels: string[]) => ({
+    uuid,
+    question: text,
+    multiSelect: false,
+    options: labels.map((label, i) => ({ id: `${uuid}-o${i}`, label, isUserInput: false })),
+  });
+  const fiscalYear = question('q-fy', 'Which fiscal year should I use?', ['FY2024', 'Most recent matching pair']);
+  const scope = question('q-scope', 'Compare revenue or headcount?', ['Revenue', 'Headcount']);
+  const payload = (...questions: ReturnType<typeof question>[]) => ({ name: 'ask_user_question', questions });
+  const asked = (id: string, p: ReturnType<typeof payload>) =>
+    message({ _id: id, messageType: 'tool_call', tools: [{ toolName: 'ask_user_question', toolResult: p }] } as Partial<ConversationMessage>);
+  const said = (id: string, content: string) => message({ _id: id, messageType: 'user_query', content });
+  const replied = (id: string, content = '') => message({ _id: id, messageType: 'bot_response', content });
+  const picked = 'User selections:\n1. "Which fiscal year should I use?" → Most recent matching pair';
+
+  it('keeps the card closed when the same question comes back', () => {
+    const { unansweredAskUserQuestion, messages } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(fiscalYear)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+    const card = messages.find((m) => m.id === 'b1')?.metadata?.custom as Record<string, unknown>;
+    expect(Object.keys(card.persistedAskUserQuestionAnswers as object)).toEqual(['q-fy']);
+  });
+
+  it('keeps it closed when the model words the same question slightly differently', () => {
+    const reworded = question('q-fy-2', '  WHICH fiscal year should I use ', ['FY2024', 'Most recent matching pair']);
+    const { unansweredAskUserQuestion, messages } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(reworded)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+    const card = messages.find((m) => m.id === 'b1')?.metadata?.custom as { persistedAskUserQuestion: { questions: unknown[] } };
+    expect(card.persistedAskUserQuestion.questions).toHaveLength(1);
+  });
+
+  it('keeps it closed when the same question comes back more than once', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(fiscalYear)), replied('b2'),
+      said('u3', picked), asked('t3', payload(fiscalYear)), replied('b3'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+  });
+
+  it('keeps it closed when only one question of a two-question card comes back', () => {
+    const both =
+      'User selections:\n1. "Which fiscal year should I use?" → FY2024\n2. "Compare revenue or headcount?" → Revenue';
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear, scope)), replied('b1'),
+      said('u2', both), asked('t2', payload(fiscalYear)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion).toBeNull();
+  });
+
+  it('still reopens the card for a question the user has not answered', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), asked('t2', payload(scope)), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
+    expect(unansweredAskUserQuestion?.payload.questions).toHaveLength(2);
+    expect(Object.keys(unansweredAskUserQuestion?.answers ?? {})).toEqual(['q-fy']);
+  });
+
+  it('still lets the user retry when the resume came back empty without asking again', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'Compare Asana Q3 vs Q4'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), replied('b2'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b1');
+  });
+
+  it('treats the same question in a later turn as a new question', () => {
+    const { unansweredAskUserQuestion } = loadHistoricalMessages([
+      said('u1', 'first'), asked('t1', payload(fiscalYear)), replied('b1'),
+      said('u2', picked), replied('b2', 'first answer'),
+      said('u3', 'second'), asked('t3', payload(fiscalYear)), replied('b3'),
+    ]);
+
+    expect(unansweredAskUserQuestion?.assistantMessageId).toBe('b3');
+  });
+});
