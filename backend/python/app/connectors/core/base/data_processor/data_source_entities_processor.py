@@ -3085,7 +3085,9 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
-    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str) -> bool:
+    async def has_stored_permissions(
+        self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
+    ) -> bool:
         """Whether this connector's record group, user group or role ``external_id`` has
         permission edges stored.
 
@@ -3093,6 +3095,10 @@ class DataSourceEntitiesProcessor:
         in full. ``entity`` is ``record_group``, ``user_group`` or ``role``. A read that
         fails raises: taken for "nothing stored", it would let a partial list replace the
         stored one.
+
+        ``keep=True`` is for a caller that holds the node back when it is stored: the node is
+        then noted as seen by the full sync in progress, if any, so the unlink after that
+        sync leaves the kept edges alone.
         """
         async with self.data_store_provider.transaction() as tx_store:
             if entity == "record_group":
@@ -3112,7 +3118,9 @@ class DataSourceEntitiesProcessor:
             edges = await tx_store.get_edges_to_node(
                 f"{collection}/{node.id}", CollectionNames.PERMISSION.value, raise_on_error=True
             )
-            return bool(edges)
+        if edges and keep:
+            self._note_full_sync_seen(connector_id, collection, node.id)
+        return bool(edges)
 
     @retry_on_deadlock()
     async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
