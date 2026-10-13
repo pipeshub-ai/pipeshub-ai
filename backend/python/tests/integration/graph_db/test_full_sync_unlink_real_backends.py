@@ -513,9 +513,9 @@ async def test_a_channel_whose_members_cannot_be_read_fails_closed(sync: _Sync) 
         assert links["belongs_to"] == 1 and links["inherits"] == 1, (name, links)
 
 
-async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_full_sync(sync: _Sync) -> None:
-    """ServiceNow writes such groups without members and adds them one at a
-    time, which only ever adds."""
+async def _department(sync: _Sync) -> tuple[Callable[[], AppUserGroup], Callable[[], Awaitable[set[str]]]]:
+    """A ServiceNow-style department with alice and bob as members, written as
+    the connector does: the group without members, then one membership per user."""
     users = CollectionNames.USERS.value
     await sync.graph.batch_create_edges(
         [{"from_id": key, "from_collection": users, "to_id": sync.connector_id,
@@ -526,7 +526,7 @@ async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_ful
     )
 
     def department() -> AppUserGroup:
-        # One id across both writes, so both backends upsert the same node.
+        # One id across writes, so both backends upsert the same node.
         return AppUserGroup(id=f"dept-{sync.connector_id}", app_name=Connectors.SERVICENOW,
                             connector_id=sync.connector_id, source_user_group_id="dept-1",
                             name="Sales", org_id=sync.org_id)
@@ -542,14 +542,91 @@ async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_ful
     for key in (sync.alice, sync.bob):
         assert await sync.processor.create_user_group_membership(f"src-{key}", "dept-1", sync.connector_id)
     assert await members() == {sync.alice, sync.bob}
+    return department, members
+
+
+async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_full_sync(sync: _Sync) -> None:
+    department, members = await _department(sync)
 
     async def script(s: _Sync) -> None:
         await s.processor.batch_upsert_user_groups([department()])
         # Bob left the department at the source.
-        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
         await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
 
     task, _ = await sync.full_sync(script)
     await asyncio.wait_for(task, timeout=60)
 
     assert await members() == {sync.alice}
+
+
+async def test_a_user_page_that_fails_leaves_the_members_not_yet_read(sync: _Sync) -> None:
+    """ServiceNow reads users 100 to a page and adds memberships page by page."""
+    department, members = await _department(sync)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        raise RuntimeError("ServiceNow API error on the next user page")
+
+    task, _ = await sync.full_sync(script)
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(task, timeout=60)
+
+    assert await members() == {sync.alice, sync.bob}
+
+
+async def test_a_sync_stopped_after_the_first_member_keeps_the_rest(sync: _Sync) -> None:
+    department, members = await _department(sync)
+    first_written = asyncio.Event()
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        first_written.set()
+        await asyncio.Event().wait()
+
+    task, lease = await sync.full_sync(script)
+    await asyncio.wait_for(first_written.wait(), timeout=60)
+    lease.stop_requested.set()
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await members() == {sync.alice, sync.bob}
+
+
+async def test_a_membership_that_does_not_land_keeps_the_groups_members(sync: _Sync) -> None:
+    """The store answers False (here a user it cannot find); the list this sync
+    read is not complete, so the group keeps the members it has."""
+    department, members = await _department(sync)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        assert not await s.processor.create_user_group_membership("src-unknown", "dept-1", s.connector_id)
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await members() == {sync.alice, sync.bob}
+
+
+async def test_a_moved_record_gets_its_fetched_grants_in_a_full_sync(sync: _Sync) -> None:
+    """A move that carries the record's complete permission list (Local FS)
+    replaces its grants; one that carries none (GitHub, GitLab) only adds."""
+    await _first_sync(sync, inherit=False)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice, s.bob))])
+        moved, _ = s.message("m1-renamed", inherit=False)
+        await s.processor.on_records_moved(
+            [(f"m1-{s.connector_id}", moved, [s.grant(s.alice)])], permissions_fetched=True
+        )
+        renamed, _ = s.message("m2-renamed", inherit=False)
+        await s.processor.on_records_moved([(f"m2-{s.connector_id}", renamed, [])])
+        await s.processor.on_new_records([s.message("m3", readers=(s.alice, s.bob), inherit=False)])
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await sync.can_read(sync.alice, "m1-renamed")
+    assert not await sync.can_read(sync.bob, "m1-renamed"), "bob's grant was revoked at the source"
+    assert await sync.can_read(sync.alice, "m2-renamed") and await sync.can_read(sync.bob, "m2-renamed")

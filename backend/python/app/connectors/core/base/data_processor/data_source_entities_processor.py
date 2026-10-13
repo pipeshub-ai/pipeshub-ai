@@ -23,7 +23,12 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
-from app.connectors.core.sync.full_sync_coverage import PERMISSIONS_REWRITTEN, FullSyncSeen
+from app.connectors.core.sync.full_sync_coverage import (
+    GROUP_MEMBERS_UNSURE,
+    GROUP_MEMBERSHIP,
+    PERMISSIONS_REWRITTEN,
+    FullSyncSeen,
+)
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -2168,8 +2173,15 @@ class DataSourceEntitiesProcessor:
     async def on_records_moved(
         self,
         moves: list[tuple[str, Record, list[Permission]]],
+        *,
+        permissions_fetched: bool = False,
     ) -> None:
         """Apply in-place rename / move for a batch of records.
+
+        ``permissions_fetched``: each move's permission list is the complete one
+        the connector read for the record (Local FS). Only then may a full sync
+        replace the record's grants with it; otherwise they are added to, as the
+        GitHub and GitLab connectors pass none for a rename.
 
         Each element of *moves* is ``(old_external_id, new_record, permissions)``
         where *old_external_id* is the ``external_record_id`` that was previously
@@ -2245,7 +2257,9 @@ class DataSourceEntitiesProcessor:
                         continue
 
                     if old_record is None:
-                        processed, process_moves = await self._process_record(new_record, permissions, tx_store)
+                        processed, process_moves = await self._process_record(
+                            new_record, permissions, tx_store, permissions_fetched=permissions_fetched
+                        )
                         fallback_pending_moves.extend(process_moves)
                         if processed:
                             new_records_to_publish.append(processed)
@@ -2425,7 +2439,17 @@ class DataSourceEntitiesProcessor:
                         # existing_record=None forces _handle_parent_record to build a
                         # fresh parent edge (the stale one was deleted above).
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
-                        await self._handle_record_permissions(new_record, permissions, tx_store)
+                        # As in _process_record: only a complete, fetched list
+                        # replaces the grants, and only on the record's first
+                        # such write in a full sync.
+                        replace_permissions = permissions_fetched and self._first_full_sync_visit(
+                            new_record.connector_id, PERMISSIONS_REWRITTEN, new_record.id
+                        )
+                        await self._handle_record_permissions(
+                            new_record, permissions, tx_store, replace=replace_permissions
+                        )
+                        if permissions_fetched:
+                            self._note_full_sync_seen(new_record.connector_id, PERMISSIONS_REWRITTEN, new_record.id)
                         self._note_full_sync_seen(
                             new_record.connector_id, CollectionNames.RECORDS.value, new_record.id
                         )
@@ -3789,9 +3813,6 @@ class DataSourceEntitiesProcessor:
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         for ug in user_groups:
             ug.org_id = self.org_id
-        # Not noted as seen for a full sync: a group's members come afterwards
-        # through create_user_group_membership, which notes it. Seen means its
-        # member list was rewritten in this sync.
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_user_groups(user_groups)
 
@@ -4146,37 +4167,77 @@ class DataSourceEntitiesProcessor:
         group_external_id: str,
         connector_id: str,
     ) -> bool:
+        """Add one member to a user group. Only ever adds.
+
+        During a full sync the membership is also noted, so that once the sync
+        has run to the end the group's members can be replaced, in one write,
+        by exactly those it read (finish_full_sync_memberships). Deleting the old
+        members ahead of the list would take access away from everyone not yet
+        re-added if the sync stopped part-way.
+        """
+        tracking = self._full_sync_run(connector_id) is not None
         try:
             async with self._sync_transaction() as tx_store:
-                group = None
-                if self._full_sync_run(connector_id) is not None:
-                    # Memberships come one at a time and only add. In a full sync
-                    # the group's first one replaces the members it had, so a
-                    # member removed at the source goes; later ones add. A group
-                    # that gets no member this sync stays unseen and is unlinked
-                    # after it, which clears its members too.
-                    group = await tx_store.get_user_group_by_external_id(
-                        connector_id, group_external_id, raise_on_error=True
-                    )
-                    if group is not None and self._first_full_sync_visit(
-                        connector_id, CollectionNames.GROUPS.value, group.id
-                    ):
-                        await tx_store.delete_edges_to(
-                            group.id, CollectionNames.GROUPS.value, CollectionNames.PERMISSION.value
-                        )
                 created = await tx_store.create_user_group_membership(
                     user_source_id, group_external_id, connector_id
                 )
-                if group is not None:
-                    self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, group.id)
+                if not tracking:
+                    return created
+                user = await tx_store.get_user_by_source_id(user_source_id, connector_id) if created else None
+                if created and user is not None:
+                    self._note_full_sync_seen(
+                        connector_id,
+                        GROUP_MEMBERSHIP,
+                        (group_external_id, user.id, user_source_id, user.email),
+                    )
+                else:
+                    self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
                 return created
         except Exception as e:
+            if tracking:
+                self._note_full_sync_seen(connector_id, GROUP_MEMBERS_UNSURE, group_external_id)
             self.logger.error(
                 f"Failed to create user group membership "
                 f"({user_source_id} -> {group_external_id}): {e}",
                 exc_info=True,
             )
             return False
+
+    async def finish_full_sync_memberships(self, connector_id: str, run: FullSyncSeen) -> None:
+        """After a full sync ran to the end, give each group that gained members
+        one at a time exactly the members this sync read for it.
+
+        One replace per group, from the complete list, so a member removed at the
+        source goes and nobody is ever left without access part-way. A group one
+        of whose membership writes did not land keeps the members it has. A group
+        that on_new_user_groups already rewrote is left as it is. Every group
+        handled here counts as seen, so the unlink after this does not touch it.
+        Raises on failure: the caller then owes another full sync.
+        """
+        groups = CollectionNames.GROUPS.value
+        external_ids = set(run.group_memberships) | run.groups_members_unsure
+        if not external_ids:
+            return
+        for external_id in sorted(external_ids):
+            async with self.data_store_provider.transaction() as tx_store:
+                group = await tx_store.get_user_group_by_external_id(
+                    connector_id, external_id, raise_on_error=True
+                )
+                if group is None or run.has(groups, group.id):
+                    continue
+                if external_id not in run.groups_members_unsure:
+                    edges = [
+                        Permission(
+                            external_id=source_id,
+                            email=email,
+                            type=PermissionType.READ,
+                            entity_type=EntityType.USER,
+                        ).to_arango_permission(user_id, CollectionNames.USERS.value, group.id, groups)
+                        for user_id, (source_id, email) in run.group_memberships.get(external_id, {}).items()
+                    ]
+                    await tx_store.replace_edges_to(group.id, groups, edges, CollectionNames.PERMISSION.value)
+            run.add(groups, group.id)
+        await self._access_changed([connector_id])
 
     async def update_user_group_name(
         self,

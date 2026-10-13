@@ -275,26 +275,110 @@ class TestWhatTheProcessorNotes:
         processor.end_full_sync_run("a", a)
         assert processor._full_sync_run("a") is None and processor._full_sync_run("b") is b
 
-    @pytest.mark.asyncio
-    async def test_a_groups_first_membership_in_a_full_sync_replaces_its_members(self) -> None:
-        """ServiceNow writes organisational groups without members and adds them
-        one at a time, which only adds: someone who left would keep access."""
+    @staticmethod
+    def _membership_store(*results: bool) -> MagicMock:
         tx = MagicMock()
+        tx.create_user_group_membership = AsyncMock(side_effect=list(results))
+        tx.get_user_by_source_id = AsyncMock(
+            side_effect=lambda source_id, _connector: MagicMock(id=f"user-{source_id}", email=f"{source_id}@x")
+        )
         tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="g1"))
-        tx.delete_edges_to = AsyncMock(return_value=2)
-        tx.create_user_group_membership = AsyncMock(return_value=True)
+        tx.replace_edges_to = AsyncMock()
+        tx.delete_edges_to = AsyncMock()
+        return tx
 
+    def _membership_processor(self, tx: MagicMock) -> DataSourceEntitiesProcessor:
         @contextlib.asynccontextmanager
         async def transaction() -> AsyncIterator[MagicMock]:
             yield tx
 
-        processor = self._processor(transaction)
-        assert await processor.create_user_group_membership("u1", "dept-1", "c1")
-        tx.delete_edges_to.assert_not_awaited()  # no full sync: add only, as before
+        return self._processor(transaction)
 
+    @pytest.mark.asyncio
+    async def test_memberships_only_add_while_the_sync_runs(self) -> None:
+        """ServiceNow adds organisational-group members one user page at a time.
+        Deleting ahead of the full list would lock out everyone not yet re-added
+        if a later page failed, so nothing is deleted during the sync."""
+        tx = self._membership_store(True, True)
+        processor = self._membership_processor(tx)
         run = processor.begin_full_sync_run("c1")
+
         assert await processor.create_user_group_membership("u1", "dept-1", "c1")
         assert await processor.create_user_group_membership("u2", "dept-1", "c1")
 
-        tx.delete_edges_to.assert_awaited_once_with("g1", CollectionNames.GROUPS.value, CollectionNames.PERMISSION.value)
+        tx.delete_edges_to.assert_not_awaited()
+        tx.replace_edges_to.assert_not_awaited()
+        assert not run.has(CollectionNames.GROUPS.value, "g1"), "seen only once replaced"
+
+    @pytest.mark.asyncio
+    async def test_after_the_sync_each_group_gets_exactly_the_members_it_read(self) -> None:
+        tx = self._membership_store(True, True)
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+        await processor.create_user_group_membership("u2", "dept-1", "c1")
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        tx.replace_edges_to.assert_awaited_once()
+        group_id, collection, edges, edge_collection = tx.replace_edges_to.await_args.args
+        assert (group_id, collection, edge_collection) == (
+            "g1", CollectionNames.GROUPS.value, CollectionNames.PERMISSION.value
+        )
+        assert len(edges) == 2
         assert run.has(CollectionNames.GROUPS.value, "g1")
+
+    @pytest.mark.asyncio
+    async def test_a_membership_that_did_not_land_keeps_the_groups_members(self) -> None:
+        """The store answers False for a missing user or an error it swallowed:
+        the list read is not complete, so the group is not replaced."""
+        tx = self._membership_store(True, False)
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+        await processor.create_user_group_membership("u2", "dept-1", "c1")
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        tx.replace_edges_to.assert_not_awaited()
+        assert run.has(CollectionNames.GROUPS.value, "g1"), "kept as it is, so not unlinked either"
+
+    @pytest.mark.asyncio
+    async def test_outside_a_full_sync_memberships_are_not_tracked(self) -> None:
+        tx = self._membership_store(True)
+        processor = self._membership_processor(tx)
+        assert await processor.create_user_group_membership("u1", "dept-1", "c1")
+        tx.get_user_by_source_id.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_memberships_are_not_replaced_when_the_sync_raised() -> None:
+    gp = _graph_provider()
+    connector = _connector(None)
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock()
+
+    async def run_sync() -> None:
+        connector.data_entities_processor._note_full_sync_seen("c1", RECORDS, "r1")
+        raise RuntimeError("the next user page failed")
+
+    connector.run_sync = run_sync
+    with pytest.raises(RuntimeError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    connector.data_entities_processor.finish_full_sync_memberships.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_memberships_are_replaced_before_the_unlink() -> None:
+    gp = _graph_provider()
+    connector = _connector(None)
+    order: list[str] = []
+    connector.data_entities_processor.finish_full_sync_memberships = AsyncMock(
+        side_effect=lambda *_a: order.append("memberships")
+    )
+    gp.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=lambda *_a, **_k: order.append("unlink") or (0, True))
+    connector.run_sync = _writes_one_record(connector)
+
+    await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value)
+
+    assert order == ["memberships", "unlink"]

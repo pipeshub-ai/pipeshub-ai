@@ -43,6 +43,15 @@ class FullSyncCoverage:
 #: anything about who may read it.
 PERMISSIONS_REWRITTEN = "permissionsRewritten"
 
+#: Not a collection: one member a user group gained through a single membership
+#: write (ServiceNow's organisational groups). The node id is the tuple
+#: ``(group_external_id, user_id, user_source_id, email)``.
+GROUP_MEMBERSHIP = "groupMembership"
+
+#: Not a collection: the external id of a user group one of whose membership
+#: writes did not land, so its member list from this sync is not complete.
+GROUP_MEMBERS_UNSURE = "groupMembersUnsure"
+
 
 @dataclass
 class FullSyncSeen:
@@ -52,12 +61,20 @@ class FullSyncSeen:
         default_factory=lambda: {collection: set() for collection in TRACKED_COLLECTIONS}
     )
     permissions_rewritten: set[str] = field(default_factory=set)
+    #: group external id -> {user id: (user source id, email)} from membership writes.
+    group_memberships: dict[str, dict[str, tuple[str, str]]] = field(default_factory=dict)
+    groups_members_unsure: set[str] = field(default_factory=set)
 
-    def add(self, collection: str, node_id: str | None) -> None:
+    def add(self, collection: str, node_id: object) -> None:
         if not node_id:
             return
         if collection == PERMISSIONS_REWRITTEN:
             self.permissions_rewritten.add(node_id)
+        elif collection == GROUP_MEMBERSHIP:
+            group_external_id, user_id, source_id, email = node_id
+            self.group_memberships.setdefault(group_external_id, {})[user_id] = (source_id, email)
+        elif collection == GROUP_MEMBERS_UNSURE:
+            self.groups_members_unsure.add(node_id)
         elif collection in self.by_collection:
             self.by_collection[collection].add(node_id)
 
@@ -67,4 +84,4 @@ class FullSyncSeen:
         return node_id in self.by_collection.get(collection, ())
 
     def count(self) -> int:
-        return sum(len(ids) for ids in self.by_collection.values())
+        return sum(len(ids) for ids in self.by_collection.values()) + len(self.group_memberships)

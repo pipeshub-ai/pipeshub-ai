@@ -546,6 +546,11 @@ async def _unlink_what_full_sync_missed(
         logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
         return True
     try:
+        # Groups whose members came one at a time get the full list now, in one
+        # write each; only now is that list known to be complete.
+        finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
+        if callable(finish):
+            await finish(connector_id, seen)
         deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
             connector_id,
             seen.by_collection,
