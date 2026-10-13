@@ -1254,12 +1254,15 @@ class TestReindexEdgeCases:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the stored-access note fail, as a database error would."""
+    """Make reading the stored-access note fail as the graph stores do: a failed read raises
+    only when the caller asks for that, and otherwise comes back as None (no sync point)."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         if key.endswith("stored_access"):
-            raise RuntimeError("database unavailable")
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return None
         return await real(key, raise_on_error)
 
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
@@ -1404,6 +1407,34 @@ class TestUnreadApplicationRoles:
         assert acl_summary(db.record_group_permissions["10000"]) == before
         note = store.values_for("stored_access") or {}
         assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_with_what_was_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+        assert "20000" not in db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG's saved access is kept"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS had nothing stored, so the grants that were read are saved"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)

@@ -45,7 +45,9 @@ def _make_connector() -> JiraDataCenterConnector:
     cs.get_config = AsyncMock()
     connector = JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-gaps", "team", "u1")
     # The graph store is a mock here; the stored-access read is covered by the behaviour tests.
-    connector._stored_access_at_start = AsyncMock(return_value=frozenset())
+    connector._load_stored_access = AsyncMock()
+    connector._note_stored_access = AsyncMock()
+    connector._note_stored_project_keys = AsyncMock()
     return connector
 
 
