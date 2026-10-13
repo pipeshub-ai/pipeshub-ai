@@ -246,6 +246,13 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
         line = f"- {asked}: {entities}; {how}; mentioned in {count} readable record{'' if count == '1' else 's'}."
         if result.rejected:
             line += f" Not the same: {_entities(result.rejected, names)}."
+        if result.unchecked:
+            line += (
+                f" Longer names that may be the same could not be checked and were not used: "
+                f"{_entities(result.unchecked, names)}; call again with the full name to include one."
+            )
+        if result.more_longer_names:
+            line += " Many more readable names start with it; call again with the full name to include one."
         return line
     if result.status is LinkStatus.AMBIGUOUS:
         return f"- {asked}: too many readable entities start with this name; give the full name."

@@ -109,6 +109,21 @@ async def test_a_failed_or_empty_check_never_drops_the_exact_match(answer: dict[
     linking = await _link([([sam, sam_lee], False)], _Verifier(answer), mentions=mentions)
     (result,) = linking.results
     assert result.status is LinkStatus.MATCHED and result.accepted == [sam]
+    if answer is None:
+        assert result.unchecked == [sam_lee], "a check that never answered says what it left out"
+    else:
+        assert result.rejected == [sam_lee] and result.unchecked == []
+
+
+@pytest.mark.asyncio
+async def test_an_exact_match_beside_too_many_longer_names_says_so() -> None:
+    verifier = _Verifier({0: [0]})
+    sam = _c("e1", "Sam", "person", CandidateSource.EXACT)
+    mentions = _mentions({"name": "Sam", "kind": "person"})
+    linking = await _link([([sam], True)], verifier, mentions=mentions)
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [sam]
+    assert result.more_longer_names is True and verifier.calls == []
 
 
 @pytest.mark.asyncio

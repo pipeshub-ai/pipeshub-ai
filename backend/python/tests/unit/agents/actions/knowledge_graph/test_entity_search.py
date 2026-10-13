@@ -220,6 +220,20 @@ async def test_all_with_a_name_that_did_not_link_searches_nothing(
 
 
 @pytest.mark.asyncio
+async def test_an_exact_first_name_says_which_longer_names_it_left_out(wired: dict[str, Any]) -> None:
+    sam = _candidate("e-sam", "Sam", kind="person")
+    (mention,) = parse_mentions([{"name": "Sam", "kind": "person"}]).mentions
+    wired["linking"] = _linking(
+        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], unchecked=[_candidate("e-lee", "Sam Lee", kind="person")]),
+        LinkResult(mention, LinkStatus.MATCHED, accepted=[sam], more_longer_names=True),
+    )
+    wired["scope"] = RecordScope(per_name=[NameRecords("Sam", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
+    text = await entity_search.execute_search_by_entities(_state(), mentions=[{"name": "Sam", "kind": "person"}, "Sam Q"])
+    assert "Longer names that may be the same could not be checked and were not used: Sam Lee (person)" in text
+    assert "Many more readable names start with it" in text
+
+
+@pytest.mark.asyncio
 async def test_a_query_is_passed_as_given(wired: dict[str, Any]) -> None:
     wired["linking"] = _linking(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]))
     wired["scope"] = RecordScope(per_name=[NameRecords("Acme", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])

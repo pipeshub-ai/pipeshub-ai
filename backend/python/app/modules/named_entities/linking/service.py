@@ -54,7 +54,11 @@ class LinkResult:
     rejected: list[Candidate] = field(default_factory=list)
     """Readable look-alikes that are not the same thing."""
     unchecked: list[Candidate] = field(default_factory=list)
-    """Possible matches the verifier could not check (``UNVERIFIED``)."""
+    """Possible matches the verifier could not check: every candidate of an
+    ``UNVERIFIED`` name, or the longer names beside an exact match."""
+    more_longer_names: bool = False
+    """Beside an exact match, more readable names start with it than one check
+    can tell apart, so none of them was considered."""
 
 
 @dataclass(frozen=True)
@@ -125,7 +129,9 @@ class EntityLinker:
                     to_check.append((len(results), mention, offered, [c for c in longer if c not in offered], exact))
                     results.append(None)
                 else:
-                    results.append(LinkResult(mention, LinkStatus.MATCHED, accepted=exact))
+                    results.append(LinkResult(
+                        mention, LinkStatus.MATCHED, accepted=exact, more_longer_names=entry.ambiguous,
+                    ))
             elif entry.ambiguous:
                 results.append(LinkResult(mention, LinkStatus.AMBIGUOUS))
             elif not entry.candidates:
@@ -157,7 +163,8 @@ class EntityLinker:
             chosen = None if decided is None else decided.get(number)
             if chosen is None:
                 results[position] = (
-                    LinkResult(mention, LinkStatus.MATCHED, accepted=settled) if settled
+                    LinkResult(mention, LinkStatus.MATCHED, accepted=settled, rejected=refused, unchecked=offered)
+                    if settled
                     else LinkResult(mention, LinkStatus.UNVERIFIED, rejected=refused, unchecked=offered)
                 )
                 continue
