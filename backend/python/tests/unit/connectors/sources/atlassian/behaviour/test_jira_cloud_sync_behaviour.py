@@ -959,7 +959,8 @@ class TestUnfinishedUserRead:
         assert len(site_db.user_groups) == groups_saved, "no group is saved again"
         assert "1" in tickets(site_db), "issues are still synced"
 
-    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, api, site_db, checkpoints, search) -> None:
+    @pytest.mark.parametrize("status", [503, 408])
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, api, site_db, checkpoints, search, status) -> None:
         self._stub_bo_everywhere(api)
         site_db.active_users.append(type("U", (), {"email": "bo@acme.com"})())
         # Bo's email is hidden, so only the lookup by his PipesHub email finds him.
@@ -972,7 +973,7 @@ class TestUnfinishedUserRead:
         assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
 
         site_db.app_users.clear()  # nothing cached from the last sync, so the lookup is needed again
-        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=status))
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
@@ -1006,6 +1007,57 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == []
+
+    async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding back would leave everyone without access.
+        access = self._access(site_db)
+        assert access["devs"] == ["ana@acme.com"]
+        assert access["developers"] == []
+        assert access["lead"] == []
+        assert ("EntityType.GROUP", "grp-dev") in access["project"], "the grants that were read are saved"
+
+    async def test_a_full_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "bo@acme.com" in self._access(site_db)["devs"]
+
+        # A full sync's prep deletes the sync points and every stored grant before the connector runs.
+        checkpoints.sync_points.clear()
+        site_db.user_groups.clear()
+        site_db.app_roles.clear()
+        site_db.record_group_permissions.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        access = self._access(site_db)
+        assert access["devs"] == ["ana@acme.com"]
+        assert ("EntityType.GROUP", "grp-dev") in access["project"]
+
+    async def test_a_failed_lookup_after_the_user_list_is_refused_outright_still_fails_closed(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        api.on("GET", f"{JIRA}/users/search", json_response({"errorMessages": ["denied"]}, status=403))
+        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == [], "a refused user list is not kept open by a lookup that failed"
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
