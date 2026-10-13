@@ -1630,3 +1630,22 @@ class TestUnfinishedUserRead:
         await connector._fetch_users()
 
         assert connector._user_read_unfinished is True
+
+    async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert ("EntityType.USER", "PermissionType.READ", None, "carol@example.com") in before
+
+        # The same project (id 10000) now has the key NEW.
+        jira.on("GET", f"{API}/project", json_response([{"id": "10000", "key": "NEW", "name": "Engineering"}]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, (
+            "the project is known by its id, so its saved access is kept"
+        )
