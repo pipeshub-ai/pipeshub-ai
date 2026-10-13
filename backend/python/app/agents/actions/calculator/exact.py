@@ -384,22 +384,32 @@ def _power(base: Value, exponent: Value) -> Value:
         # An odd root of a negative number is real: (-b)**(p/q) = (-1)**p * b**(p/q).
         magnitude = _power(-base, exponent)
         return -magnitude if exponent.numerator % 2 else magnitude
-    # Judged on the exponent as given: 2 + 1e-400 is not an integer although
-    # a double rounds it to one.
+    # Decided on the base and exponent as given, before either is rounded:
+    # 0 ** 1e-400 is 0, not the 0 ** 0 of a flushed exponent, and 2 + 1e-400
+    # is not an integer although a double rounds it to one.
+    if exponent == 0:
+        return 1.0
+    if base == 0:
+        if exponent < 0:
+            raise CalculationError("Division by zero.")
+        return 0.0
     whole = exponent.denominator == 1 if isinstance(exponent, Fraction) else exponent.is_integer()
     e = _as_float(exponent, flush=True)
     try:
         b = _as_float(base)
     except _OutsideFloatRange:
-        if not isinstance(base, Fraction) or base <= 0:
+        if not isinstance(base, Fraction):
             raise
-        return _decimal_power(base, exponent)
+        if base > 0:
+            return _decimal_power(base, exponent)
+        if not whole:
+            raise CalculationError("A negative number to a fractional power has no real value.") from None
+        magnitude = _decimal_power(-base, exponent)
+        return -magnitude if int(Fraction(exponent)) % 2 else magnitude
     if b < 0 and not whole:
         raise CalculationError("A negative number to a fractional power has no real value.")
-    if b == 0 and e < 0:
-        raise CalculationError("Division by zero.")
     try:
-        return _bounded(math.pow(b, e), nonzero=b != 0)
+        return _bounded(math.pow(b, e), nonzero=True)
     except OverflowError as exc:
         raise CalculationError("The result is too large.") from exc
 

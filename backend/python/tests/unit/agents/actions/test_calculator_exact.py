@@ -252,6 +252,13 @@ class TestExactArithmetic:
             ("pi // 10**400", 0),
             ("(-pi) // 10**400", -1),
             ("sqrt(2) % 10**400", 1.4142135623731),
+            # Powers decided by the exponent and base as given, not as rounded.
+            ("0 ** 1e-400", 0),
+            ("sin(0) ** 1e-400", 0),
+            ("0 ** 1e-20", 0),
+            ("(-10**400) ** log(1)", 1),
+            ("(-1e-400) ** sin(0)", 1),
+            ("(10**400) ** log(1)", 1),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -333,6 +340,10 @@ class TestRefusedExpressions:
             ("(-8) ** (2 + 1e-400)", "no real value"),
             ("(-8) ** (1 + 1e-20)", "no real value"),
             ("(-pi) ** (2 + 1e-400)", "no real value"),
+            ("0 ** (-1e-400)", "Division by zero"),
+            ("sin(0) ** (-1e-400)", "Division by zero"),
+            ("(-10**400) ** (-log(e))", "too small"),
+            ("(-1e-400) ** (-log(e))", "too large"),
             ("atan2(1e-400, 1)", "too small"),
             ("asin(1e-400)", "too small"),
             ("(2e-400) ** 2.5", "too small"),
