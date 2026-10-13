@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import bisect
 import logging
 import math
 import re
@@ -72,9 +73,11 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
+    BLOCK_RENDER_OVERHEAD,
     RECORD_CLOSE,
     continuation_hint,
     describe_gaps,
+    estimate_block_chars,
     no_fit_hint,
     record_trailer_reserve,
     selection_hint,
@@ -3919,7 +3922,7 @@ class _TableFraming:
         return self._per_row + len(str(block_index)) + len(ref) + len(content)
 
 
-_TABLE_CONTINUED = "continued; its summary is shown with its first rows"
+_TABLE_CONTINUED = "continued"
 _TABLE_SUMMARY_OMITTED = "summary omitted to fit"
 
 
@@ -4106,6 +4109,29 @@ def _mint_refs(
             entry["citation_ref"] = ref_mapper.get_or_create_ref(entry["block_web_url"])
 
 
+_METADATA_TRUNCATED = "\n[…metadata truncated to fit]"
+
+
+def _record_header(context_metadata: str) -> str:
+    return f"<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"
+
+
+def _carries_content(block: dict[str, Any], fragment_map: dict[int, list[dict[str, Any]]]) -> bool:
+    """Whether a top-level block has something to show, so a read that did
+    not show it cannot count as reading the record in full."""
+    block_type = block.get("type")
+    data = block.get("data")
+    if block.get("index") in fragment_map:
+        return True
+    if block_type == BlockType.IMAGE.value:
+        return bool(image_block_text(block)) or (isinstance(data, dict) and bool(data.get("uri")))
+    if block_type == BlockType.TABLE_ROW.value:
+        return bool(data.get("row_natural_language_text")) if isinstance(data, dict) else bool(data)
+    if block_type in (BlockType.TEXT.value, BlockType.CODE.value):
+        return bool(_safe_stringify_content(data).strip()) if data else False
+    return False
+
+
 def _fk_lines_text(record: dict[str, Any]) -> str:
     """The foreign-key tables a SQL table record points to, or ""."""
     fk_parent = record.get("fk_parent_record_ids")
@@ -4195,14 +4221,24 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record.get("context_metadata", "")
-        record_header = f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
+        context_metadata = record.get("context_metadata", "") or ""
+        fk_text = _fk_lines_text(record)
+        trailer_reserve = record_trailer_reserve(record)
+        frame = len(_record_header(context_metadata)) + trailer_reserve + len(fk_text)
+        if frame > render_budget.chars_remaining:
+            # Metadata larger than the record's room: what was printed has to
+            # be what was charged, so the metadata is cut (and the FK lines
+            # dropped) rather than the budget overrun.
+            room = render_budget.chars_remaining - (frame - len(context_metadata)) + len(fk_text)
+            fk_text = ""
+            keep = max(0, room - len(_METADATA_TRUNCATED))
+            context_metadata = context_metadata[:keep] + _METADATA_TRUNCATED
+        record_header = _record_header(context_metadata)
         render_budget.charge_framing(record_header)
         content.append({"type": "text", "text": record_header})
-        fk_text = _fk_lines_text(record)
         # Held back before the walk so the hint and closing tag cannot push
         # the result past what the budget reported.
-        render_budget.charge_framing_chars(record_trailer_reserve(record) + len(fk_text))
+        render_budget.charge_framing_chars(trailer_reserve + len(fk_text))
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
@@ -4210,19 +4246,21 @@ def record_to_message_content(
         fragment_map = _build_fragment_map(blocks)
 
         # Per table or group, the last block index its render covered. A unit
-        # renders up to the next figure parented to it, which the image branch
-        # prints in place; the walk then re-enters the unit after the figure.
+        # renders its children only up to the next block it does not own (a
+        # figure parented to it, a nested list), which the walk prints in
+        # place before re-entering the unit after it.
         covered_until: dict[str, float] = {}
-        figures_by_group: dict[object, list[int]] = defaultdict(list)
-        for b in sorted(blocks, key=lambda b: b.get("index", 0)):
-            if (
-                isinstance(b, dict) and b.get("type") == BlockType.IMAGE.value
-                and b.get("parent_index") is not None and b.get("parent_block_index") is None
-            ):
-                figures_by_group[b.get("parent_index")].append(b.get("index", 0))
 
-        def _next_figure(group_index: object, after: int) -> int | None:
-            return next((i for i in figures_by_group.get(group_index, ()) if i > after), None)
+        def _next_foreign(after: int, owned: set[int]) -> int | None:
+            if not owned:
+                return None
+            last = max(owned)
+            for index in _all_block_indices[bisect.bisect_right(_all_block_indices, after):]:
+                if index >= last:
+                    return None
+                if index not in owned:
+                    return index
+            return None
 
         blocks_by_index = {b.get("index", 0): b for b in blocks if isinstance(b, dict)}
         rec_frontend_url = record.get("frontend_url", "")
@@ -4280,12 +4318,24 @@ def record_to_message_content(
                 break
 
             if block_index in gap_markers:
+                # Printed only with room for it and, after earlier blocks, for
+                # the block it introduces: a gap marker is charged like text.
+                needed = len(gap_markers[block_index]) + (
+                    estimate_block_chars(block) + BLOCK_RENDER_OVERHEAD if _renderable_rendered else 0
+                )
+                if not render_budget.can_afford_chars(needed):
+                    if _truncated_at is None:
+                        _truncated_at = block_index
+                    render_budget.stop_at(block_index)
+                    break
                 render_budget.charge_framing(gap_markers[block_index])
                 content.append({"type": "text", "text": gap_markers[block_index]})
                 gaps_emitted = True
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
-            ref = ref_mapper.get_or_create_ref(block_web_url)
+            # Minted only once the block is printed: a ref for a block that is
+            # not shown cites nothing.
+            ref = ref_mapper.peek_ref(block_web_url)
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
@@ -4317,6 +4367,7 @@ def record_to_message_content(
                         render_budget.stop_at(block_index)
                         break
                     render_budget.charge_chars(reserve)
+                    ref_mapper.get_or_create_ref(block_web_url)
                     pending_images.append(_PendingImage(
                         position=len(content), block_index=block_index, ref=ref,
                         description=description, image_uri=image_uri, candidate=candidate,
@@ -4335,6 +4386,7 @@ def record_to_message_content(
                             _truncated_at = block_index
                         render_budget.stop_at(block_index)
                         break
+                    ref_mapper.get_or_create_ref(block_web_url)
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
@@ -4347,6 +4399,7 @@ def record_to_message_content(
                         _truncated_at = block_index
                     render_budget.stop_at(block_index)
                     break
+                ref_mapper.get_or_create_ref(block_web_url)
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
@@ -4364,6 +4417,7 @@ def record_to_message_content(
                         _truncated_at = block_index
                     render_budget.stop_at(block_index)
                     break
+                ref_mapper.get_or_create_ref(block_web_url)
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
@@ -4372,8 +4426,7 @@ def record_to_message_content(
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
                 reentered = block_group_id in covered_until
-                barrier = _next_figure(block_group_index, block_index)
-                covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
+                covered_until[block_group_id] = math.inf
                 # A row whose table is missing is skipped like a row with no table at all.
                 if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
@@ -4393,6 +4446,10 @@ def record_to_message_content(
                                         rows_to_be_included_list.extend(range(start, end + 1))
                             elif isinstance(children, list):
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
+                        rows_to_be_included_list = sorted(set(rows_to_be_included_list))
+                        barrier = _next_foreign(block_index, set(rows_to_be_included_list))
+                        if barrier is not None:
+                            covered_until[block_group_id] = barrier - 1
 
                         child_results = []
                         rows_rendered: list[int] = []
@@ -4523,6 +4580,8 @@ def record_to_message_content(
                                 content.append({"type": "text", "text": clipped})
                                 _renderable_rendered += 1
                                 render_budget.count_block()
+                                # A no-op when the row was actually clipped.
+                                render_budget.note_shown((row_index,))
                                 break
                             if unfit_row is not None:
                                 render_budget.stop_at(unfit_row[0])
@@ -4576,7 +4635,9 @@ def record_to_message_content(
 
                 if not group_blocks:
                     continue
-                barrier = _next_figure(parent_index, block_index)
+                barrier = _next_foreign(block_index, {
+                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
+                })
                 covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 label = block_group.get("type")
@@ -4591,6 +4652,7 @@ def record_to_message_content(
                     and (include_blocks is None or index in include_blocks)
                     and (barrier is None or index < barrier)
                 ]
+                units.sort(key=lambda unit: unit[0]["block_index"])
                 if not units:
                     continue
                 widest_ref = f"ref{len(ref_mapper.ref_to_url) + len(group_blocks)}"
@@ -4646,6 +4708,8 @@ def record_to_message_content(
                     content.append({"type": "text", "text": emitted})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    # A no-op when the child was actually clipped.
+                    render_budget.note_shown((unfit_unit[0]["block_index"],))
                     render_budget.stop_at(unfit_unit[0]["block_index"] + 1)
                     break
 
@@ -4686,6 +4750,17 @@ def record_to_message_content(
             )
 
         record_label = record.get("id") or record.get("virtual_record_id") or ""
+        if include_blocks is None:
+            walked = render_budget.outcome(record_key)
+            if walked.stopped_at_block is None and any(
+                index >= start_block and index not in walked.shown_blocks
+                and _carries_content(blocks_by_index.get(index, {}), fragment_map)
+                for index in _all_block_indices
+            ):
+                # A block of a shape the renderer cannot show (a row of a group
+                # that is not a table, a child of an unknown group type) is
+                # missing from this read, so it must not count as complete.
+                render_budget.note_unshown()
         outcome = render_budget.outcome(record_key)
         # The budget knows the first block not shown -- inside a table, the
         # first row that did not fit -- which is where reading resumes.

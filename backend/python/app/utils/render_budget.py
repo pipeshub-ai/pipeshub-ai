@@ -98,6 +98,8 @@ class RecordRenderOutcome:
     shown_blocks: frozenset[int] = frozenset()
     clipped: bool = False
     stop_reason: TruncatedBy | None = None
+    # A block with content that the render could not show, without a stop.
+    unshown: bool = False
 
     @property
     def complete(self) -> bool:
@@ -105,6 +107,7 @@ class RecordRenderOutcome:
             self.stopped_at_block is None
             and self.table_truncation is None
             and not self.clipped
+            and not self.unshown
         )
 
 
@@ -124,6 +127,7 @@ class _RecordState:
     table_truncation: TableTruncation | None = None
     shown: set[int] = field(default_factory=set)
     clipped: bool = False
+    unshown: bool = False
 
 
 @dataclass
@@ -180,6 +184,7 @@ class RenderBudget:
             shown_blocks=frozenset(state.shown),
             clipped=state.clipped,
             stop_reason=state.stop_reason,
+            unshown=state.unshown,
         )
 
     # -- spending -----------------------------------------------------------
@@ -307,6 +312,12 @@ class RenderBudget:
         if state.stopped_at_block is None:
             state.stopped_at_block = block_index
             state.stop_reason = reason
+
+    def note_unshown(self) -> None:
+        """The current record has a block with content this render could not
+        show, though nothing stopped it: it is not read in full."""
+        if self._current is not None:
+            self._records[self._current].unshown = True
 
     def note_selection(self, first_unshown: int) -> None:
         """The current record was shown by relevance and left blocks out. A
