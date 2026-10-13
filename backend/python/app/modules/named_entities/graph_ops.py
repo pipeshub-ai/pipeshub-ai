@@ -557,6 +557,10 @@ def named_entity_neo4j_indexes() -> list[str]:
         f"CREATE INDEX named_entity_org_orphaned IF NOT EXISTS FOR (n:{label}) ON (n.orgId, n.orphanedAt)",
         f"CREATE INDEX mentions_entity_org IF NOT EXISTS FOR ()-[r:{rel}]-() ON (r.orgId)",
         f"CREATE INDEX value_mention_record IF NOT EXISTS FOR (v:{_VALUE_LABEL}) ON (v.recordId)",
+        # Kind-only lookups and the dangling sweep filter on orgId alone: a composite
+        # range index needs every property predicated, and `size($kinds) = 0 OR ...`
+        # leaves kind unusable to the planner.
+        f"CREATE INDEX value_mention_org IF NOT EXISTS FOR (v:{_VALUE_LABEL}) ON (v.orgId)",
         f"CREATE INDEX value_mention_org_kind_start IF NOT EXISTS FOR (v:{_VALUE_LABEL}) ON (v.orgId, v.kind, v.startMs)",
         f"CREATE INDEX value_mention_org_currency_amount IF NOT EXISTS FOR (v:{_VALUE_LABEL}) ON (v.orgId, v.currency, v.amountFloat)",
         f"CREATE INDEX value_mention_org_dimension_si IF NOT EXISTS FOR (v:{_VALUE_LABEL}) ON (v.orgId, v.dimension, v.siValue)",
@@ -571,6 +575,9 @@ async def ensure_named_entity_indexes(http_client) -> None:
     await http_client.ensure_persistent_index(col, ["orgId", "kind", "normalizedAliases[*]"])
     await http_client.ensure_persistent_index(col, ["orgId", "orphanedAt"], sparse=True)
     await http_client.ensure_persistent_index(_VALUES, ["recordId"])
+    # Not sparse: the sparse ones below skip rows missing their third field, so they
+    # cannot serve kind-only lookups or the orgId-only dangling sweep.
+    await http_client.ensure_persistent_index(_VALUES, ["orgId", "kind"])
     await http_client.ensure_persistent_index(_VALUES, ["orgId", "kind", "startMs"], sparse=True)
     await http_client.ensure_persistent_index(_VALUES, ["orgId", "currency", "amountFloat"], sparse=True)
     await http_client.ensure_persistent_index(_VALUES, ["orgId", "dimension", "siValue"], sparse=True)
