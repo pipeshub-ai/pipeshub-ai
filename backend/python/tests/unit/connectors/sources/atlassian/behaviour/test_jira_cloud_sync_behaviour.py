@@ -883,6 +883,19 @@ def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
     return row
 
 
+
+def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reading the issues checkpoint fail, as a database error would."""
+    real = store.get_sync_point
+
+    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        if key.endswith("issues_global"):
+            raise RuntimeError("database unavailable")
+        return await real(key, raise_on_error)
+
+    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
+
+
 class TestUnfinishedUserRead:
     """A user list that stops part-way must not shrink who can see what.
 
@@ -1058,6 +1071,22 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == [], "a refused user list is not kept open by a lookup that failed"
+
+    async def test_a_checkpoint_that_cannot_be_read_keeps_the_stored_access(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+
+        fail_checkpoint_reads(checkpoints, monkeypatch)
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(site_db) == before, "an unreadable checkpoint is not 'nothing stored'"
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
