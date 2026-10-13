@@ -7,7 +7,7 @@ import os
 import re
 import shlex
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from cachetools import TTLCache
@@ -1733,6 +1733,48 @@ async def merge_pattern_match_results(
     return results
 
 
+def grep_hits_on_loaded_records(
+    raw_records: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+) -> list[dict]:
+    """Hint entries for grep hits on records semantic search already loaded,
+    best first.
+
+    ``merge_pattern_match_results`` skips these records because their blocks
+    are about to be shown. When the search result then leaves one out to fit
+    its size, these entries name it in the keyword hint instead, so its match
+    can still be fetched. Only records already in the map qualify, and those
+    passed the semantic search's own permission check.
+    """
+    first: dict[str, dict] = {}
+    best: dict[str, dict] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if not vrid or not isinstance(virtual_record_id_to_result.get(vrid), dict):
+            continue
+        first.setdefault(vrid, raw)
+        if vrid not in best or _record_rank(raw) > _record_rank(best[vrid]):
+            best[vrid] = raw
+    entries: list[dict] = []
+    for raw in sorted(first.values(), key=keyword_match_rank, reverse=True):
+        vrid = raw["virtual_record_id"]
+        entry: dict[str, Any] = {"virtual_record_id": vrid, "score": 0.0, "source": "pattern_match"}
+        match_count = _record_rank(best[vrid])[1]
+        if match_count > 0:
+            entry["_match_count"] = match_count
+        if best[vrid].get("match_preview"):
+            entry["_match_snippet"] = best[vrid]["match_preview"]
+        entries.append(entry)
+    return entries
+
+
+def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
+    """The metadata a semantic search result shows for ``record``."""
+    return record.get("context_metadata") or (
+        f"Record ID: {record.get('id') or 'N/A'}\nName: {record.get('record_name') or 'N/A'}"
+    )
+
+
 def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
     """Build a metadata block from a graph record by delegating to
     ``Record.to_llm_context()`` so the LLM receives the same fields
@@ -1810,10 +1852,15 @@ def render_pattern_match_hint(
         graph_rec = virtual_record_id_to_result.get(vrid)
         if not graph_rec:
             continue
-        metadata_block = _render_graph_record_metadata(graph_rec)
-        mc = graph_rec.get("_match_count", 0)
+        # A record semantic search loaded holds its blocks; a grep-only one
+        # holds the graph document.
+        if "block_containers" in graph_rec:
+            metadata_block = _render_loaded_record_metadata(graph_rec)
+        else:
+            metadata_block = _render_graph_record_metadata(graph_rec)
+        mc = graph_rec.get("_match_count") or entry.get("_match_count") or 0
         mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
-        snippet = graph_rec.get("_match_snippet")
+        snippet = graph_rec.get("_match_snippet") or entry.get("_match_snippet")
         snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
         sections.append(f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>")
 
