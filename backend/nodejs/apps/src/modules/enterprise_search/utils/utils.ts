@@ -15,6 +15,7 @@ import mongoose, { ClientSession, FilterQuery } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -39,7 +40,10 @@ import {
   isAGUI,
   SSEProtocol,
 } from './agui';
-import { StreamedContentAccumulator } from './stream-lifecycle';
+import {
+  DETACHED_RUN_MAX_MS,
+  StreamedContentAccumulator,
+} from './stream-lifecycle';
 import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
 
 const logger = new Logger({
@@ -1612,6 +1616,48 @@ export const addErrorToConversation = (
     stack,
     metadata: mergedMetadata,
   });
+};
+
+/** A run is only believed live this long after its last activity, so a crashed Node never wedges a thread. */
+const ACTIVE_RUN_WINDOW_MS = DETACHED_RUN_MAX_MS + 5 * 60 * 1000;
+/** Covers Stop followed straight by a new message: the old run is still winding down after the cancel. */
+const ACTIVE_RUN_SETTLE_MS = 15_000;
+const ACTIVE_RUN_POLL_MS = 250;
+
+const isRunActive = (
+  session: { status?: unknown; lastActivityAt?: unknown } | null,
+): boolean => {
+  if (session?.status !== CONVERSATION_STATUS.INPROGRESS) return false;
+  const lastActivity = Number(session.lastActivityAt ?? 0);
+  if (!(lastActivity > 0)) return false;
+  return Date.now() - lastActivity < ACTIVE_RUN_WINDOW_MS;
+};
+
+/**
+ * Refuses a new run on a thread whose previous run is still going (it outlives
+ * a refresh): both would write the same session and the older one could
+ * overwrite the newer one's status. Waits briefly first so a quick
+ * Stop-then-send isn't rejected while the cancelled run finishes saving.
+ * Reads without a session on purpose: inside a transaction snapshot the status
+ * would never change.
+ */
+export const assertNoActiveRun = async (
+  filter: FilterQuery<IChatSessionDocument>,
+  settleMs: number = ACTIVE_RUN_SETTLE_MS,
+): Promise<void> => {
+  const deadline = Date.now() + settleMs;
+  for (;;) {
+    const current = await ChatSession.findOne(filter)
+      .select('status lastActivityAt')
+      .lean();
+    if (!isRunActive(current)) return;
+    if (Date.now() >= deadline) {
+      throw new ConflictError(
+        'A response is still being generated for this conversation. Wait for it to finish, or stop it, then send your message again.',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, ACTIVE_RUN_POLL_MS));
+  }
 };
 
 export const markConversationFailed = async (

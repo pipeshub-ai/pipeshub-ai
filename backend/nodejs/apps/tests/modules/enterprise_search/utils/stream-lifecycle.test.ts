@@ -101,7 +101,7 @@ describe('stream-lifecycle', () => {
       expect(onAbandon.called).to.be.false
     })
 
-    it('does nothing at the cap when no stream was ever bound (the AI request failed to open)', () => {
+    it('aborts the signal at the cap when no stream is bound yet, without running onAbandon', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
@@ -110,7 +110,7 @@ describe('stream-lifecycle', () => {
       res.emit('close')
       clock.tick(CAP_MS * 2)
 
-      expect(handle.isAborted()).to.be.false
+      expect(handle.isAborted()).to.be.true
       expect(onAbandon.called).to.be.false
     })
 

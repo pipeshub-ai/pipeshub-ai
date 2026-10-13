@@ -40,10 +40,8 @@ export function startRemoteRunPoll(target: RemoteRunPollTarget): () => void {
   const tick = async (): Promise<void> => {
     if (stopped) return;
     const slot = useChatStore.getState().slots[target.slotId];
-    if (!slot || slot.isStreaming || slot.stopping) {
-      if (slot) finish();
-      return;
-    }
+    // Leave `remoteRunInProgress` set: the hook re-arms once the local stream is done.
+    if (!slot || slot.isStreaming || slot.stopping) return;
 
     let settled = false;
     try {

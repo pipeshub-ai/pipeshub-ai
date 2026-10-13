@@ -57,7 +57,8 @@ vi.mock('../api', async () => {
 // triggers the crashing import-time hydration described above.
 const { useChatStore } = (await import('../store')) as unknown as { useChatStore: typeof UseChatStoreType };
 const { ChatApi } = (await import('../api')) as unknown as { ChatApi: typeof ChatApiType };
-const { cancelStreamForSlot } = await import('../streaming');
+const { cancelStreamForSlot, streamMessageForSlot, streamRegenerateForSlot } = await import('../streaming');
+const { streamSSERequest } = await import('@/lib/api');
 
 const SLOT_ID = 'slot-under-test';
 
@@ -89,6 +90,7 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     abortController: new AbortController(),
     runId: 'run-123',
     stopping: false,
+    remoteRunInProgress: false,
     messagePagination: null,
     lastAccessedAt: Date.now(),
     isOwner: true,
@@ -134,23 +136,8 @@ describe('cancelStreamForSlot — guards', () => {
   });
 });
 
-describe('cancelStreamForSlot — no convId/runId (very first turn)', () => {
-  it('hard-aborts immediately when convId is not yet known', () => {
-    const abortController = new AbortController();
-    const abortSpy = vi.spyOn(abortController, 'abort');
-    seedSlot({ convId: null, abortController });
-
-    cancelStreamForSlot(SLOT_ID);
-
-    expect(abortSpy).toHaveBeenCalledTimes(1);
-    expect(mockedCancelStream).not.toHaveBeenCalled();
-    const slot = useChatStore.getState().slots[SLOT_ID];
-    expect(slot?.isStreaming).toBe(false);
-    expect(slot?.stopping).toBe(false);
-    expect(slot?.runId).toBeNull();
-  });
-
-  it('hard-aborts immediately when runId is not yet known', () => {
+describe('cancelStreamForSlot — no runId', () => {
+  it('drops the connection locally when there is no runId to cancel', () => {
     const abortController = new AbortController();
     const abortSpy = vi.spyOn(abortController, 'abort');
     seedSlot({ runId: null, abortController });
@@ -159,15 +146,130 @@ describe('cancelStreamForSlot — no convId/runId (very first turn)', () => {
 
     expect(abortSpy).toHaveBeenCalledTimes(1);
     expect(mockedCancelStream).not.toHaveBeenCalled();
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.isStreaming).toBe(false);
+    expect(slot?.stopping).toBe(false);
   });
 
   it('clears the pending sidebar entry for a still-temp slot on the no-run-id fallback', () => {
-    seedSlot({ convId: null, isTemp: true });
+    seedSlot({ convId: null, runId: null, isTemp: true });
     const clearSpy = vi.spyOn(useChatStore.getState(), 'clearPendingConversation');
 
     cancelStreamForSlot(SLOT_ID);
 
     expect(clearSpy).toHaveBeenCalledWith(SLOT_ID);
+  });
+});
+
+describe('cancelStreamForSlot — Stop before the conversation id is known (first turn of a new chat)', () => {
+  it('does not abort the connection and does not post yet, since there is no conversation to target', () => {
+    const abortController = new AbortController();
+    const abortSpy = vi.spyOn(abortController, 'abort');
+    seedSlot({ convId: null, isTemp: true, abortController });
+
+    cancelStreamForSlot(SLOT_ID);
+
+    expect(abortSpy).not.toHaveBeenCalled();
+    expect(mockedCancelStream).not.toHaveBeenCalled();
+    expect(useChatStore.getState().slots[SLOT_ID]?.stopping).toBe(true);
+  });
+
+  it('posts the cancel as soon as conversation_created gives the slot its id', async () => {
+    seedSlot({ convId: null, isTemp: true });
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockedCancelStream).not.toHaveBeenCalled();
+
+    useChatStore.getState().updateSlot(SLOT_ID, { convId: 'conv-new' });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(mockedCancelStream).toHaveBeenCalledWith('conv-new', 'run-123', undefined);
+  });
+
+  it('still settles the UI after the grace period if the id never arrives', async () => {
+    const abortController = new AbortController();
+    const abortSpy = vi.spyOn(abortController, 'abort');
+    seedSlot({ convId: null, isTemp: true, abortController });
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
+    expect(mockedCancelStream).not.toHaveBeenCalled();
+  });
+});
+
+describe('cancelStreamForSlot — cancel retries', () => {
+  it('retries while the backend has not registered the run yet (cancelled: false) until it is acknowledged', async () => {
+    mockedCancelStream
+      .mockResolvedValueOnce({ cancelled: false })
+      .mockResolvedValueOnce({ cancelled: false })
+      .mockResolvedValueOnce({ cancelled: true });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockedCancelStream).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(mockedCancelStream).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockedCancelStream).toHaveBeenCalledTimes(3);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(mockedCancelStream).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps retrying a cancel POST that rejects', async () => {
+    mockedCancelStream.mockRejectedValueOnce(new Error('network down')).mockResolvedValueOnce({ cancelled: true });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(600);
+
+    expect(mockedCancelStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a cancel POST that never completes, and the grace timer still settles the UI', async () => {
+    mockedCancelStream.mockReturnValueOnce(new Promise(() => {}));
+    const abortController = new AbortController();
+    const abortSpy = vi.spyOn(abortController, 'abort');
+    seedSlot({ abortController });
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockedCancelStream).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps retrying after the grace timeout has settled the UI', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(8000);
+
+    expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
+    expect(mockedCancelStream.mock.calls.length).toBeGreaterThan(3);
+  });
+
+  it('gives up once the retry window closes', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const calls = mockedCancelStream.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(mockedCancelStream.mock.calls.length).toBe(calls);
   });
 });
 
@@ -350,5 +452,31 @@ describe('cancelStreamForSlot — grace-timeout fallback', () => {
 
     expect(originalAbortSpy).not.toHaveBeenCalled();
     expect(newAbortSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('a run left over from before a refresh is still in progress', () => {
+  beforeEach(() => {
+    vi.mocked(streamSSERequest).mockReset();
+  });
+
+  it('does not start a second run for a new message', async () => {
+    seedSlot({ isStreaming: false, runId: null, remoteRunInProgress: true });
+
+    await streamMessageForSlot(SLOT_ID, 'follow-up', { query: 'follow-up' } as never);
+
+    expect(streamSSERequest).not.toHaveBeenCalled();
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.messages).toHaveLength(0);
+    expect(slot?.isStreaming).toBe(false);
+  });
+
+  it('does not start a second run for a regenerate', async () => {
+    seedSlot({ isStreaming: false, runId: null, remoteRunInProgress: true });
+
+    await streamRegenerateForSlot(SLOT_ID, 'msg-1');
+
+    expect(streamSSERequest).not.toHaveBeenCalled();
+    expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
   });
 });

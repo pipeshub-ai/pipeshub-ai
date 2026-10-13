@@ -5,6 +5,7 @@ import mongoose from 'mongoose'
 import {
   allocateSeq,
   appendMessages,
+  assertNoActiveRun,
   attachSharedBy,
   attachSharedByIfRecipient,
   formatPreviousConversations,
@@ -16,7 +17,7 @@ import {
   savePartialConversation,
   staleAskUserQuestionToolCallIds,
 } from '../../../../src/modules/enterprise_search/utils/utils'
-import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { ConflictError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
@@ -255,6 +256,71 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(replace.called).to.equal(false)
       expect(conversation.status).to.equal(CONVERSATION_STATUS.FAILED)
       expect(conversation.save.calledOnce).to.equal(true)
+    })
+  })
+
+  describe('assertNoActiveRun', () => {
+    type RunState = { status?: string; lastActivityAt?: number } | null
+
+    /** `ChatSession.findOne(...).select(...).lean()` returning each state in turn (the last one repeats). */
+    const stubSessionStates = (...states: RunState[]): sinon.SinonStub => {
+      let call = 0
+      return sinon.stub(ChatSession, 'findOne').callsFake((() => ({
+        select: () => ({
+          lean: () => Promise.resolve(states[Math.min(call++, states.length - 1)]),
+        }),
+      })) as never)
+    }
+
+    const filter = { _id: new mongoose.Types.ObjectId(), isDeleted: false }
+    const running = (): RunState => ({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
+
+    it('lets a message through when the previous run has finished', async () => {
+      stubSessionStates({ status: CONVERSATION_STATUS.COMPLETE, lastActivityAt: Date.now() })
+
+      await assertNoActiveRun(filter)
+    })
+
+    it('reads the status for the caller\'s own filter, outside any transaction', async () => {
+      const findOne = stubSessionStates(null)
+
+      await assertNoActiveRun(filter)
+
+      expect(findOne.calledOnceWithExactly(filter)).to.equal(true)
+    })
+
+    it('refuses with a conflict when a run is still going after the settle window', async () => {
+      const clock = sinon.useFakeTimers({ now: Date.now() })
+      stubSessionStates(running())
+
+      const outcome = rejection(assertNoActiveRun(filter, 1000))
+      await clock.tickAsync(1500)
+
+      expect(await outcome).to.be.instanceOf(ConflictError)
+    })
+
+    it('waits out a run that is being cancelled instead of refusing a quick Stop-then-send', async () => {
+      const clock = sinon.useFakeTimers({ now: Date.now() })
+      const findOne = stubSessionStates(running(), running(), { status: CONVERSATION_STATUS.STOPPED, lastActivityAt: Date.now() })
+
+      const settled = assertNoActiveRun(filter, 5000)
+      await clock.tickAsync(1000)
+      await settled
+
+      expect(findOne.callCount).to.equal(3)
+    })
+
+    it('does not treat a stale in-progress status as a live run (a crashed server must not lock the thread)', async () => {
+      const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000
+      stubSessionStates({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: twoHoursAgo })
+
+      await assertNoActiveRun(filter)
+    })
+
+    it('does not block a session that has no activity timestamp', async () => {
+      stubSessionStates({ status: CONVERSATION_STATUS.INPROGRESS })
+
+      await assertNoActiveRun(filter)
     })
   })
 

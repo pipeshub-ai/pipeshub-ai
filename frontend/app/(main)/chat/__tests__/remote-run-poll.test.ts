@@ -79,7 +79,7 @@ describe('startRemoteRunPoll', () => {
     expect(slot(slotId).isInitialized).toBe(false);
   });
 
-  it('stops without fetching once a local stream owns the slot', async () => {
+  it('pauses without fetching or clearing the flag while a local stream owns the slot', async () => {
     const slotId = remoteRunSlot();
     startRemoteRunPoll({ slotId, convId: 'conv-1', agentId: null });
     useChatStore.getState().updateSlot(slotId, { isStreaming: true });
@@ -87,7 +87,7 @@ describe('startRemoteRunPoll', () => {
     await vi.advanceTimersByTimeAsync(3000);
 
     expect(fetchConversation).not.toHaveBeenCalled();
-    expect(slot(slotId).remoteRunInProgress).toBe(false);
+    expect(slot(slotId).remoteRunInProgress).toBe(true);
   });
 
   it('gives up after the time cap if the conversation never leaves in-progress', async () => {

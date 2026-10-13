@@ -96,12 +96,15 @@ export function attachUpstreamAbort(
     );
     abandonTimer = setTimeout(() => {
       abandonTimer = null;
-      if (!boundStream || streamClosed) return;
+      if (streamClosed) return;
       logger.warn('Detached run exceeded its time cap; abandoning it', {
         requestId,
         maxDetachedMs,
       });
       controller.abort();
+      // Still awaiting the upstream response: aborting the signal is all there
+      // is to tear down, and the caller's own error path records the failure.
+      if (!boundStream) return;
       boundStream.destroy();
       onAbandon?.();
     }, maxDetachedMs);

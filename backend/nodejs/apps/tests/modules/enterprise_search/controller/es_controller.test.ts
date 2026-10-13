@@ -65,7 +65,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { BadRequestError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, ConflictError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
@@ -384,6 +384,10 @@ describe('Enterprise Search Controller', () => {
     }
     if (!(ChatSessionMessage.aggregate as any).restore) {
       sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    }
+    // The in-progress-run guard reads the session itself; streaming tests don't care.
+    if (!(searchUtils.assertNoActiveRun as any).restore) {
+      sinon.stub(searchUtils, 'assertNoActiveRun').resolves()
     }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
@@ -8752,6 +8756,86 @@ describe('Enterprise Search Controller', () => {
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // A run left running after a refresh must not be joined by a second one
+  // -----------------------------------------------------------------------
+  describe('a send while the thread already has a run in progress', () => {
+    const CONFLICT_MESSAGE = 'A response is still being generated for this conversation.'
+    const user = () => ({
+      userId: new mongoose.Types.ObjectId(VALID_OID),
+      orgId: new mongoose.Types.ObjectId(VALID_OID2),
+    })
+
+    const expectRefusedWithoutStartingARun = (res: any, executeStream: sinon.SinonStub) => {
+      const written = res.write.args.map((a: any) => a[0]).join('')
+      expect(written).to.include(CONFLICT_MESSAGE)
+      expect(written).to.include('RUN_ERROR')
+      expect(executeStream.called).to.be.false
+      expect(res.end.called).to.be.true
+    }
+
+    it('addMessageStream refuses the message and never starts a second run', async () => {
+      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      const markFailed = sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { query: 'second message' },
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await addMessageStream(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
+      expect(markFailed.called).to.be.false
+      const filter = (searchUtils.assertNoActiveRun as sinon.SinonStub).firstCall.args[0]
+      expect(String(filter._id)).to.equal(VALID_OID)
+      expect(String(filter.orgId)).to.equal(VALID_OID2)
+      expect(String(filter.userId)).to.equal(VALID_OID)
+    })
+
+    it('addMessageStreamToAgentConversation refuses the message and never starts a second run', async () => {
+      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'second message' },
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await addMessageStreamToAgentConversation(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
+      const filter = (searchUtils.assertNoActiveRun as sinon.SinonStub).firstCall.args[0]
+      expect(filter.agentKey).to.equal('agent-1')
+    })
+
+    it('regenerateAnswers refuses and never starts a second run', async () => {
+      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: new mongoose.Types.ObjectId().toString() },
+        body: {},
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await regenerateAnswers(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
     })
   })
 

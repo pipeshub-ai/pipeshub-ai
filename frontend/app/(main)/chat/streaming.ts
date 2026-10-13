@@ -61,14 +61,21 @@ function createPendingAssistantId(): string {
 /**
  * Client-generated run identifier sent with the stream request so a later
  * Stop can cooperatively cancel this exact run (`ChatApi.cancelStream`).
- * Unlike `createPendingAssistantId`, there's no non-crypto fallback — the
- * backend validates it as a UUID (`cancelRunBodySchema`) — so callers must
- * treat `undefined` as "this run cannot be cooperatively cancelled" and
- * fall back to a hard abort (see `cancelStreamForSlot`).
+ * The backend validates it as a UUID (`cancelRunBodySchema`), so there is no
+ * `Math.random` fallback: `randomUUID` needs a secure context, but
+ * `getRandomValues` does not, so plain-HTTP deployments still get a real v4
+ * UUID. `undefined` (no Web Crypto at all) means this run cannot be cancelled.
  */
 function generateRunId(): string | undefined {
   const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : undefined;
-  return cryptoApi && typeof cryptoApi.randomUUID === 'function' ? cryptoApi.randomUUID() : undefined;
+  if (!cryptoApi) return undefined;
+  if (typeof cryptoApi.randomUUID === 'function') return cryptoApi.randomUUID();
+  if (typeof cryptoApi.getRandomValues !== 'function') return undefined;
+  const bytes = cryptoApi.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0'));
+  return `${hex.slice(0, 4).join('')}-${hex.slice(4, 6).join('')}-${hex.slice(6, 8).join('')}-${hex.slice(8, 10).join('')}-${hex.slice(10).join('')}`;
 }
 
 /** True while this slot's in-flight `runId` is still the one `streamRunId` started. */
@@ -85,6 +92,74 @@ function slotIsOnRun(slotId: string, streamRunId: string | null): boolean {
  * short enough that a stuck backend doesn't leave Stop looking unresponsive.
  */
 const STOP_GRACE_MS = 5000;
+
+/**
+ * Closing the stream no longer stops a run (it finishes server-side), so the
+ * cancel POST is the only Stop that works and must actually land. It can race
+ * the backend registering the run (`cancelled: false` for an unknown id) or hit
+ * a network blip, so it is retried with backoff until acknowledged.
+ */
+const STOP_CANCEL_RETRY_WINDOW_MS = 20_000;
+const STOP_CANCEL_RETRY_BASE_MS = 500;
+const STOP_CANCEL_RETRY_MAX_MS = 3000;
+/** A cancel POST that never settles counts as failed so the next attempt still goes out. */
+const STOP_CANCEL_ATTEMPT_TIMEOUT_MS = 5000;
+/** Poll interval while waiting for `conversation_created` to give a new chat its id. */
+const STOP_CANCEL_CONV_ID_POLL_MS = 250;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('request timed out')), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
+/**
+ * Posts the cancel until the backend reports `cancelled: true` or the retry
+ * window closes. Deliberately independent of the slot's lifecycle: it keeps
+ * going after the grace timer settles the UI, and after a Stop-then-send has
+ * moved the slot on to a new run. `knownConvId` is null on the very first
+ * turn of a new chat, so the id is read from the slot once it arrives.
+ */
+function postCancelUntilAcknowledged(
+  slotId: string,
+  runId: string,
+  agentId: string | null,
+  knownConvId: string | null,
+): void {
+  const deadline = Date.now() + STOP_CANCEL_RETRY_WINDOW_MS;
+  let delay = STOP_CANCEL_RETRY_BASE_MS;
+
+  const attempt = async (): Promise<void> => {
+    const convId = knownConvId ?? useChatStore.getState().slots[slotId]?.convId ?? null;
+    if (convId) {
+      try {
+        const result = await withTimeout(
+          ChatApi.cancelStream(convId, runId, agentId ?? undefined),
+          STOP_CANCEL_ATTEMPT_TIMEOUT_MS,
+        );
+        if (result?.cancelled) return;
+      } catch (err) {
+        console.warn('[streaming] cancelStream request failed for slot', slotId, err);
+      }
+    }
+    if (Date.now() >= deadline) return;
+    const wait = convId ? delay : STOP_CANCEL_CONV_ID_POLL_MS;
+    if (convId) delay = Math.min(delay * 2, STOP_CANCEL_RETRY_MAX_MS);
+    setTimeout(() => void attempt(), wait);
+  };
+
+  void attempt();
+}
 
 /**
  * Builds the post-stop message list for the offline fallback (grace-timeout
@@ -470,6 +545,9 @@ export async function streamMessageForSlot(
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
   if (!slot) return;
+  // A run left over from before a refresh is still writing this thread; a second
+  // run would collide with it, so the UI entry points hold the send back.
+  if (slot.remoteRunInProgress) return;
 
   // A Stop-then-send (or a second submit while the previous run is still
   // winding down) must kill the previous fetch so its callbacks cannot
@@ -1196,6 +1274,7 @@ export async function streamRegenerateForSlot(
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
+  if (slot.remoteRunInProgress) return;
 
   slot.abortController?.abort();
 
@@ -1613,17 +1692,20 @@ export async function streamRegenerateForSlot(
  * normal `RUN_FINISHED` that this same stream's `onComplete` renders (see
  * `streamMessageForSlot`/`streamRegenerateForSlot`).
  *
- * A `STOP_GRACE_MS` timer is the guaranteed fallback: if the run hasn't
- * settled by then (backend unreachable, stuck request, cancel POST itself
- * failed), it hard-aborts the connection and commits whatever text streamed
- * so far as a locally-synthesized stopped message — never leaves the
- * composer stuck showing "Stopping…" forever.
+ * The cancel POST is retried until acknowledged (`postCancelUntilAcknowledged`)
+ * because closing the connection no longer stops a run. A Stop before
+ * `conversation_created` on a brand-new chat waits for the conversation id
+ * rather than aborting.
+ *
+ * A `STOP_GRACE_MS` timer keeps the UI honest: if the run hasn't settled by
+ * then (backend unreachable, stuck request), it drops the connection and
+ * commits whatever text streamed so far as a locally-synthesized stopped
+ * message — never leaves the composer stuck showing "Stopping…" forever.
+ * The cancel retries carry on in the background after that.
  *
  * No-ops if the slot isn't streaming or is already `stopping` (second Stop
- * click). If `convId`/`runId` aren't known yet (stopped before
- * `conversation_created` on the very first turn of a brand-new
- * conversation), there's nothing to target server-side — fall straight to a
- * hard abort; Node lets that run finish and saves the whole answer.
+ * click). Only a run with no `runId` (no Web Crypto) has nothing to target,
+ * so it just drops the connection locally.
  *
  * Exported as `cancelStreamForSlot` — the name `runtime.ts`'s `onCancel`
  * and the chat-input Stop button both already call.
@@ -1635,7 +1717,7 @@ export function cancelStreamForSlot(slotId: string): void {
 
   const { convId, runId, threadAgentId, isTemp } = slot;
 
-  if (!convId || !runId) {
+  if (!runId) {
     slot.abortController?.abort();
     store.updateSlot(slotId, {
       isStreaming: false,
@@ -1659,11 +1741,7 @@ export function cancelStreamForSlot(slotId: string): void {
   store.updateSlot(slotId, { stopping: true });
   debugLog.flush('stream-stop-requested', { slotId, runId });
 
-  ChatApi.cancelStream(convId, runId, threadAgentId ?? undefined).catch((err) => {
-    // Best-effort — the grace timer below is the guaranteed fallback if this
-    // request fails outright (network blip, backend restart mid-run, etc).
-    console.warn('[streaming] cancelStream request failed for slot', slotId, err);
-  });
+  postCancelUntilAcknowledged(slotId, runId, threadAgentId ?? null, convId ?? null);
 
   setTimeout(() => {
     const cur = useChatStore.getState().slots[slotId];

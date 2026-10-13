@@ -82,6 +82,7 @@ import {
   withoutErrorStacks,
   recordClassifiedFailureOnSession,
   savePartialConversation,
+  assertNoActiveRun,
 } from '../utils/utils';
 import {
   attachUpstreamAbort,
@@ -1391,6 +1392,14 @@ export const addMessageStream =
         query: req.body.query,
         filters: req.body.filters,
         timestamp: new Date().toISOString(),
+      });
+
+      await assertNoActiveRun({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+        ...EXCLUDE_AGENT,
       });
 
       // Get existing conversation and add user message
@@ -3219,6 +3228,13 @@ async function regenerateAnswersInternal(
       messageId,
       timestamp: new Date().toISOString(),
     });
+
+    if (!conversationId) {
+      throw new BadRequestError('Conversation ID is required');
+    }
+    await assertNoActiveRun(
+      config.buildQueryFilter(conversationId, orgId, userId, agentKey),
+    );
 
     // Validate conversation and message
     let validationResult: {
@@ -6305,6 +6321,15 @@ export const addMessageStreamToAgentConversation =
         query: req.body.query,
         filters: req.body.filters,
         timestamp: new Date().toISOString(),
+      });
+
+      await assertNoActiveRun({
+        _id: conversationId,
+        agentKey,
+        orgId,
+        userId,
+        isDeleted: false,
+        ...ONLY_AGENT,
       });
 
       // Get existing conversation and add user message
