@@ -16,12 +16,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.retrieval.provenance import (
     RetrievalLayer,  # noqa: TC001 - pydantic resolves it at runtime
 )
+from app.utils.render_budget import (
+    TruncatedBy,
+)
 
 RETRIEVAL_CONTEXT_EVENT_NAME = "retrieval_context"
 RETRIEVAL_CONTEXT_SCHEMA_VERSION = 1
 
 RetrievalSource = Literal["prefetch", "tool"]
-FetchTruncatedBy = Literal["chars", "blocks", "selection", "not_read", "past_end"]
+# The renderer's own reasons, so the wire contract cannot drift from them.
+FetchTruncatedBy = TruncatedBy
 RetrievalStatus = Literal["ok", "empty", "skipped", "error"]
 
 

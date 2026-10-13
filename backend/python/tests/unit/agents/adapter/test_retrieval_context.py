@@ -4,8 +4,10 @@ the delta ledger, and `emit_retrieval_context` gating."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import patch
+
+import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUIFormatter, LegacyFormatter
 from app.agents.agent_loop.protocol.retrieval_context import (
@@ -22,6 +24,7 @@ from app.agents.agent_loop.retrieval_ledger import (
     emit_retrieval_context,
 )
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.utils.render_budget import TruncatedBy
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -281,6 +284,15 @@ class TestLedger:
 
         [fetched] = delta.records[0].fetched
         assert set(fetched.model_dump(exclude_none=True)) == {"startBlock", "blocksRendered", "complete"}
+
+    @pytest.mark.parametrize("reason", get_args(TruncatedBy))
+    def test_every_reason_the_renderer_reports_reaches_the_frame(self, reason: str) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 1, "complete": False,
+                   "truncatedBy": reason}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        assert delta.records[0].fetched[0].truncatedBy == reason
 
     def test_an_unknown_stop_reason_is_dropped_not_fatal(self) -> None:
         outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
