@@ -25,6 +25,14 @@ from app.modules.retrieval.entity_permissions import EntityAccessError
 # normalize_source_ids
 # ---------------------------------------------------------------------------
 
+def _flatten_into(records: dict[str, Any], units: list[dict[str, Any]]) -> Any:  # noqa: ANN401
+    """A `get_flattened_results` stand-in that loads `records` and returns `units`."""
+    async def flatten(_results, _blob, _org, _mm, vr_map, *_args, **_kwargs) -> list[dict[str, Any]]:
+        vr_map.update(records)
+        return units
+    return flatten
+
+
 class TestNormalizeSourceIds:
     def test_none(self) -> None:
         assert normalize_source_ids(None) is None
@@ -360,7 +368,7 @@ class TestExecuteSearchFanOut:
             raise RuntimeError("stop after the fan-out")
 
         with patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"), patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            "app.modules.retrieval.context.builder.get_flattened_results",
             side_effect=capture,
         ):
             await execute_search(state, "test query", source_ids=["kb-1", "kb-2"])
@@ -394,15 +402,15 @@ class TestExecuteSearchFanOut:
 
 class TestExecuteSearchFullPath:
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -417,7 +425,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "Block content"}]],
             MagicMock(),
@@ -443,15 +451,15 @@ class TestExecuteSearchFullPath:
         assert "final_results" in state
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="table")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={"r1": (1, 3)})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -466,7 +474,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "Content"}]],
             MagicMock(),
@@ -487,18 +495,19 @@ class TestExecuteSearchFullPath:
         }
         result = await execute_search(state, "test query")
         assert "Top 1 block" in result
-        mock_render_cand.assert_called_once()
+        mock_render_cand.assert_called()
+        assert state["fetch_plan"] is plan
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -513,7 +522,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "V"}]],
             MagicMock(),
@@ -536,17 +545,19 @@ class TestExecuteSearchFullPath:
         }
         result = await execute_search(state, "test query")
         assert "Top 1 block" in result
+        # The model name says nothing; only the state's flag makes a search multimodal.
+        assert mock_flatten.call_args.args[3] is False
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -626,21 +637,20 @@ class TestExecuteSearchException:
 
 
 _RENDER_PATCHES = (
-    patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n"),
-    patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new),
+    patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n"),
+    patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new),
     patch("app.modules.agents.record_escalation.render_coverage_note", return_value=""),
     patch("app.modules.agents.record_escalation.render_candidate_table", return_value=""),
     patch("app.modules.agents.record_escalation.build_candidates", return_value=SimpleNamespace(has_candidates=False)),
     patch("app.modules.agents.record_escalation.analyze_coverage", return_value={}),
     patch(
-        "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+        "app.modules.retrieval.context.renderer.build_message_content_array",
         return_value=([[{"type": "text", "text": "Enterprise pricing strategy 2026"}]], MagicMock()),
     ),
-    patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock),
+    patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock),
     patch(
-        "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
-        new_callable=AsyncMock,
-        return_value=[{"virtual_record_id": "vr1", "block_index": 0}],
+        "app.modules.retrieval.context.builder.get_flattened_results",
+        side_effect=_flatten_into({"vr1": {"id": "r1"}}, [{"virtual_record_id": "vr1", "block_index": 0}]),
     ),
     patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"),
     patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None),
@@ -819,7 +829,7 @@ class TestEmptyNarrowedSearch:
         search_mod = "app.agents.actions.knowledge_graph.ops.search"
         with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r9"}])), \
                 patch(f"{search_mod}.merge_pattern_match_results", AsyncMock(return_value=[])), \
-                patch(f"{search_mod}.get_flattened_results", AsyncMock(return_value=[])):
+                patch("app.modules.retrieval.context.builder.get_flattened_results", AsyncMock(return_value=[])):
             parsed = json.loads(
                 await execute_search(_state(retrieval), "pricing", source_ids=["private-kb-app"])
             )
@@ -863,7 +873,7 @@ class TestGrepHitsDoNotDisplaceLoadedRecords:
         search_mod = "app.agents.actions.knowledge_graph.ops.search"
         with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r"}])), \
                 patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
-                patch(f"{search_mod}.get_flattened_results", AsyncMock(return_value=[])), \
+                patch("app.modules.retrieval.context.builder.get_flattened_results", AsyncMock(return_value=[])), \
                 patch(f"{search_mod}.BlobStorage"):
             await execute_search(state, "annual fee")
 
@@ -903,7 +913,7 @@ class TestRetrievalLayerProvenance:
         grep_hits = [{"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-2"}]
         with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep_hits)), \
                 patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
-                patch(f"{search_mod}.get_flattened_results", side_effect=flatten), \
+                patch("app.modules.retrieval.context.builder.get_flattened_results", side_effect=flatten), \
                 patch(f"{search_mod}.BlobStorage"):
             await execute_search(state, "annual fee")
         return state
@@ -1109,23 +1119,25 @@ class TestExecuteSearchEntityFilters:
             retrieval, _kg_entity_id_filter_key={"t1": ("topics", "Context graph governance")},
         )
         with patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            "app.modules.retrieval.context.builder.get_flattened_results",
             new_callable=AsyncMock,
         ) as mock_flatten, patch(
-            "app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context",
+            "app.modules.retrieval.context.builder.enrich_records_with_graph_context",
             new_callable=AsyncMock,
         ), patch(
-            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+            "app.modules.retrieval.context.renderer.build_message_content_array",
         ) as mock_build_content, patch(
             "app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled",
             return_value=None,
         ), patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"), patch(
             "app.modules.agents.record_escalation.build_candidates",
         ) as mock_build_cands, patch(
-            "app.agents.actions.retrieval.retrieval._dedupe_append_final_results",
+            "app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results",
             side_effect=lambda old, new: old + new,
         ):
-            mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
+            mock_flatten.side_effect = _flatten_into(
+                {"vr1": {"id": "r1"}}, [{"virtual_record_id": "vr1", "block_index": 0}],
+            )
             mock_build_content.return_value = (
                 [[{"type": "text", "text": "Fallback content"}]], MagicMock(),
             )

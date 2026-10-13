@@ -12,9 +12,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_ID_FILTER_KEY_CACHE_KEY,
     RECORD_SCOPED_ENTITY_CACHE_KEY,
@@ -23,9 +26,17 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
+from app.agents.actions.knowledge_graph.ops.results import (
+    compose_result_tail,
+    dedupe_append_final_results,
+    tool_output,
+)
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
+from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.ordering import relevance_ordered_context
+from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
@@ -40,12 +51,11 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
     CitationRefMapper,
-    build_message_content_array,
-    enrich_records_with_graph_context,
-    get_flattened_results,
+    ImageBudget,
     get_record_id_shortener_if_enabled,
     merge_into_records_map,
 )
+from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
     await_pattern_match,
     cancel_task_if_running,
@@ -55,7 +65,9 @@ from app.utils.pattern_match import (
 )
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
+    from app.modules.agents.record_escalation.models import FetchPlan
 
 logger = logging.getLogger(__name__)
 
@@ -86,15 +98,6 @@ ENTITY_SCOPE_INCOMPLETE_MESSAGE = (
     "knowledgegraph__find_records_by_entity."
 )
 
-_RECORD_NAME_RE = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
-_RETRIEVED_COUNT_RE = re.compile(
-    r"^Top (\d+) blocks? from (\d+) records?", re.IGNORECASE | re.MULTILINE
-)
-_RETRIEVED_COUNT_RE_LEGACY = re.compile(
-    r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
-)
-
-
 def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
     """One ranked list from the per-source searches of a fan-out.
 
@@ -108,6 +111,132 @@ def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
     for hit, score in fused:
         hit["score"] = score
     return [hit for hit, _ in fused]
+
+
+# The text around the records (fetch plan, header) follows which records are
+# shown, so the records are cut again, at most this many times in all, when a
+# cut changed it.
+_MAX_FIT_PASSES = 3
+
+
+def _ranked_header(blocks: int, records: int, omitted: int, *, by_relevance: bool) -> str:
+    order = "most relevant record first; " if by_relevance else ""
+    header = (
+        f"Top {blocks} block{'s' if blocks != 1 else ''} "
+        f"from {records} record{'s' if records != 1 else ''} "
+        f"({order}ranked sample — other records may match)."
+    )
+    if omitted:
+        header += (
+            f" {omitted} lower-ranked record{'s' if omitted != 1 else ''} "
+            "left out to fit the result size."
+        )
+    return header
+
+
+@dataclass(frozen=True)
+class _ResultFrame:
+    """Everything in a search result around the records, for one selection."""
+
+    summary: str
+    candidate_suffix: str
+    """The fetch candidates, with full record ids (shortened when used)."""
+    tail_chars: int
+    shown_records: dict[str, Any]
+    final_results: list[dict[str, Any]]
+    coverage: dict[str, tuple[int, int]]
+    plan: FetchPlan
+
+    @property
+    def chars(self) -> int:
+        return len(self.summary) + self.tail_chars
+
+
+def _result_frame(
+    state: "ChatState",
+    selection: Selection,
+    records: dict[str, Any],
+    pm_shown: list[dict[str, Any]],
+    *,
+    entity_notes: str,
+    pm_hint: str,
+    by_relevance: bool,
+) -> _ResultFrame:
+    """The summary, fetch plan and tail a result showing ``selection`` gets.
+
+    Reads the request state and changes nothing in it, so it can be sized for
+    more than one selection.
+    """
+    from app.modules.agents.record_escalation import (
+        analyze_coverage,
+        build_candidates,
+        render_candidate_table,
+        render_coverage_note,
+    )
+
+    shown_vrids = {unit.get("virtual_record_id") for unit in selection.ranked}
+    shown_vrids.update(entry.get("virtual_record_id") for entry in pm_shown)
+    shown_records = {vrid: record for vrid, record in records.items() if vrid in shown_vrids}
+
+    # Coverage over everything accumulated this request, not just this call,
+    # so parallel or repeated searches do not each report partial counts.
+    final_results = dedupe_append_final_results(state.get("final_results", []), selection.ranked)
+    live = state.get("virtual_record_id_to_result")
+    full_map = dict(live) if isinstance(live, dict) else {}
+    merge_into_records_map(full_map, shown_records)
+    coverage = analyze_coverage(final_results, full_map)
+    seen_rids: set[str] = set()
+    records_in_order: list[dict[str, Any]] = []
+    for entry in final_results:
+        record = full_map.get(entry.get("virtual_record_id") or "")
+        rid = record.get("id") if isinstance(record, dict) else None
+        if rid and rid not in seen_rids:
+            seen_rids.add(rid)
+            records_in_order.append(record)
+    plan = build_candidates(
+        coverage=coverage,
+        records_in_relevance_order=records_in_order,
+        already_fetched_ids=set(state.get("full_records_fetched", set())),
+    )
+
+    candidate_suffix = coverage_note = ""
+    if plan.has_candidates:
+        needs_whole_doc = bool(state.get("needs_whole_document", False))
+        candidate_suffix = render_candidate_table(plan, needs_whole_document=needs_whole_doc)
+        # At the TOP of the result: the table lands at the bottom, possibly
+        # thousands of tokens later, where the model may already be answering.
+        coverage_note = render_coverage_note(plan, needs_whole_document=needs_whole_doc)
+    shown_candidates = candidate_suffix
+    if candidate_suffix and selection.record_id_shortener is not None:
+        shown_candidates = selection.record_id_shortener.copy().shorten_record_ids_in_text(candidate_suffix)
+
+    if selection.ranked:
+        header = _ranked_header(
+            len(selection.ranked),
+            len({unit.get("virtual_record_id") for unit in selection.ranked}),
+            selection.omitted_records,
+            by_relevance=by_relevance,
+        )
+        summary = f"{header}\n\n{entity_notes}{coverage_note}"
+    else:
+        n_pm = len(pm_shown)
+        summary = (
+            f"No content blocks from semantic search, but {n_pm} "
+            f"record{'s' if n_pm != 1 else ''} found via keyword matching. "
+            "Review the record names below and fetch the most relevant "
+            "one(s) directly.\n\n"
+            f"{entity_notes}"
+        )
+    tail_chars = len(compose_result_tail(shown_records, shown_candidates)) + len(pm_hint)
+    return _ResultFrame(
+        summary=summary,
+        candidate_suffix=candidate_suffix,
+        tail_chars=tail_chars,
+        shown_records=shown_records,
+        final_results=final_results,
+        coverage=coverage,
+        plan=plan,
+    )
 
 
 def _note_provenance(
@@ -252,7 +381,7 @@ async def execute_search(
     modified_after: str | None = None,
     modified_before: str | None = None,
     entity_ids: list[str] | None = None,
-) -> str:
+) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
     ``source_ids`` accepts both app-connector IDs and KB-collection IDs;
@@ -627,32 +756,20 @@ async def execute_search(
         )
         is_multimodal_llm = bool(state.get("is_multimodal_llm", False))
 
-        virtual_record_id_to_result: dict[str, Any] = {}
-        flattened_results = await get_flattened_results(
-            search_results,
-            blob_store,
-            org_id,
-            is_multimodal_llm,
-            virtual_record_id_to_result,
-            virtual_to_record_map,
+        knowledge = await KnowledgeContextBuilder(
+            blob_store=blob_store,
             graph_provider=graph_provider,
+            org_id=org_id,
+            user_id=user_id,
+            config_service=config_service,
+        ).build(
+            search_results,
+            virtual_to_record_map,
+            is_multimodal_llm=is_multimodal_llm,
+            # A fan-out already gave each source its own limit.
+            max_units=None if per_source_fan_out else adjusted_limit,
         )
-
-        if flattened_results and graph_provider:
-            await enrich_records_with_graph_context(
-                virtual_record_id_to_result,
-                graph_provider,
-                flattened_results,
-                virtual_to_record_map,
-                blob_store=blob_store,
-                org_id=org_id,
-                config_service=config_service,
-                user_id=user_id,
-            )
-
-        final_results = search_results if not flattened_results else flattened_results
-        if not per_source_fan_out:
-            final_results = final_results[:adjusted_limit]
+        virtual_record_id_to_result = knowledge.virtual_record_id_to_result
 
         pm_record_entries: list[dict[str, Any]] = []
         if raw_pattern_records:
@@ -681,137 +798,10 @@ async def execute_search(
 
         # Grep hits can all be dropped by the merge (permissions, time range);
         # that is still an empty search and must answer like one.
-        if not final_results and not pm_record_entries:
+        if not knowledge.ranked and not pm_record_entries:
             return _empty_result()
 
-        _note_provenance(
-            state, search_results, virtual_record_id_to_result, pm_record_entries, raw_pattern_records,
-        )
-
-        # Accumulate into state for citation pipeline
-        from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
-        state["final_results"] = _dedupe_append_final_results(
-            state.get("final_results", []), final_results,
-        )
-        # Updated in place: a fetch running in the same turn writes into this
-        # same dict, and replacing it would drop what that fetch added.
-        live_virtual_map = state.get("virtual_record_id_to_result")
-        if not isinstance(live_virtual_map, dict):
-            live_virtual_map = state["virtual_record_id_to_result"] = {}
-        merge_into_records_map(live_virtual_map, virtual_record_id_to_result)
-        existing_tool_records = state.get("tool_records")
-        if not isinstance(existing_tool_records, list):
-            existing_tool_records = []
-        new_tool_records = list(virtual_record_id_to_result.values())
-        existing_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict)}
-        state["tool_records"] = existing_tool_records + [
-            r for r in new_tool_records
-            if not (isinstance(r, dict) and r.get("_id") in existing_ids)
-        ]
-
-        # Record escalation candidates
-        candidate_suffix = ""
-        coverage_note = ""
-        needs_whole_doc = bool(state.get("needs_whole_document", False))
-        from app.modules.agents.record_escalation import (
-            analyze_coverage,
-            build_candidates,
-            render_candidate_table,
-            render_coverage_note,
-        )
-        all_final = state.get("final_results", [])
-        full_vr_map = state.get("virtual_record_id_to_result", {})
-        coverage = analyze_coverage(all_final, full_vr_map)
-        already_fetched: set[str] = set(state.get("full_records_fetched", set()))
-        seen_rids: set[str] = set()
-        records_in_order: list[dict] = []
-        for entry in all_final:
-            vrid = entry.get("virtual_record_id")
-            if not vrid:
-                continue
-            rec = full_vr_map.get(vrid)
-            if not rec:
-                continue
-            rid = rec.get("id")
-            if rid and rid not in seen_rids:
-                seen_rids.add(rid)
-                records_in_order.append(rec)
-        plan = build_candidates(
-            coverage=coverage,
-            records_in_relevance_order=records_in_order,
-            already_fetched_ids=already_fetched,
-        )
-        state["fetch_coverage"] = coverage
-        state["fetch_plan"] = plan
-        if plan.has_candidates:
-            candidate_suffix = render_candidate_table(plan, needs_whole_document=needs_whole_doc)
-            # Placed at the TOP of the result (see `summary` below) — the
-            # full table above lands at the bottom, potentially thousands of
-            # tokens away on a long result, where the model may already be
-            # composing an answer from the blocks by the time it reaches it.
-            coverage_note = render_coverage_note(plan, needs_whole_document=needs_whole_doc)
-
-        # TEMPORARY token-savings experiment (opt-in, disabled by default —
-        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
-        # in `utils/chat_helpers.py`. Same shared shortener as
-        # search_internal_knowledge/navigate/lookup_record/list_files, keyed
-        # off tool_state so whichever tool the model calls first mints it.
-        record_id_shortener = get_record_id_shortener_if_enabled(state)
-        if candidate_suffix and record_id_shortener is not None:
-            candidate_suffix = record_id_shortener.shorten_record_ids_in_text(candidate_suffix)
-
-        sorted_results = sorted(
-            final_results,
-            key=lambda x: (
-                x.get("virtual_record_id") or "",
-                -1 if x.get("block_index") is None else x.get("block_index"),
-            ),
-        )
-        ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
-        message_content_array, ref_mapper = build_message_content_array(
-            sorted_results,
-            virtual_record_id_to_result,
-            is_multimodal_llm=is_multimodal_llm,
-            ref_mapper=ref_mapper,
-            from_tool=True,
-            record_id_shortener=record_id_shortener,
-        )
-        state["citation_ref_mapper"] = ref_mapper
-
-        formatted_records = []
-        for content in message_content_array:
-            content_string = ""
-            for item in content:
-                if item["type"] == "text":
-                    content_string += item["text"]
-            formatted_records.append(content_string)
-
-        entity_notes = _entity_notes(
-            unknown_entity_ids=unknown_entity_ids,
-            filter_dropped=entity_filter_dropped,
-            record_scope_applied=bool(virtual_record_ids_from_tool),
-            scope_truncated=entity_scope_truncated,
-            entities_skipped=entities_skipped,
-        )
-        has_semantic_blocks = len(final_results) > 0
-        if has_semantic_blocks:
-            summary = (
-                f"Top {len(final_results)} block{'s' if len(final_results) != 1 else ''} "
-                f"from {len(virtual_record_id_to_result)} record{'s' if len(virtual_record_id_to_result) != 1 else ''} "
-                "(ranked sample — other records may match).\n\n"
-                f"{entity_notes}"
-                f"{coverage_note}"
-            )
-        else:
-            n_pm = len(pm_record_entries)
-            summary = (
-                f"No content blocks from semantic search, but {n_pm} "
-                f"record{'s' if n_pm != 1 else ''} found via keyword matching. "
-                "Review the record names below and fetch the most relevant "
-                "one(s) directly.\n\n"
-                f"{entity_notes}"
-            )
-        from app.agents.actions.retrieval.retrieval import compose_result_tail
+        has_semantic_blocks = bool(knowledge.ranked)
         try:
             pm_hint = render_pattern_match_hint(
                 pm_record_entries, virtual_record_id_to_result,
@@ -821,12 +811,100 @@ async def execute_search(
             # The semantic answer above is complete without the hint.
             logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
             pm_hint = ""
-        remember_shown_results(
-            state, [*final_results, *(pm_record_entries if pm_hint else [])], virtual_record_id_to_result,
+        pm_shown = pm_record_entries if pm_hint else []
+        if not has_semantic_blocks and not pm_shown:
+            return _empty_result()
+        entity_notes = _entity_notes(
+            unknown_entity_ids=unknown_entity_ids,
+            filter_dropped=entity_filter_dropped,
+            record_scope_applied=bool(virtual_record_ids_from_tool),
+            scope_truncated=entity_scope_truncated,
+            entities_skipped=entities_skipped,
         )
-        return summary + "\n".join(formatted_records) + compose_result_tail(
-            virtual_record_id_to_result, candidate_suffix,
-        ) + pm_hint
+
+        # TEMPORARY token-savings experiment (opt-in, disabled by default —
+        # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
+        # in `utils/chat_helpers.py`. Same shared shortener as
+        # navigate/lookup_record/list_files, keyed off tool_state so whichever
+        # tool the model calls first mints it.
+        record_id_shortener = get_record_id_shortener_if_enabled(state)
+        ref_mapper = state.get("citation_ref_mapper")
+        if not isinstance(ref_mapper, CitationRefMapper):
+            ref_mapper = CitationRefMapper()
+        image_budget = state.get("image_budget")
+        if not isinstance(image_budget, ImageBudget):
+            image_budget = state["image_budget"] = ImageBudget()
+        by_relevance = relevance_ordered_context()
+        renderer = KnowledgeRenderer(
+            virtual_record_id_to_result,
+            ref_mapper=ref_mapper,
+            is_multimodal_llm=is_multimodal_llm,
+            by_relevance=by_relevance,
+            record_id_shortener=record_id_shortener,
+            image_budget=image_budget,
+            image_admission=admission_from_state(state),
+        )
+
+        def frame(selection: Selection) -> _ResultFrame:
+            return _result_frame(
+                state,
+                selection,
+                virtual_record_id_to_result,
+                pm_shown,
+                entity_notes=entity_notes,
+                pm_hint=pm_hint,
+                by_relevance=by_relevance,
+            )
+
+        # Everything else in the result is sized first, so the records are cut
+        # here, least relevant first, rather than mid-record by the generic
+        # tool-result cap. No await from here to the render: the selection is
+        # measured against the shared ref mapper and image budget as they are now.
+        result_frame = frame(Selection(ranked=knowledge.ranked))
+        for _ in range(_MAX_FIT_PASSES):
+            selection = renderer.select(
+                knowledge.ranked, DEFAULT_MAX_RESULT_CHARS - result_frame.chars,
+            )
+            result_frame = frame(selection)
+            if (selection.chars or 0) <= DEFAULT_MAX_RESULT_CHARS - result_frame.chars:
+                break
+        rendered = renderer.render(selection)
+        state["citation_ref_mapper"] = ref_mapper
+        candidate_suffix = result_frame.candidate_suffix
+        if candidate_suffix and record_id_shortener is not None:
+            candidate_suffix = record_id_shortener.shorten_record_ids_in_text(candidate_suffix)
+
+        # Only what was shown is accumulated: the citation pipeline, the fetch
+        # plan and the retrieval trace all read these.
+        final_results = rendered.ranked
+        shown_records = result_frame.shown_records
+        state["final_results"] = result_frame.final_results
+        # Updated in place: a fetch running in the same turn writes into this
+        # same dict, and replacing it would drop what that fetch added.
+        live_virtual_map = state.get("virtual_record_id_to_result")
+        if not isinstance(live_virtual_map, dict):
+            live_virtual_map = state["virtual_record_id_to_result"] = {}
+        merge_into_records_map(live_virtual_map, shown_records)
+        existing_tool_records = state.get("tool_records")
+        if not isinstance(existing_tool_records, list):
+            existing_tool_records = []
+        existing_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict)}
+        state["tool_records"] = existing_tool_records + [
+            r for r in shown_records.values()
+            if not (isinstance(r, dict) and r.get("_id") in existing_ids)
+        ]
+        state["fetch_coverage"] = result_frame.coverage
+        state["fetch_plan"] = result_frame.plan
+
+        _note_provenance(state, search_results, shown_records, pm_shown, raw_pattern_records)
+        remember_shown_results(state, [*final_results, *pm_shown], shown_records)
+        text = (
+            result_frame.summary
+            + rendered.text
+            + compose_result_tail(shown_records, candidate_suffix)
+            + pm_hint
+        )
+        return tool_output(text, rendered.images, state)
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

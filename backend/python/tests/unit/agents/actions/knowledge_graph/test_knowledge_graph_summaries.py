@@ -16,8 +16,10 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
     _navigate_args_summary,
     _navigate_result_summary,
     _normalize_identifiers,
-    _search_result_summary,
     _time_range_error_message,
+)
+from app.agents.actions.knowledge_graph.ops.results import (
+    search_result_summary as _search_result_summary,
 )
 
 
@@ -183,12 +185,6 @@ class TestSearchResultSummary:
         assert "5 blocks" in result
         assert "3 records" in result
         assert "Doc1" in result
-
-    def test_retrieved_n_blocks_header(self) -> None:
-        content = "Retrieved 10 knowledge blocks from 4 documents\nName : Report"
-        result = _search_result_summary({}, _tool_result(content))
-        assert "10 blocks" in result
-        assert "4 records" in result
 
     def test_no_match_returns_none(self) -> None:
         result = _search_result_summary({}, _tool_result("Random text without header"))
