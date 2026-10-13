@@ -125,11 +125,14 @@ class TestRankFusion:
         assert [found[v]["fusion_score"] for v in "abc"] == pytest.approx([1 / 60, 1 / 60, 1 / 62])
 
     @staticmethod
-    def _merged_order(monkeypatch: pytest.MonkeyPatch, mode: str | None) -> list[str]:
-        if mode is None:
-            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
-        else:
-            monkeypatch.setenv("HIGH_ACCURACY_MODE", mode)
+    def _merged_order(
+        monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str | None = None,
+    ) -> list[str]:
+        for name, value in (("HIGH_ACCURACY_MODE", mode), ("GREP_RANK_FUSION", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
         found: dict = {}
         _merge_command_hits(found, [
             {"virtual_record_id": "broad-only", "matched_terms": "5", "match_count": "40"},
@@ -144,6 +147,18 @@ class TestRankFusion:
     @pytest.mark.parametrize("mode", [None, "false", "1", ""])
     def test_otherwise_the_best_match_counts_rank_first(self, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
         assert self._merged_order(monkeypatch, mode) == ["broad-only", "both"]
+
+    @pytest.mark.parametrize(("mode", "feature"), [(None, "true"), ("false", "true"), ("true", "")])
+    def test_its_own_switch_or_high_accuracy_mode_turns_fusion_on(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, mode, feature) == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("feature", ["false", "0"])
+    def test_its_own_switch_turns_fusion_off_in_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, "true", feature) == ["broad-only", "both"]
 
 
 def test_hint_shows_matched_text():

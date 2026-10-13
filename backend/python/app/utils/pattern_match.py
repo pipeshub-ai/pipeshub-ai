@@ -31,7 +31,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
-from app.utils.env_utils import high_accuracy_mode
+from app.utils.env_utils import accuracy_feature_enabled
 from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
@@ -60,6 +60,7 @@ _PATTERN_MATCH_TOTAL_BUDGET = 35.0
 # Reciprocal rank fusion constant (Cormack et al. 2009): damps the gap
 # between first and second place so one command cannot decide the order.
 _RRF_K = 60
+_GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
 _MAX_PATTERN_MATCH_RECORDS = 50
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
@@ -1088,8 +1089,9 @@ async def _run_pattern_match_with_llm_grep(
 
 def _merge_command_hits(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
     """Add one grep command's ranked hits to *found*. Rank fusion is opt-in
-    (``HIGH_ACCURACY_MODE``); otherwise each record keeps its best hit."""
-    if high_accuracy_mode():
+    (``GREP_RANK_FUSION``, else ``HIGH_ACCURACY_MODE``); otherwise each record
+    keeps its best hit."""
+    if accuracy_feature_enabled(_GREP_RANK_FUSION_ENV_VAR):
         _fuse_ranked(found, records)
     else:
         _keep_best(found, records)

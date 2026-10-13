@@ -295,6 +295,7 @@ services:
       # search queries). Off by default. A feature's own switch below, when
       # set to true or false, overrides it for that feature; blank follows it.
       - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
+      - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
 
       # Storage config
