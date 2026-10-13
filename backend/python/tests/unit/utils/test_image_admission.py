@@ -232,32 +232,59 @@ class TestAFetchReattachesWhatOnlySearchShowed:
         assert [d.reason for d in fetched.degraded] == [DegradeReason.DUPLICATE]
 
     def test_a_fetch_attaches_unseen_figures_before_second_copies(self) -> None:
-        """The reserve is for what the model has not seen: a re-attach is a
-        copy of a search hit, so it is charged to search's share."""
+        """New figures take the free slots first; a copy of a search hit only
+        gets a slot they left."""
         admission = _model_admission("openai")
         searched = admission.admit([_candidate(i) for i in (0, 1, 50, 51)])
         assert len(searched.admitted) == 4
 
-        record = [_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in (0, 1, 2, 3, 4)]
-        fetched = admission.admit(record)
+        fetched = admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in (0, 1, 2, 3, 4)])
 
-        assert sorted(c.ref for c in fetched.admitted) == ["ref2", "ref3", "ref4"]
-        assert sorted((d.candidate.ref, d.reason) for d in fetched.degraded) == [
-            ("ref0", DegradeReason.DUPLICATE), ("ref1", DegradeReason.DUPLICATE),
-        ]
+        assert sorted(c.ref for c in fetched.admitted) == ["ref0", "ref2", "ref3", "ref4"]
+        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref1", DegradeReason.DUPLICATE)]
+        assert admission.remaining == 0
 
-    def test_a_reattach_ranks_after_the_batch_s_new_images(self) -> None:
+    def test_a_copy_does_not_crowd_out_a_small_new_figure(self) -> None:
+        """Seven new figures fit the seven free slots, so nothing is crowded:
+        the 40x40 diagram must not be prefiltered because a copy was in the batch."""
         admission = _model_admission("openai")
-        admission.admit([_candidate(0)])
-        admission.admit([_candidate(10 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(6)])
+        admission.admit([_candidate(100)])
 
         fetched = admission.admit([
-            _candidate(0, origin=ImageOrigin.FETCHED_RECORD, relevance=0.9),
-            _candidate(20, origin=ImageOrigin.FETCHED_RECORD),
+            *[_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(6)],
+            _candidate(6, origin=ImageOrigin.FETCHED_RECORD, width=40, height=40),
+            _candidate(100, origin=ImageOrigin.FETCHED_RECORD),
         ])
 
-        assert [c.ref for c in fetched.admitted] == ["ref20"]
-        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref0", DegradeReason.DUPLICATE)]
+        assert sorted(c.ref for c in fetched.admitted) == [f"ref{i}" for i in range(7)]
+        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref100", DegradeReason.DUPLICATE)]
+
+    def test_crowding_among_new_figures_still_prefilters_and_the_copy_waits(self) -> None:
+        admission = _model_admission("openai")
+        admission.admit([_candidate(i) for i in (100, 101, 102, 103)])
+
+        fetched = admission.admit([
+            *[_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)],
+            _candidate(4, origin=ImageOrigin.FETCHED_RECORD, width=40, height=40),
+            _candidate(100, origin=ImageOrigin.FETCHED_RECORD),
+        ])
+
+        assert sorted(c.ref for c in fetched.admitted) == [f"ref{i}" for i in range(4)]
+        assert sorted((d.candidate.ref, d.reason) for d in fetched.degraded) == [
+            ("ref100", DegradeReason.DUPLICATE), ("ref4", DegradeReason.TOO_SMALL),
+        ]
+
+    def test_copies_alone_use_the_room_the_request_has_left(self) -> None:
+        """Search's share is spent, but the request is not: a fetch of only
+        those images re-attaches them rather than pointing at copies that
+        tool-result clearing can drop."""
+        admission = _model_admission("openai")
+        admission.admit([_candidate(i) for i in range(4)])
+
+        fetched = admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
+
+        assert len(fetched.admitted) == 4
+        assert admission.remaining == 0
 
     def test_a_replayed_history_image_is_not_reattached(self) -> None:
         admission = _model_admission("openai")

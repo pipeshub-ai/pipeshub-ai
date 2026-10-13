@@ -41,8 +41,7 @@ Two properties the callers depend on:
   The one exception is a fetched record's image whose only copy so far was a
   search hit. Search results are not protected from tool-result clearing, so
   that copy can vanish while the fetch still points at it; the fetch attaches
-  its own copy instead, after the record's unseen images and out of search's
-  share of the cap.
+  its own copy instead, with whatever slots the record's unseen images left.
 
 Retrieval also gets only part of the per-request cap
 (`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
@@ -221,10 +220,9 @@ def _prefilter_reason(candidate: ImageCandidate) -> DegradeReason | None:
     return None
 
 
-def _rank_key(candidate: ImageCandidate, *, reattach: bool = False) -> tuple[int, bool, float, int, int, int]:
-    """Sort key for a scarce slot: origin tier, then new before a second copy
-    of a search hit, then relevance, then size, then recency, with document
-    order as a deterministic final tiebreak.
+def _rank_key(candidate: ImageCandidate) -> tuple[int, float, int, int, int]:
+    """Sort key for a scarce slot: origin tier, then relevance, then size,
+    then recency, with document order as a deterministic final tiebreak.
 
     Size enters below relevance rather than above it: a large image is a
     weak signal that it is a figure rather than a thumbnail, but a small
@@ -233,7 +231,6 @@ def _rank_key(candidate: ImageCandidate, *, reattach: bool = False) -> tuple[int
     """
     return (
         int(candidate.origin),
-        reattach,
         -candidate.relevance,
         -candidate.area,
         -candidate.turn_index,
@@ -335,8 +332,8 @@ class ImageAdmission:
         admitted: list[ImageCandidate] = []
         degraded: list[DegradedImage] = []
         fresh: list[ImageCandidate] = []
+        reattaches: list[ImageCandidate] = []
         seen_in_batch: set[str] = set()
-        reattaching: set[str] = set()
 
         for candidate in candidates:
             digest = candidate.hash
@@ -352,9 +349,7 @@ class ImageAdmission:
                 degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
                 continue
             seen_in_batch.add(digest)
-            if reattach:
-                reattaching.add(digest)
-            fresh.append(candidate)
+            (reattaches if reattach else fresh).append(candidate)
 
         # The prefilter exists to stop page furniture from crowding out real
         # figures, so it only runs when there is crowding. A record whose one
@@ -375,43 +370,47 @@ class ImageAdmission:
         else:
             eligible = fresh
 
-        for candidate in sorted(eligible, key=lambda c: _rank_key(c, reattach=c.hash in reattaching)):
-            # A re-attach is a second copy of a search hit, so it is charged
-            # to search's share: the reserve stays for images not yet seen.
-            retrieved = candidate.origin.is_retrieved or candidate.hash in reattaching
-            if self.policy.max_images_per_request - self._slots_used <= 0 or (
-                retrieved
-                and self._retrieved_slots_used >= self.policy.max_retrieved_images
-            ):
-                degraded.append(DegradedImage(candidate, DegradeReason.OVER_REQUEST_CAP))
-                continue
-            if not self.budget.can_add():
-                degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
-                continue
-            _ = self.budget.try_consume(1)
-            self._slots_used += 1
-            if retrieved:
-                self._retrieved_slots_used += 1
-            if candidate.origin is ImageOrigin.SEARCH_HIT:
-                self._search_only_hashes.add(candidate.hash)
+        for candidate in sorted(eligible, key=_rank_key):
+            reason = self._take_slot(candidate)
+            if reason is None:
+                admitted.append(self._normalize(candidate))
             else:
-                self._search_only_hashes.discard(candidate.hash)
-            self._admitted_hashes.add(candidate.hash)
-            admitted.append(self._normalize(candidate))
+                degraded.append(DegradedImage(candidate, reason))
 
-        # A re-attach that lost its slot still has the search hit's copy.
-        if reattaching:
-            degraded = [
-                DegradedImage(d.candidate, DegradeReason.DUPLICATE)
-                if d.candidate.hash in reattaching else d
-                for d in degraded
-            ]
+        # Second copies of search hits get only what the new images left: the
+        # pixels are already in the request, just not where clearing spares
+        # them. One that gets no slot still points at the search copy.
+        for candidate in sorted(reattaches, key=_rank_key):
+            if self._take_slot(candidate) is None:
+                admitted.append(self._normalize(candidate))
+            else:
+                degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
 
         # Ranking decided membership; document order decides presentation, so
         # what the model reads still matches the record it came from.
         #
         admitted.sort(key=lambda c: (c.turn_index, c.block_index))
         return AdmissionResult(admitted=admitted, degraded=degraded)
+
+    def _take_slot(self, candidate: ImageCandidate) -> DegradeReason | None:
+        """Spend a slot on ``candidate``, or say why there is none."""
+        retrieved = candidate.origin.is_retrieved
+        if self.policy.max_images_per_request - self._slots_used <= 0 or (
+            retrieved and self._retrieved_slots_used >= self.policy.max_retrieved_images
+        ):
+            return DegradeReason.OVER_REQUEST_CAP
+        if not self.budget.can_add():
+            return DegradeReason.OVER_CONVERSATION_CAP
+        _ = self.budget.try_consume(1)
+        self._slots_used += 1
+        if retrieved:
+            self._retrieved_slots_used += 1
+        if candidate.origin is ImageOrigin.SEARCH_HIT:
+            self._search_only_hashes.add(candidate.hash)
+        else:
+            self._search_only_hashes.discard(candidate.hash)
+        self._admitted_hashes.add(candidate.hash)
+        return None
 
     def _normalize(self, candidate: ImageCandidate) -> ImageCandidate:
         """Fit an admitted image to the model's per-image limits.
