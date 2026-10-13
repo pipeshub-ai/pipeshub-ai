@@ -1089,13 +1089,15 @@ class JiraConnector(BaseConnector):
         ``external_id`` already has permission edges stored.
 
         Asked only when a write may be partial this sync: stored edges are access worth
-        keeping, and with none there is nothing to keep, so what was read is saved. A read
-        that fails raises ``StoredAccessReadError``, which stops the sync before the write:
-        a failed read is never taken for "nothing stored".
+        keeping, and with none there is nothing to keep, so what was read is saved. A node
+        found stored is held back, so it is noted as seen by a full sync in progress and the
+        unlink after that sync leaves its edges alone. A read that fails raises
+        ``StoredAccessReadError``, which stops the sync before the write: a failed read is
+        never taken for "nothing stored".
         """
         try:
             return await self.data_entities_processor.has_stored_permissions(
-                entity, self.connector_id, external_id
+                entity, self.connector_id, external_id, keep=True
             )
         except Exception as e:
             raise StoredAccessReadError(
@@ -1121,10 +1123,11 @@ class JiraConnector(BaseConnector):
         return kept
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A full sync that kept stored access, because the application roles could not be
-        read or the user list was not read in full, did not re-read what it kept, so nothing
-        is unlinked after it: unlinking would delete the edges it kept."""
-        return FullSyncCoverage(complete=not (self._user_read_unfinished or self._projects_naming_unread_roles))
+        """A full sync whose user list was not read in full did not re-read the users and the
+        access it kept, so nothing is unlinked after it. A project held because the
+        application roles could not be read is noted as seen instead (``_has_stored_access``),
+        so the unlink still runs for what is really gone."""
+        return FullSyncCoverage(complete=not self._user_read_unfinished)
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: it grants an application role

@@ -1397,25 +1397,10 @@ class TestUnreadApplicationRoles:
 
         assert acl_summary(db.record_group_permissions["10000"]) == before, "a failed read is not taken for 'nothing stored'"
 
-    async def test_a_full_sync_that_kept_stored_access_reports_it_did_not_read_everything(
-        self, jira, db, store, search
-    ) -> None:
-        stub_site(jira, search)
-        connector, _ = await make_connector(db, store)
-        await connector.run_sync()
-        assert connector.full_sync_coverage().complete is True
-
-        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        await connector.run_sync()
-
-        # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
-        assert connector.full_sync_coverage().complete is False
-
     async def test_a_full_sync_with_unread_roles_keeps_the_project_access_after_the_unlink(
         self, jira, db, store, search
     ) -> None:
-        stub_site(jira, search)
-        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        stub_site(jira, search)  # ENG has no issues, so nothing but the held project marks it seen
         connector, _ = await make_connector(db, store)
         await connector.run_sync()
         before = acl_summary(db.record_group_permissions["10000"])
@@ -1428,6 +1413,7 @@ class TestUnreadApplicationRoles:
         await run_full_sync(connector, db)
 
         assert acl_summary(db.record_group_permissions["10000"]) == before, "the role's group stays"
+        assert connector.full_sync_coverage().complete is True, "the unlink still runs for what is really gone"
 
     async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, jira, db, store, search) -> None:
         stub_site(jira, search)
