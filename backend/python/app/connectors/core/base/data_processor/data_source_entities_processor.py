@@ -3085,7 +3085,6 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
-    @retry_on_deadlock()
     async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str) -> bool:
         """Whether this connector's record group, user group or role ``external_id`` has
         permission edges stored.
@@ -3115,6 +3114,7 @@ class DataSourceEntitiesProcessor:
             )
             return bool(edges)
 
+    @retry_on_deadlock()
     async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         # Most connectors have no dedicated "space renamed"/"project renamed"
         # webhook (Dropbox's team_folder_rename -> update_record_group_name
