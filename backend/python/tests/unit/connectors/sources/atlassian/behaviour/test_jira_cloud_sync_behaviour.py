@@ -1241,21 +1241,6 @@ class TestUnfinishedUserRead:
         assert self._access(site_db) == before, "a failed read is not taken for 'nothing stored'"
         assert len(site_db.user_groups) == groups_saved
 
-    async def test_a_full_sync_that_kept_stored_access_reports_it_did_not_read_everything(
-        self, api, site_db, checkpoints, search
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        assert connector.full_sync_coverage().complete is True
-
-        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
-        assert connector.full_sync_coverage().complete is False
-
     async def test_a_full_sync_with_a_short_read_keeps_what_it_held_after_the_unlink(
         self, api, site_db, checkpoints, search
     ) -> None:
@@ -1286,6 +1271,36 @@ class TestUnfinishedUserRead:
 
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)  # ENG has no issues, so nothing but the kept project marks it seen
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, site_db)
+
+        assert acl(site_db) == before, "the stored grants survive the unlink"
+
+    async def test_a_full_sync_with_a_short_read_still_unlinks_what_is_gone(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        checkpoints.sync_points.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        graph = await run_full_sync(connector, site_db)
+
+        # What this sync held is noted as seen, so the unlink still runs for what Jira no longer has.
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.

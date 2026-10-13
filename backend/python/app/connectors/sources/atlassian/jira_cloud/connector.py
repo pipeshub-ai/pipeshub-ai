@@ -71,7 +71,6 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
-from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.html_utils import (
     extract_attachment_ids,
@@ -540,11 +539,6 @@ class JiraConnector(BaseConnector):
         """Title like '{instance or Jira} connector {event}' for multi-instance clarity."""
         return f"{self.connector_instance_name or 'Jira'} connector {event}"
 
-    def full_sync_coverage(self) -> FullSyncCoverage:
-        """A full sync that kept stored access because the user list was not read in full did not re-read what it
-        kept, so nothing is unlinked after it: unlinking would delete the edges it kept."""
-        return FullSyncCoverage(complete=not self._user_read_unfinished)
-
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
         full, so a user it names, or a role or lead under a renamed key, may be missing."""
@@ -653,6 +647,9 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
+                    # Noted as seen by a full sync in progress when it has stored grants, so
+                    # the unlink after that sync does not take away the access kept here.
+                    await self._has_stored_access("record_group", str(group.external_group_id))
             readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
