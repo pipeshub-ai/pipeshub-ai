@@ -24,7 +24,11 @@ from app.config.constants.arangodb import AppStatus
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_coordinator import Admission, SyncLease
-from app.connectors.core.sync.sync_dispatcher import SubmitResult
+from app.connectors.core.sync.sync_dispatcher import (
+    SubmitResult,
+    SyncEventDispatcher,
+    SyncSpec,
+)
 from app.connectors.core.sync.sync_runner import run_sync_task
 
 _LOG = logging.getLogger("test")
@@ -115,13 +119,18 @@ class TestBootResumesAnInterruptedManualFullSync:
         dispatcher, coordinator = await _boot(_app(**_INTERRUPTED))
 
         dispatcher.submit.assert_awaited_once()
-        assert dispatcher.submit.await_args.args[0].connector_id == "c1"
+        spec = dispatcher.submit.await_args.args[0]
+        assert spec.connector_id == "c1"
+        # Marked, so the start handler checks it is still owed when consumed.
+        assert spec.boot_resume is True
         coordinator.spawn.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_a_scheduled_connector_cut_short_still_resumes(self) -> None:
         dispatcher, _ = await _boot(_app(**_INTERRUPTED), strategy="SCHEDULED")
         dispatcher.submit.assert_awaited_once()
+        # A scheduled connector resumes whatever its marks say; nothing to recheck.
+        assert dispatcher.submit.await_args.args[0].boot_resume is False
 
 
 class TestBootLeavesOtherManualConnectorsAlone:
@@ -319,3 +328,89 @@ class TestTheBootSweep:
         assert written["full"].get(_FULL) is True
         assert written["full"].get(_OWED) is True
         assert _OWED not in written["incr"]
+
+
+async def _published_payload(*, boot_resume: bool) -> dict:
+    """What the real dispatcher puts on the sync topic for this spec."""
+    producer = AsyncMock()
+    dispatcher = SyncEventDispatcher(_LOG, producer)
+    with patch("app.connectors.core.sync.sync_dispatcher.get_coordinator", return_value=None):
+        result = await dispatcher.submit(
+            SyncSpec(connector_id="c1", connector_name="slack", org_id="o1", boot_resume=boot_resume)
+        )
+    assert result is SubmitResult.ACCEPTED
+    return producer.send_message.await_args.kwargs["message"]["payload"]
+
+
+async def _consume(payload: dict, doc: dict) -> tuple[AsyncMock, MagicMock]:
+    """Run the real start handler on one event, against the app doc as it is now.
+
+    Returns the graph (whose sync-point and edge deletes are the full-sync
+    prep) and the coordinator (whose spawn is the sync starting).
+    """
+    from app.connectors.services.event_service import EventService
+
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value=doc)
+    graph.update_node = AsyncMock()
+    graph.batch_upsert_nodes = AsyncMock()
+    graph.delete_sync_points_by_connector_id = AsyncMock(return_value=(1, True))
+    graph.delete_connector_sync_edges = AsyncMock(return_value=(1, True))
+    container = MagicMock()
+    container.messaging_producer = AsyncMock()
+    svc = EventService(MagicMock(spec=logging.Logger), container, graph)
+
+    async def _spawn(_lease: SyncLease, coro: object) -> MagicMock:
+        coro.close()  # the sync itself is not under test here
+        return MagicMock(name="task")
+
+    lease = SyncLease("c1", "tok", 1)
+    coordinator = MagicMock()
+    coordinator.begin = AsyncMock(return_value=(Admission.GRANTED, lease))
+    coordinator.spawn = AsyncMock(side_effect=_spawn)
+    coordinator.end = AsyncMock()
+    with patch(
+        "app.connectors.services.event_service.get_coordinator", return_value=coordinator
+    ), patch.object(svc, "_ensure_connector", AsyncMock(return_value=MagicMock())):
+        assert await svc._handle_start_sync("slack", payload) is True
+    return graph, coordinator
+
+
+# The app doc after someone pressed stop while the boot event waited for the
+# consumers to start: /sync/stop found no lease to stop and cleared pendingResync.
+_STOPPED_SINCE_BOOT = _app(**{_FULL: True, _OWED: False})
+
+
+class TestTheBootResumeIsCheckedAgainWhenConsumed:
+    """Boot publishes the resume before the consumers start, and joining the
+    consumer group can take tens of seconds. A stop in that gap finds no lease
+    and only clears pendingResync, which the start path does not otherwise
+    read, so the event itself has to carry "check this is still owed"."""
+
+    @pytest.mark.asyncio
+    async def test_a_stop_after_the_resume_was_published_holds(self) -> None:
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True), _STOPPED_SINCE_BOOT
+        )
+        graph.delete_sync_points_by_connector_id.assert_not_awaited()
+        graph.delete_connector_sync_edges.assert_not_awaited()
+        coordinator.spawn.assert_not_awaited()
+        coordinator.end.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_resume_still_owed_runs_in_full(self) -> None:
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True), _app(**_INTERRUPTED)
+        )
+        graph.delete_sync_points_by_connector_id.assert_awaited_once()
+        coordinator.spawn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_unmarked_resync_still_runs(self) -> None:
+        """The Sync button publishes the same event without pendingResync set,
+        so only the boot resume is checked against it."""
+        payload = await _published_payload(boot_resume=False)
+        assert "bootResume" not in payload
+        graph, coordinator = await _consume(payload, _STOPPED_SINCE_BOOT)
+        graph.delete_sync_points_by_connector_id.assert_awaited_once()
+        coordinator.spawn.assert_awaited_once()

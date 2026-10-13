@@ -30,7 +30,11 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
-from app.connectors.core.sync.sync_runner import drain_queued_syncs, run_sync_task
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    resumes_interrupted_full_sync,
+    run_sync_task,
+)
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
@@ -688,6 +692,20 @@ class EventService:
             await self._drop_queued_intent(connector_id)
             return True, False
 
+        if payload.get("bootResume") and not await self._boot_resume_still_owed(connector_id):
+            # Published at boot for a MANUAL connector whose full sync a restart
+            # cut short, and consumed only once the consumers started, which can
+            # be tens of seconds later. A /sync/stop in that gap found no lease
+            # to stop and cleared pendingResync, so this event is all that is
+            # left of a sync the person stopped. The prep below would delete
+            # its sync points and permission edges. Events nobody marked (the
+            # Sync button, the drain, schedules) never get here.
+            self.logger.info(
+                f"Not resuming {connector_id}: its interrupted full sync is no "
+                "longer owed (stopped, disabled or already run since boot)"
+            )
+            return True, False
+
         if effective_full_sync:
             # No "is one already running" check here: begin() above already
             # settled admission, and it is this call that holds the claim. Asking
@@ -878,6 +896,21 @@ class EventService:
             connector_id, wait_sec,
         )
         return False
+
+    async def _boot_resume_still_owed(self, connector_id: str) -> bool:
+        """Re-read now: the doc read at the top predates _ensure_connector.
+
+        A failed read resumes nothing; the connector keeps pendingFullSync, so
+        the next sync anyone starts still runs in full.
+        """
+        try:
+            doc = await self.graph_provider.get_document(
+                document_key=connector_id, collection=CollectionNames.APPS.value
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not re-read {connector_id} before resuming it: {e}")
+            return False
+        return resumes_interrupted_full_sync(doc if isinstance(doc, dict) else None)
 
     async def _mark_queued(
         self, connector_id: str, *, full_sync: bool = False

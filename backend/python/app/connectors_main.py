@@ -48,7 +48,11 @@ from app.connectors.core.sync.sync_coordinator import (
     process_identity,
     set_coordinator,
 )
-from app.connectors.core.sync.sync_runner import drain_queued_syncs, join_cleanup_tasks
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    join_cleanup_tasks,
+    resumes_interrupted_full_sync,
+)
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
@@ -180,7 +184,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
 
     It also gets pendingResync: nothing finished that run, so the request it
     was serving is still owed, and that is what lets the boot resume restart it
-    on a MANUAL connector too (see ``_resumes_interrupted_full_sync``).
+    on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
     """
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
@@ -416,32 +420,6 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         return False
 
 
-def _resumes_interrupted_full_sync(app: dict | None) -> bool:
-    """Whether a MANUAL connector is owed the full sync a restart cut short.
-
-    MANUAL means "not on a schedule", not "abandon a sync someone started". A
-    full sync cut short by a restart or a crash leaves both pendingFullSync and
-    pendingResync (``sync_runner._finalize``, ``reset_stale_sync_state``).
-    pendingFullSync alone is not enough: saving new filters sets it, and so
-    does stopping a full sync, and neither of those should start a MANUAL
-    connector by itself. The stop route clears pendingResync, so a stop holds.
-
-    And only a connector that can run at all, the same states the start path
-    refuses (``event_service._start_sync_with_lease``): not disabled, not
-    signed out, not being deleted. A QUEUED one is left to the startup drain,
-    which re-issues it after this; publishing it here too would run it twice.
-    """
-    if not app:
-        return False
-    return (
-        bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
-        and bool(app.get(ConnectorStateKeys.PENDING_RESYNC))
-        and app.get(ConnectorStateKeys.IS_ACTIVE) is not False
-        and app.get(ConnectorStateKeys.IS_AUTHENTICATED) is not False
-        and app.get("status") not in (AppStatus.QUEUED.value, "DELETING")
-    )
-
-
 async def _current_app(
     graph_provider, logger: logging.Logger, connector_id: str
 ) -> dict | None:
@@ -479,15 +457,16 @@ async def _publish_startup_resync(
     Respects the MANUAL strategy, which the event handler deliberately does not:
     that path also carries the user's resync button, and MANUAL means "not on a
     schedule", not "never". The one exception is a full sync a restart cut
-    short, which resumes (``_resumes_interrupted_full_sync``).
+    short, which resumes (``resumes_interrupted_full_sync``).
 
     Publishing rather than sharding by hash keeps this a single pass with no
     shard-count to get wrong, and the consumer's capacity gate meters the
     arrivals so a large fleet does not stampede one of them.
     """
     try:
-        if await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id):
-            if not _resumes_interrupted_full_sync(app) or not _resumes_interrupted_full_sync(
+        manual = await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id)
+        if manual:
+            if not resumes_interrupted_full_sync(app) or not resumes_interrupted_full_sync(
                 await _current_app(graph_provider, logger, connector_id)
             ):
                 logger.info(
@@ -509,6 +488,7 @@ async def _publish_startup_resync(
                 connector_id=connector_id,
                 connector_name=connector_name,
                 org_id=org_id,
+                boot_resume=manual,
             )
         )
         logger.info(f"Startup resync for {connector_id}: {result.value}")

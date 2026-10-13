@@ -114,6 +114,36 @@ async def _run_until_aborted(connector: "BaseConnector", lease: SyncLease) -> No
                 await sync
 
 
+def resumes_interrupted_full_sync(app: dict | None) -> bool:
+    """Whether a MANUAL connector is owed the full sync a restart cut short.
+
+    MANUAL means "not on a schedule", not "abandon a sync someone started". A
+    full sync cut short by a restart or a crash leaves both pendingFullSync and
+    pendingResync (``_finalize``, ``connectors_main.reset_stale_sync_state``).
+    pendingFullSync alone is not enough: saving new filters sets it, and so
+    does stopping a full sync, and neither of those should start a MANUAL
+    connector by itself. The stop route clears pendingResync, so a stop holds.
+
+    And only a connector that can run at all, the same states the start path
+    refuses (``event_service._start_sync_with_lease``): not disabled, not
+    signed out, not being deleted. A QUEUED one is left to the startup drain,
+    which re-issues it after this; publishing it here too would run it twice.
+
+    Asked twice: at boot, before publishing the resume, and by the start handler
+    for the event that resume published (``bootResume``), since a stop can land
+    in between and the start path does not otherwise read pendingResync.
+    """
+    if not app:
+        return False
+    return (
+        bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
+        and bool(app.get(ConnectorStateKeys.PENDING_RESYNC))
+        and app.get(ConnectorStateKeys.IS_ACTIVE) is not False
+        and app.get(ConnectorStateKeys.IS_AUTHENTICATED) is not False
+        and app.get("status") not in (AppStatus.QUEUED.value, "DELETING")
+    )
+
+
 async def _deleting_or_gone(
     graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
 ) -> bool:
@@ -165,7 +195,7 @@ async def _finalize(
     shutting down, not by a person stopping it or by the sync failing. The
     request it was serving is still owed, so pendingResync goes in the same
     write, and the next boot resumes the full sync even on a MANUAL connector
-    (see ``connectors_main._resumes_interrupted_full_sync``). Not written when
+    (see ``resumes_interrupted_full_sync``). Not written when
     the lease was lost: the new owner runs the connector, not the next boot.
     """
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
