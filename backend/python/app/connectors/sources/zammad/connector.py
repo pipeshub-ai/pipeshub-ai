@@ -2335,7 +2335,7 @@ class ZammadConnector(BaseConnector):
         }
         kb_map: Dict[int, RecordGroup] = {}
         category_map: Dict[int, RecordGroup] = {}
-        category_permissions_map: Dict[int, Dict[str, List[int]]] = {}
+        category_permissions_map: Dict[int, Dict[str, Any]] = {}
         await self._process_kb_entities(
             assets=listing,
             kb_map=kb_map,
@@ -2401,7 +2401,7 @@ class ZammadConnector(BaseConnector):
         assets: Dict[str, Any],
         kb_map: Dict[int, RecordGroup],
         category_map: Dict[int, RecordGroup],
-        category_permissions_map: Dict[int, Dict[str, List[int]]]
+        category_permissions_map: Dict[int, Dict[str, Any]]
     ) -> None:
         """
         Process knowledge bases and categories from the knowledge base listing.
@@ -2519,6 +2519,9 @@ class ZammadConnector(BaseConnector):
                 permissions_effective = cat_data.get("permissions_effective", [])
                 editor_role_ids: List[int] = []
                 reader_role_ids: List[int] = []
+                # False when the category's permissions couldn't be read for a reason
+                # that passes: saving it would replace its stored grants with none.
+                permissions_read = True
 
                 if permissions_effective:
                     editor_role_ids = [
@@ -2536,26 +2539,46 @@ class ZammadConnector(BaseConnector):
                             kb_id=kb_id,
                             cat_id=cat_id
                         )
-                        if perm_response.success and perm_response.data:
-                            # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
-                            # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
-                            permissions_list = perm_response.data.get("permissions", [])
-                            editor_role_ids = [
-                                p["role_id"] for p in permissions_list
-                                if p.get("access") == "editor"
-                            ]
-                            reader_role_ids = [
-                                p["role_id"] for p in permissions_list
-                                if p.get("access") == "reader"
-                            ]
                     except Exception as e:
+                        perm_response = None
                         self.logger.warning(f"Failed to fetch permissions for category {cat_id}: {e}")
+                    perm_data = perm_response.data if perm_response else None
+                    if perm_response and perm_response.success and isinstance(perm_data, dict):
+                        # Use 'permissions' array for actual access levels (not roles_editor/roles_reader)
+                        # permissions array has: {"id": X, "access": "editor|reader|none", "role_id": Y}
+                        permissions_list = perm_data.get("permissions", [])
+                        editor_role_ids = [
+                            p["role_id"] for p in permissions_list
+                            if p.get("access") == "editor"
+                        ]
+                        reader_role_ids = [
+                            p["role_id"] for p in permissions_list
+                            if p.get("access") == "reader"
+                        ]
+                    elif (
+                        perm_response is None
+                        or perm_response.success
+                        or read_failure(perm_response.status_code) is ReadOutcome.INTERRUPTED
+                    ):
+                        permissions_read = False
+                        self.logger.warning(
+                            f"Could not read the permissions of KB category {cat_id}; it and its "
+                            "archived and draft answers keep their stored access this sync"
+                        )
+                    else:
+                        # Refused, or gone (404): saved with no role grants, so nobody
+                        # keeps access through it that Zammad can't confirm.
+                        self.logger.warning(
+                            f"Zammad refused the permissions of KB category {cat_id} "
+                            f"(HTTP {perm_response.status_code}); saving it with no role grants"
+                        )
 
                 # Store permissions and KB ID for answer processing
                 category_permissions_map[cat_id] = {
                     "kb_id": kb_id,
                     "editor_role_ids": editor_role_ids,
-                    "reader_role_ids": reader_role_ids
+                    "reader_role_ids": reader_role_ids,
+                    "read": permissions_read,
                 }
 
                 # Create category permissions (all roles: editor + reader)
@@ -2596,7 +2619,9 @@ class ZammadConnector(BaseConnector):
                     web_url=cat_web_url,
                 )
 
-                category_record_groups.append((cat_record_group, cat_permissions))
+                if permissions_read:
+                    category_record_groups.append((cat_record_group, cat_permissions))
+                # Kept in the map either way: answers and child categories find their place through it.
                 category_map[cat_id] = cat_record_group
 
             if category_record_groups:
@@ -2608,7 +2633,7 @@ class ZammadConnector(BaseConnector):
         answers: dict[str, dict[str, Any]],
         assets: dict[str, Any],
         category_map: Dict[int, RecordGroup],
-        category_permissions_map: Dict[int, Dict[str, List[int]]]
+        category_permissions_map: Dict[int, Dict[str, Any]]
     ) -> tuple[int, int, list[int]]:
         """
         Write KB answers from the knowledge base listing, BATCH_SIZE_KB_ANSWERS at a time.
@@ -2648,6 +2673,14 @@ class ZammadConnector(BaseConnector):
 
                     # Determine visibility
                     visibility = self._determine_visibility(answer_data)
+                    if visibility in ("ARCHIVED", "DRAFT") and cat_perms.get("read") is False:
+                        # Granted to the category's editor roles, which couldn't be read;
+                        # writing it now would replace its stored grants with none.
+                        self.logger.warning(
+                            f"KB answer {answer_id} waits for its category's permissions; the next sync reads it again"
+                        )
+                        failed_updated_at.append(answer_updated_at)
+                        continue
 
                     # Enrich answer with translations
                     translation_ids = answer_data.get("translation_ids", [])

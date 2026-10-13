@@ -869,7 +869,8 @@ class ZammadDataSource:
             return ZammadResponse(
                 success=status_ok,
                 data=response.json() if response_text else None,
-                message="get_kb_category_permissions succeeded" if status_ok else "get_kb_category_permissions failed"
+                message="get_kb_category_permissions succeeded" if status_ok else "get_kb_category_permissions failed",
+                status_code=response.status,
             )
         except Exception as e:
             return ZammadResponse(
