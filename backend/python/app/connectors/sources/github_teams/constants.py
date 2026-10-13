@@ -81,9 +81,9 @@ CODE_FILE_MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 PR_PAGE_SIZE = 100
 ISSUE_PAGE_SIZE = 100
 
-# A PR's changed-file contents are inlined into the blocks payload and held in
-# memory while the container is serialised, so cap what gets inlined. The diff
-# itself is always kept — only the full-file body is dropped above this.
+# A changed file GitHub returns without a diff (too large to show) has its
+# contents inlined into the PR's blocks payload instead, held in memory while
+# the container is serialised, so cap what gets inlined.
 PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
 
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a

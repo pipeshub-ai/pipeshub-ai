@@ -580,6 +580,12 @@ class CommentsHelper:
         """Build conversation-comment BlockGroups, then one TEXT_SECTION BlockGroup
         per changed file with that file's review comments attached.
 
+        A file's group holds its diff, not the whole file (with "Index Code
+        Files" on, the default branch's copy is its own code-file record). Only a file
+        GitHub returns without a diff (too large, or binary) and that still
+        exists has its text at the PR head inlined, within
+        ``PR_FILE_INLINE_CONTENT_MAX_BYTES``.
+
         Review comments are grouped by real GitHub review thread
         (``in_reply_to_id`` chain), matching ``BlockGroup.comments``'s documented
         "grouped by thread_id" contract. Grouping every comment on a path into
@@ -737,11 +743,15 @@ class CommentsHelper:
             if not filename:
                 continue
             status = getattr(file, "status", "")
-            patch = getattr(file, "patch", None) or "(no textual diff available — binary or too large)"
+            diff = getattr(file, "patch", None)
+            patch = diff or "(no textual diff available — binary or too large)"
             file_content: str | None = None
             oversized = False
             content_bytes: int | None = None
-            if status != "removed" and head_sha:
+            # The diff and review comments describe a change; the whole file
+            # at the PR head is fetched only when GitHub gives no diff (too
+            # large to show, or binary), since it is then the only view of it.
+            if not diff and status != "removed" and head_sha:
                 content_res = await c.runtime.ds_call(
                     c.data_source.get_file_contents, owner, repo, filename, head_sha,
                 )
@@ -795,6 +805,10 @@ class CommentsHelper:
             return None, True, declared
         decoded = self._decode_content_file(content_file)
         if decoded is None:
+            return None, False, declared if isinstance(declared, int) else None
+        if "\x00" in decoded:
+            # Binary (git's own test: a NUL byte). Decoding it as UTF-8 would
+            # index a page of replacement characters.
             return None, False, declared if isinstance(declared, int) else None
         size = len(decoded.encode("utf-8"))
         if size > PR_FILE_INLINE_CONTENT_MAX_BYTES:
