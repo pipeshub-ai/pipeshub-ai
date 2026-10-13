@@ -945,6 +945,11 @@ else
 fi
 
 if $BACKUPS && $EXISTING_CLUSTER; then
+  # Assigned outside the test: set -e and the ERR trap do not see a command
+  # that fails inside an if condition.
+  cluster_volumes="$(aws ec2 describe-volumes \
+    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
+    --query 'length(Volumes)' --output text)"
   if ! kubectl get storageclass "$STORAGE_CLASS" \
     -o go-template='{{range $k, $v := .parameters}}{{$k}}={{$v}}{{"\n"}}{{end}}' \
     | grep -qE '^tagSpecification_[0-9]+=pipeshub-backup=true$'; then
@@ -952,9 +957,7 @@ if $BACKUPS && $EXISTING_CLUSTER; then
     note "skipped: the backup plan selects volumes tagged pipeshub-backup=true, and ${STORAGE_CLASS} does not add that tag."
     note "Add tagSpecification_1: \"pipeshub-backup=true\" to a storage class only PipesHub uses (see storageclass-gp3.yaml), or back up the volumes your own way."
     BACKUPS=false
-  elif [[ "$(aws ec2 describe-volumes \
-    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
-    --query 'length(Volumes)' --output text)" == 0 ]]; then
+  elif [[ "$cluster_volumes" == 0 ]]; then
     step "Daily EBS backups"
     note "skipped: no volume carries both pipeshub-backup=true and kubernetes.io/cluster/${CLUSTER}=owned, and the backup plan needs both."
     note "The EBS CSI driver adds the cluster tag when it runs with --k8s-tag-cluster-id=${CLUSTER}."
@@ -985,9 +988,13 @@ if $BACKUPS; then
   SELECTION_ID="$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" \
     --query "BackupSelectionsList[?SelectionName=='${CLUSTER}-ebs'].SelectionId | [0]" --output text)"
   [[ "$SELECTION_ID" != None ]] || SELECTION_ID=""
-  if [[ -n "$SELECTION_ID" && "$(aws backup get-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID" \
-    --query "length(BackupSelection.Conditions.StringEquals[?ConditionKey=='aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}' && ConditionValue=='owned'] || \`[]\`)" \
-    --output text)" == 0 ]]; then
+  scoped=1
+  if [[ -n "$SELECTION_ID" ]]; then
+    scoped="$(aws backup get-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID" \
+      --query "length(BackupSelection.Conditions.StringEquals[?ConditionKey=='aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}' && ConditionValue=='owned'] || \`[]\`)" \
+      --output text)"
+  fi
+  if [[ "$scoped" == 0 ]]; then
     aws backup delete-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID"
     note "replaced backup selection ${CLUSTER}-ebs, which was not limited to this cluster's volumes"
     SELECTION_ID=""
