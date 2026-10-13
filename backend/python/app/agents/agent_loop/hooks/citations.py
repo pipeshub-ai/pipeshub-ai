@@ -258,7 +258,7 @@ class _FetchFullRecordTool(Tool):
             return 0
         try:
             return max(0, int(float(raw)))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(
                 f"start_block must be a whole number, got {raw!r}."
             ) from exc

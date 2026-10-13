@@ -552,7 +552,10 @@ class TestEdgesOfACall:
             assert abs(ahead - behind) <= 2, (record["id"], ahead, behind)
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(("raw", "expected"), [("10", 10), (10.0, 10), ("lots", None), (True, None), (0, None)])
+    @pytest.mark.parametrize(("raw", "expected"), [
+        ("10", 10), (10.0, 10), ("lots", None), (True, None), (0, None),
+        ("inf", None), ("Infinity", None), (float("inf"), None), (float("nan"), None),
+    ])
     async def test_max_blocks_from_the_model_is_coerced_not_trusted(self, raw: object, expected: int | None) -> None:
         context = _context(query="")
 
@@ -895,3 +898,21 @@ class TestClipGuardsAndTelemetry:
 
         entry = _outcome(context, "rec-pe")
         assert (entry["complete"], entry["truncatedBy"]) == (False, "past_end")
+
+
+class TestAnInfiniteOffsetIsAToolError:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw", ["inf", float("inf"), "-Infinity"])
+    async def test_not_a_traceback(self, raw: object) -> None:
+        from app.agents.agent_loop.hooks.citations import (
+            CitationCollector,
+            _FetchFullRecordTool,
+        )
+
+        context = _context(query="")
+        output = await _FetchFullRecordTool(CitationCollector(context), context).execute(
+            record_ids=["rec-x"], start_block=raw,
+        )
+
+        assert output.success is False
+        assert "whole number" in output.error
