@@ -1265,6 +1265,19 @@ def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
 
 
+
+def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make writing the stored-access note fail, as a database error would."""
+    real = store.update_sync_point
+
+    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
+        if key.endswith("stored_access"):
+            raise RuntimeError("database unavailable")
+        await real(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
 
@@ -1276,6 +1289,7 @@ class TestUnreadApplicationRoles:
             pytest.param(httpx.ConnectError("reset"), id="network"),
             pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
             pytest.param(json_response({"roles": []}), id="wrong-shape"),
+            pytest.param(json_response(["jira-software"]), id="malformed-entry"),
         ],
     )
     async def test_an_unread_application_role_list_keeps_the_project_access(self, jira, db, store, search, answer) -> None:
@@ -1363,6 +1377,33 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl_summary(db.record_group_permissions["10000"]) == before
+
+    async def test_a_note_that_cannot_be_written_stops_the_sync_before_the_project_is_saved(
+        self, jira, db, store, search, monkeypatch
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        fail_note_writes(store, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+
+        assert "10000" not in db.record_group_permissions, "no access is saved without its note"
+
+    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
+            del store.sync_points[key]  # as left by a version without the notes
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before
+        note = store.values_for("stored_access") or {}
+        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)

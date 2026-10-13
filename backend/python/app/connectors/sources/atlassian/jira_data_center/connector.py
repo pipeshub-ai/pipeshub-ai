@@ -746,9 +746,9 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            await self.data_entities_processor.on_new_record_groups(readable_projects)
             if readable_projects:
                 await self._note_stored_access("projects")
+            await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # Sync issues for all projects
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -820,28 +820,36 @@ class JiraDataCenterConnector(BaseConnector):
     async def _stored_access_at_start(self) -> frozenset[str]:
         """Which kinds of access earlier syncs saved, so a short read must not replace them.
 
-        Each save notes its kind in the ``stored_access`` sync point right after it lands,
-        so a sync cut short after saving groups still counts its groups. A full sync's prep
+        Each kind is noted in the ``stored_access`` sync point just before it is saved, so
+        a sync cut short after saving groups still counts its groups. A full sync's prep
         deletes every sync point along with the stored edges, so after it, and on a first
-        sync, nothing is noted. A connector last synced before these notes existed has only
-        its issues checkpoint, which counts for every kind.
+        sync, nothing is noted. A connector last synced before these notes existed has
+        only its issues checkpoint: every kind counts once, and is noted, so from then on
+        the notes alone decide.
 
-        A read that fails is raised, so the sync stops before any write that replaces
-        stored access. Carrying on could save nothing now and then write the checkpoint,
-        which would make an empty store look like a kept one on the next sync.
+        A read or write that fails is raised, so the sync stops before any write that
+        replaces stored access. Carrying on could save nothing now and then write the
+        checkpoint, which would make an empty store look like a kept one on the next sync.
         """
         noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
+        if noted:
+            return frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind))
         checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
         if checkpoint and checkpoint.get("last_sync_time") is not None:
+            await self.issues_sync_point.update_sync_point(
+                STORED_ACCESS_SYNC_POINT, dict.fromkeys(STORED_ACCESS_KINDS, True)
+            )
             return STORED_ACCESS_KINDS
-        return frozenset(kind for kind in STORED_ACCESS_KINDS if (noted or {}).get(kind))
+        return frozenset()
 
     async def _note_stored_access(self, kind: str) -> None:
-        """Note that a save of ``kind`` landed, for ``_stored_access_at_start`` on later syncs."""
-        try:
-            await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
-        except Exception as e:
-            self.logger.warning("⚠️ Could not note the saved %s access: %s", kind, e)
+        """Note, before saving ``kind``, that it is stored, for ``_stored_access_at_start`` later.
+
+        Noted first so that a save is never left without its note: if the note cannot be
+        written the error stops the sync before the save, and a save that fails after it
+        only makes a later short read hold back, which keeps access rather than dropping it.
+        """
+        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
@@ -1652,9 +1660,14 @@ class JiraDataCenterConnector(BaseConnector):
                 self._app_roles_unread = True
                 return {}
 
+            if any(not isinstance(role, dict) for role in roles_data):
+                # An entry that is not a role object may be a role a project grants; the list
+                # cannot be taken as complete. (A role object without a key matches no grant.)
+                self.logger.warning("⚠️ Application roles response has an entry that is not a role")
+                self._app_roles_unread = True
+                return {}
+
             for role in roles_data:
-                if not isinstance(role, dict):
-                    continue
                 role_key = role.get("key")
                 if not role_key:
                     continue

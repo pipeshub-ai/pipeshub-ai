@@ -889,6 +889,19 @@ def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
 
 
+
+def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make writing the stored-access note fail, as a database error would."""
+    real = store.update_sync_point
+
+    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
+        if key.endswith("stored_access"):
+            raise RuntimeError("database unavailable")
+        await real(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme also grants the jira-software application role, which Jira maps to grp-sw."""
 
@@ -909,6 +922,7 @@ class TestUnreadApplicationRoles:
             pytest.param(httpx.ConnectError("reset"), id="network"),
             pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
             pytest.param(json_response({"roles": []}), id="wrong-shape"),
+            pytest.param(json_response(["jira-software"]), id="malformed-entry"),
         ],
     )
     async def test_an_unread_application_role_list_keeps_the_project_access(self, api, site_db, checkpoints, search, answer) -> None:
@@ -992,6 +1006,35 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl(site_db) == before
+
+    async def test_a_note_that_cannot_be_written_stops_the_sync_before_the_project_is_saved(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        fail_note_writes(checkpoints, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+
+        assert "10000" not in site_db.record_group_permissions, "no access is saved without its note"
+
+    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
+            del checkpoints.sync_points[key]  # as left by a version without the notes
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl(site_db) == before
+        note = checkpoints.values_for("stored_access") or {}
+        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
         self._stub_application_role(api)
