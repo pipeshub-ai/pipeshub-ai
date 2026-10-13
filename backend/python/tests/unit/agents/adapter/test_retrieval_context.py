@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import patch
 
 from app.agents.agent_loop.protocol.formatter import AGUIFormatter, LegacyFormatter
 from app.agents.agent_loop.protocol.retrieval_context import (
@@ -13,6 +14,10 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievedRecordPayload,
 )
 from app.agents.agent_loop.retrieval_ledger import (
+    MAX_BLOCK_INDICES_PER_RECORD,
+    MAX_FRAMES_PER_RUN,
+    MAX_KNOWN_RECORD_IDS_PER_FRAME,
+    MAX_RECORDS_PER_FRAME,
     RetrievalContextLedger,
     emit_retrieval_context,
 )
@@ -333,3 +338,113 @@ class TestEmitRetrievalContext:
         ]
         assert len(reported) == 20
         assert len(set(reported)) == 20
+
+
+class TestFrameBounds:
+    """One oversized result must not turn a frame, or a run's trace, into
+    megabytes of ids; a frame that left something out says so."""
+
+    def _context(self) -> Any:  # noqa: ANN401
+        return make_context(
+            protocol="agui", run_id="run-1", include_retrieval_context=True,
+            event_sink=_RecordingSink(),
+        )
+
+    @staticmethod
+    def _values(context: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+        return [event["data"]["value"] for event in context.event_sink.events]
+
+    async def test_a_frame_within_the_caps_carries_no_truncated_key(self) -> None:
+        context = self._context()
+        context.tool_state["final_results"] = [_block("vr-1", 0)]
+
+        await emit_retrieval_context(context, source="tool")
+
+        assert "truncated" not in self._values(context)[0]
+
+    async def test_records_past_the_cap_are_left_out_and_flagged(self) -> None:
+        context = self._context()
+        context.tool_state["final_results"] = [
+            _block(f"vr-{i}", 0) for i in range(MAX_RECORDS_PER_FRAME + 5)
+        ]
+
+        await emit_retrieval_context(context, source="tool")
+
+        [value] = self._values(context)
+        assert len(value["records"]) == MAX_RECORDS_PER_FRAME
+        assert value["truncated"] is True
+        assert value["cumulativeRecords"] == MAX_RECORDS_PER_FRAME + 5
+
+    async def test_a_huge_table_is_cut_to_the_block_cap(self) -> None:
+        context = self._context()
+        rows = [{"block_index": i} for i in range(1, MAX_BLOCK_INDICES_PER_RECORD + 50)]
+        context.tool_state["final_results"] = [
+            {"virtual_record_id": "vr-t", "block_index": 0, "content": ("summary", rows)},
+        ]
+
+        await emit_retrieval_context(context, source="tool")
+
+        [value] = self._values(context)
+        assert len(value["records"][0]["blockIndices"]) == MAX_BLOCK_INDICES_PER_RECORD
+        assert value["truncated"] is True
+
+    async def test_known_ids_past_the_cap_are_left_out_and_flagged(self) -> None:
+        context = self._context()
+        context.tool_state["known_record_ids"] = {
+            f"rec-{i:05d}" for i in range(MAX_KNOWN_RECORD_IDS_PER_FRAME + 1)
+        }
+
+        await emit_retrieval_context(context, source="tool")
+
+        [value] = self._values(context)
+        assert len(value["knownRecordIds"]) == MAX_KNOWN_RECORD_IDS_PER_FRAME
+        assert value["truncated"] is True
+
+    async def test_the_run_stops_sending_frames_at_the_cap(self) -> None:
+        context = self._context()
+        for i in range(MAX_FRAMES_PER_RUN + 3):
+            await emit_retrieval_context(
+                context, source="tool", status="empty", tool_call_id=f"c{i}",
+            )
+
+        values = self._values(context)
+        assert len(values) == MAX_FRAMES_PER_RUN
+        assert values[-1]["seq"] == MAX_FRAMES_PER_RUN
+        assert values[-1]["truncated"] is True
+        assert "truncated" not in values[-2]
+
+
+class TestEmitNeverRaises:
+    """It runs after every tool call, before the answer is finalized."""
+
+    async def test_a_ledger_fault_drops_the_frame(self) -> None:
+        context = TestFrameBounds()._context()
+        context.tool_state["final_results"] = [_block("vr-1", 0)]
+
+        with patch.object(RetrievalContextLedger, "take_delta", side_effect=RuntimeError("bug")):
+            await emit_retrieval_context(context, source="tool")
+
+        assert context.event_sink.events == []
+
+    async def test_a_formatter_fault_drops_the_frame(self) -> None:
+        context = TestFrameBounds()._context()
+        context.tool_state["final_results"] = [_block("vr-1", 0)]
+
+        with patch.object(
+            type(context.formatter), "retrieval_context", side_effect=ValueError("bad frame"),
+        ):
+            await emit_retrieval_context(context, source="tool")
+
+        assert context.event_sink.events == []
+
+    async def test_cancellation_is_not_swallowed(self) -> None:
+        context = TestFrameBounds()._context()
+
+        with patch.object(
+            RetrievalContextLedger, "take_delta", side_effect=asyncio.CancelledError,
+        ):
+            try:
+                await emit_retrieval_context(context, source="tool")
+            except asyncio.CancelledError:
+                return
+        raise AssertionError("CancelledError was swallowed")

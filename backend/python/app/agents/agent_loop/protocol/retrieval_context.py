@@ -3,8 +3,8 @@
 Carries identifiers only — which records and blocks reached the model after
 prefetch or a tool call — never block text, so the frame stays small and
 adds no content exposure beyond what the answer's citations already carry.
-Field names are camelCase to match the wire contract external clients (the
-FRAMES benchmark harness) parse, same convention as `ArtifactSSEPayload`.
+Field names are camelCase to match the wire contract external clients (evaluation
+tools) parse, same convention as `ArtifactSSEPayload`.
 """
 
 from __future__ import annotations
@@ -72,6 +72,9 @@ class RetrievalContextPayload(BaseModel):
     cumulativeBlocks: int = 0
     cumulativeRecords: int = 0
     errorMessage: str | None = None
+    # Set when this frame left items out to stay within its size caps, or is
+    # the last frame the run may send; absent otherwise.
+    truncated: bool | None = None
 
     def to_wire_dict(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

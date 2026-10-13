@@ -13,6 +13,7 @@ covered without touching this module.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -36,6 +37,14 @@ if TYPE_CHECKING:
     from app.agents.chat_modes.prefetch import PrefetchResult
 
 _MAX_ERROR_MESSAGE_CHARS = 500
+# Size caps so one oversized result (a 10,000-row table, a listing of every
+# record) cannot turn a frame, or the run's trace, into megabytes of ids.
+MAX_RECORDS_PER_FRAME = 200
+MAX_BLOCK_INDICES_PER_RECORD = 1_000
+MAX_KNOWN_RECORD_IDS_PER_FRAME = 500
+MAX_FRAMES_PER_RUN = 500
+
+logger = logging.getLogger(__name__)
 
 BlockKey = tuple[str, int | None]
 FetchKey = tuple[str, int, int]
@@ -124,6 +133,12 @@ class RetrievalContextLedger:
     def next_seq(self) -> int:
         self._seq += 1
         return self._seq
+
+    @property
+    def frames_exhausted(self) -> bool:
+        """The run already sent `MAX_FRAMES_PER_RUN` frames (the last one
+        flagged `truncated`)."""
+        return self._seq >= MAX_FRAMES_PER_RUN
 
     def take_delta(self, tool_state: Mapping[str, Any]) -> RetrievalDelta:
         records_map: Mapping[str, Any] = tool_state.get("virtual_record_id_to_result") or {}
@@ -271,28 +286,58 @@ async def emit_retrieval_context(
 ) -> None:
     """Write one `retrieval_context` frame for whatever is new since the last
     frame. No-op unless the request opted in. An `ok` call with nothing new
-    writes nothing (unless `always`), so ordinary tool calls cost no bytes."""
+    writes nothing (unless `always`), so ordinary tool calls cost no bytes.
+
+    Never raises: it runs after every tool call and before the answer is
+    finalized, so a fault here must cost a measurement, never the answer.
+    """
     if not context.include_retrieval_context or context.event_sink is None:
         return
-    ledger = context.retrieval_ledger
-    delta = ledger.take_delta(context.tool_state)
-    if delta.is_empty and status == "ok" and not always:
+    try:
+        ledger = context.retrieval_ledger
+        if ledger.frames_exhausted:
+            return
+        delta = ledger.take_delta(context.tool_state)
+        if delta.is_empty and status == "ok" and not always:
+            return
+        records, truncated = _bounded_records(delta.records)
+        known_record_ids = delta.known_record_ids[:MAX_KNOWN_RECORD_IDS_PER_FRAME]
+        truncated = truncated or len(known_record_ids) < len(delta.known_record_ids)
+        seq = ledger.next_seq()
+        payload = RetrievalContextPayload(
+            seq=seq,
+            source=source,
+            status=status,
+            statusReason=status_reason,
+            toolName=tool_name,
+            toolCallId=tool_call_id,
+            records=records,
+            knownRecordIds=known_record_ids,
+            cumulativeBlocks=delta.cumulative_blocks,
+            cumulativeRecords=delta.cumulative_records,
+            errorMessage=error_message[:_MAX_ERROR_MESSAGE_CHARS] if error_message else None,
+            truncated=(truncated or seq >= MAX_FRAMES_PER_RUN) or None,
+        )
+        events = list(context.formatter.retrieval_context(context, payload=payload))
+    except Exception:
+        logger.exception(
+            "retrieval_context: dropping frame for run %s", getattr(context, "run_id", None),
+        )
         return
-    payload = RetrievalContextPayload(
-        seq=ledger.next_seq(),
-        source=source,
-        status=status,
-        statusReason=status_reason,
-        toolName=tool_name,
-        toolCallId=tool_call_id,
-        records=delta.records,
-        knownRecordIds=delta.known_record_ids,
-        cumulativeBlocks=delta.cumulative_blocks,
-        cumulativeRecords=delta.cumulative_records,
-        errorMessage=error_message[:_MAX_ERROR_MESSAGE_CHARS] if error_message else None,
-    )
-    for event in context.formatter.retrieval_context(context, payload=payload):
+    for event in events:
         await context.event_sink.write(event)
+
+
+def _bounded_records(
+    records: list[RetrievedRecordPayload],
+) -> tuple[list[RetrievedRecordPayload], bool]:
+    truncated = len(records) > MAX_RECORDS_PER_FRAME
+    kept = records[:MAX_RECORDS_PER_FRAME]
+    for record in kept:
+        if len(record.blockIndices) > MAX_BLOCK_INDICES_PER_RECORD:
+            record.blockIndices = record.blockIndices[:MAX_BLOCK_INDICES_PER_RECORD]
+            truncated = True
+    return kept, truncated
 
 
 def prefetch_status(

@@ -27,11 +27,15 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict
 
 from app.agents.agent_loop.protocol.agui import AGUIEventType, frame
-from app.agents.agent_loop.protocol.retrieval_context import RETRIEVAL_CONTEXT_EVENT_NAME
+from app.agents.agent_loop.protocol.retrieval_context import (
+    RETRIEVAL_CONTEXT_EVENT_NAME,
+)
 from app.agents.agent_loop.protocol.run_usage import RUN_USAGE_EVENT_NAME
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.protocol.retrieval_context import RetrievalContextPayload
+    from app.agents.agent_loop.protocol.run_usage import RunUsagePayload
 
 
 class ArtifactSSEPayload(BaseModel):
@@ -71,11 +75,6 @@ class ArtifactSSEPayload(BaseModel):
         return self.model_dump(exclude_none=True)
 
 
-def _wire(payload: Any) -> dict[str, Any]:
-    """Accepts the payload model or an already-serialised dict."""
-    return payload.to_wire_dict() if hasattr(payload, "to_wire_dict") else payload
-
-
 class ProtocolFormatter(ABC):
     @abstractmethod
     def answer_delta(
@@ -101,14 +100,14 @@ class ProtocolFormatter(ABC):
 
     @abstractmethod
     def retrieval_context(
-        self, context: "AgentContext", *, payload: Any,
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
     ) -> list[dict[str, Any]]:
         """Which records and blocks reached the model. Opt-in; identifiers
         only, never block text."""
 
     @abstractmethod
     def run_usage(
-        self, context: "AgentContext", *, payload: Any,
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
     ) -> list[dict[str, Any]]:
         """Token and loop-outcome totals for the whole run."""
 
@@ -141,11 +140,15 @@ class LegacyFormatter(ProtocolFormatter):
             "data": {"tool": tool, "toolset": toolset, "reason": reason, "message": message},
         }]
 
-    def retrieval_context(self, context, *, payload):
-        return [{"event": RETRIEVAL_CONTEXT_EVENT_NAME, "data": _wire(payload)}]
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
+    ) -> list[dict[str, Any]]:
+        return [{"event": RETRIEVAL_CONTEXT_EVENT_NAME, "data": payload.to_wire_dict()}]
 
-    def run_usage(self, context, *, payload):
-        return [{"event": RUN_USAGE_EVENT_NAME, "data": _wire(payload)}]
+    def run_usage(
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
+    ) -> list[dict[str, Any]]:
+        return [{"event": RUN_USAGE_EVENT_NAME, "data": payload.to_wire_dict()}]
 
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
@@ -210,16 +213,20 @@ class AGUIFormatter(ProtocolFormatter):
             runId=context.run_id,
         )]
 
-    def retrieval_context(self, context, *, payload):
+    def retrieval_context(
+        self, context: "AgentContext", *, payload: "RetrievalContextPayload",
+    ) -> list[dict[str, Any]]:
         return [frame(
             AGUIEventType.CUSTOM, name=RETRIEVAL_CONTEXT_EVENT_NAME,
-            value=_wire(payload), runId=context.run_id,
+            value=payload.to_wire_dict(), runId=context.run_id,
         )]
 
-    def run_usage(self, context, *, payload):
+    def run_usage(
+        self, context: "AgentContext", *, payload: "RunUsagePayload",
+    ) -> list[dict[str, Any]]:
         return [frame(
             AGUIEventType.CUSTOM, name=RUN_USAGE_EVENT_NAME,
-            value=_wire(payload), runId=context.run_id,
+            value=payload.to_wire_dict(), runId=context.run_id,
         )]
 
     def error(self, context, *, message, code):

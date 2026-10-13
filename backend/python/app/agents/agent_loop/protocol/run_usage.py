@@ -1,6 +1,6 @@
 """Wire payload for the opt-in CUSTOM `run_usage` stream frame: token totals
-for every LLM call one chat run made, so external clients (the FRAMES
-benchmark harness) can report cost without a second tracing system.
+for every LLM call one chat run made, so external clients (evaluation
+tools) can report cost without a second tracing system.
 Rides on the same opt-in as `retrieval_context` (`includeRetrievalContext`).
 """
 
@@ -12,12 +12,16 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.agent import Agent
     from app.agent_loop_lib.core.responses import RunUsage
+    from app.agent_loop_lib.core.types import AgentResult
+    from app.agents.agent_loop.context import AgentContext
 
 logger = logging.getLogger(__name__)
 
 RUN_USAGE_EVENT_NAME = "run_usage"
 RUN_USAGE_SCHEMA_VERSION = 2
+_MAX_AGENT_ERROR_CHARS = 500
 
 
 class RunUsagePayload(BaseModel):
@@ -41,7 +45,9 @@ class RunUsagePayload(BaseModel):
     # One `[input, output, cacheRead, cacheWrite]` per LLM call, in call order
     # (schema 1 sent the first three).
     calls: list[list[int]] = Field(default_factory=list)
-    # Loop outcome signals that otherwise never reach the stream.
+    # Loop outcome signals that otherwise never reach the stream. `turns`
+    # counts the rounds that continued the loop (tool calls, nudges); the
+    # final reply ends the loop and is not one of them.
     turns: int | None = None
     maxTurns: int | None = None
     completionGateNudges: int = 0
@@ -69,8 +75,8 @@ class RunUsagePayload(BaseModel):
 
 async def emit_run_usage(
     context: "AgentContext",
-    agent: Any,
-    result: Any,
+    agent: "Agent",
+    result: "AgentResult",
     *,
     model: str | None = None,
 ) -> None:
@@ -98,8 +104,9 @@ async def emit_run_usage(
         payload.turns = len(turns) if isinstance(turns, list) else None
         payload.maxTurns = getattr(spec, "max_turns", None)
         payload.completionGateNudges = context.completion_gate_nudges
-        payload.agentError = getattr(result, "error", None)
-        events = list(context.formatter.run_usage(context, payload=payload.to_wire_dict()))
+        error = getattr(result, "error", None)
+        payload.agentError = str(error)[:_MAX_AGENT_ERROR_CHARS] if error else None
+        events = list(context.formatter.run_usage(context, payload=payload))
     except Exception:
         logger.exception("run_usage: dropping usage frame for run %s", getattr(context, "run_id", None))
         return
