@@ -1088,6 +1088,27 @@ class TestUnfinishedUserRead:
 
         assert self._access(site_db) == before, "an unreadable checkpoint is not 'nothing stored'"
 
+    async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/project/search", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        with pytest.raises(Exception):  # noqa: B017 - any failure that stops the sync after the groups are saved
+            await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+        assert checkpoints.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+
+        self._stub_bo_everywhere(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        groups_saved = len(site_db.user_groups)
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert len(site_db.user_groups) == groups_saved, "groups the first sync saved are kept"
+        assert ("EntityType.GROUP", "grp-dev") in acl(site_db), "a project it never saved is saved with what was read"
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
