@@ -51,15 +51,17 @@ def dedupe_append_final_results(
     existing: list[dict[str, Any]],
     new_blocks: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Append ``new_blocks``, skipping duplicates by (virtual_record_id, block_index)."""
-    if not isinstance(existing, list):
-        existing = []
+    """Append ``new_blocks``, skipping duplicates by (virtual_record_id, block_index).
+
+    Accumulated state of the wrong shape is dropped rather than failing every
+    reader of it after this.
+    """
+    appended = [entry for entry in existing if isinstance(entry, dict)] if isinstance(existing, list) else []
     seen_keys = {
         key
-        for entry in existing
-        if isinstance(entry, dict) and (key := _block_accumulation_key(entry)) is not None
+        for entry in appended
+        if (key := _block_accumulation_key(entry)) is not None
     }
-    appended = list(existing)
     for entry in new_blocks:
         key = _block_accumulation_key(entry)
         if key is None or key not in seen_keys:

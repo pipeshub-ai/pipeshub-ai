@@ -33,7 +33,7 @@ class TestDedupeAppendFinalResults:
 
     def test_wrongly_typed_accumulated_state_starts_over(self) -> None:
         assert dedupe_append_final_results("oops", [_block("v1", 0)]) == [_block("v1", 0)]  # type: ignore[arg-type]
-        assert len(dedupe_append_final_results([None, "x", _block("v1", 0)], [_block("v1", 0)])) == 3
+        assert dedupe_append_final_results([None, "x", _block("v1", 0)], [_block("v1", 0)]) == [_block("v1", 0)]
 
 
 class TestSearchResultSummary:

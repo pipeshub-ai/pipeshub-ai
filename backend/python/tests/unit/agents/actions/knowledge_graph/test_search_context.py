@@ -196,7 +196,7 @@ class TestWronglyTypedState:
     async def test_accumulators_of_the_wrong_type_are_started_over(self) -> None:
         records = {"a": _record("a")}
         state = _state(
-            final_results="oops",
+            final_results=[None, "oops"],
             virtual_record_id_to_result=["oops"],
             tool_records={"oops": 1},
             image_budget="oops",
