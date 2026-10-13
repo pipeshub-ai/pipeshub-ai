@@ -151,6 +151,20 @@ class TestFitsTheToolResultCap:
         assert "g1" in state["virtual_record_id_to_result"]
 
     @pytest.mark.asyncio
+    async def test_no_record_is_shown_by_its_neighbours_alone(self) -> None:
+        records = {f"v{i}": _record(f"v{i}", blocks=6) for i in range(10)}
+        units = [_unit(f"v{i}", 1, f"v{i} " + "x" * 1_200, 0.9 - i / 100) for i in range(10)]
+        state = _state()
+
+        result = await _search(state, records, units, cap=6_000)
+
+        shown = {u["virtual_record_id"] for u in state["final_results"]}
+        with_hit = {u["virtual_record_id"] for u in state["final_results"] if u.get("score") is not None}
+        assert shown == with_hit
+        assert all(f"{vrid} xxx" in result for vrid in shown)
+        assert set(state["virtual_record_id_to_result"]) == shown
+
+    @pytest.mark.asyncio
     async def test_everything_that_fits_is_shown_unchanged(self) -> None:
         records, units = _five_records()
         state = _state()

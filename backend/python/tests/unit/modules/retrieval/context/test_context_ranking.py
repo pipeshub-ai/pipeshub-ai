@@ -12,7 +12,14 @@ from app.modules.retrieval.context.ordering import (
     relevance_ordered_context,
 )
 from app.modules.retrieval.context.ranking import rank_units
-from app.modules.retrieval.context.units import unit_block_indices, unit_score
+from app.modules.retrieval.context.units import (
+    NEIGHBOUR_OF_KEY,
+    is_orphan_neighbour,
+    table_block_span,
+    unit_block_indices,
+    unit_score,
+    without_orphan_neighbours,
+)
 
 
 def _text(vrid: str, index: int | None, score: float | None = None) -> dict:
@@ -179,3 +186,106 @@ class TestRelevanceOrderedContextSwitch:
             else:
                 monkeypatch.setenv(name, value)
         assert relevance_ordered_context() is expected
+
+
+def _table_record(rows: range, *, before: int = 1, after: int = 1, old_format: bool = False) -> dict:
+    """Caption text, table rows, a note: the shape a parsed document stores."""
+    blocks = [{"type": BlockType.TEXT.value, "data": f"caption {i}"} for i in range(before)]
+    first = len(blocks)
+    blocks += [
+        {"type": BlockType.TABLE_ROW.value, "parent_index": 0, "data": {"row_natural_language_text": f"row {i}"}}
+        for i in rows
+    ]
+    last = len(blocks) - 1
+    blocks += [{"type": BlockType.TEXT.value, "data": f"note {i}"} for i in range(after)]
+    children = (
+        [{"block_index": i} for i in range(first, last + 1)] if old_format
+        else {"block_ranges": [{"start": first, "end": last}]}
+    )
+    return {"block_containers": {
+        "blocks": blocks,
+        "block_groups": [{"type": GroupType.TABLE.value, "children": children}],
+    }}
+
+
+def _table_hit(vrid: str, rows: list[int], *, group: int | None = 0) -> dict:
+    unit = _table(vrid, {row: 0.9 - row / 100 for row in rows})
+    if group is not None:
+        unit["block_group_index"] = group
+    return unit
+
+
+class TestTableNeighbours:
+    """A table hit lists only its matched rows; its caption and its note sit
+    beside the table's own range."""
+
+    @pytest.mark.parametrize("group", [0, None])
+    def test_a_hit_on_middle_rows_gets_the_caption_and_the_note(self, group: int | None) -> None:
+        records = {"t": _table_record(range(10))}
+
+        expanded = expand_neighbours([_table_hit("t", [5, 6], group=group)], records)
+
+        assert _keys(expanded)[1:] == [("t", 0), ("t", 11)]
+        assert [u["content"] for u in expanded[1:]] == ["caption 0", "note 0"]
+
+    def test_the_old_children_format_is_read_too(self) -> None:
+        records = {"t": _table_record(range(10), old_format=True)}
+        assert _keys(expand_neighbours([_table_hit("t", [5])], records))[1:] == [("t", 0), ("t", 11)]
+
+    def test_a_table_at_the_start_of_the_record_gets_only_the_note(self) -> None:
+        records = {"t": _table_record(range(4), before=0)}
+        assert _keys(expand_neighbours([_table_hit("t", [2])], records))[1:] == [("t", 4)]
+
+    def test_a_table_at_the_end_of_the_record_gets_only_the_caption(self) -> None:
+        records = {"t": _table_record(range(4), after=0)}
+        assert _keys(expand_neighbours([_table_hit("t", [2])], records))[1:] == [("t", 0)]
+
+    def test_a_table_filling_the_record_gets_none(self) -> None:
+        records = {"t": _table_record(range(4), before=0, after=0)}
+        assert _keys(expand_neighbours([_table_hit("t", [1])], records)) == [("t", 1)]
+
+    def test_a_table_whose_group_is_missing_falls_back_to_its_rows(self) -> None:
+        records = {"t": _record(*[BlockType.TEXT.value] * 8)}
+        assert _keys(expand_neighbours([_table_hit("t", [3, 5], group=4)], records))[1:] == [("t", 2), ("t", 6)]
+
+    def test_span_of_a_non_table_unit_is_none(self) -> None:
+        assert table_block_span(_table_record(range(3)), _text("t", 1, 0.5)) is None
+
+
+class TestNeighbourAnchors:
+    def test_a_neighbour_names_the_unit_it_was_added_for(self) -> None:
+        records = {"a": _record(*[BlockType.TEXT.value] * 3)}
+        expanded = expand_neighbours([_text("a", 1, 0.9)], records)
+        assert [u.get(NEIGHBOUR_OF_KEY) for u in expanded] == [None, [1], [1]]
+
+    def test_a_neighbour_shared_by_two_hits_names_both(self) -> None:
+        records = {"a": _record(*[BlockType.TEXT.value] * 5)}
+        expanded = expand_neighbours([_text("a", 1, 0.9), _text("a", 3, 0.8)], records)
+        shared = next(u for u in expanded if u["block_index"] == 2)
+        assert shared[NEIGHBOUR_OF_KEY] == [1, 3]
+
+    def test_a_neighbour_is_an_orphan_only_without_all_its_units(self) -> None:
+        records = {"a": _record(*[BlockType.TEXT.value] * 5)}
+        first, second = _text("a", 1, 0.9), _text("a", 3, 0.8)
+        expanded = expand_neighbours([first, second], records)
+        shared = next(u for u in expanded if u["block_index"] == 2)
+
+        assert not is_orphan_neighbour(shared, [second])
+        assert is_orphan_neighbour(shared, [])
+        assert is_orphan_neighbour(shared, [_text("b", 3, 0.8)])
+        assert not is_orphan_neighbour(first, [])
+
+    def test_orphans_are_dropped_and_everything_else_kept_in_order(self) -> None:
+        records = {"a": _record(*[BlockType.TEXT.value] * 6)}
+        expanded = expand_neighbours([_text("a", 1, 0.9), _text("a", 4, 0.8)], records)
+        without_second = [u for u in expanded if u["block_index"] != 4]
+
+        assert _keys(without_orphan_neighbours(without_second)) == [("a", 1), ("a", 0), ("a", 2)]
+
+    def test_a_neighbour_of_a_table_stays_with_the_table(self) -> None:
+        records = {"t": _table_record(range(10))}
+        table = _table_hit("t", [5, 6])
+        expanded = expand_neighbours([table], records)
+
+        assert without_orphan_neighbours(expanded) == expanded
+        assert without_orphan_neighbours(expanded[1:]) == []

@@ -11,6 +11,7 @@ from PIL import Image
 
 from app.models.blocks import BlockType
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
+from app.modules.retrieval.context.neighbours import expand_neighbours
 from app.modules.retrieval.context.renderer import RenderedKnowledge, render_knowledge
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, RecordIdShortener
 from app.utils.image_admission import ImageAdmission
@@ -269,6 +270,78 @@ class TestRenderKnowledge:
 
         first = run()
         assert all(run() == first for _ in range(3))
+
+
+class TestNoNeighbourWithoutItsPassage:
+    """A neighbour is context for a hit. The fit used to keep a record's cheap
+    neighbours after its hit no longer fitted, showing paragraphs around a
+    passage the model never sees."""
+
+    @staticmethod
+    def _hits_with_neighbours(n: int) -> tuple[dict, list[dict]]:
+        records = {f"v{i}": _record(f"v{i}", f"V{i}", blocks=6) for i in range(n)}
+        hits = [_unit(f"v{i}", 1, f"v{i}-hit " + "x" * 3_000, 0.9 - i / 100) for i in range(n)]
+        return records, expand_neighbours(hits, records)
+
+    @staticmethod
+    def _shown_without_hit(rendered: RenderedKnowledge) -> set[str]:
+        with_hit = {u["virtual_record_id"] for u in rendered.units if u.get("score") is not None}
+        return {u["virtual_record_id"] for u in rendered.units} - with_hit
+
+    def test_a_record_whose_hit_does_not_fit_is_left_out_not_shown_as_neighbours(self) -> None:
+        records, units = self._hits_with_neighbours(10)
+        one = len(_render(units[:1] + units[10:12], records).text)
+
+        # Room for four whole records, plus the neighbours of several more.
+        rendered = _render(units, records, max_chars=one * 4 + 1_000)
+
+        assert self._shown_without_hit(rendered) == set()
+        assert sorted(set(_vrids(rendered.units))) == ["v0", "v1", "v2", "v3"]
+        assert rendered.omitted_records == 6
+
+    def test_neighbours_stay_beside_a_hit_that_fits(self) -> None:
+        records, units = self._hits_with_neighbours(2)
+
+        rendered = _render(units, records, max_chars=100_000)
+
+        assert sorted((u["virtual_record_id"], u["block_index"]) for u in rendered.units) == [
+            ("v0", 0), ("v0", 1), ("v0", 2), ("v1", 0), ("v1", 1), ("v1", 2),
+        ]
+
+    def test_trimming_the_last_record_never_leaves_an_orphan(self) -> None:
+        records = {"a": _record("a", "A", blocks=8)}
+        hits = [_unit("a", 1, "best", 0.9), _unit("a", 5, "weaker " * 40, 0.5)]
+        units = expand_neighbours(hits, records)
+        best_only = len(_render(expand_neighbours(hits[:1], records), records).text)
+
+        rendered = _render(units, records, max_chars=best_only + 20)
+
+        kept = {u["block_index"] for u in rendered.units}
+        assert 1 in kept
+        assert not kept & {4, 6} or 5 in kept
+
+    def test_the_best_record_keeps_its_hit_even_alone_over_the_cap(self) -> None:
+        records, units = self._hits_with_neighbours(3)
+
+        rendered = _render(units, records, max_chars=500)
+
+        assert {u["block_index"] for u in rendered.units if u["virtual_record_id"] == "v0"} >= {1}
+        assert self._shown_without_hit(rendered) == set()
+
+    @pytest.mark.timeout(180)
+    def test_the_same_input_selects_the_same_units_under_any_hash_seed(self) -> None:
+        from tests.support.hash_seeds import outputs_across_hash_seeds
+
+        outputs = outputs_across_hash_seeds(
+            "import json\n"
+            "from tests.unit.modules.retrieval.context.test_context_renderer import "
+            "TestNoNeighbourWithoutItsPassage as T, _render\n"
+            "records, units = T._hits_with_neighbours(10)\n"
+            "r = _render(units, records, max_chars=14_000)\n"
+            "print(json.dumps([r.text, [(u['virtual_record_id'], u['block_index']) for u in r.units]]))\n"
+        )
+
+        assert len(outputs) == 1
 
 
 class TestKnowledgeContextBuilder:

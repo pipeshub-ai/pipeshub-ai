@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.context.ordering import order_for_reading
 from app.modules.retrieval.context.ranking import rank_units
+from app.modules.retrieval.context.units import (
+    is_orphan_neighbour,
+    without_orphan_neighbours,
+)
 from app.utils.chat_helpers import admission_for, build_message_content_array
 
 if TYPE_CHECKING:
@@ -238,13 +242,16 @@ class _Renderer:
     ) -> tuple[list[Unit], int, _RenderState]:
         """The record's most relevant units that render within ``room``.
 
-        Unscored units (neighbours, FK tables) are tried last. ``keep_one``
-        keeps the best unit even when it alone is over, so the most relevant
-        record is never dropped.
+        Unscored units (neighbours, FK tables) are tried last, and a
+        neighbour only beside a unit it belongs to. ``keep_one`` keeps the
+        best unit even when it alone is over, so the most relevant record is
+        never dropped.
         """
         chosen: list[Unit] = []
         size, after = 0, probe
         for unit in rank_units(units):
+            if is_orphan_neighbour(unit, chosen):
+                continue
             # A unit too big on its own is too big beside others: skip the
             # costlier render with them. The final check catches any slack.
             if chosen and self.measure([unit], probe)[0] > room:
@@ -274,7 +281,7 @@ class _Renderer:
                 break
             last = kept[-1]
             if len(last) > 1:
-                kept[-1] = rank_units(last)[:-1]
+                kept[-1] = without_orphan_neighbours(rank_units(last)[:-1])
             elif len(kept) > 1:
                 kept.pop()
                 dropped += 1
