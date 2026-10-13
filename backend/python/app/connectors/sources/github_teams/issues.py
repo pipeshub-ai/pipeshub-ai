@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
@@ -132,6 +132,16 @@ def _status_from_issue(issue: Any) -> str:
     return Status.DONE.value
 
 
+def _updated_before(item: object, bound: datetime | None) -> bool:
+    """Whether ``item`` was last updated before ``bound`` (never, without one)."""
+    updated_at = getattr(item, "updated_at", None)
+    if bound is None or not isinstance(updated_at, datetime):
+        return False
+    if updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=timezone.utc)
+    return updated_at < bound
+
+
 class IssuesSync:
     """Handles issue (ticket) synchronisation for ``GitHubTeamsConnector``."""
 
@@ -196,7 +206,17 @@ class IssuesSync:
             datetime.fromtimestamp(last_sync_time / 1000, tz=timezone.utc)
             if last_sync_time is not None else None
         )
-        since_dt = listing_since(checkpoint_dt, sync_window_start(c.sync_filters))
+        window_dt = sync_window_start(c.sync_filters)
+        since_dt = listing_since(checkpoint_dt, window_dt)
+        # GitHub's ``since`` means updated *after*, to the second. That suits
+        # the checkpoint, the last issue already stored. A window start is a
+        # date the admin chose and includes issues updated at it, so ask from
+        # a second earlier and drop anything older here.
+        window_floor = (
+            window_dt if since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
+            else None
+        )
+        request_since = window_floor - timedelta(seconds=1) if window_floor else since_dt
 
         page = 1
         processed = 0
@@ -204,7 +224,7 @@ class IssuesSync:
         while True:
             issues_res = await c.runtime.ds_call(
                 c.data_source.list_issues, owner, repo_name,
-                state="all", since=since_dt, sort="updated", direction="desc",
+                state="all", since=request_since, sort="updated", direction="desc",
                 per_page=ISSUE_PAGE_SIZE, page=page,
             )
             if not issues_res.success:
@@ -213,9 +233,12 @@ class IssuesSync:
                     "so this page is retried next sync.", repo.full_name, page, issues_res.error,
                 )
                 return
-            items = issues_res.data or []
-            if not items:
+            listed = issues_res.data or []
+            if not listed:
                 break
+            # Newest first, so the first issue older than the window means
+            # every later one is older too.
+            items = [i for i in listed if not _updated_before(i, window_floor)]
 
             # The page IS the batch: one build, one persist call, one
             # transaction. Re-chunking by a constant only split it into a
@@ -230,7 +253,7 @@ class IssuesSync:
                 return
             processed += len(items)
 
-            if len(items) < ISSUE_PAGE_SIZE:
+            if len(items) < len(listed) or len(listed) < ISSUE_PAGE_SIZE:
                 break
             page += 1
 

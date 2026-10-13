@@ -86,7 +86,9 @@ def _listed(number: int, updated_at: datetime, *, is_pr: bool) -> _Listed:
 class RepoWithHistory(CountingGitHub):
     """A repository with one issue and one PR updated per day for three years.
 
-    ``/issues`` returns PRs as well, like GitHub, and honours ``since``,
+    ``/issues`` returns PRs as well, like GitHub, and honours ``since`` as
+    GitHub documents it: sent to the whole second, matching items updated
+    strictly after it. It also honours
     ``sort``, ``direction`` and paging. ``/pulls`` has no ``since``, like GitHub.
     """
 
@@ -112,7 +114,8 @@ class RepoWithHistory(CountingGitHub):
         per_page: int = 30, page: int = 1, **_: object,
     ) -> GitHubResponse:
         self.list_issues_since.append(since)
-        items = [i for i in self.issues + self.pulls if since is None or i.updated_at >= since]
+        sent = since.replace(microsecond=0) if since is not None else None
+        items = [i for i in self.issues + self.pulls if sent is None or i.updated_at > sent]
         return self._ok("list_issues", self._page(items, direction, per_page, page))
 
     async def list_pulls(
@@ -209,7 +212,9 @@ class TestWindow:
 
         await c.issues.fetch_issues_batched(gh.repo)
 
-        assert set(gh.list_issues_since) == {self.START}
+        # GitHub's since is exclusive, so a window start is asked for from a
+        # second earlier and the extra second dropped locally.
+        assert set(gh.list_issues_since) == {self.START - timedelta(seconds=1)}
         tickets = [r for r in _stored(c) if isinstance(r, TicketRecord)]
         assert len(tickets) == _in_window(gh.issues, self.START)
         assert min(t.source_updated_at for t in tickets) >= _ms(self.START)
@@ -256,6 +261,19 @@ class TestWindow:
         # The first issue stored is the most recently updated one.
         assert stored[0].external_record_id == f"{gh.repo.id}/issues/1"
 
+    async def test_an_issue_updated_at_the_window_start_is_included(self) -> None:
+        # GitHub's since is exclusive: sending the window start as-is would
+        # skip this issue, and the checkpoint would then move past it for good.
+        gh = RepoWithHistory()
+        start = gh.issues[10].updated_at
+        c = _connector(gh, _window(start))
+
+        await c.issues.fetch_issues_batched(gh.repo)
+
+        tickets = [r for r in _stored(c) if isinstance(r, TicketRecord)]
+        assert len(tickets) == 11
+        assert min(t.source_updated_at for t in tickets) == _ms(start)
+
     async def test_a_pull_request_updated_at_the_window_start_is_included(self) -> None:
         gh = RepoWithHistory()
         start = gh.pulls[10].updated_at
@@ -298,7 +316,7 @@ class TestWindowAndCheckpoint:
         checkpoint = NOW - timedelta(days=700)
         gh, c = await self._second_sync_after(checkpoint, _window(self.START))
 
-        assert set(gh.list_issues_since) == {self.START}
+        assert set(gh.list_issues_since) == {self.START - timedelta(seconds=1)}
         prs = [r for r in _stored(c) if isinstance(r, PullRequestRecord)]
         assert len(prs) == _in_window(gh.pulls, self.START)
         dep = c.data_entities_processor
