@@ -291,3 +291,19 @@ class TestNavigateView:
 
         assert "exists, but its content is not indexed yet (status: AUTO_INDEX_OFF)" in text
         assert "fetch_record" not in text
+
+    def test_without_a_context_block_the_header_still_says_so(self) -> None:
+        """The typed record failed to load, so only the identity header shows."""
+        view = NavigationView(
+            current=NodeRef(id=PR_ID, name=PR_NAME, node_type="record", sub_type="PULL_REQUEST", is_record=True),
+            breadcrumbs=[], rows=[], related=[], pagination=None,
+            web_url=PR_URL, indexing_status=OFF, connector="GITHUB",
+            context_block=None,
+        )
+
+        text = render_navigation_view(view, page=1)
+
+        assert f"URL: {PR_URL}" in text
+        assert "exists, but its content is not indexed yet (status: AUTO_INDEX_OFF)" in text
+        assert "Indexed:" not in text
+        assert "fetch_record" not in text

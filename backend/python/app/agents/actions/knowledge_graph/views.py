@@ -208,7 +208,11 @@ def render_navigation_view_with_ids(
                 lines.append(f"Node: {_trunc(cur.name)}")
                 type_str = f"{cur.node_type}/{cur.sub_type}" if cur.sub_type else cur.node_type
                 connector_str = f"Connector: {view.connector}" if view.connector else ""
-                indexed_str = f"Indexed: {view.indexing_status}" if view.indexing_status else ""
+                unindexed = is_not_indexed(view.indexing_status)
+                indexed_str = (
+                    f"Indexed: {view.indexing_status}"
+                    if view.indexing_status and not unindexed else ""
+                )
                 meta = " | ".join(filter(None, [f"Type: {type_str}", connector_str, indexed_str]))
                 if meta:
                     lines.append(meta)
@@ -216,6 +220,10 @@ def render_navigation_view_with_ids(
                 lines.append(f"{cur.display_id_label}: {_short(cur.id, shortener)}")
                 if view.web_url:
                     lines.append(f"URL: {view.web_url}")
+                if unindexed:
+                    # Same note as with a context block: the read hint is
+                    # withheld below, so this is what explains why.
+                    lines.extend(not_indexed_note(view.indexing_status).split("\n"))
 
     # Children listing
     pag = view.pagination
