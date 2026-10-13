@@ -282,6 +282,14 @@ export class InMemoryChatStore {
       new FakeQuery((state) => shape(store.findSessions(filter), state))) as never)
     sinon.stub(ChatSession, 'countDocuments').callsFake(((filter: Filter) =>
       new FakeQuery(() => store.findSessions(filter).length)) as never)
+    sinon.stub(ChatSession, 'updateOne').callsFake(((filter: Filter, update: Doc) => {
+      const doc = store.findSessions(filter)[0]
+      if (doc) {
+        applyUpdate(doc, update)
+        store.writes.push('chatSession.updateOne')
+      }
+      return Promise.resolve({ acknowledged: true, matchedCount: doc ? 1 : 0, modifiedCount: doc ? 1 : 0 })
+    }) as never)
     sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: (SessionOption & { new?: boolean }) | null) => {
       assertSessionUsable(options)
       const doc = store.findSessions(filter)[0]

@@ -132,6 +132,8 @@ const pendingStopConvIds = new Map<string, string | null>();
 
 interface CancelHandle {
   isAcknowledged(): boolean;
+  /** The conversation id the cancel was (last) addressed to, once known. */
+  convId(): string | null;
   /** Resolves once the cancel was acknowledged or the retry window closed. */
   readonly done: Promise<void>;
 }
@@ -152,6 +154,7 @@ function postCancelUntilAcknowledged(
   const deadline = Date.now() + STOP_CANCEL_RETRY_WINDOW_MS;
   let delay = STOP_CANCEL_RETRY_BASE_MS;
   let acknowledged = false;
+  let addressedConvId = knownConvId;
   if (!knownConvId) pendingStopConvIds.set(runId, null);
 
   const done = new Promise<void>((resolve) => {
@@ -162,6 +165,7 @@ function postCancelUntilAcknowledged(
     const attempt = async (): Promise<void> => {
       const convId = knownConvId ?? pendingStopConvIds.get(runId) ?? null;
       if (convId) {
+        addressedConvId = convId;
         try {
           const result = await withTimeout(
             ChatApi.cancelStream(convId, runId, agentId ?? undefined),
@@ -187,7 +191,21 @@ function postCancelUntilAcknowledged(
     void attempt();
   });
 
-  return { isAcknowledged: () => acknowledged, done };
+  return { isAcknowledged: () => acknowledged, convId: () => addressedConvId, done };
+}
+
+/**
+ * Points a slot whose Stop was not acknowledged at the conversation the run
+ * belongs to, and flags it so the remote-run poll reloads it once the server
+ * settles. `isTemp` has to go: `invalidateConversation` skips temp slots, so the
+ * poll would finish without ever replacing the local "stopped" bubble.
+ * Leaves the slot alone if it has moved on to another run or conversation.
+ */
+function followRemoteRun(slotId: string, convId: string): void {
+  const slot = useChatStore.getState().slots[slotId];
+  if (!slot || slot.isStreaming || slot.stopping) return;
+  if (slot.convId && slot.convId !== convId) return;
+  useChatStore.getState().updateSlot(slotId, { convId, isTemp: false, remoteRunInProgress: true });
 }
 
 /**
@@ -1792,13 +1810,20 @@ export function cancelStreamForSlot(slotId: string): void {
     if (knownConvId) {
       cur.abortController?.abort();
     } else {
-      void cancel.done.then(() => cur.abortController?.abort());
+      void cancel.done.then(() => {
+        cur.abortController?.abort();
+        // The id only arrived after this timer: the run may still be going and the slot saw none of it.
+        const lateConvId = cancel.convId();
+        if (lateConvId && !cancel.isAcknowledged()) followRemoteRun(slotId, lateConvId);
+      });
     }
     const messages = buildStoppedMessages(cur.messages, cur.regenerateMessageId, cur.streamingContent);
     useChatStore.getState().updateSlot(slotId, {
       // A cancel the backend hasn't acknowledged may not have stopped the run:
       // treat the thread like a leftover run until the server says it settled.
       remoteRunInProgress: Boolean(knownConvId) && !cancel.isAcknowledged(),
+      // A first-turn chat is still temp (`onConnected` keeps it so); the poll's reload skips temp slots.
+      ...(knownConvId ? { convId: knownConvId, isTemp: false } : {}),
       isStreaming: false,
       streamingContent: '',
       streamingQuestion: '',

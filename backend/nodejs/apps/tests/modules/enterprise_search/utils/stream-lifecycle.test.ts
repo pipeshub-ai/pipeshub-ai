@@ -4,6 +4,7 @@ import { EventEmitter } from 'events'
 import { Readable } from 'stream'
 import {
   attachUpstreamAbort,
+  runGuarded,
   StreamedContentAccumulator,
 } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 
@@ -213,5 +214,29 @@ describe('stream-lifecycle', () => {
       acc.setAccumulatedText('full running text so far and more')
       expect(acc.getText()).to.equal('full running text so far and more')
     })
+  })
+})
+
+describe('runGuarded', () => {
+  it('runs the task', async () => {
+    const task = sinon.stub().resolves()
+
+    runGuarded(task)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(task.calledOnce).to.be.true
+  })
+
+  it('swallows a failing task instead of leaving an unhandled rejection', async () => {
+    const unhandled = sinon.stub()
+    process.once('unhandledRejection', unhandled)
+    try {
+      runGuarded(() => Promise.reject(new Error('disk full')), { requestId: 'req-1' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    } finally {
+      process.removeListener('unhandledRejection', unhandled)
+    }
+
+    expect(unhandled.called).to.be.false
   })
 })

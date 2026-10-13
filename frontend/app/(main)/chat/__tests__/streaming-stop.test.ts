@@ -243,6 +243,82 @@ describe('cancelStreamForSlot — Stop before the conversation id is known (firs
   });
 });
 
+describe('cancelStreamForSlot — handing a first-turn chat over to the remote-run poll', () => {
+  let callbacks: { onConnected?: (data: unknown) => void } = {};
+  const startFirstTurn = (): string => {
+    vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: typeof callbacks) => {
+      callbacks = cb;
+      return new Promise(() => {});
+    }) as never);
+    seedSlot({ convId: null, isTemp: true, isStreaming: false, runId: null, messages: [] });
+    void streamMessageForSlot(SLOT_ID, 'first question', { query: 'first question' } as never);
+    return useChatStore.getState().slots[SLOT_ID]?.runId as string;
+  };
+
+  it('lets the reload run once the id is known and the cancel was not acknowledged', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    startFirstTurn();
+    callbacks.onConnected?.({ conversationId: 'conv-new' });
+    expect(useChatStore.getState().slots[SLOT_ID]?.isTemp).toBe(true);
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.convId).toBe('conv-new');
+    expect(slot?.isTemp).toBe(false);
+    expect(slot?.remoteRunInProgress).toBe(true);
+
+    useChatStore.getState().updateSlot(SLOT_ID, { isInitialized: true });
+    useChatStore.getState().invalidateConversation('conv-new');
+    expect(useChatStore.getState().slots[SLOT_ID]?.isInitialized, 'the poll can now reload it').toBe(false);
+  });
+
+  it('hands over too when the id only arrives after the grace timer and the cancel is never acknowledged', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    startFirstTurn();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+    callbacks.onConnected?.({ conversationId: 'conv-late' });
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.convId).toBe('conv-late');
+    expect(slot?.isTemp).toBe(false);
+    expect(slot?.remoteRunInProgress).toBe(true);
+  });
+
+  it('leaves the slot alone when a late id arrives and the cancel is acknowledged', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: true });
+    startFirstTurn();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+    callbacks.onConnected?.({ conversationId: 'conv-late' });
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.convId).toBeNull();
+    expect(slot?.remoteRunInProgress).toBe(false);
+  });
+
+  it('does not touch a slot that has moved on to another conversation by the time the late id arrives', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    startFirstTurn();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+    callbacks.onConnected?.({ conversationId: 'conv-late' });
+    useChatStore.getState().updateSlot(SLOT_ID, { convId: 'conv-other' });
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.convId).toBe('conv-other');
+    expect(slot?.remoteRunInProgress).toBe(false);
+  });
+});
+
 describe('cancelStreamForSlot — a cancel the backend has not acknowledged by the grace timeout', () => {
   it('holds the thread as a leftover run, so sends wait for the server to report it settled', async () => {
     mockedCancelStream.mockResolvedValue({ cancelled: false });

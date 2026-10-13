@@ -371,6 +371,30 @@ describe('es_controller streaming answers', () => {
         )
       })
 
+      it('does not hand a long answer to a second request just because it has been running a while', async () => {
+        const clock = sinon.useFakeTimers({
+          toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+          now: Date.now(),
+        })
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
+        await settle()
+
+        await clock.tickAsync(40 * 60 * 1000) // browser still connected the whole time
+        const second = sendAgain(flow, run)
+        await clock.tickAsync(16_000)
+        await second.done
+
+        expect(second.res.eventsOf('RUN_ERROR')).to.have.length(1)
+        expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+
+        run.ai.send('RUN_FINISHED', finalAnswer('Done.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+        expect(run.conversation().status).to.equal('Complete')
+      })
+
       it('goes ahead once the previous run has finished saving, so a quick Stop-then-send is not refused', async () => {
         const clock = fakeClock()
         const run = await startStream(flow)

@@ -82,12 +82,14 @@ import {
   withoutErrorStacks,
   recordClassifiedFailureOnSession,
   savePartialConversation,
+  keepRunAlive,
   releaseRun,
   reserveRun,
   type RunReservation,
 } from '../utils/utils';
 import {
   attachUpstreamAbort,
+  runGuarded,
   StreamedContentAccumulator,
 } from '../utils/stream-lifecycle';
 import {
@@ -787,7 +789,7 @@ export const streamChat =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || !savedConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          void finalizeRun();
+          runGuarded(finalizeRun, { requestId });
           return;
         }
         streamSettled = true;
@@ -814,6 +816,7 @@ export const streamChat =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, savedConversation._id as mongoose.Types.ObjectId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -1178,7 +1181,7 @@ export const streamChat =
 
         res.end();
       };
-      stream.on('end', finalizeRun);
+      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -1481,7 +1484,7 @@ export const addMessageStream =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || !existingConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          void finalizeRun();
+          runGuarded(finalizeRun, { requestId });
           return;
         }
         streamSettled = true;
@@ -1507,6 +1510,7 @@ export const addMessageStream =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, confirmedConversation._id as mongoose.Types.ObjectId, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -1914,7 +1918,7 @@ export const addMessageStream =
 
         res.end();
       };
-      stream.on('end', finalizeRun);
+      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -3374,7 +3378,7 @@ async function regenerateAnswersInternal(
     const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
       if (streamSettled || !existingConversation) return;
       if (completeData || upstreamAiErrorEventForwarded) {
-        void finalizeRun();
+        runGuarded(finalizeRun, { requestId });
         return;
       }
       streamSettled = true;
@@ -3404,6 +3408,7 @@ async function regenerateAnswersInternal(
       throw new Error('Failed to get stream from AI service');
     }
     upstreamAbort.bindStream(stream);
+    keepRunAlive(stream, existingConversation._id as mongoose.Types.ObjectId, reservation?.runId);
 
     // Process SSE events, capture complete event, and forward non-complete events
     stream.on('data', (chunk: Buffer) => {
@@ -3601,7 +3606,7 @@ async function regenerateAnswersInternal(
       await releaseRun(reservation);
       res.end();
     };
-    stream.on('end', finalizeRun);
+    stream.on('end', () => runGuarded(finalizeRun, { requestId }));
 
     stream.on('error', async (error: Error) => {
       if (upstreamAbort.isAborted()) {
@@ -5731,7 +5736,7 @@ export const deleteAgent =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || !savedConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          void finalizeRun();
+          runGuarded(finalizeRun, { requestId });
           return;
         }
         streamSettled = true;
@@ -5757,6 +5762,7 @@ export const deleteAgent =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, savedConversation._id as mongoose.Types.ObjectId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -6122,7 +6128,7 @@ export const deleteAgent =
 
         res.end();
       };
-      stream.on('end', finalizeRun);
+      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -6438,7 +6444,7 @@ export const addMessageStreamToAgentConversation =
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || !existingConversation) return;
         if (completeData || upstreamAiErrorEventForwarded) {
-          void finalizeRun();
+          runGuarded(finalizeRun, { requestId });
           return;
         }
         streamSettled = true;
@@ -6464,6 +6470,7 @@ export const addMessageStreamToAgentConversation =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, confirmedConversation._id as mongoose.Types.ObjectId, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -6869,7 +6876,7 @@ export const addMessageStreamToAgentConversation =
 
         res.end();
       };
-      stream.on('end', finalizeRun);
+      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {

@@ -8,6 +8,7 @@ import {
   attachSharedBy,
   attachSharedByIfRecipient,
   formatPreviousConversations,
+  keepRunAlive,
   markAgentConversationFailed,
   markConversationFailed,
   releaseRun,
@@ -18,6 +19,7 @@ import {
   savePartialConversation,
   staleAskUserQuestionToolCallIds,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import { PassThrough } from 'stream'
 import { InMemoryChatStore } from '../controller/chat-test-harness'
 import { ConflictError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
@@ -361,6 +363,72 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(update.firstCall.args[2]).to.not.have.property('session')
     })
 
+    describe('keepRunAlive', () => {
+      const beat = (): sinon.SinonFakeTimers =>
+        sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'], now: Date.now() })
+
+      it('keeps a long-running run looking alive, so another request cannot take its thread', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+
+        await clock.tickAsync(45 * 60 * 1000)
+        const takeover = rejection(reserveRun(mine(thread._id), 1000))
+        await clock.tickAsync(1500)
+
+        expect(await takeover).to.be.instanceOf(ConflictError)
+        expect(Date.now() - (thread.lastActivityAt as number)).to.be.lessThan(2 * 60 * 1000)
+        stream.destroy()
+      })
+
+      it('stops when the stream closes, and no longer changes the thread', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+        stream.destroy()
+        await clock.tickAsync(0)
+        const stamped = thread.lastActivityAt
+
+        await clock.tickAsync(10 * 60 * 1000)
+
+        expect(thread.lastActivityAt).to.equal(stamped)
+      })
+
+      it('ignores a thread that has since been taken over by another run', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const older = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.COMPLETE)
+        await reserveRun(mine(thread._id))
+        const stamped = thread.lastActivityAt
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, older?.runId)
+
+        await clock.tickAsync(5 * 60 * 1000)
+
+        expect(thread.lastActivityAt).to.equal(stamped)
+        stream.destroy()
+      })
+
+      it('never records an update as a change to the conversation itself', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+
+        await clock.tickAsync(61 * 1000)
+
+        const update = ChatSession.updateOne as unknown as sinon.SinonStub
+        expect(update.firstCall.args[2]).to.deep.equal({ timestamps: false })
+        stream.destroy()
+      })
+    })
+
     describe('releaseRun', () => {
       it('puts the thread back to what it was when the run never took it over', async () => {
         const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
@@ -379,6 +447,19 @@ describe('Saving chat answers (enterprise search utils)', () => {
         await releaseRun(reservation)
 
         expect(thread.status).to.equal(CONVERSATION_STATUS.STOPPED)
+      })
+
+      it('does not touch a newer request\'s run when an older reservation is released late', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const older = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.COMPLETE) // the older run saved its answer
+        const newer = await reserveRun(mine(thread._id))
+
+        await releaseRun(older)
+
+        expect(thread.status, 'the newer run still owns the thread').to.equal(CONVERSATION_STATUS.INPROGRESS)
+        await releaseRun(newer)
+        expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
       })
 
       it('does nothing without a reservation', async () => {

@@ -170,3 +170,20 @@ export class StreamedContentAccumulator {
     return this.text.length > 0;
   }
 }
+
+/**
+ * Runs an async finalizer from a place that cannot await it (an event
+ * listener, a timer callback). A throw would otherwise be an unhandled
+ * rejection, which can take the process down.
+ */
+export const runGuarded = (
+  task: () => Promise<void>,
+  context: Record<string, unknown> = {},
+): void => {
+  task().catch((error: unknown) => {
+    logger.error('Failed to finalize the run', {
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+};
