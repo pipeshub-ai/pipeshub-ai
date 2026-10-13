@@ -123,6 +123,7 @@ from app.agents.agent_loop.hooks import (
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
+    retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
     shape_image_injection,
@@ -185,6 +186,7 @@ from app.agents.agent_loop.skills_wiring import (
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
@@ -354,14 +356,17 @@ class PipesHubAgentFactory:
                 ),
             )
 
+        # Opt-in: every agent of this request resolves its model from this
+        # registry, so its transports are where each call's usage is counted.
+        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
         # Same model as "langchain" above, reached through the provider's own
         # SDK instead. LangChain builds an AIMessageChunk per streamed token and
@@ -403,11 +408,11 @@ class PipesHubAgentFactory:
 
         transport_registry.register(
             DIRECT_TRANSPORT,
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 _direct_or_langchain,
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -1072,6 +1077,11 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+        if context.include_retrieval_context:
+            # Opt-in: diffs the retrieval accumulators after every tool call
+            # and streams only what is new. Off by default, so a normal
+            # request pays nothing for it.
+            hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 

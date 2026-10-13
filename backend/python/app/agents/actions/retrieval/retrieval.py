@@ -22,6 +22,7 @@ from app.agents.actions.util.tool_summaries import (
     bullet_list,
     parse_json_maybe,
 )
+from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.models.entities import RecordType
@@ -430,6 +431,7 @@ class Retrieval:
                         logger_instance=logger_instance,
                         llm=self.state.get("llm"),
                         user_query=self.state.get("query"),
+                        on_llm_usage=grep_generation_usage_reporter(self.state),
                     )
                 )
 

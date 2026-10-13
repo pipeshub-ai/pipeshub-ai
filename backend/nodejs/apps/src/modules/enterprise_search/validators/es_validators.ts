@@ -277,6 +277,17 @@ const contextFieldsSchema = {
   runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
 };
 
+/**
+ * Opt-in: Python streams CUSTOM `retrieval_context` frames naming the records
+ * and blocks that reached the model, plus a `run_usage` frame — evaluation
+ * clients read both. Must be declared or Zod's unknown-key stripping removes
+ * it from req.body before the controller sees it. The two stream routes accept
+ * it; regenerating an answer is not a measured run.
+ */
+const retrievalContextFieldsSchema = {
+  includeRetrievalContext: z.boolean().optional(),
+};
+
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
  * cancel routes, matching Python's `CancelRunRequest`. */
 export const cancelRunBodySchema = z.object({
@@ -361,6 +372,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     projectVisibility: z.enum(['private', 'project']).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...retrievalContextFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -515,6 +527,7 @@ const addMessageBodySchema = z.object({
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...retrievalContextFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({

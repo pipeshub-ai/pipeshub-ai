@@ -3649,9 +3649,29 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_user_groups(connector_id, self.org_id)
 
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
+        """Write user groups without their members, one node per external id.
+
+        A group arrives with a fresh id and is written by id, so each one that
+        is already stored takes that node's id, as in ``on_new_user_groups``;
+        otherwise every sync would add a copy of the group, and its members and
+        the permissions naming it would be split across the copies.
+        """
         for ug in user_groups:
             ug.org_id = self.org_id
         async with self.data_store_provider.transaction() as tx_store:
+            ids: dict[tuple[str, str], str] = {}
+            for ug in user_groups:
+                key = (ug.connector_id, ug.source_user_group_id)
+                if key not in ids:
+                    # Raising, as in on_new_user_groups: a failed lookup taken
+                    # for "not stored" would write the copy this prevents.
+                    existing = await tx_store.get_user_group_by_external_id(
+                        connector_id=ug.connector_id,
+                        external_id=ug.source_user_group_id,
+                        raise_on_error=True,
+                    )
+                    ids[key] = existing.id if existing is not None else ug.id
+                ug.id = ids[key]
             await tx_store.batch_upsert_user_groups(user_groups)
 
     async def delete_edges_between_collections(
