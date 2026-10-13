@@ -1479,11 +1479,16 @@ _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
 }
 _BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
 
-# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
-# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
-# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
-# mid-token names like ``my-gpt-5-compatible``.
-_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+# OpenAI's closed GPT-5+ models on Bedrock (GPT-5.x, GPT-6 Sol/Luna/Astra).
+# Bedrock IDs are dot-delimited (``us.openai.gpt-6-luna``), so the name must be
+# bare, follow a ``/`` (an inference-profile ARN), or sit under the ``openai.``
+# namespace -- another provider's ``amazon.gpt-6-model`` is not OpenAI. A
+# substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and mid-token names
+# like ``my-gpt-5-compatible``. The major is a single digit on purpose;
+# ``gpt-oss`` never matches.
+_BEDROCK_OPENAI_GPT_RE = re.compile(
+    r"(?:^|/|\bopenai\.)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE,
+)
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
@@ -1519,14 +1524,14 @@ def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
     return bool(model_name) and "gpt-oss" in model_name.lower()
 
 
-def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
-    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+def _bedrock_is_openai_gpt(model_name: str | None) -> bool:
+    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss."""
     if not model_name:
         return False
     lowered = model_name.lower()
     if "gpt-oss" in lowered:
         return False
-    return bool(_GPT5_MODEL_RE.search(lowered))
+    return bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
 
 
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
@@ -1538,7 +1543,7 @@ def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
     return (
         "openai" in lowered
         or "gpt-oss" in lowered
-        or bool(_GPT5_MODEL_RE.search(lowered))
+        or bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
     )
 
 
@@ -1619,8 +1624,8 @@ def _bedrock_additional_model_request_fields(
         if _bedrock_is_gpt_oss(model_name):
             effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
         else:
-            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
-            # through. ``none`` is already floored to low above.
+            # GPT-5.6 / GPT-6 Converse models: pass UI effort through.
+            # ``none`` is already floored to low above.
             effort = effort_input
         return {"reasoning_effort": effort}
 
@@ -1694,7 +1699,8 @@ def _bedrock_temperature(
     - Claude models that dropped sampling params → omit.
     - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
     - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
-    - GPT-5.x on Bedrock typically rejects temperature → omit.
+    - GPT-5.x / GPT-6 on Bedrock Converse reject temperature at any value
+      (including 1) → omit.
     - Otherwise use configured temperature (default 0.2). Never force 1 for
       Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
     """
@@ -1704,7 +1710,7 @@ def _bedrock_temperature(
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
 
-    if _bedrock_is_openai_gpt5(model_name):
+    if _bedrock_is_openai_gpt(model_name):
         return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
@@ -1753,7 +1759,7 @@ def _identify_bedrock_provider(model_name: str | None) -> str | None:
         return LLMProvider.MISTRAL.value
     if "claude" in lowered or "anthropic" in lowered:
         return LLMProvider.ANTHROPIC.value
-    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
+    if "openai" in lowered or "gpt-oss" in lowered or _BEDROCK_OPENAI_GPT_RE.search(lowered):
         return "openai"
     if "llama" in lowered or "meta" in lowered:
         return "meta"

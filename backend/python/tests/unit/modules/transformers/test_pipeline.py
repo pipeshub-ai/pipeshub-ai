@@ -1,5 +1,7 @@
 """Unit tests for app.modules.transformers.pipeline.IndexingPipeline."""
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +18,7 @@ from app.models.blocks import (
 )
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.utils import indexing_timing as timing
 
 _SENTINEL = object()
 
@@ -427,3 +430,38 @@ class TestEnrich:
         await pipeline._enrich(ctx)
 
         assert call_order == ["extraction", "blob", "summary", "enrich"]
+
+    @pytest.mark.asyncio
+    async def test_summary_embedding_time_is_counted_once(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ) -> None:
+        """index_record_summary times its own embed and upsert steps, so a
+        stage wrapped around the whole call would count that time twice."""
+        metadata = _make_semantic_metadata(summary="Timed summary")
+
+        async def set_metadata(ctx) -> None:
+            ctx.record.semantic_metadata = metadata
+
+        async def embed_summary(*_args, **_kwargs) -> None:
+            with timing.stage("embed.dense"):
+                await asyncio.sleep(0.05)
+
+        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
+        sink_orchestrator.vector_store.index_record_summary = AsyncMock(
+            side_effect=embed_summary
+        )
+        ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]))
+
+        timeline, token = timing.begin_record("rec-123")
+        started = time.perf_counter()
+        try:
+            await pipeline._enrich(ctx)
+        finally:
+            wall = time.perf_counter() - started
+            timing.end_record(timeline, token, outcome="ok")
+
+        # Every step here runs one after another, so busy time cannot
+        # exceed the wall time of the call.
+        busy = sum(total for _count, total, _max in timeline.stage_totals().values())
+        assert busy <= wall
+        assert timeline.stage_totals()["embed.dense"][0] == 1

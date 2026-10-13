@@ -78,7 +78,8 @@ test.describe('Set up an AI model', () => {
     // It is listed among the configured models...
     // The switch reads "Configured Models <count>".
     await page.getByRole('radio', { name: /^Configured Models/ }).click();
-    await expect(page.getByText(friendlyName)).toBeVisible({ timeout: 20_000 });
+    // Exact: the "Checking <name> with …" toast also holds the name until it is removed.
+    await expect(page.getByText(friendlyName, { exact: true })).toBeVisible({ timeout: 20_000 });
 
     // ...and offered in chat, from the real available-models API.
     await page.goto('/chat/');

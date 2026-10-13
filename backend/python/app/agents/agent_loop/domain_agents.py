@@ -48,6 +48,7 @@ from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agents.agent_loop.answer_rules import multi_step_answer_rules
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
 
@@ -167,6 +168,11 @@ def _internal_exploration_instructions(context: "AgentContext | None") -> str | 
     query_rule = keyword_search_query_rule("knowledgegraph__search")
     if query_rule:
         base += f"\n\n{query_rule}"
+    # The explorer runs the chained lookups a multi-step question needs, so it
+    # gets the rules as well as the parent that writes the answer.
+    multi_step = multi_step_answer_rules()
+    if multi_step:
+        base += f"\n\n{multi_step}"
     if context is None or not context.agent_knowledge:
         return base
     source_table = context.get_source_catalog().render()

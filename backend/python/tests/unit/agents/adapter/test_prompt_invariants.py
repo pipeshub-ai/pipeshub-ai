@@ -70,6 +70,12 @@ _KNOWLEDGE_ESSENTIAL_TOOLS: frozenset[str] = frozenset(
     }
 )
 
+_CALCULATOR_TOOLS: tuple[str, ...] = (
+    "calculator__evaluate_expression",
+    "calculator__date_difference",
+    "calculator__count_text",
+)
+
 # Backtick identifiers that are parameters / prose, not tools.
 _NON_TOOL_BACKTICKS: frozenset[str] = frozenset(
     {
@@ -239,6 +245,26 @@ _FIXTURES: dict[str, dict[str, Any]] = {
             *sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), "jira_search_issues",
         ],
     },
+    # The calculator, granted eagerly and behind lazy disclosure: the
+    # "## Exact Numbers" rule names its tools only when they are bound.
+    "kb_with_calculator": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), *_CALCULATOR_TOOLS],
+    },
+    "lazy_with_calculator": {
+        "agent_knowledge": [_mk_kb("Private KB", KB_ID)],
+        "has_knowledge": True,
+        "available_connectors": [],
+        "tool_disclosure": "lazy",
+        "pinned_toolsets": ["knowledgegraph"],
+        "registry_toolsets": {
+            "knowledgegraph": sorted(_KNOWLEDGE_ESSENTIAL_TOOLS),
+            "calculator": list(_CALCULATOR_TOOLS),
+        },
+        "tool_names": [*sorted(_KNOWLEDGE_ESSENTIAL_TOOLS), *_CALCULATOR_TOOLS],
+    },
     # Full-record escalation granted — the one fixture where "## Reading
     # Records in Full" is expected to render.
     "kb_with_full_record": {
@@ -360,6 +386,7 @@ _FIXTURES_WITH_XREFS = ["kb_plus_service_tools"]
 _FIXTURES_WITH_TOOL_REFS = [
     "kb_only", "kb_plus_3_apps", "duplicate_apps", "kb_plus_service_tools", "web_search_mode",
     "run_code_no_web", "service_only", "lazy_with_pinned", "kb_with_full_record",
+    "kb_with_calculator", "lazy_with_calculator",
 ]
 _ALL_FIXTURES = list(_FIXTURES.keys())
 
@@ -648,3 +675,20 @@ def test_source_catalog_cached_on_context() -> None:
     first = context.get_source_catalog()
     second = context.get_source_catalog()
     assert first is second
+
+
+# ---------------------------------------------------------------------------
+# Invariant 8: the calculator is named only in a form the agent can act on
+# ---------------------------------------------------------------------------
+
+def test_invariant_eager_calculator_named_by_its_tools() -> None:
+    section = build_prompt_for_fixture("kb_with_calculator").split("## Exact Numbers", 1)[1]
+    assert "`calculator__evaluate_expression`" in section.split("\n## ", 1)[0]
+
+
+def test_invariant_lazy_calculator_named_by_its_toolset() -> None:
+    prompt = build_prompt_for_fixture("lazy_with_calculator")
+    section = prompt.split("## Exact Numbers", 1)[1].split("\n## ", 1)[0]
+    assert 'fetch_tools("calculator")' in section
+    assert all(name not in prompt for name in _CALCULATOR_TOOLS)
+    assert "`calculator`" in prompt.split("Tools you must load before calling", 1)[1]

@@ -1,9 +1,13 @@
 # Named entity extraction
 
 Indexing can extract typed entities from a record and store them beside the
-taxonomy graph. The Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION` is off by
-default. Turning it off does not delete nodes other records still mention;
-it removes the mention edges for records indexed while the flag is off.
+taxonomy graph. Extraction, and the agent tools that read it, are on when the
+Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION` is on or the deployment sets
+`HIGH_ACCURACY_MODE=true`; both are off by default, and under
+`HIGH_ACCURACY_MODE` the flag cannot turn it off. Records indexed before it
+was on gain entities when they are indexed again. Turning it off does not
+delete nodes other records still mention; it removes the mention edges for
+records indexed while it is off.
 
 ## What is stored
 
@@ -235,7 +239,7 @@ instead of returning a partial list; the check stops at the 51st readable
 record. If scope or permissions can't be resolved, the tool call fails
 rather than reporting an empty result.
 
-Agent tools, when the flag is on:
+Agent tools, when extraction is on:
 
 - `search_entities` accepts `named_entity_kinds`
 - `find_records_by_entity` accepts a named-entity id

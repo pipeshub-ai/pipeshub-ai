@@ -173,6 +173,45 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('includeRetrievalContext', () => {
+    // Zod strips unknown keys, so an undeclared field never reaches the
+    // controller — the flag has to survive parsing to do anything at all.
+    it('survives parsing on the universal stream route', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: {
+          query: 'hello',
+          chatMode: UNIVERSAL_STREAM_CHAT_MODES[0],
+          includeRetrievalContext: true,
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.includeRetrievalContext).to.equal(true)
+      }
+    })
+
+    it('is optional, and absent means absent', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello', chatMode: UNIVERSAL_STREAM_CHAT_MODES[0] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.includeRetrievalContext).to.equal(undefined)
+      }
+    })
+
+    it('rejects a non-boolean', () => {
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: {
+          query: 'hello',
+          chatMode: UNIVERSAL_STREAM_CHAT_MODES[0],
+          includeRetrievalContext: 'yes',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+  })
+
   describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
     for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
       it(`should accept required universal stream chatMode ${chatMode}`, () => {
@@ -470,6 +509,21 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { body: { query: '' } }
       const result = enterpriseSearchSearchSchema.safeParse(data)
       expect(result.success).to.be.false
+    })
+
+    it('should reject a query over 100000 characters, like a chat question', () => {
+      const data = { body: { query: 'a'.repeat(100001) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.false
+      expect(result.error!.issues.map((i) => i.message)).to.include(
+        'Search query exceeds maximum length of 100000 characters',
+      )
+    })
+
+    it('should accept a query of exactly 100000 characters', () => {
+      const data = { body: { query: 'a'.repeat(100000) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
     })
 
     it('should strip model fields from body (semantic search schema is query-centric)', () => {

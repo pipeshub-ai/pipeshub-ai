@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 # Blocks either side of a hit that come along with it. A matched passage whose
 # neighbours are missing reads as a fragment: the sentence that defines the
 # term, or the row the total belongs to, is usually adjacent. The search path
-# widens hits the same way (`adjacent_chunks` in `get_flattened_results`).
+# widens hits the same way (`expand_neighbours` in `modules/retrieval/context`).
 NEIGHBOUR_SPAN = 1
 
 # How many ranked hits to ask for. Generous, because the budget — not this

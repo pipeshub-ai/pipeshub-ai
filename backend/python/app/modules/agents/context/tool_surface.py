@@ -81,6 +81,10 @@ class ToolSurfaces:
     has_service_tools: bool
     """Convenience — True iff `live_api_apps` is non-empty."""
 
+    calculator_tools: tuple[str, ...] = ()
+    """Granted exact-calculation tools (expression, date difference, text
+    count, in that order); `()` when none is granted."""
+
     @property
     def search_tool(self) -> str | None:
         """`retrieval` when this agent writes the search query itself; None
@@ -165,6 +169,11 @@ class ToolSurfaces:
 
         has_service_tools = bool(live_api_apps)
 
+        calculator_tools = granted_any(
+            ["calculator.evaluate_expression", "calculator.date_difference", "calculator.count_text"],
+            names_set,
+        )
+
         return cls(
             retrieval=retrieval,
             web_names=web_names,
@@ -177,6 +186,7 @@ class ToolSurfaces:
             has_knowledge=has_knowledge,
             has_web_search=has_web_search,
             has_service_tools=has_service_tools,
+            calculator_tools=calculator_tools,
         )
 
     # ── Convenience formatters ────────────────────────────────────────────────

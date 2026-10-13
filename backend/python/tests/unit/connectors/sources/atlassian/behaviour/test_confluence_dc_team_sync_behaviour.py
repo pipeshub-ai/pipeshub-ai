@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -54,7 +55,7 @@ class TeamDb(RemovalRecordsDb):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> object:
         return next((g for g, _ in reversed(self.user_groups) if g.source_user_group_id == external_id), None)
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.app_users)
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
@@ -328,6 +329,35 @@ class TestUsersAndGroups:
         assert b"/group/eng%20team/member" in member_calls[0].url.raw_path
         (lookup,) = atlassian_api.calls("GET", f"{API}/user")
         assert AtlassianApiStub.query(lookup) == {"key": "ldap"}
+
+    async def test_a_failed_user_lookup_does_not_empty_the_group(self, atlassian_api, db, store) -> None:
+        ana = user("ana", "ana@example.com")
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ana], {"eng": [ana]})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert db.members_of("eng") == ["ana@example.com"]
+
+        db.get_all_app_users = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert db.members_of("eng") == ["ana@example.com"]
+
+    async def test_a_lookup_that_finds_no_users_still_empties_the_group(self, atlassian_api, db, store) -> None:
+        ana = user("ana", "ana@example.com")
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ana], {"eng": [ana]})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["ana@example.com"]
+
+        db.app_users.clear()
+        await connector._sync_user_groups()
+
+        assert db.user_groups[-1][0].name == "eng"
+        assert db.members_of("eng") == []
 
     async def test_groups_are_read_to_the_end(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
