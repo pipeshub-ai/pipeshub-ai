@@ -3887,7 +3887,7 @@ def _check_oauth_app_urls(connector_type: str, settings: dict[str, Any] | None) 
     try:
         check_oauth_url_settings(connector_type, settings)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
 
 
 async def _link_to_shared_oauth_app(
@@ -6470,7 +6470,7 @@ async def _build_oauth_flow_config(
     try:
         pin_oauth_urls(connector_type, oauth_flow_config)
     except ValueError as e:
-        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e  # user-written message
 
     return oauth_flow_config
 
