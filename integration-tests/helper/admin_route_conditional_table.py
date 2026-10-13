@@ -36,6 +36,7 @@ Placeholders in a path, query, body, ``words`` or ``absent`` are written
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -379,11 +380,12 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              params={"search": "{toolset_name}"}),
     _secrets("get_toolset_instance", "api/routes/toolsets.py", f"{_TOOLSETS}/instances/{{toolset}}",
              "{toolset_name}", ('"auth":', "{toolset_key}"), admin_sees='"auth":'),
-    # The admin is shown the client id; the secret comes back masked even for them.
+    # The admin is shown the client id; the secret comes back masked for them only
+    # with HIDE_SECRET_CONFIG=true, which the stack and this process both read.
     _secrets("list_toolset_oauth_configs", "api/routes/toolsets.py",
              f"{_TOOLSETS}/oauth-configs/{OAUTH_TOOLSET_TYPE}", "{toolset_oauth_name}",
              ("{toolset_client_id}", "{toolset_secret}"), admin_sees="{toolset_client_id}",
-             admin_hidden=("{toolset_secret}",)),
+             admin_hidden=("{toolset_secret}",) if os.getenv("HIDE_SECRET_CONFIG") == "true" else ()),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.
     ConditionalRoute(
