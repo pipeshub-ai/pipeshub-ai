@@ -304,22 +304,22 @@ def _bounded(value: Value, *, nonzero: bool = False) -> Value:
 
 
 def _as_float(value: Value, *, flush: bool = False) -> float:
-    """`flush`: a non-zero value below a double's range becomes 0.0 instead of
-    an error, for a caller whose result does not depend on it (pi + 1e-400)
-    and which refuses a result that comes out 0 when it cannot be."""
+    """`flush`: a non-zero value below a double's range becomes a zero of its
+    sign instead of an error, for a function whose result does not depend on
+    it (exp(1e-400)) and which refuses a result that comes out 0 when it
+    cannot be."""
     try:
         result = float(value)
     except OverflowError as exc:
         raise _OutsideFloatRange("The result is too large for floating-point functions.") from exc
     if flush and value != 0 and abs(result) < sys.float_info.min:
-        return 0.0
+        return -0.0 if value < 0 else 0.0
     return _bounded(result, nonzero=value != 0)
 
 
 def _times(left: Value, right: Value) -> Value:
     if isinstance(left, float) or isinstance(right, float):
-        product = _as_float(left, flush=True) * _as_float(right, flush=True)
-        return _bounded(product, nonzero=left != 0 and right != 0)
+        return _as_float(Fraction(left) * Fraction(right))
     return _bounded(left * right)
 
 
@@ -350,20 +350,10 @@ def _binary(op: ast.operator, left_q: Quantity, right_q: Quantity) -> Quantity:
         dimension = _require_alike([left_dim, right_dim], "add, subtract or take the remainder of")
     else:
         raise CalculationError(f"Unsupported operator: {type(op).__name__}.")
-    exact = isinstance(left, Fraction) and isinstance(right, Fraction)
-    if exact:
-        a, b = left, right
-    else:
-        a = _as_float(left, flush=True)
-        if isinstance(op, (ast.Div, ast.FloorDiv, ast.Mod)) and right != 0:
-            try:
-                b = _as_float(right)
-            except _OutsideFloatRange as exc:
-                if abs(right) < 1:
-                    raise CalculationError("The result is too large.") from exc
-                raise
-        else:
-            b = _as_float(right, flush=True)
+    # An approximate operand takes part with its exact binary value and the
+    # result is rounded once: the range of the result decides, not of each
+    # operand ((-1e-400) // pi is -1, pi / 10**400 is too small).
+    a, b = Fraction(left), Fraction(right)
     try:
         if isinstance(op, ast.Add):
             result = a + b
@@ -372,21 +362,14 @@ def _binary(op: ast.operator, left_q: Quantity, right_q: Quantity) -> Quantity:
         elif isinstance(op, ast.Div):
             result = a / b
         elif isinstance(op, ast.FloorDiv):
-            result = a // b
+            result = Fraction(a // b)
         else:
             result = a % b
     except ZeroDivisionError as exc:
         raise CalculationError("Division by zero.") from exc
-    if exact:
-        return _bounded(Fraction(result)), dimension
-    if isinstance(op, ast.Div):
-        nonzero = left != 0
-    elif isinstance(op, (ast.Add, ast.Sub)):
-        # Exact comparison: 0.0 + 1e-400 is not 0, although both flush to 0.
-        nonzero = Fraction(left) != (-Fraction(right) if isinstance(op, ast.Add) else Fraction(right))
-    else:
-        nonzero = False
-    return _bounded(float(result), nonzero=nonzero), dimension
+    if isinstance(left, Fraction) and isinstance(right, Fraction):
+        return _bounded(result), dimension
+    return _as_float(result), dimension
 
 
 def _power(base: Value, exponent: Value) -> Value:
@@ -401,6 +384,9 @@ def _power(base: Value, exponent: Value) -> Value:
         # An odd root of a negative number is real: (-b)**(p/q) = (-1)**p * b**(p/q).
         magnitude = _power(-base, exponent)
         return -magnitude if exponent.numerator % 2 else magnitude
+    # Judged on the exponent as given: 2 + 1e-400 is not an integer although
+    # a double rounds it to one.
+    whole = exponent.denominator == 1 if isinstance(exponent, Fraction) else exponent.is_integer()
     e = _as_float(exponent, flush=True)
     try:
         b = _as_float(base)
@@ -408,7 +394,7 @@ def _power(base: Value, exponent: Value) -> Value:
         if not isinstance(base, Fraction) or base <= 0:
             raise
         return _decimal_power(base, exponent)
-    if b < 0 and not e.is_integer():
+    if b < 0 and not whole:
         raise CalculationError("A negative number to a fractional power has no real value.")
     if b == 0 and e < 0:
         raise CalculationError("Division by zero.")

@@ -243,6 +243,15 @@ class TestExactArithmetic:
             ("(2e-400) ** 0.5", 1.4142135623731e-200),
             ("(2e-400) ** 0.25", 1.18920711500272e-100),
             ("(2*10**400) ** (1/3)", 2.71441761659491e133),
+            # A flushed input keeps its sign.
+            ("atan2(-1e-400, -1)", -3.14159265358979),
+            ("degrees(atan2(-1e-400, -1))", -180),
+            # Arithmetic with an approximate operand is exact, then rounded once.
+            ("(-1e-400) // pi", -1),
+            ("(-1e-400) % pi", 3.14159265358979),
+            ("pi // 10**400", 0),
+            ("(-pi) // 10**400", -1),
+            ("sqrt(2) % 10**400", 1.4142135623731),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -317,6 +326,13 @@ class TestRefusedExpressions:
             ("log(10, 1 + 1e-400)", "too large"),
             ("0 * pi + 1e-400", "too small"),
             ("pi / 1e-400", "too large"),
+            ("pi / 10**400", "too small"),
+            ("1e-400 % pi", "too small"),
+            ("(-2) ** 1e-400", "no real value"),
+            ("(-pi) ** 1e-400", "no real value"),
+            ("(-8) ** (2 + 1e-400)", "no real value"),
+            ("(-8) ** (1 + 1e-20)", "no real value"),
+            ("(-pi) ** (2 + 1e-400)", "no real value"),
             ("atan2(1e-400, 1)", "too small"),
             ("asin(1e-400)", "too small"),
             ("(2e-400) ** 2.5", "too small"),
@@ -390,7 +406,7 @@ class TestNoUnexpectedErrors:
     _VALUES = (
         "0", "1", "-1", "2", "0.5", "1e-400", "-1e-400", "2e-400", "1e-310", "1e-300", "1e300",
         "10**400", "-10**400", "1 + 1e-20", "1 - 1e-20", "1/3", "pi", "e", "sqrt(2)", "7**-300",
-        "(10**499 - 1)/(10**498 + 7)", 'hms("1:02:03.5")',
+        "(10**499 - 1)/(10**498 + 7)", 'hms("1:02:03.5")', "-pi", "-8", "1/7", "2 + 1e-400",
     )
     _UNARY = (
         "abs", "floor", "ceil", "round", "sqrt", "exp", "log", "log10", "sin", "cos", "tan",
