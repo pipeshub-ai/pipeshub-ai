@@ -13,7 +13,7 @@ from __future__ import annotations
 import base64
 import struct
 import zlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -25,6 +25,9 @@ from app.utils.chat_helpers import (
     record_to_message_content,
     record_to_text,
 )
+
+if TYPE_CHECKING:
+    from app.utils.image_admission import ImageAdmission
 
 
 def _png_data_uri() -> str:
@@ -536,3 +539,85 @@ class TestRecordsThatCannotBeShown:
         assert len(contents) == 1
         assert "from r2" in _joined(contents)
         assert _joined(contents).count("</record>") == 1
+
+
+class TestTableHitsThroughTheContextPipeline:
+    """Units straight from `get_flattened_results`, then `expand_neighbours`:
+    a table hit gets the text either side of the whole table."""
+
+    @staticmethod
+    def _captioned_table(num_cells: int | None) -> dict:
+        rows = [{"index": i, "type": "table_row", "parent_index": 0,
+                 "data": {"row_natural_language_text": f"row {i}"}} for i in range(1, 11)]
+        table = {"index": 0, "type": "table", "data": {"table_summary": "Fees by plan"},
+                 "children": {"block_ranges": [{"start": 1, "end": 10}]}}
+        if num_cells is not None:
+            table["table_metadata"] = {"num_of_cells": num_cells}
+        return blob("v1", [text(0, "Table 3: fees by plan"), *rows, text(11, "Fees exclude VAT")], [table])
+
+    @pytest.mark.parametrize(("num_cells", "hits"), [
+        (None, [hit("v1", 5), hit("v1", 6)]),
+        (20, [hit("v1", 0, group=True)]),
+    ])
+    async def test_the_caption_and_the_note_come_with_the_table(self, num_cells: int | None, hits: list) -> None:
+        from app.modules.retrieval.context.neighbours import expand_neighbours
+
+        store = InMemoryBlobStore({"v1": self._captioned_table(num_cells)})
+        units, vr_map = await flatten(store, hits, {"v1": graph_record("r1")})
+
+        expanded = expand_neighbours(units, vr_map)
+
+        assert [u["content"] for u in expanded[len(units):]] == ["Table 3: fees by plan", "Fees exclude VAT"]
+
+
+class TestSearchResultFragmentImagesAreSearchHits:
+    """An image inside a table row of a search result counts against the
+    share of the cap search may use, like any other search-hit image."""
+
+    @staticmethod
+    def _row_split_by_an_image() -> tuple[dict, dict]:
+        container = {"index": 0, "type": "table_row", "parent_index": 0, "data": {}}
+        frags = [
+            {"index": 1, "type": "text", "data": "cell", "parent_block_index": 0},
+            {"index": 2, "type": "image", "data": {"uri": PNG}, "parent_block_index": 0},
+        ]
+        table = {"index": 0, "type": "table", "data": {"table_summary": "T"},
+                 "children": [{"block_index": 0}]}
+        record = _record("v1", "r1", [container, *frags], [table])
+        unit = _flat("v1", 0, ("T", [
+            _flat("v1", 0, "cell", block_type="text"),
+            _flat("v1", 0, PNG, block_type="image"),
+        ]), block_type="table", block_group_index=0)
+        return record, unit
+
+    @staticmethod
+    def _one_image_model() -> ImageAdmission:
+        from app.utils.image_admission import ImageAdmission, ImageBudget
+        from app.utils.image_policy import resolve_image_policy
+
+        return ImageAdmission(resolve_image_policy(provider="ollama", is_multimodal=True), budget=ImageBudget())
+
+    def test_a_search_result_leaves_a_one_image_model_its_slot(self) -> None:
+        record, unit = self._row_split_by_an_image()
+        admission = self._one_image_model()
+        collected: list[dict] = []
+
+        build_message_content_array(
+            [unit], {"v1": record}, is_multimodal_llm=True, collected_images=collected,
+            image_admission=admission, image_budget=admission.budget,
+        )
+
+        assert collected == []
+        assert admission.remaining == 1
+
+    def test_a_fetched_record_still_gets_it(self) -> None:
+        record, _ = self._row_split_by_an_image()
+        admission = self._one_image_model()
+        collected: list[dict] = []
+
+        record_to_message_content(
+            record, is_multimodal_llm=True, collected_images=collected,
+            image_admission=admission, image_budget=admission.budget,
+        )
+
+        assert len(collected) == 1
