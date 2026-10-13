@@ -336,7 +336,9 @@ config:
   # MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to "true" or "false" through
   # extraEnv.
   # It also turns on named-entity extraction while indexing, and the entity
-  # tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
+  # tools that read it (search_entities, find_records_by_entity,
+  # find_records_by_value), whatever the Labs flag
+  # ENABLE_NAMED_ENTITY_EXTRACTION says.
   # ENTITY_SEARCH_TOOL="true" (through extraEnv) also offers the agent
   # search_by_entities, which links named people, organizations, products or
   # places to extracted entities and searches the records that mention them.
