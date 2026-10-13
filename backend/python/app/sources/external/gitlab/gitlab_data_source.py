@@ -858,7 +858,6 @@ class GitLabDataSource:
 
     # Used by:
     #   gitlab/projects.py - ProjectsSync._sync_project_members_as_pseudo
-    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
     def list_project_members_all(

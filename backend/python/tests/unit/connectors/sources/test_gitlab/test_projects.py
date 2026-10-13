@@ -542,8 +542,12 @@ class TestEnsureGitlabGroupRecordGroups:
         _rg, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
         assert perms == []
 
-    async def test_member_list_failure_triggers_child_project_union(self) -> None:
-        """Group found but member listing fails → child-project union attempted."""
+    async def test_member_list_failure_keeps_the_stored_group_access(self) -> None:
+        """Group found but member listing fails: the group is written with unknown grants.
+
+        ``None`` keeps what is stored. A substitute list (the members of its projects)
+        would reach every project through inheritance.
+        """
         c = make_mock_connector()
         c.data_source = MagicMock()
 
@@ -557,60 +561,19 @@ class TestEnsureGitlabGroupRecordGroups:
         async def ds_call_side(fn, *args, **kwargs):
             if "get_group" in str(fn):
                 return group_res
-            if "list_group_members" in str(fn) and "list_group_members_all" not in str(fn):
+            if "list_group_members" in str(fn):
                 return members_fail_res
             return MagicMock(success=True, data=[], error=None)
 
         c.runtime.ds_call = AsyncMock(side_effect=ds_call_side)
-        c.creator_user_permission = MagicMock(return_value=None)
+        c.creator_user_permission = MagicMock(return_value=MagicMock(email="owner@example.com"))
 
         projects_sync = ProjectsSync(c)
-        projects_sync._group_permissions_from_child_projects = AsyncMock(return_value=[])
-        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=None)
+        await projects_sync._ensure_gitlab_group_record_groups(["eng"])
 
-        p = _project(1, "eng/proj", ns_path="eng")
-        await projects_sync._ensure_gitlab_group_record_groups(["eng"], candidate_projects=[p])
-        projects_sync._group_permissions_from_child_projects.assert_called_once()
-
-
-# ===========================================================================
-# _group_permissions_from_child_projects
-# ===========================================================================
-
-
-class TestGroupPermissionsFromChildProjects:
-    async def test_returns_permissions_from_child_projects(self) -> None:
-        """Members from child projects under group path produce permissions."""
-        c = make_mock_connector()
-        c.data_source = MagicMock()
-
-        p = _project(1, "eng/proj", ns_path="eng")
-        member = _member(uid=1, access_level=40)
-        member.id = 1
-        pm_res = MagicMock(success=True, data=[member], error=None)
-        c.runtime.ds_call = AsyncMock(return_value=pm_res)
-
-        from app.models.permission import Permission, EntityType, PermissionType
-        perm = Permission(email="dev@example.com", type=PermissionType.OWNER.value, entity_type=EntityType.USER)
-
-        projects_sync = ProjectsSync(c)
-        projects_sync._transform_restrictions_to_permissions = AsyncMock(return_value=perm)
-
-        result = await projects_sync._group_permissions_from_child_projects(
-            group_path="eng", candidate_projects=[p]
-        )
-        assert len(result) >= 1
-
-    async def test_no_child_projects_returns_empty(self) -> None:
-        """No candidate projects under group → empty permissions."""
-        c = make_mock_connector()
-        projects_sync = ProjectsSync(c)
-
-        p = _project(1, "other/proj", ns_path="other")
-        result = await projects_sync._group_permissions_from_child_projects(
-            group_path="eng", candidate_projects=[p]
-        )
-        assert result == []
+        rg, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert rg.external_group_id == "eng"
+        assert perms is None
 
 
 # ===========================================================================

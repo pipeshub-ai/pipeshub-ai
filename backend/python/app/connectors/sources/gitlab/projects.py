@@ -189,9 +189,7 @@ class ProjectsSync:
             candidates=candidates, grp_in=grp_in, grp_not_in=grp_not_in, proj_in=proj_in,
         )
         if included_group_paths:
-            await self._ensure_gitlab_group_record_groups(
-                included_group_paths, candidate_projects=candidates
-            )
+            await self._ensure_gitlab_group_record_groups(included_group_paths)
             c._gitlab_included_group_paths = included_group_paths
 
         return candidates
@@ -244,17 +242,11 @@ class ProjectsSync:
     # Group RecordGroups
     # ------------------------------------------------------------------
 
-    async def _ensure_gitlab_group_record_groups(
-        self,
-        group_paths: list[str],
-        candidate_projects: list[Project] | None = None,
-    ) -> None:
-        """Create top-level GitLab group record groups before project groups reference them.
+    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
+        """Create GitLab group record groups, parents first, before project groups reference them.
 
-        Fallback chain when the direct group-members listing is unusable:
-          1. Union of members across ``candidate_projects`` whose namespace is under
-             ``group_path``.
-          2. Creator-only permission.
+        A group whose member list cannot be read keeps its stored grants: projects
+        inherit their group, so any substitute list would open every project to it.
         """
         c = self.c
         if not c.data_source:
@@ -290,16 +282,17 @@ class ProjectsSync:
             group = group_res.data
             full_path = getattr(group, "full_path", None) or str(getattr(group, "id", group_path))
 
-            group_permissions: list[Permission] = []
             members_res = await c.runtime.ds_call(
                 c.data_source.list_group_members, group_id=group_path, get_all=True,
             )
+            group_permissions: list[Permission] | None = None
             if not members_res.success:
                 self.logger.warning(
-                    "Could not list members for GitLab group %s: %s. Attempting child-project union.",
+                    "Could not list members for GitLab group %s: %s. Keeping its stored access.",
                     group_path, members_res.error,
                 )
             else:
+                group_permissions = []
                 for member in members_res.data or []:
                     # Minimal Access (5) cannot see the group's projects. Guest is 10.
                     if (getattr(member, "access_level", 0) or 0) < 10:
@@ -308,25 +301,12 @@ class ProjectsSync:
                     if permission:
                         group_permissions.append(permission)
 
-            # A successful empty list is a group with no direct members. Copying
-            # child-project members onto it would let one project see its siblings.
-            if not members_res.success and not group_permissions and candidate_projects:
-                group_permissions = await self._group_permissions_from_child_projects(
-                    group_path=group_path, candidate_projects=candidate_projects,
-                )
-
-            # Always ensure the creator has access to the group node
-            creator_permission = c.creator_user_permission()
-            if creator_permission is not None and not any(
-                getattr(p, "email", None) == creator_permission.email for p in group_permissions
-            ):
-                if not group_permissions and not candidate_projects:
-                    self.logger.warning(
-                        "GitLab group %s: group-members and child-project union both produced 0 "
-                        "permissions; applying creator-only fallback for %s.",
-                        group_path, c.creator_email,
-                    )
-                group_permissions.append(creator_permission)
+                # Always ensure the creator has access to the group node
+                creator_permission = c.creator_user_permission()
+                if creator_permission is not None and not any(
+                    getattr(p, "email", None) == creator_permission.email for p in group_permissions
+                ):
+                    group_permissions.append(creator_permission)
 
             parent_path = _parent_when_synced(full_path, group_paths)
             group_rg = RecordGroup(
@@ -341,68 +321,6 @@ class ProjectsSync:
                 inherit_permissions=parent_path is not None,
             )
             await c.data_entities_processor.on_new_record_groups([(group_rg, group_permissions)])
-
-    async def _group_permissions_from_child_projects(
-        self,
-        group_path: str,
-        candidate_projects: list[Project],
-    ) -> list[Permission]:
-        """Union child-project members into group-level USER permissions.
-
-        Used only when the direct group-member listing fails. An empty success
-        means the group has no direct members and must not inherit its children.
-        """
-        c = self.c
-        child_projects = [
-            p for p in candidate_projects
-            if _namespace_under_any_prefix(_namespace_full_path(p), [group_path])
-        ]
-        if not child_projects:
-            self.logger.debug(
-                "child-project union: no candidate projects under group %s", group_path
-            )
-            return []
-
-        member_map: dict[int, Any] = {}
-        listed_projects = failed_projects = 0
-        for proj in child_projects:
-            proj_key = getattr(proj, "id", None) or getattr(proj, "path_with_namespace", None)
-            if proj_key is None:
-                continue
-            pm_res = await c.runtime.ds_call(
-                c.data_source.list_project_members_all, project_id=proj_key, get_all=True,
-            )
-            if not pm_res.success:
-                failed_projects += 1
-                self.logger.debug(
-                    "child-project union: list_project_members_all(%s) failed under group %s: %s",
-                    proj_key, group_path, pm_res.error,
-                )
-                continue
-            listed_projects += 1
-            for m in pm_res.data or []:
-                uid = getattr(m, "id", None)
-                if uid is None:
-                    continue
-                m_level = getattr(m, "access_level", 0) or 0
-                if m_level < 10:
-                    continue
-                existing = member_map.get(uid)
-                existing_level = getattr(existing, "access_level", 0) or 0
-                if existing is None or m_level > existing_level:
-                    member_map[uid] = m
-
-        permissions: list[Permission] = []
-        for m in member_map.values():
-            permission = await self._transform_restrictions_to_permissions(m)
-            if permission:
-                permissions.append(permission)
-
-        self.logger.info(
-            "child-project union for group %s: listed=%s failed=%s, %s unique member(s) -> %s permission(s)",
-            group_path, listed_projects, failed_projects, len(member_map), len(permissions),
-        )
-        return permissions
 
     # ------------------------------------------------------------------
     # Project member sync
