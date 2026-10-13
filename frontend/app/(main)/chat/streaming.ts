@@ -110,6 +110,7 @@ function buildStoppedMessages(
   regenerateMessageId: string | null,
   streamingContent: string,
   pendingAskUserQuestion?: PendingAskUserQuestion | null,
+  streamingAssistantId?: string | null,
 ): ThreadMessageLike[] {
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
@@ -124,19 +125,30 @@ function buildStoppedMessages(
     );
   }
   const last = messages[messages.length - 1];
-  if (!last || last.role !== 'assistant') return messages;
-  if (pendingAskUserQuestion && last.id === pendingAskUserQuestion.assistantMessageId) {
-    return messages;
+  const targetId = streamingAssistantId
+    ?? (last?.role === 'assistant' && typeof last.id === 'string' ? last.id : null);
+  if (!targetId) return messages;
+  const targetIdx = messages.findIndex((m) => m.role === 'assistant' && m.id === targetId);
+  if (targetIdx < 0) return messages;
+
+  if (streamingContent) {
+    return messages.map((m) =>
+      m.id === targetId
+        ? {
+            ...m,
+            content: [{ type: 'text' as const, text: streamingContent }],
+            metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+          }
+        : m
+    );
   }
-  if (!streamingContent) return messages.slice(0, -1);
-  return [
-    ...messages.slice(0, -1),
-    {
-      ...last,
-      content: [{ type: 'text' as const, text: streamingContent }],
-      metadata: { ...last.metadata, custom: { ...last.metadata?.custom, status: 'stopped' as const } },
-    },
-  ];
+
+  const targetIsLast = targetIdx === messages.length - 1;
+  const targetIsCard = Boolean(
+    pendingAskUserQuestion && targetId === pendingAskUserQuestion.assistantMessageId,
+  );
+  if (targetIsLast && !targetIsCard) return messages.slice(0, -1);
+  return messages;
 }
 
 function stampPendingCardOnMessages(
@@ -517,6 +529,7 @@ export async function streamMessageForSlot(
       slot.regenerateMessageId,
       slot.streamingContent,
       slot.pendingAskUserQuestion,
+      slot.streamingAssistantId,
     )
     : slot.messages;
 
@@ -645,6 +658,7 @@ export async function streamMessageForSlot(
     abortController,
     runId: streamRunId,
     stopping: false,
+    streamingAssistantId: pendingAssistantId,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -1289,6 +1303,7 @@ export async function streamRegenerateForSlot(
   store.updateSlot(slotId, {
     isStreaming: true,
     regenerateMessageId: messageId,
+    streamingAssistantId: messageId,
     streamingContent: '',
     currentStatusMessage: null,
     streamingCitationMaps: null,
@@ -1492,6 +1507,7 @@ export async function streamRegenerateForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           regenerateMessageId: null,
+          streamingAssistantId: null,
           streamingContent: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
@@ -1519,6 +1535,7 @@ export async function streamRegenerateForSlot(
         useChatStore.getState().updateSlot(slotId, {
           isStreaming: false,
           regenerateMessageId: null,
+          streamingAssistantId: null,
           streamingContent: '',
           currentStatusMessage: null,
           streamingCitationMaps: null,
@@ -1547,6 +1564,7 @@ export async function streamRegenerateForSlot(
       useChatStore.getState().updateSlot(slotId, {
         isStreaming: false,
         regenerateMessageId: null,
+        streamingAssistantId: null,
         streamingContent: '',
         currentStatusMessage: null,
         streamingCitationMaps: null,
@@ -1650,6 +1668,7 @@ export async function streamRegenerateForSlot(
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
       regenerateMessageId: null,
+      streamingAssistantId: null,
       streamingContent: '',
       currentStatusMessage: null,
       streamingCitationMaps: null,
@@ -1707,6 +1726,7 @@ export function cancelStreamForSlot(slotId: string): void {
       runId: null,
       stopping: false,
       regenerateMessageId: null,
+      streamingAssistantId: null,
     });
     if (isTemp) {
       store.clearPendingConversation(slotId);
@@ -1736,6 +1756,7 @@ export function cancelStreamForSlot(slotId: string): void {
       cur.regenerateMessageId,
       cur.streamingContent,
       cur.pendingAskUserQuestion,
+      cur.streamingAssistantId,
     );
     useChatStore.getState().updateSlot(slotId, {
       isStreaming: false,
@@ -1748,6 +1769,7 @@ export function cancelStreamForSlot(slotId: string): void {
       runId: null,
       stopping: false,
       regenerateMessageId: null,
+      streamingAssistantId: null,
       messages,
     });
     if (cur.isTemp) {

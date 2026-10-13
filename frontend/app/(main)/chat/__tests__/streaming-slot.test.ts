@@ -1483,6 +1483,43 @@ describe('answering, skipping and ignoring a card in a live chat', () => {
     expect(texts(slotId).some(([, text]) => String(text).startsWith('User selections:'))).toBe(false);
   });
 
+  it('Stop during a late resume writes the partial onto the card, not the later chat', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-real/cancel': { status: 200, data: { cancelled: true } } });
+    const payload = card(region);
+    const slotId = await ask(payload, 'plan the launch');
+    respondWith([
+      frame('TEXT_MESSAGE_START'),
+      frame('TEXT_MESSAGE_CONTENT', { delta: 'Hi!' }),
+      finished('Hi!', [
+        said('u1', 'plan the launch'), saved('t1', payload), replied('b1'),
+        said('u2', 'hello'), replied('b2', 'Hi!'),
+      ]),
+    ]);
+    await streamMessageForSlot(slotId, 'hello', request({ query: 'hello' }));
+    const cardRowId = slot(slotId).messages[1].id;
+    submit(slotId, pick('q-region', ['q-region-o0']));
+
+    respondWith({
+      chunks: [frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'Working on EU' })],
+      hang: true,
+    });
+    const query = selections('"Which region?" → EU');
+    const run = streamMessageForSlot(slotId, query, request({ query }), { resumeAskUserQuestion: true });
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Working on EU'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+    slot(slotId).abortController?.abort();
+    await run;
+
+    expect(slot(slotId).messages[1].id).toBe(cardRowId);
+    expect(getThreadMessagePlainText(slot(slotId).messages[1])).toBe('Working on EU');
+    expect(getThreadMessagePlainText(slot(slotId).messages[3])).toBe('Hi!');
+    expect((slot(slotId).messages[3].metadata?.custom as { status?: string } | undefined)?.status).toBeUndefined();
+  });
+
   it('a retried answer after a stopped resume closes the card once', async () => {
     fakeApi({ 'POST /api/v1/conversations/conv-real/cancel': { status: 200, data: { cancelled: true } } });
     const payload = card(region);

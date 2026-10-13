@@ -1058,6 +1058,8 @@ export interface ChatSlot {
    */
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
+  /** Assistant row this run is writing into. A resume can be an older card. */
+  streamingAssistantId: string | null;
   pendingCollections: ChatCollectionAttachment[];
 
   /** Artifacts produced during the current streaming response. */

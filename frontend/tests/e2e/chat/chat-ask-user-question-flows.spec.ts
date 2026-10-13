@@ -628,19 +628,27 @@ test.describe('Ask user question — journeys', () => {
       msg({ _id: 'b2', messageType: 'bot_response', content: 'Planning for EU.' }),
     ];
     await mockBaseline(page);
-    await mockConversationGet(page, storedConversation(id, messages));
+    let stored = messages;
+    await mockConversationGet(page, () => storedConversation(id, stored));
     await page.goto(`/chat/?conversationId=${id}`);
     await expect(page.getByText('Planning for EU.')).toBeVisible({ timeout: 20_000 });
 
     await page.route(new RegExp(`/api/v1/conversations/${id}/message/.*/regenerate`), (route) => {
       if (route.request().method() !== 'POST') return route.continue();
+      stored = [
+        messages[0],
+        messages[1],
+        messages[2],
+        messages[3],
+        msg({ _id: 'b2', messageType: 'bot_response', content: 'Regenerated plan for EU.' }),
+      ];
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
         body: buildAguiSseBody({
           conversationId: id,
           userMessageId: 'u1',
-          botMessageId: 'b-regen',
+          botMessageId: 'b2',
           question: 'plan the launch',
           answer: 'Regenerated plan for EU.',
           modelInfo: MODEL,
@@ -653,12 +661,14 @@ test.describe('Ask user question — journeys', () => {
       .first();
     await expect(regen).toBeVisible({ timeout: 8_000 });
     await regen.click();
-    const sendButton = page.getByTestId('chat-send-button').or(page.locator('button').filter({ hasText: /send|regenerat/i })).first();
-    if (await sendButton.isVisible().catch(() => false)) {
-      await sendButton.click();
-    }
-    await expect(page.getByText(/Regenerated plan for EU|Planning for EU/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Regenerate response')).toBeVisible({ timeout: 5_000 });
+    const sendRegen = page.getByRole('button', { name: 'Send message' });
+    await expect(sendRegen).toBeVisible({ timeout: 5_000 });
+    await sendRegen.click();
+    await expect(page.getByText('Regenerated plan for EU.')).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText('Planning for EU.')).toHaveCount(0);
     await expect(page.getByText('Which region?')).toBeVisible();
+    await expect(page.getByText('EU', { exact: true })).toBeVisible();
   });
 
   test('a comma in the picked label is sent whole', async ({ page }) => {
