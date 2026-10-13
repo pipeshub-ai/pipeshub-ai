@@ -10,12 +10,12 @@ from unittest.mock import patch
 from langchain_core.messages import AIMessage
 
 from app.api.routes.chatbot import askAIStream
-from tests.integration.test_agent_turn_limit_e2e import (  # noqa: F401 - pytest fixture
+from tests.integration.test_agent_turn_limit_e2e import (  # noqa: F401  (fixture)
     _TOOL,
-    _ScriptedChatModel,
     _answer,
     _request,
     _route_kwargs,
+    _ScriptedChatModel,
     chat_model,
 )
 from tests.integration.test_chat_stream_agent_loop_e2e import _drain, _events_by_name
@@ -53,7 +53,7 @@ def _without_telemetry(events: dict[str, list[dict]]) -> dict[str, int]:
 
 
 class TestRetrievalContextOnTheStream:
-    async def test_no_frames_unless_asked_for(self, chat_model: _ScriptedChatModel) -> None:
+    async def test_no_frames_unless_asked_for(self, chat_model: _ScriptedChatModel) -> None:  # noqa: F811  (fixture imported above)
         chat_model.responses = _script()
 
         events = await _stream()
@@ -62,7 +62,7 @@ class TestRetrievalContextOnTheStream:
         assert _custom(events, "retrieval_context") == []
         assert _custom(events, "run_usage") == []
 
-    async def test_frames_change_nothing_else_on_the_stream(self, chat_model: _ScriptedChatModel) -> None:
+    async def test_frames_change_nothing_else_on_the_stream(self, chat_model: _ScriptedChatModel) -> None:  # noqa: F811  (fixture imported above)
         chat_model.responses = _script()
         plain = await _stream()
         chat_model.responses, chat_model.calls = _script(), []
@@ -78,7 +78,7 @@ class TestRetrievalContextOnTheStream:
         prefetch = [f for f in _custom(measured, "retrieval_context") if f["source"] == "prefetch"]
         assert len(prefetch) == 1, "one prefetch frame per opted-in turn, even when it ran nothing"
 
-    async def test_a_fault_in_the_trace_still_delivers_the_answer(self, chat_model: _ScriptedChatModel) -> None:
+    async def test_a_fault_in_the_trace_still_delivers_the_answer(self, chat_model: _ScriptedChatModel) -> None:  # noqa: F811  (fixture imported above)
         chat_model.responses = _script()
 
         with patch(
