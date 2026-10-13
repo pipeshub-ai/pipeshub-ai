@@ -62,7 +62,7 @@ Changes merged to `main` since the last release: [`v0.7.0...HEAD`](https://githu
 
 **OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0** · Stable · [`v0.9.1`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.1) · [Full changelog](changelog/0.9.1.md)
 
-A 20-PR security and reliability patch on top of 0.9.0, published the same day, together with the 1.7.0 SDKs, which are compatible with 0.9.1. Upgrade from 0.9.0 is recommended.
+A 20-PR security and reliability patch on top of 0.9.0, published the same day. The 1.7.0 SDKs, released on October 12, 2026, are compatible with 0.9.1. Upgrade from 0.9.0 is recommended.
 
 ### Fixed
 - The Kafka consumer used by the connectors and query services no longer loses messages after a temporary failure ([#3515](https://github.com/pipeshub-ai/pipeshub-ai/pull/3515))
