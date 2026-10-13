@@ -6,17 +6,19 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic import ValidationError
 
 from app.agent_loop_lib.core.responses import TokenUsage
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.agents.agent_loop.protocol.run_usage import (
+    ENTITY_LINKING_SOURCE,
     MAX_CALLS_PER_FRAME,
     RunUsagePayload,
     UsageLedger,
     emit_run_usage,
     grep_generation_usage_reporter,
+    llm_usage_reporter,
 )
 from tests.unit.agents.adapter.conftest import make_context
 
@@ -186,6 +188,19 @@ class TestGrepGenerationUsage:
         }))
 
         assert ledger.entries == [("grep_generation", TokenUsage(input_tokens=40, output_tokens=12))]
+
+    def test_another_source_reports_under_its_own_label(self) -> None:
+        ledger = UsageLedger()
+        report = llm_usage_reporter({"usage_ledger": ledger}, ENTITY_LINKING_SOURCE)
+        assert report is not None
+
+        report(AIMessage(content="", usage_metadata={
+            "input_tokens": 30, "output_tokens": 2, "total_tokens": 32,
+        }))
+        report(HumanMessage(content="not a model reply"))
+
+        assert ledger.entries == [("entity_linking", TokenUsage(input_tokens=30, output_tokens=2))]
+        assert llm_usage_reporter({}, ENTITY_LINKING_SOURCE) is None
 
     def test_nothing_is_wired_unless_the_request_opted_in(self) -> None:
         assert grep_generation_usage_reporter({"usage_ledger": None}) is None
