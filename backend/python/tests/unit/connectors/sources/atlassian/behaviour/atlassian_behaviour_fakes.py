@@ -216,6 +216,14 @@ class FakeRecordsDb:
         seen = getattr(self, "full_sync_seen", None)
         if stored and keep and seen is not None:
             seen.add(collection, external_id)
+            if entity == "record_group":
+                # The groups and roles its kept grants name are kept with it.
+                for permission in self.record_group_permissions.get(external_id) or []:
+                    kind = str(getattr(permission, "entity_type", ""))
+                    if kind.endswith("ROLE"):
+                        seen.add(CollectionNames.ROLES.value, permission.external_id)
+                    elif kind.endswith("GROUP"):
+                        seen.add(CollectionNames.GROUPS.value, permission.external_id)
         return stored
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:

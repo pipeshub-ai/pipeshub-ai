@@ -3098,7 +3098,10 @@ class DataSourceEntitiesProcessor:
 
         ``keep=True`` is for a caller that holds the node back when it is stored: the node is
         then noted as seen by the full sync in progress, if any, so the unlink after that
-        sync leaves the kept edges alone.
+        sync leaves the kept edges alone. So are the groups and roles its stored edges come
+        from: a kept access list still names them (a renamed Jira project's grants name roles
+        under its old key, which this sync does not write), and an unseen one would lose
+        its members and its edge into this node.
         """
         async with self.data_store_provider.transaction() as tx_store:
             if entity == "record_group":
@@ -3120,6 +3123,14 @@ class DataSourceEntitiesProcessor:
             )
         if edges and keep:
             self._note_full_sync_seen(connector_id, collection, node.id)
+            kept_sources = {CollectionNames.GROUPS.value, CollectionNames.ROLES.value}
+            for edge in edges:
+                if edge.get("_from"):
+                    from_collection, _, from_id = edge["_from"].partition("/")
+                else:
+                    from_collection, from_id = edge.get("from_collection", ""), edge.get("from_id", "")
+                if from_collection in kept_sources and from_id:
+                    self._note_full_sync_seen(connector_id, from_collection, from_id)
         return bool(edges)
 
     @retry_on_deadlock()

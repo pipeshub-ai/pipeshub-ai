@@ -1733,3 +1733,29 @@ class TestUnfinishedUserRead:
         # What this sync held is noted as seen, so the unlink still runs for what Jira no longer has.
         assert connector.full_sync_coverage().complete is True
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_a_renamed_project_keeps_its_old_key_roles_through_a_full_sync_unlink(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+        lead = [m.email for m in db.app_roles["ENG_projectLead"]]
+        assert developers and lead
+
+        # The same project (id 10000) now has the key NEW; a full sync (#4119) with a short read.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, db)
+
+        assert sorted(p.external_id for p in db.record_group_permissions["10000"]) == ["ENG_10002", "ENG_projectLead"]
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "the old-key role keeps its members"
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == lead
