@@ -234,7 +234,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
+    async def get_app_users(
+        self, org_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUser]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
     @abstractmethod

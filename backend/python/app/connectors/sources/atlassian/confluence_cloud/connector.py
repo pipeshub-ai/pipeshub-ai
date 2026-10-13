@@ -1201,9 +1201,17 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Get AppUser objects for members
-                        app_users = await self._resolve_group_app_users(
-                            member_emails, member_account_ids
-                        )
+                        try:
+                            app_users = await self._resolve_group_app_users(
+                                member_emails, member_account_ids
+                            )
+                        except Exception as lookup_error:
+                            # Saving the group now would replace its members with an empty list.
+                            self.logger.warning(
+                                f"Keeping the stored members of group {group_name}: "
+                                f"its members could not be looked up ({lookup_error})"
+                            )
+                            continue
 
                         # Save group with members
                         await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -4056,33 +4064,32 @@ class ConfluenceConnector(BaseConnector):
 
         Returns:
             List of AppUser objects found in database
+
+        Raises:
+            Whatever the database read raised. A failed read is not "none of
+            these people are users": a group saved from it would lose its members.
         """
         if not emails:
             return []
 
-        try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
+        # Fetch all users from database
+        all_app_users = await self.data_entities_processor.get_all_app_users(
+            connector_id=self.connector_id, raise_on_error=True
+        )
 
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
+        self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
 
-            # Create email lookup map
-            email_set = set(emails)
+        # Create email lookup map
+        email_set = set(emails)
 
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email
+        filtered_users = [user for user in all_app_users if user.email in email_set]
 
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+        if len(filtered_users) < len(emails):
+            missing_count = len(emails) - len(filtered_users)
+            self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
 
-            return filtered_users
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
-            return []
+        return filtered_users
 
     def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """

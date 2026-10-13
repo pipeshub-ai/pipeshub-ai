@@ -2554,7 +2554,9 @@ class IGraphDBProvider(ABC):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users for a specific connector in an organization.
@@ -2562,6 +2564,8 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
+            raise_on_error (bool): Raise a failed query instead of returning
+                ``[]``, so a caller can tell "no users" from "could not read".
 
         Returns:
             List[Dict]: List of app users

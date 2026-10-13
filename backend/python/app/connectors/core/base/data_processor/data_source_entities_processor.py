@@ -3640,9 +3640,14 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_app_user_by_email(email, connector_id)
 
-    async def get_all_app_users(self, connector_id: str) -> list[AppUser]:
+    async def get_all_app_users(
+        self, connector_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUser]:
+        """``raise_on_error`` raises a failed read instead of answering ``[]``."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_app_users(self.org_id, connector_id)
+            return await tx_store.get_app_users(
+                self.org_id, connector_id, raise_on_error=raise_on_error
+            )
 
     async def get_all_user_groups(self, connector_id: str) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:

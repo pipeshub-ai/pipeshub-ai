@@ -4661,9 +4661,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """Get all users for a connector in an organization"""
+        """Get all users for a connector in an organization.
+
+        ``raise_on_error`` raises a failed query instead of returning ``[]``.
+        """
         try:
             query = """
             MATCH (app:App {id: $connector_id})
@@ -4689,6 +4694,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get app users failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Group Operations ====================

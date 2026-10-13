@@ -962,6 +962,11 @@ class TestGetAppUsers:
         result = await connected_provider.get_app_users("org1", "conn1")
         assert result == []
 
+    async def test_exception_raised_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = ConnectionError("err")
+        with pytest.raises(ConnectionError):
+            await connected_provider.get_app_users("org1", "conn1", raise_on_error=True)
+
 
 # ===================================================================
 # get_user_group_by_external_id

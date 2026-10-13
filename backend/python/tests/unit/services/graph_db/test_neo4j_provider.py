@@ -2063,6 +2063,8 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("app users fail"))
         assert await neo4j_provider.get_app_users("org-1", "conn-1") == []
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_app_users("org-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_user_group_by_external_id_success_and_none(self, neo4j_provider: Neo4jProvider):

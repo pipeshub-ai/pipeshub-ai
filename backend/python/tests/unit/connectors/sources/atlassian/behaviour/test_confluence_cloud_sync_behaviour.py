@@ -575,6 +575,44 @@ class TestGroups:
         assert group.source_user_group_id == "grp-eng"
         assert [m.email for m in saved_members] == ["ana@acme.com"]
 
+    async def test_a_failed_user_lookup_does_not_empty_the_group(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        db.get_all_app_users = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+    async def test_a_lookup_that_finds_no_users_still_empties_the_group(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        db.app_users.clear()
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng"
+        assert saved_members == []
+
     async def test_short_pages_that_say_more_follow_are_followed(self, api, db, checkpoints) -> None:
         for source_id, email in (("acc-ana", "ana@acme.com"), ("acc-bo", "bo@acme.com")):
             db.app_users.append(AppUser(
