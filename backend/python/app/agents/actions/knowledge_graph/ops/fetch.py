@@ -231,8 +231,10 @@ async def execute_fetch_record(
         select_relevant_blocks,
     )
     from app.utils.render_budget import (
+        FETCH_SAFETY_MAX_BLOCKS,
         RecordRenderOutcome,
         fair_shares,
+        fetch_size_by_chars_enabled,
         resolve_render_budget,
     )
 
@@ -259,7 +261,15 @@ async def execute_fetch_record(
     # After resolve so a short label and its full id collapse to one entry.
     record_ids = list(dict.fromkeys(record_ids))
     requested_max = _requested_max_blocks(max_blocks)
-    block_cap = resolve_block_cap(requested_max)
+    by_chars = fetch_size_by_chars_enabled()
+    if by_chars:
+        # Characters decide how much is read. Some models send `max_blocks`
+        # on every call by habit, so it is honoured only where it is a real
+        # request: continuing a record from the offset it was handed.
+        honoured = requested_max if start_block > 0 else None
+        block_cap = min(FETCH_SAFETY_MAX_BLOCKS, honoured or FETCH_SAFETY_MAX_BLOCKS)
+    else:
+        block_cap = resolve_block_cap(requested_max)
     # One allowance for the whole call, split fairly between its records: N
     # records must not each get a full window's worth. Sized from the model
     # actually answering.
@@ -376,11 +386,17 @@ async def execute_fetch_record(
             # an in-order read of a record too large for its share, or what
             # the model asked for; it never cuts a record that fits or a
             # selection, which was sized by characters already.
-            budget.allot(
-                record_key, limit,
-                max_blocks=requested_max if fits else block_cap,
-                unbounded_blocks=include_blocks is not None or (fits and requested_max is None),
-            )
+            if by_chars:
+                budget.allot(
+                    record_key, limit, max_blocks=block_cap,
+                    unbounded_blocks=include_blocks is not None,
+                )
+            else:
+                budget.allot(
+                    record_key, limit,
+                    max_blocks=requested_max if fits else block_cap,
+                    unbounded_blocks=include_blocks is not None or (fits and requested_max is None),
+                )
             # The render is synchronous and this path is not: an image that
             # needs downscaling to the model's per-image limits is a Pillow
             # decode/resize/encode (~600 ms for a 4000x3000 page scan), and

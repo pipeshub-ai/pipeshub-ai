@@ -286,7 +286,8 @@ class TestFullReadStartsAtTheBeginning:
 
         structured.coroutine = _coroutine
 
-        with patch(
+        # A first read's max_blocks caps it only with sizing by characters off.
+        with patch.dict("os.environ", {"FETCH_SIZE_BY_CHARS": "false"}), patch(
             "app.utils.fetch_full_record.create_fetch_full_record_tool",
             return_value=structured,
         ):
@@ -307,11 +308,12 @@ class TestFullReadStartsAtTheBeginning:
 
     async def test_oversized_record_is_capped_from_the_start_with_a_hint(self) -> None:
         record = _record_with_blocks("rec-3", 10)
-        text = await self._read(
-            record,
-            final_results=[{"virtual_record_id": "v-rec-3", "block_index": 9}],
-            max_blocks=4,
-        )
+        with patch.dict("os.environ", {"FETCH_SIZE_BY_CHARS": "false"}):
+            text = await self._read(
+                record,
+                final_results=[{"virtual_record_id": "v-rec-3", "block_index": 9}],
+                max_blocks=4,
+            )
         assert "content of block 0" in text
         assert "content of block 4" not in text
         assert "start_block=4" in text

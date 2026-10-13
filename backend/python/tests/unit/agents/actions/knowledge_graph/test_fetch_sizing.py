@@ -34,6 +34,14 @@ _GAP = re.compile(r"not shown — this record is too large to return in one read
                   r"knowledgegraph__fetch_record again with start_block=(\d+)")
 
 
+@pytest.fixture(autouse=True)
+def _sized_by_the_shared_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These pin fetch with FETCH_SIZE_BY_CHARS off: under the shared 64K
+    result cap, with the server's block cap. `test_fetch_size_by_chars`
+    covers it on."""
+    monkeypatch.setenv("FETCH_SIZE_BY_CHARS", "false")
+
+
 def _text_record(name: str, blocks: int, chars: int) -> dict[str, Any]:
     return {
         "id": f"rec-{name}",

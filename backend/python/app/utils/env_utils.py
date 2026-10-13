@@ -27,6 +27,20 @@ def env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() == "true"
 
 
+_OFF_VALUES = frozenset({"false", "0", "no", "off"})
+
+
+def enabled_unless_off(name: str) -> bool:
+    """A feature that is on by default and that a deployment can turn off.
+
+    Unset or blank is on (Compose passes `${NAME:-}` through as ""); "false",
+    "0", "no" or "off" turns it off. It does not follow `HIGH_ACCURACY_MODE`:
+    the mode is for features that cost more per question, and these are on
+    for everyone.
+    """
+    return os.getenv(name, "").strip().lower() not in _OFF_VALUES
+
+
 HIGH_ACCURACY_MODE_ENV_VAR = "HIGH_ACCURACY_MODE"
 
 

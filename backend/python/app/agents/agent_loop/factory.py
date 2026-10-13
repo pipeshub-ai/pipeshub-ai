@@ -103,6 +103,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
@@ -195,6 +196,7 @@ from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
+from app.utils.render_budget import fetch_result_cap
 
 
 def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
@@ -1034,7 +1036,12 @@ class PipesHubAgentFactory:
             # Only registered for providers that actually need it so
             # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
+        # Fetch sized by characters gets a cap equal to its own budget, so
+        # the shared 64K cap never cuts a fetch in the middle.
+        fetch_cap = fetch_result_cap(context.context_length)
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(             # L1
+            tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else None,
+        ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
         ))

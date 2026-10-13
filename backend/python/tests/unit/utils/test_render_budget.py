@@ -177,6 +177,12 @@ class TestPerRecordOutcomes:
 
 
 class TestSizing:
+    """With FETCH_SIZE_BY_CHARS off; `test_fetch_size_by_chars` covers it on."""
+
+    @pytest.fixture(autouse=True)
+    def _sized_by_the_shared_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("FETCH_SIZE_BY_CHARS", "false")
+
     def test_a_large_window_is_capped(self) -> None:
         assert resolve_render_budget(1_000_000).max_chars == MAX_RENDER_CHARS
 

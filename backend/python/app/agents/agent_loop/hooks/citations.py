@@ -58,6 +58,7 @@ from app.modules.agents.record_escalation.policy import (
     FULL_READ_SKIP,
     ONE_BLOCK_IS_NOT_ENOUGH,
 )
+from app.utils.render_budget import fetch_size_by_chars_enabled
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
@@ -119,6 +120,18 @@ _SKIP_CASE = (
     "or assignee.)"
 )
 _FULL_READ_SKIP_CASE = f"(Skip only when {FULL_READ_SKIP}. {ONE_BLOCK_IS_NOT_ENOUGH})"
+
+_MAX_BLOCKS_DESCRIPTION = (
+    "Maximum number of blocks to return per record. Leave unset to use the "
+    "server default. Set only when you need a smaller slice."
+)
+# Fixed per deployment (FETCH_SIZE_BY_CHARS), so the schema, and the prompt
+# prefix a provider caches, is the same for every request.
+_MAX_BLOCKS_BY_CHARS_DESCRIPTION = (
+    "Leave unset. A read returns as much of each record as fits. Only when "
+    "continuing a record from start_block may this limit how many blocks that "
+    "call returns."
+)
 
 
 class CitationCollector:
@@ -239,8 +252,8 @@ class _FetchFullRecordTool(Tool):
                 name="max_blocks",
                 type=ParameterType.INTEGER,
                 description=(
-                    "Maximum number of blocks to return per record. Leave unset to use the "
-                    "server default. Set only when you need a smaller slice."
+                    _MAX_BLOCKS_BY_CHARS_DESCRIPTION
+                    if fetch_size_by_chars_enabled() else _MAX_BLOCKS_DESCRIPTION
                 ),
                 required=False,
             ),

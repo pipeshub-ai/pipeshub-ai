@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Literal
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
     DEFAULT_MAX_RESULT_CHARS,
 )
-from app.utils.env_utils import env_int
+from app.utils.env_utils import enabled_unless_off, env_int
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -56,6 +56,14 @@ FETCH_RESULT_RESERVE = 6_000
 # Every tool result is capped at DEFAULT_MAX_RESULT_CHARS by cutting out its
 # middle, so a fetch sized past it loses blocks it reported as shown.
 MAX_RENDER_CHARS = DEFAULT_MAX_RESULT_CHARS - FETCH_RESULT_RESERVE
+
+# Sizing by characters (FETCH_SIZE_BY_CHARS, on unless turned off): fetch
+# gets its own tool-result cap, so it may take its share of the window up to
+# this ceiling. Past it, a single result is more than a model reads well.
+FETCH_SIZE_BY_CHARS_ENV_VAR = "FETCH_SIZE_BY_CHARS"
+FETCH_MAX_CHARS = 140_000
+# A bound on the walk, not on size: characters decide how much is read.
+FETCH_SAFETY_MAX_BLOCKS = 5_000
 
 DEFAULT_CONTEXT_LENGTH = 128_000
 
@@ -384,23 +392,55 @@ def resolve_render_budget(
     """
     window = context_length if context_length and context_length > 0 else DEFAULT_CONTEXT_LENGTH
     derived = int(window * _CONTEXT_SHARE * _CHARS_PER_TOKEN)
-    max_chars = max(MIN_RENDER_CHARS, min(MAX_RENDER_CHARS, derived))
+    if fetch_size_by_chars_enabled():
+        # Its own result cap lets fetch take its share of the window. The
+        # floor is min(MIN_RENDER_CHARS, share), never above the share, so a
+        # small model gets a read in proportion to its window.
+        ceiling = FETCH_MAX_CHARS
+        max_chars = max(min(MIN_RENDER_CHARS, derived), min(derived, ceiling))
+    else:
+        ceiling = MAX_RENDER_CHARS
+        max_chars = max(MIN_RENDER_CHARS, min(MAX_RENDER_CHARS, derived))
 
     override = env_int(MAX_CHARS_ENV_VAR, default=None, lo=1_000)
     if override is not None:
-        if override > MAX_RENDER_CHARS:
+        if override > ceiling:
             logger.warning(
                 "%s=%d exceeds what fits under the tool-result cap; using %d",
-                MAX_CHARS_ENV_VAR, override, MAX_RENDER_CHARS,
+                MAX_CHARS_ENV_VAR, override, ceiling,
             )
-        max_chars = min(override, MAX_RENDER_CHARS)
+        max_chars = min(override, ceiling)
 
     return RenderBudget(max_chars=max_chars, max_blocks=max_blocks)
 
 
+def fetch_size_by_chars_enabled() -> bool:
+    """Fetch sized by characters alone: on unless the deployment sets
+    FETCH_SIZE_BY_CHARS=false. Read per call, but set per deployment, so the
+    tool schema it changes is the same for every request."""
+    return enabled_unless_off(FETCH_SIZE_BY_CHARS_ENV_VAR)
+
+
+def fetch_result_cap(context_length: int | None) -> int | None:
+    """The tool-result cap for `knowledgegraph__fetch_record` when it is sized
+    by characters: its budget plus what follows the records, so the shared
+    cap never cuts a fetch in the middle. Never below the shared cap, which
+    a fetch sized for a small window does not reach. None keeps the shared
+    cap."""
+    if not fetch_size_by_chars_enabled():
+        return None
+    return max(
+        DEFAULT_MAX_RESULT_CHARS,
+        resolve_render_budget(context_length).max_chars + FETCH_RESULT_RESERVE,
+    )
+
+
 __all__ = [
     "DEFAULT_CONTEXT_LENGTH",
+    "FETCH_MAX_CHARS",
     "FETCH_RESULT_RESERVE",
+    "FETCH_SAFETY_MAX_BLOCKS",
+    "FETCH_SIZE_BY_CHARS_ENV_VAR",
     "MAX_CHARS_ENV_VAR",
     "MAX_RENDER_CHARS",
     "MIN_RENDER_CHARS",
@@ -410,5 +450,7 @@ __all__ = [
     "TableTruncation",
     "TruncatedBy",
     "fair_shares",
+    "fetch_result_cap",
+    "fetch_size_by_chars_enabled",
     "resolve_render_budget",
 ]
