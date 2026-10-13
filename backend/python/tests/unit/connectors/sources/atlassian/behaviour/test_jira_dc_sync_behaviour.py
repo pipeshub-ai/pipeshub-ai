@@ -20,6 +20,7 @@ from atlassian_behaviour_fakes import (
     json_response,
     logged,
     record_logs,
+    run_full_sync,
 )
 from fastapi import HTTPException
 
@@ -1409,6 +1410,35 @@ class TestUnreadApplicationRoles:
 
         # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
         assert connector.full_sync_coverage().complete is False
+
+    async def test_a_full_sync_with_unread_roles_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert any(external_id == "jira-software-users" for _, _, external_id, _ in before)
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the role's group stays"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)

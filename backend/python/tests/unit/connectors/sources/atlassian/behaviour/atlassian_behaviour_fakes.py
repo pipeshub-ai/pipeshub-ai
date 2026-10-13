@@ -10,11 +10,12 @@ first one wrote).
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -269,3 +270,72 @@ class FakeConfigService:
         if path == f"/services/connectors/{self.connector_id}/config":
             return self.config
         return default
+
+
+async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # noqa: ANN401
+    """Run ``connector.run_sync`` as ``run_sync_task`` runs a full sync (#4119).
+
+    The fake db notes what the sync writes. After a sync that returns, the stand-in
+    graph provider takes the stored members and grants away from every group, role and
+    record group the sync did not write, unless the connector reports an incomplete read,
+    as ``unlink_nodes_missed_by_full_sync`` does. Returns that graph provider.
+    """
+    from app.config.constants.arangodb import AppStatus, CollectionNames
+    from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+    from app.connectors.core.sync.sync_runner import run_sync_task
+
+    seen = FullSyncSeen()
+    tracked = {
+        "on_new_user_groups": (CollectionNames.GROUPS.value, lambda g: g.source_user_group_id),
+        "on_new_app_roles": (CollectionNames.ROLES.value, lambda r: r.source_role_id),
+        "on_new_record_groups": (CollectionNames.RECORD_GROUPS.value, lambda g: g.external_group_id),
+        "on_new_records": (CollectionNames.RECORDS.value, lambda r: r.external_record_id),
+    }
+    originals = {name: getattr(db, name) for name in tracked}
+
+    def tracking(name: str) -> Any:  # noqa: ANN401
+        collection, key = tracked[name]
+
+        async def write(items: list[tuple[Any, list[Any]]]) -> None:
+            for item, _ in items:
+                seen.add(collection, key(item))
+            await originals[name](items)
+
+        return write
+
+    async def unlink(connector_id: str, by_collection: dict[str, set[str]], **_: object) -> tuple[int, bool]:
+        removed = 0
+        groups = {g.source_user_group_id: g for g, _ in db.user_groups}
+        for external_id, group in groups.items():
+            if external_id not in by_collection[CollectionNames.GROUPS.value]:
+                db.user_groups.append((group, []))
+                if hasattr(db, "groups_saved"):
+                    db.groups_saved[external_id] = []
+                removed += 1
+        for external_id in list(getattr(db, "app_roles", {})):
+            if external_id not in by_collection[CollectionNames.ROLES.value]:
+                db.app_roles[external_id] = []
+                removed += 1
+        for external_id in list(db.record_group_permissions):
+            if external_id not in by_collection[CollectionNames.RECORD_GROUPS.value]:
+                db.record_group_permissions[external_id] = []
+                removed += 1
+        return removed, True
+
+    graph = AsyncMock()
+    graph.get_document = AsyncMock(return_value={"id": connector.connector_id, "status": AppStatus.FULL_SYNCING.value})
+    graph.unlink_nodes_missed_by_full_sync = AsyncMock(side_effect=unlink)
+    for name in tracked:
+        setattr(db, name, tracking(name))
+    db.begin_full_sync_run = lambda connector_id: seen
+    db.end_full_sync_run = lambda connector_id, run: None
+    try:
+        await run_sync_task(
+            connector, connector.connector_id, graph, logging.getLogger("test.full_sync"),
+            start_status=AppStatus.FULL_SYNCING.value,
+        )
+    finally:
+        for name, original in originals.items():
+            setattr(db, name, original)
+        del db.begin_full_sync_run, db.end_full_sync_run
+    return graph
