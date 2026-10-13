@@ -708,3 +708,69 @@ class TestALargeTableHeader:
 
         assert _outcome(context, "rec-d")["complete"] is False
         assert "rec-d" not in context.full_records_fetched
+
+
+class TestAGroupContinues:
+    """A group too large for the room was clipped whole, and its continuation
+    rendered every child again from the first, so its tail never appeared."""
+
+    @staticmethod
+    def _list(*, image: bool) -> dict[str, Any]:
+        if image:
+            return TestImageFormsAreCharged._list_with_an_image(items=60, chars=1_500)
+        record = TestImageFormsAreCharged._list_with_an_image(items=60, chars=1_500)
+        blocks = record["block_containers"]["blocks"]
+        record["block_containers"]["blocks"] = [b for b in blocks if b.get("parent_block_index") is None]
+        record["block_containers"]["blocks"][1]["data"] = "gl para 1 " + "x" * 1_500
+        return record
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
+    async def test_the_continuation_reads_on_from_the_hint(self, image: bool) -> None:
+        context = _context(query="", is_multimodal_llm=image)
+        context.tool_state["supports_multipart_tool_result"] = True
+        first = await _fetch(context, [self._list(image=image)])
+        start = int(re.search(r"start_block=(\d+) — one record", first).group(1))
+
+        second = await _fetch(context, [self._list(image=image)], start_block=start, start_block_sent=True)
+
+        assert "gl para 0 " not in second
+        assert _shown(second, "gl") - _shown(first, "gl")
+        assert min(_shown(second, "gl")) == start
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("image", [False, True], ids=["text", "image"])
+    async def test_following_the_hints_reaches_the_last_item(self, image: bool) -> None:
+        context = _context(query="", is_multimodal_llm=image)
+        context.tool_state["supports_multipart_tool_result"] = True
+        seen: set[int] = set()
+        start = 0
+        for _ in range(10):
+            text = await _fetch(context, [self._list(image=image)], start_block=start, start_block_sent=start > 0)
+            seen |= _shown(text, "gl")
+            match = re.search(r"start_block=(\d+) — one record", text)
+            if match is None:
+                break
+            assert int(match.group(1)) > start
+            start = int(match.group(1))
+        assert seen == set(range(60))
+
+    @pytest.mark.asyncio
+    async def test_a_selection_inside_a_group_shows_its_hit_after_a_gap(self) -> None:
+        record = _text_record("sg", 400, 400)
+        for block in record["block_containers"]["blocks"]:
+            block["parent_index"] = 0
+        record["block_containers"]["block_groups"] = [{
+            "index": 0, "type": GroupType.LIST.value, "data": {},
+            "children": {"block_ranges": [{"start": 0, "end": 399}]},
+        }]
+        context = _context(retrieval_service=_hits("sg", [350]))
+
+        text = await _fetch(context, [record])
+
+        shown = _shown(text, "sg")
+        assert 0 in shown and 350 in shown
+        assert any(0 < int(g) < 350 for g in _GAP.findall(text))
+        claimed = re.search(r"showed the (\d+) block\(s\) most relevant to the question, of 400", text)
+        assert claimed is not None and int(claimed.group(1)) == len(shown)
+        assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars

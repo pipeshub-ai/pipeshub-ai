@@ -6,8 +6,11 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import groupby
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from jinja2 import Template
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -4078,6 +4081,30 @@ def _without_pixels(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _group_text(
+    template: "Template", group_index: object, label: object, entries: list[dict[str, Any]], file_path: str,
+) -> str:
+    """A group's children in `block_group_prompt`'s form."""
+    return template.render(
+        block_group_index=group_index,
+        block_group_web_url="",
+        label=label,
+        blocks=entries,
+        file_path=file_path,
+    )
+
+
+def _mint_refs(
+    entries: list[dict[str, Any]], ref_mapper: "CitationRefMapper", frontend_url: str, record_id: str,
+) -> None:
+    """Give rendered group entries their block URL and citation ref, and only
+    those: a ref minted for a child that is not shown cites nothing."""
+    for entry in entries:
+        if isinstance(entry.get("block_index"), int):
+            entry["block_web_url"] = build_block_web_url(frontend_url, record_id, entry["block_index"])
+            entry["citation_ref"] = ref_mapper.get_or_create_ref(entry["block_web_url"])
+
+
 def _fk_lines_text(record: dict[str, Any]) -> str:
     """The foreign-key tables a SQL table record points to, or ""."""
     fk_parent = record.get("fk_parent_record_ids")
@@ -4215,10 +4242,10 @@ def record_to_message_content(
             # knows it is not reading a contiguous document.
             if include_blocks is not None and block_index not in include_blocks:
                 continue
-            # A row of a table already rendered (or one that ran out of room)
-            # was covered by that table; announcing a gap before it would
-            # describe blocks the model did read.
-            if block_type == BlockType.TABLE_ROW.value and (
+            # A row or child of a table or group already rendered (or one
+            # that ran out of room) was covered by it; announcing a gap before
+            # it would describe blocks the model did read.
+            if block.get("parent_index") is not None and (
                 f"{record.get('virtual_record_id', '')}-{block.get('parent_index')}" in seen_block_groups
             ):
                 continue
@@ -4529,54 +4556,82 @@ def record_to_message_content(
                     continue
                 seen_block_groups.add(block_group_id)
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
-                for gb in group_blocks:
-                    gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
-                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
-
-                if not has_images:
-                    rendered_form = template.render(
-                        block_group_index=parent_index,
-                        block_group_web_url="",
-                        label=block_group.get("type"),
-                        blocks=group_blocks,
-                        file_path=record_file_path,
+                label = block_group.get("type")
+                # A group renders child by child, like a table: a continuation
+                # resumes at its child, and a selection reads its own children
+                # with the ones between announced inside the group.
+                first_child = start_block if include_blocks is None else max(start_block, block_index)
+                units = [
+                    list(entries)
+                    for index, entries in groupby(group_blocks, key=lambda gb: gb.get("block_index"))
+                    if isinstance(index, int) and index >= first_child
+                    and (include_blocks is None or index in include_blocks)
+                ]
+                if not units:
+                    continue
+                widest_ref = f"ref{len(ref_mapper.ref_to_url) + len(group_blocks)}"
+                empty_text = _group_text(template, parent_index, label, [], record_file_path)
+                image_header = f"[{label} #{parent_index}]\n"
+                spent = len(image_header) if has_images else len(empty_text) + 2
+                kept: list[dict[str, Any]] = []
+                kept_indices: list[int] = []
+                unfit_unit: list[dict[str, Any]] | None = None
+                for unit in units:
+                    unit_index = unit[0]["block_index"]
+                    gap_entry = None
+                    if kept_indices and unit_index in gap_markers:
+                        gap_entry = {"block_index": "…", "citation_ref": "", "block_type": BlockType.TEXT.value,
+                                     "content": gap_markers[unit_index].strip()}
+                    priced = [{**entry, "citation_ref": widest_ref} for entry in unit]
+                    if gap_entry is not None:
+                        priced = [gap_entry, *priced]
+                    cost = (
+                        _images_render_bound(priced) if has_images
+                        else len(_group_text(template, parent_index, label, priced, record_file_path))
+                        - len(empty_text)
                     )
-                    emitted = render_budget.take(f"{rendered_form}\n\n")
-                    if emitted is None:
+                    if not render_budget.can_afford_chars(spent + cost):
+                        unfit_unit = unit
+                        break
+                    spent += cost
+                    if gap_entry is not None:
+                        kept.append(gap_entry)
+                        gaps_emitted = True
+                    kept.extend(unit)
+                    kept_indices.append(unit_index)
+
+                if not kept_indices:
+                    if unfit_unit is None or _renderable_rendered > 0:
                         if _truncated_at is None:
                             _truncated_at = block_index
-                        render_budget.stop_at(block_index)
+                        render_budget.stop_at(unfit_unit[0]["block_index"] if unfit_unit else block_index)
                         break
-                    content.append({"type": "text", "text": emitted})
-                elif render_budget.can_afford_chars(
-                    len(f"[{block_group.get('type')} #{parent_index}]\n")
-                    + _images_render_bound(group_blocks),
-                ):
-                    group_header = f"[{block_group.get('type')} #{parent_index}]\n"
-                    printed = [{"type": "text", "text": group_header}]
+                    # The first unit of a read must make progress: its text is
+                    # clipped like a text block's, its pixels are not sent, and
+                    # reading resumes at the child after it.
+                    _mint_refs(unfit_unit, ref_mapper, rec_frontend_url, rec_record_id)
+                    clipped_text = _group_text(
+                        template, parent_index, label, _without_pixels(unfit_unit), record_file_path,
+                    )
+                    emitted = render_budget.take(f"{clipped_text}\n\n")
+                    content.append({"type": "text", "text": emitted or ""})
+                    _renderable_rendered += 1
+                    render_budget.count_block()
+                    render_budget.stop_at(unfit_unit[0]["block_index"] + 1)
+                    break
+
+                _mint_refs(kept, ref_mapper, rec_frontend_url, rec_record_id)
+                if has_images:
+                    printed = [{"type": "text", "text": image_header}]
                     printed.extend(_render_blocks_with_images(
-                        group_blocks, is_multimodal_llm, image_budget, collected_images,
+                        kept, is_multimodal_llm, image_budget, collected_images,
                         image_admission=admission, image_origin=image_origin,
                     ))
-                    render_budget.charge_chars(sum(len(item.get("text", "")) for item in printed))
-                    content.extend(printed)
-                elif _renderable_rendered == 0:
-                    # The first unit of a read must make progress: its text is
-                    # clipped like a text block's, and its pixels are not sent.
-                    text_form = template.render(
-                        block_group_index=parent_index,
-                        block_group_web_url="",
-                        label=block_group.get("type"),
-                        blocks=_without_pixels(group_blocks),
-                        file_path=record_file_path,
-                    )
-                    emitted = render_budget.take(f"{text_form}\n\n")
-                    content.append({"type": "text", "text": emitted or ""})
                 else:
-                    if _truncated_at is None:
-                        _truncated_at = block_index
-                    render_budget.stop_at(block_index)
-                    break
+                    group_text = _group_text(template, parent_index, label, kept, record_file_path)
+                    printed = [{"type": "text", "text": f"{group_text}\n\n"}]
+                render_budget.charge_chars(sum(len(item.get("text", "")) for item in printed))
+                content.extend(printed)
                 _renderable_rendered += 1
                 # A group is one renderable unit, the same as a table or a
                 # top-level block. Without this it cost nothing against
@@ -4585,9 +4640,14 @@ def record_to_message_content(
                 # found nothing, so it appended "no blocks at offset N" under
                 # the group it had just rendered.
                 render_budget.count_block()
-                render_budget.note_shown(
-                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
-                )
+                render_budget.note_shown(kept_indices)
+                if unfit_unit is not None:
+                    # Nothing after a group that ran out of room may render:
+                    # the continuation resumes at its next child.
+                    if _truncated_at is None:
+                        _truncated_at = block_index
+                    render_budget.stop_at(unfit_unit[0]["block_index"])
+                    break
             else:
                 continue
 
