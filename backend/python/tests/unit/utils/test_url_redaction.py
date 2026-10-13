@@ -277,6 +277,33 @@ class TestRedactSensitiveQueryParams:
             ("https://user:8080#hunter2@host/db", ["hunter2"]),
             ("mongodb://alice@example.com:8080?hunter2@mongo/db", ["hunter2"]),
             ("redis://:8080?hunter2@redis:6379/0", ["hunter2"]),
+            # Whitespace in the user name, and an `@` in a later query segment.
+            ("https://alice bob:hunter2@host/db", ["hunter2"]),
+            ("smtp://John Doe:hunter2@mail.internal:587", ["hunter2"]),
+            ("https://user :hunter2@host/db", ["hunter2"]),
+            ("https://us\ter:hunter2@host/db", ["hunter2"]),
+            ("https://us\ner:hunter2@host/db", ["hunter2"]),
+            ("//alice bob:hunter2@host/db", ["hunter2"]),
+            ("/debug?db=https%3A%2F%2Falice%20bob%3Ahunter2%40host%2Fdb", ["hunter2"]),
+            ("https://user:8080?page=1&hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?page=1&hunter2%40host/db", ["hunter2"]),
+            ("https://user:8080?page=1;hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?page=1&x=2&hunter2@host/db", ["hunter2"]),
+            ("https://user : hunter2@host/db", ["hunter2"]),
+            ("https://user: 8080@host/db", ["8080@"]),
+            ("https://user:8080 @host/db", ["8080 @"]),
+            ("https://user:pw @ host/db", ["pw @"]),
+            ("https://user:8080?page = 1&hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?page=1&amp;hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?q=a+b&hunter2@host/db", ["hunter2"]),
+            ("https://john+doe:hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?page=1&%20hunter2@host/db", ["hunter2"]),
+            ("https://user:8080#a=1&hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?a=1?hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?a=1#hunter2@host/db", ["hunter2"]),
+            ("https://user:8080?page=1%26hunter2%40host/db", ["hunter2", "8080"]),
+            ("https://user:8080?page=1&hunter2%2540host/db", ["hunter2"]),
+            ("https://user:8080?page=1&hunter2@host/db?email=a@b.com", ["hunter2"]),
             ("https://user:8080?hunter2%40host/db", ["hunter2"]),
             ("/debug?db=postgres://app:1234?xsecret@pg/db", ["xsecret"]),
             # A user name that holds an `@`.
@@ -305,6 +332,12 @@ class TestRedactSensitiveQueryParams:
             "http://localhost:3001/invite?email=a@b.com",
             "http://localhost:3001?email=a@b.com",
             "http://localhost:3001/#/login?next=a@b.com",
+            "http://localhost:3001?page=1&email=a@b.com",
+            "https://user:8080?page=1&email=a@b.com",
+            "http://localhost:3001?page=1&amp;email=a@b.com",
+            "http://localhost:3001?email = a@b.com",
+            "http://localhost:3001?q=a+b&email=a@b.com",
+            "http://localhost:3001?page=1;email=a@b.com",
         ],
     )
     def test_a_port_with_an_at_sign_in_a_query_pair_is_still_a_port(self, url: str) -> None:
@@ -363,6 +396,8 @@ _PASSWORD_SECRETS = [
     "8080%2FHEADX",
     "8080?HEADX",
     "8080#HEADX",
+    "8080?page=1&HEADX",
+    "8080?page=1;HEADX",
     "HEADX TAILX",
 ]
 _MARKERS = ["HEADX", "TAILX"]
@@ -388,6 +423,10 @@ _PASSWORD_TEMPLATES = [
     # A user name that holds an `@`.
     "mongodb://alice@example.com:{s}@mongo:27017/db",
     "//alice@example.com:{s}@host/db",
+    # A user name that holds whitespace.
+    "https://alice bob:{s}@host.example/db",
+    "smtp://John Doe:{s}@mail.internal:587",
+    "//alice bob:{s}@host/db",
 ]
 # Nested in a query, where a raw `#` would end the outer URL first.
 _NESTED_PASSWORD_TEMPLATES = [
@@ -395,6 +434,7 @@ _NESTED_PASSWORD_TEMPLATES = [
     "/debug?db=//user:{s}@host/db",
     "/login?returnTo=//user:{s}@host/cb?code={s}",
     "/debug?db=mongodb://alice@example.com:{s}@mongo:27017/db",
+    "/debug?db=https://alice bob:{s}@host/db",
 ]
 _SEPARATORS = ["=", "&", "?", "#", "@", ":", ";"]
 
@@ -419,7 +459,8 @@ def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
     cases = [
         *(t.format(s=s) for t in _QUERY_TEMPLATES for s in _SECRETS),
         *(t.format(s=s) for t in _PASSWORD_TEMPLATES for s in _PASSWORD_SECRETS),
-        *(t.format(s=s) for t in _NESTED_PASSWORD_TEMPLATES for s in _PASSWORD_SECRETS if "#" not in s),
+        # A raw `#` or `&` would end the outer URL or pair first.
+        *(t.format(s=s) for t in _NESTED_PASSWORD_TEMPLATES for s in _PASSWORD_SECRETS if not {"#", "&"} & set(s)),
     ]
     checked = 0
     for template in cases:

@@ -133,16 +133,19 @@ _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 _USERINFO_START = re.compile(r"^(?:[a-z][a-z0-9+.-]*:)?//|^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _USERINFO_COLON = re.compile(r":|%(?:25)*3a", re.IGNORECASE)
 # A user name never holds the end of an authority, raw or encoded. It may
-# hold an `@` (`alice@example.com:pw@host`).
-_NOT_A_USER = re.compile(r"[\s/?#\[\]]|%(?:25)*(?:2f|3f|23)", re.IGNORECASE)
+# hold an `@` (`alice@example.com:pw@host`) or whitespace (`John Doe:pw@host`).
+_NOT_A_USER = re.compile(r"[/?#\[\]]|%(?:25)*(?:2f|3f|23)", re.IGNORECASE)
 # `host:8080/…` is a port, not a password: one or more digits, then a raw `/`,
 # `?`, `#`, `,` (several hosts), whitespace or the end, and no `@` raw or
-# encoded before the query, fragment or end. Past that `?` or `#`, an `@`
-# still makes it a password unless an `=` comes first: in a query an `@` sits
-# inside a pair (`?email=a@b.com`), while a userinfo `@` has no `=` before it
-# (`app:1234?secret@host`). `localhost:3001/invite?email=a@b.com` is a port;
-# `app:1234/x@host` and `app:1234/x?y@host` are passwords.
-_PORT = r"\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:$|[?#](?:(?!%(?:25)*40)[^@=])*(?:=|$))"
+# encoded before the query, fragment or end. Past that `?` or `#`, each `&`,
+# `;`, `?` or `#` segment that holds an `@` must have an `=` before it: in a
+# query an `@` sits inside a pair (`?page=1&email=a@b.com`), while a userinfo
+# `@` does not (`app:1234?page=1&secret@host`).
+_QUERY_SEGMENT = r"(?:(?!%(?:25)*40)[^@=&;?#])*(?:=[^&;?#]*)?"
+_PORT = (
+    r"\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*"
+    rf"(?:$|[?#]{_QUERY_SEGMENT}(?:[&;?#]{_QUERY_SEGMENT})*$)"
+)
 _ANY_AT = re.compile(r"@|%(?:25)*40", re.IGNORECASE)
 # Query or fragment syntax, raw or encoded, inside what is read as a password.
 _QUERY_MARK = re.compile(r"[?#;&]|%(?:25)*(?:3f|23|3b|26)", re.IGNORECASE)
@@ -155,7 +158,7 @@ def _split_password_url(url: str) -> tuple[str, str, str] | None:
     encoding; it matches the Node helper:
 
     - The user name runs to the first ``:`` and holds no ``/``, ``?`` or
-      ``#``; it may hold an ``@``.
+      ``#``; it may hold an ``@`` or whitespace.
     - If a port follows that ``:`` (see ``_PORT``), it is not a password.
     - Otherwise everything up to the last ``@`` in the rest of the text is
       the password, whatever it holds (``/``, ``?``, ``#``, spaces, a further
@@ -335,7 +338,7 @@ def redact_sensitive_query_params(url: str) -> str:
 # wholesale instead of trusting the parse that missed it.
 _MAX_SCAN_LAYERS = 10
 # The shapes `_split_password_url` reads, anywhere in the text: a user name
-# (which may hold an `@`) after `//`, or a `scheme:user:` with no `//`, then a
+# (which may hold an `@` or whitespace) after `//`, or a `scheme:user:` with no `//`, then a
 # `:` followed by neither a port nor `REDACTED@`, and an `@` somewhere after
 # it, past any spaces. A `user:REDACTED` with an `@` still to come is caught
 # too: the redaction stopped short of the real end of the password.
@@ -343,8 +346,8 @@ _PASSWORD_URL = re.compile(
     "|".join(
         rf"{head}(?!REDACTED@)(?!{_PORT})[^@]*@"
         for head in (
-            r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#:\[\]]*:",
-            r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#:\[\]]+:",
+            r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^/?#:\[\]]*:",
+            r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^/?#:\[\]]+:",
         )
     ),
     re.IGNORECASE,
@@ -418,8 +421,11 @@ def _redact_wholly(url: str) -> str:
     elif scheme:
         # The authority after any raw `user@`. It ends at the first encoded
         # character, so an encoded `@` further on is never read as a boundary.
+        # The port is left out too: when no password could be split off, what
+        # follows the `:` may still be the start of one.
         authority = re.split(r"[/?#%;&=\s]", url[scheme.end():], maxsplit=1)[0]
-        kept = f"{scheme.group()}{authority.split('@')[-1]}/{REDACTED}"
+        host = re.match(r"\[[^\]]*\]|[^:]*", authority.split("@")[-1])
+        kept = f"{scheme.group()}{host.group() if host else ''}/{REDACTED}"
     elif url.startswith("/"):
         kept = f"{_KEPT_TEXT_END.split(url, maxsplit=1)[0]}?{REDACTED}"
     return REDACTED if _has_residual_secret(kept) else kept

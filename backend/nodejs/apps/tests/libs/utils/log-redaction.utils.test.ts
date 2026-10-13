@@ -449,6 +449,33 @@ describe('log-redaction.utils', () => {
       ['https://user:8080#hunter2@host/db', ['hunter2']],
       ['mongodb://alice@example.com:8080?hunter2@mongo/db', ['hunter2']],
       ['redis://:8080?hunter2@redis:6379/0', ['hunter2']],
+      // Whitespace in the user name, and an `@` in a later query segment.
+      ["https://alice bob:hunter2@host/db", ["hunter2"]],
+      ["smtp://John Doe:hunter2@mail.internal:587", ["hunter2"]],
+      ["https://user :hunter2@host/db", ["hunter2"]],
+      ["https://us\ter:hunter2@host/db", ["hunter2"]],
+      ["https://us\ner:hunter2@host/db", ["hunter2"]],
+      ["//alice bob:hunter2@host/db", ["hunter2"]],
+      ["/debug?db=https%3A%2F%2Falice%20bob%3Ahunter2%40host%2Fdb", ["hunter2"]],
+      ["https://user:8080?page=1&hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?page=1&hunter2%40host/db", ["hunter2"]],
+      ["https://user:8080?page=1;hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?page=1&x=2&hunter2@host/db", ["hunter2"]],
+      ["https://user : hunter2@host/db", ["hunter2"]],
+      ["https://user: 8080@host/db", ["8080@"]],
+      ["https://user:8080 @host/db", ["8080 @"]],
+      ["https://user:pw @ host/db", ["pw @"]],
+      ["https://user:8080?page = 1&hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?page=1&amp;hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?q=a+b&hunter2@host/db", ["hunter2"]],
+      ["https://john+doe:hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?page=1&%20hunter2@host/db", ["hunter2"]],
+      ["https://user:8080#a=1&hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?a=1?hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?a=1#hunter2@host/db", ["hunter2"]],
+      ["https://user:8080?page=1%26hunter2%40host/db", ["hunter2", "8080"]],
+      ["https://user:8080?page=1&hunter2%2540host/db", ["hunter2"]],
+      ["https://user:8080?page=1&hunter2@host/db?email=a@b.com", ["hunter2"]],
       ['https://user:8080?hunter2%40host/db', ['hunter2']],
       ['/debug?db=postgres://app:1234?xsecret@pg/db', ['xsecret']],
       // A user name that holds an `@`.
@@ -478,6 +505,12 @@ describe('log-redaction.utils', () => {
       'http://localhost:3001/invite?email=a@b.com',
       'http://localhost:3001?email=a@b.com',
       'http://localhost:3001/#/login?next=a@b.com',
+      "http://localhost:3001?page=1&email=a@b.com",
+      "https://user:8080?page=1&email=a@b.com",
+      "http://localhost:3001?page=1&amp;email=a@b.com",
+      "http://localhost:3001?email = a@b.com",
+      "http://localhost:3001?q=a+b&email=a@b.com",
+      "http://localhost:3001?page=1;email=a@b.com",
     ]) {
       it(`still reads a port with an \`@\` in a query pair as a port: ${url}`, () => {
         expect(redactSensitiveQueryParams(url)).to.equal(url)
@@ -522,6 +555,8 @@ describe('log-redaction.utils', () => {
       '8080%2FHEADX',
       '8080?HEADX',
       '8080#HEADX',
+      '8080?page=1&HEADX',
+      '8080?page=1;HEADX',
       'HEADX TAILX',
     ]
     const MARKERS = ['HEADX', 'TAILX']
@@ -547,6 +582,10 @@ describe('log-redaction.utils', () => {
       // A user name that holds an `@`.
       (s: string) => `mongodb://alice@example.com:${s}@mongo:27017/db`,
       (s: string) => `//alice@example.com:${s}@host/db`,
+      // A user name that holds whitespace.
+      (s: string) => `https://alice bob:${s}@host.example/db`,
+      (s: string) => `smtp://John Doe:${s}@mail.internal:587`,
+      (s: string) => `//alice bob:${s}@host/db`,
     ]
     // Nested in a query, where a raw `#` would end the outer URL first.
     const NESTED_PASSWORD_TEMPLATES = [
@@ -554,6 +593,7 @@ describe('log-redaction.utils', () => {
       (s: string) => `/debug?db=//user:${s}@host/db`,
       (s: string) => `/login?returnTo=//user:${s}@host/cb?code=${s}`,
       (s: string) => `/debug?db=mongodb://alice@example.com:${s}@mongo:27017/db`,
+      (s: string) => `/debug?db=https://alice bob:${s}@host/db`,
     ]
     const SEPARATORS = ['=', '&', '?', '#', '@', ':', ';']
 
@@ -585,7 +625,8 @@ describe('log-redaction.utils', () => {
         ...QUERY_TEMPLATES.flatMap((t) => SECRETS.map((s) => t(s))),
         ...PASSWORD_TEMPLATES.flatMap((t) => PASSWORD_SECRETS.map((s) => t(s))),
         ...NESTED_PASSWORD_TEMPLATES.flatMap((t) =>
-          PASSWORD_SECRETS.filter((s) => !s.includes('#')).map((s) => t(s)),
+          // A raw `#` or `&` would end the outer URL or pair first.
+          PASSWORD_SECRETS.filter((s) => !/[#&]/.test(s)).map((s) => t(s)),
         ),
       ]
       for (const template of cases) {
@@ -695,8 +736,14 @@ describe('log-redaction.utils', () => {
     })
 
     it('redacts a port-like password in a parsed query value', () => {
-      const logged = JSON.stringify(redactQueryForLog({ db: 'postgres://app:1234?xsecret@pg/db' }))
-      expect(decodeAll(logged), logged).to.not.contain('xsecret')
+      for (const [db, secret] of [
+        ['postgres://app:1234?xsecret@pg/db', 'xsecret'],
+        ['https://alice bob:hunter2@host/db', 'hunter2'],
+        ['https://user:8080?page=1&hunter2@host/db', 'hunter2'],
+      ]) {
+        const logged = JSON.stringify(redactQueryForLog({ db }))
+        expect(decodeAll(logged), logged).to.not.contain(secret)
+      }
     })
 
     it('keeps an ordinary parameter name as it was', () => {
