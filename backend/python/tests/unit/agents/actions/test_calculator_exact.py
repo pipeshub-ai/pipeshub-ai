@@ -275,9 +275,10 @@ class TestExactArithmetic:
             ("radians(-10**309)", -1.74532925199433e307),
             ("radians(10**310)", 1.74532925199433e308),
             ("degrees(1e-309)", 5.72957795130823e-308),
-            # Within its error bound: the angle is uncertain by about 5e-10.
+            # Within its error bound: the angles are uncertain by about 2e-10
+            # and 5e-7 radians.
             ("sin(10**6 * pi)", -2.23191218136087e-10),
-            ("sin(2**51 + sin(1))", 0.892431998674941),
+            ("sin(2**32 + sin(1))", -0.969136722624749),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -375,6 +376,9 @@ class TestRefusedExpressions:
             ("cos((10**22 + 1/2) * pi)", "meaningful"),
             ("tan(2**53 * pi)", "meaningful"),
             ("sin(2**52 + sin(1))", "meaningful"),
+            ("sin(2**51 + sin(1))", "meaningful"),
+            ("sin(10**15 + sin(1))", "meaningful"),
+            ("sin(2**34 + sin(1))", "meaningful"),
             ("sin(10**400 * pi)", "meaningful"),
             ("cos(exp(1000))", "meaningful"),
             ("atan2(1e-400, 1)", "too small"),

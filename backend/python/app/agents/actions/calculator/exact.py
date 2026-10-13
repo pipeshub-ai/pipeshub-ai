@@ -63,10 +63,12 @@ _CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?)
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
 # Digits carried beyond an argument's own when taking its log.
 _LOG_GUARD_DIGITS = 30
+# Largest rounding error (radians) an approximate trig angle may carry.
+_ANGLE_TOLERANCE = 1e-6
 _IMPRECISE_ANGLE = (
     "The angle is too large for its precision to give a meaningful sine, cosine or "
-    "tangent; reduce it first (for example use exact multiples of pi, or write the "
-    "angle exactly)."
+    "tangent: pi and function results are approximate. Supply the angle already "
+    "reduced to a few radians, or write it exactly with integers and fractions."
 )
 _TRIG = frozenset({"sin", "cos", "tan"})
 _TOO_SMALL = "The result is too small for floating-point functions (below about 1e-308)."
@@ -530,9 +532,11 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         if isinstance(values[0], Fraction) and abs(values[0]) > 1:
             angle = _reduced_angle(values[0])
             return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
-        if isinstance(values[0], float) and math.ulp(values[0]) >= 1:
-            # The angle is only known to within one ulp, here a radian or more:
-            # the full scale of a sine, so no digit of the result is meaningful.
+        if isinstance(values[0], float) and math.ulp(values[0]) / 2 > _ANGLE_TOLERANCE:
+            # An approximate angle carries at least half an ulp of rounding,
+            # and |sin'| <= 1 passes it straight to the result: past this the
+            # digits reported would be mostly noise (sin(2**51 + sin(1)) is
+            # off by 0.06).
             raise CalculationError(_IMPRECISE_ANGLE)
     if name in ("radians", "degrees") and isinstance(values[0], Fraction):
         # Scaled on the exact value, so only the result has to fit a double.
