@@ -3740,6 +3740,26 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``virtual_record_ids`` that at least one record holds.
+
+        ``get_records_by_virtual_record_id`` answered for many VRIDs in one
+        round trip, with the same predicate per VRID: not scoped by connector or
+        org, and ``visibility`` choosing live or trashed records. A sweep over
+        many VRIDs asks this instead of one query each.
+
+        Raises on failure rather than answering an empty set, which would read
+        as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_accessible_connector_types(
         self,
         user_id: str,

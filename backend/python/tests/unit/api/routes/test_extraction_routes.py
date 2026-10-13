@@ -15,6 +15,10 @@ from jose import jwt
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.extraction import router as extraction_router
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.transformers.document_extraction import (
+    DocumentClassification,
+    SubCategories,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +172,34 @@ def test_classify_record_name_and_type_default_to_empty() -> None:
     call_kwargs = mock_extraction.classify.call_args[1]
     assert call_kwargs["record_name"] == ""
     assert call_kwargs["record_type"] == ""
+
+
+def test_classify_reports_no_language_for_a_record_in_code_and_formats_only() -> None:
+    classification = DocumentClassification(
+        departments=["Engineering"], category="Technical",
+        subcategories=SubCategories(level1="Software", level2="Python", level3="Testing"),
+        languages=["Python", "YAML"], topics=["Testing"], summary="A test doc.",
+    )
+    mock_extraction = MagicMock()
+    mock_extraction.classify = AsyncMock(return_value=classification)
+    block_container = {
+        "blocks": [{
+            "index": 0, "type": "text", "format": "txt",
+            "data": (
+                "apiVersion: v1, kind: Service, metadata.name: payments, metadata.namespace: prod, "
+                "metadata.labels.app: payments, spec.selector.app: payments, spec.type: ClusterIP"
+            ),
+        }],
+        "block_groups": [],
+    }
+
+    response = TestClient(_build_app(mock_extraction)).post(
+        "/api/v1/extract/classify",
+        json={"block_container": block_container, "org_id": "org-123"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["classification"]["languages"] == []
 
 
 # ---------------------------------------------------------------------------

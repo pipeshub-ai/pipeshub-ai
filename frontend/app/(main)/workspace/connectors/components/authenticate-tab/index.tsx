@@ -37,6 +37,7 @@ import { useTranslation } from 'react-i18next';
 export function AuthenticateTab() {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const isAdmin = useUserStore(selectIsAdmin);
+  const revealedOAuthAppId = useConnectorsStore((s) => s.revealedOAuthAppId);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
   const addToast = useToastStore((s) => s.addToast);
   const {
@@ -418,6 +419,10 @@ export function AuthenticateTab() {
           </Text>
         </Flex>
 
+        {connectorSchema.supportsConnectionCheck && (
+          <EgressIpNotice connectorName={connectorTypeName} />
+        )}
+
         <Flex direction="column" gap="5">
           {visibleAuthFields.map((field) => (
             <SchemaFormField
@@ -427,6 +432,7 @@ export function AuthenticateTab() {
               onChange={setAuthFormValue}
               error={formErrors[field.name]}
               disabled={authFieldsDisabled}
+              revealed={Boolean(linkedOAuthAppId) && revealedOAuthAppId === linkedOAuthAppId}
             />
           ))}
         </Flex>
@@ -587,10 +593,6 @@ export function AuthenticateTab() {
             </Flex>
           )}
         </>
-      )}
-
-      {connectorSchema.supportsConnectionCheck && (
-        <EgressIpNotice connectorName={connectorTypeName} />
       )}
 
       {connectionCheck.status === 'failed' && connectionCheck.message && (

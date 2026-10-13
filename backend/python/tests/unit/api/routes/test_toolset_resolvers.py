@@ -274,7 +274,8 @@ class TestResolveInheritedFromOrgId:
 
 
 class TestMaskOauthSecrets:
-    def test_client_secret_is_redacted_and_the_rest_kept(self) -> None:
+    def test_client_secret_is_redacted_and_the_rest_kept(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HIDE_SECRET_CONFIG", "true")
         from app.api.routes.toolset_resolvers import (
             REDACTED_PLACEHOLDER,
             mask_oauth_secrets,

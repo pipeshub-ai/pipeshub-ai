@@ -424,7 +424,8 @@
     "statuses": "狀態",
     "sources": "來源",
     "sizes": "大小",
-    "clearFilter": "清除篩選"
+    "clearFilter": "清除篩選",
+    "applyFilters": "套用篩選"
   },
   "form": {
     "leaveBlankToKeep": "留白即保留現有的值。",

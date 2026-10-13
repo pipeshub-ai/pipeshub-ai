@@ -63,8 +63,10 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
 from app.telemetry.setup import setup_telemetry
+from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -719,9 +721,11 @@ async def _upkeep_lanes(
 
 
 # How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
-# because orphans are rare and every row costs a graph lookup; the cursor below
+# because orphans are rare and every page costs a graph read; the cursor below
 # carries the position forward so successive ticks cover the rest.
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
+# Between pages, while the indexing loop is busy (see LoopShare).
+ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor = 0
 
 
@@ -744,8 +748,8 @@ async def _sweep_orphaned_virtual_record_mappings(
     records is exactly an orphan. Reusing rewrite_or_delete_virtual_record keeps
     the confirming re-read, so a lagging graph read cannot delete live vectors.
 
-    Orphans are rare but the mapping collection is large, and each row costs a
-    graph lookup, so a full scan per tick would be a standing N+1 for almost no
+    Orphans are rare but the mapping collection is large, and each page costs a
+    graph read, so a full scan per tick would be standing work for almost no
     yield. Instead each tick walks a bounded slice and leaves the cursor where it
     stopped, wrapping at the end: the collection is covered over many ticks
     rather than all at once. The cursor is per-process and resets on restart —
@@ -756,6 +760,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     swept = 0
     offset = _orphan_sweep_cursor
     pages_scanned = 0
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
         page = await graph_provider.get_documents_paginated(
@@ -770,37 +775,37 @@ async def _sweep_orphaned_virtual_record_mappings(
             break
 
         swept_this_page = 0
-        for mapping in page:
-            vrid = mapping.get("_key") or mapping.get("id")
-            if not isinstance(vrid, str) or not vrid:
-                continue
-            try:
-                # The handler below was written for this and could not fire:
-                # the read swallowed its own failure and answered [], which
-                # this loop reads as "no records reference it" and cleans up.
-                records = await graph_provider.get_records_by_virtual_record_id(
-                    vrid, raise_on_error=True
+        vrids = [
+            vrid
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        ]
+        try:
+            # One read per page, not one per mapping: the answer is the same,
+            # and on Neo4j each read is a millisecond of the indexing loop.
+            # Raising, not answering empty: an empty answer would read as "no
+            # records reference these" and clean them all up.
+            in_use = await graph_provider.get_virtual_record_ids_in_use(vrids)
+            unreferenced = [vrid for vrid in vrids if vrid not in in_use]
+            # Content still held by a record in the trash is the purge's to
+            # remove; releasing it here would delete a restorable record's
+            # stored content ahead of time.
+            trashed = (
+                await graph_provider.get_virtual_record_ids_in_use(
+                    unreferenced, visibility=RecordVisibility.DELETED
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Could not check virtual record %s for orphaned vectors: %s",
-                    vrid,
-                    exc,
-                )
-                continue
-            if records:
-                continue
-            try:
-                # Content still held by a record in the trash is the purge's to
-                # remove; releasing it here would delete a restorable record's
-                # stored content ahead of time.
-                trashed = await graph_provider.get_records_by_virtual_record_id(
-                    vrid, raise_on_error=True, visibility=RecordVisibility.DELETED
-                )
-            except Exception as exc:
-                logger.warning("Could not check virtual record %s for trashed records: %s", vrid, exc)
-                continue
-            if trashed:
+                if unreferenced
+                else set()
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not check %d virtual record(s) for orphaned vectors: %s",
+                len(vrids),
+                exc,
+            )
+            unreferenced, trashed = [], set()
+        for vrid in unreferenced:
+            if vrid in trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -814,6 +819,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+        await pacer.pause()
 
         if len(page) < page_size:
             offset = 0
@@ -2004,6 +2010,7 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        content["indexing_llm"] = indexing_llm_stats()
         # Which connector is on which Redis Streams lane, from the last lane
         # upkeep this replica ran (the one holding the recovery lock).
         lane_report = last_lane_report(Topic.RECORD_EVENTS.value)

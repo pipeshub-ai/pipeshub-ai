@@ -27,6 +27,15 @@ def env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() == "true"
 
 
+HIGH_ACCURACY_MODE_ENV_VAR = "HIGH_ACCURACY_MODE"
+
+
+def high_accuracy_mode() -> bool:
+    """``HIGH_ACCURACY_MODE=true``: retrieval features that may cost more
+    compute or latency per question for better answers. Off by default."""
+    return env_bool(HIGH_ACCURACY_MODE_ENV_VAR, False)
+
+
 def env_int(
     name: str,
     default: int | None = None,

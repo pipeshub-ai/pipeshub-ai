@@ -25,6 +25,9 @@ from app.api.middlewares.auth import (
 )
 from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer
+from app.modules.transformers.document_extraction import (
+    semantic_metadata_from_classification,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +91,7 @@ async def classify(
             record_name=body.record_name,
             record_type=body.record_type,
         )
-        if classification is None:
-            metadata = None
-        else:
-            from app.models.blocks import SemanticMetadata  # noqa: PLC0415
-            metadata = SemanticMetadata(
-                departments=classification.departments,
-                languages=classification.languages,
-                topics=classification.topics,
-                summary=classification.summary,
-                categories=[classification.category],
-                sub_category_level_1=classification.subcategories.level1,
-                sub_category_level_2=classification.subcategories.level2,
-                sub_category_level_3=classification.subcategories.level3,
-            )
+        metadata = None if classification is None else semantic_metadata_from_classification(classification)
     except Exception as exc:  # noqa: BLE001
         logger.exception(
             "Unexpected error during classification for org '%s'", org_id

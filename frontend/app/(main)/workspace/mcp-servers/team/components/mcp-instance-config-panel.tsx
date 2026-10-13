@@ -309,6 +309,7 @@ export function McpInstanceConfigPanel({
         clientId: stored.clientId || '',
         clientSecret: stored.clientSecret || '',
       });
+      setShowOauthClientSecret(true);
     } catch {
       // The fields stay blank, which still saves as "keep the stored value".
     } finally {

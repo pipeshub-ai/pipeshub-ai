@@ -24,6 +24,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchTimedOut,
     search_entities_for_user,
 )
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
@@ -79,6 +80,12 @@ async def execute_search_entities(
             query,
             entity_types=valid_types or None,
             top_k=bounded_top_k,
+        )
+    except EntitySearchTimedOut:
+        logger.warning("search_entities timed out", exc_info=True)
+        return False, _error(
+            "Entity search timed out before it could confirm which matches you can access — "
+            "this is not an empty result. Try again, or use knowledgegraph__search."
         )
     except EntityAccessError:
         logger.warning("search_entities failed", exc_info=True)

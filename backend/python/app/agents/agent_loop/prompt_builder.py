@@ -259,9 +259,8 @@ def _build_citation_rules(*, enable_record_id_shortening: bool) -> str:
 # too, but only this form is unambiguous to the user reading the answer.
 #
 # This section is only injected when `confidence_enabled()` returns True
-# (controlled by PIPESHUB_ENABLE_CONFIDENCE, default False).  When disabled
-# the confidence indicator on the frontend simply shows nothing, which is
-# the correct default behaviour.
+# (controlled by PIPESHUB_ENABLE_CONFIDENCE, default True).  When disabled
+# the confidence indicator on the frontend simply shows nothing.
 def _build_answer_confidence_section() -> str:
     """Build the confidence section using the deterministic rubric."""
     from app.agents.agent_loop.confidence import rubric_text

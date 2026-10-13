@@ -12445,7 +12445,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR kb_role IN kb_roles
                 LET kb = kb_role.kb_doc
                 LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
-                SORT {sort_field} {sort_direction}
+                SORT {sort_field} {sort_direction}, kb._key
                 LIMIT @skip, @limit
                 RETURN {{
                     id: kb._key,
@@ -12793,7 +12793,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER child_file == null
                             RETURN 1
                     )
-                    SORT record.recordName ASC
+                    SORT record.recordName ASC, record._key
                     RETURN {{
                         id: record._key,
                         name: record.recordName,
@@ -12830,7 +12830,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -13070,7 +13070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER child_file == null
                             RETURN 1
                     )
-                    SORT subfolder_record.recordName ASC
+                    SORT subfolder_record.recordName ASC, subfolder_record._key
                     RETURN {{
                         id: subfolder_record._key,
                         name: subfolder_record.recordName,
@@ -13111,7 +13111,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -15649,7 +15649,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
@@ -15968,6 +15968,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
+            // Keyed lookup: a FIRST(FOR ... FILTER) per record is O(records x folders).
+            LET folder_by_id = MERGE(FOR f IN kbFolders RETURN {{ [f.folder._id]: f }})
             LET folder_records = (
                 FOR relEdge IN @@record_relations
                     FILTER relEdge._from IN folder_ids
@@ -15978,18 +15980,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.orgId == @org_id
                     FILTER record.mimeType != "application/vnd.folder"
                     {record_filter}
-                    LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
+                    LET folder_info = folder_by_id[relEdge._from]
                     RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
             LET all_records_data = APPEND(folder_records, {root_records})
-            LET record_ids = all_records_data[*].record._id
-            LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
             LET page = (
             FOR item IN all_records_data
                 LET record = item.record
-                LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
+                // File details only for the page: matching every record's file against every record ran before LIMIT.
+                LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )
             RETURN {{ records: page, total: LENGTH(all_records_data) }}
@@ -19623,15 +19624,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         here rather than threading an extra flag through every caller.
         """
         try:
-            apps = await self.get_user_apps(user_key, transaction)
+            apps = await self.get_user_apps(user_key, transaction, raise_on_error=True)
             return [
                 a.get("_key") or a.get("id")
-                for a in apps
+                for a in apps or []
                 if a and (a.get("_key") or a.get("id")) and not a.get("isHidden")
             ]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            return []
+            raise
 
     async def get_user_permission_app_ids(
         self,
@@ -19690,7 +19691,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return list(results[0]) if results and results[0] else []
         except Exception as e:
             self.logger.error("❌ Failed to get user permission app ids: %s", str(e))
-            return []
+            raise
 
     async def get_knowledge_hub_context_permissions(
         self,
@@ -24526,6 +24527,34 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if vid and row.get("id"):
                 holders.setdefault(vid, []).append(row)
         return holders
+
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.get_virtual_record_ids_in_use`."""
+        wanted = [v for v in dict.fromkeys(virtual_record_ids) if isinstance(v, str) and v]
+        if not wanted:
+            return set()
+        query = f"""
+        FOR vrid IN @virtual_record_ids
+            LET held = FIRST(
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.virtualRecordId == vrid
+                    AND {aql_record_visibility("record", visibility)}
+                    LIMIT 1
+                    RETURN 1
+            )
+            FILTER held != null
+            RETURN vrid
+        """
+        results = await self.http_client.execute_aql(
+            query, {"virtual_record_ids": wanted}, transaction
+        )
+        return {vrid for vrid in results or [] if vrid}
 
     async def get_records_by_virtual_record_id(
         self,

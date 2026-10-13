@@ -3,9 +3,11 @@
 import asyncio
 import contextlib
 import json
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage
 
 from app.agents.actions.storage_search.storage_search import _validate_command
 from app.utils.pattern_match import (
@@ -38,6 +40,17 @@ from app.utils.pattern_match import (
     validate_grep_command,
     validate_pattern_match_command,
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_cached_grep_generation() -> Iterator[None]:
+    from app.utils import pattern_match
+
+    pattern_match._grep_commands_cache.clear()
+    pattern_match._grep_llm_cache.clear()
+    yield
+    pattern_match._grep_commands_cache.clear()
+    pattern_match._grep_llm_cache.clear()
 
 
 # ===========================================================================
@@ -1778,6 +1791,108 @@ class TestExecutePatternMatchPipelineWithGrepCommand:
 # ===========================================================================
 
 
+class TestGrepCommandResultSchema:
+    def test_commands_come_before_reasoning(self) -> None:
+        # Structured output emits keys in schema order; a cut-off reasoning must not lose the commands.
+        assert list(GrepCommandResult.model_json_schema()["properties"]) == ["grep_commands", "reasoning"]
+
+    def test_long_reasoning_is_truncated_not_rejected(self) -> None:
+        result = GrepCommandResult(grep_commands=["grep -rci x ."], reasoning="x" * 1000)
+        assert len(result.reasoning) == 200
+        assert "maxLength" not in json.dumps(GrepCommandResult.model_json_schema())
+
+    def test_prompt_does_not_offer_rg(self) -> None:
+        from app.utils.pattern_match import _GREP_GENERATION_SYSTEM_PROMPT
+
+        assert "Allowed binaries: grep, egrep, fgrep, xargs ONLY" in _GREP_GENERATION_SYSTEM_PROMPT
+        assert " rg" not in _GREP_GENERATION_SYSTEM_PROMPT
+
+
+class TestGrepGenerationLlm:
+    @pytest.mark.asyncio
+    async def test_low_effort_model_is_built_once_and_cached(self) -> None:
+        from app.utils.pattern_match import _grep_generation_llm
+
+        low = MagicMock(name="low")
+        config_service = MagicMock()
+        with patch(
+            "app.utils.pattern_match.get_llm_for_role",
+            new_callable=AsyncMock, return_value=(low, {}),
+        ) as get_role:
+            first = await _grep_generation_llm(config_service, "org-1", MagicMock(name="chat"))
+            second = await _grep_generation_llm(config_service, "org-1", MagicMock(name="chat"))
+
+        assert first is low and second is low
+        get_role.assert_awaited_once()
+        assert get_role.call_args.kwargs["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_chat_model(self) -> None:
+        from app.utils.pattern_match import _grep_generation_llm
+
+        chat = MagicMock(name="chat")
+        with patch(
+            "app.utils.pattern_match.get_llm_for_role",
+            new_callable=AsyncMock, side_effect=ValueError("No LLM found"),
+        ):
+            assert await _grep_generation_llm(MagicMock(), "org-1", chat) is chat
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_lookup_falls_back_to_the_chat_model(self) -> None:
+        from app.utils import pattern_match
+        from app.utils.pattern_match import _grep_generation_llm
+
+        async def stalled(*_args: object, **_kwargs: object) -> None:
+            await asyncio.sleep(60)
+
+        chat = MagicMock(name="chat")
+        with patch("app.utils.pattern_match.get_llm_for_role", side_effect=stalled), patch(
+            "app.utils.pattern_match._GREP_LLM_LOOKUP_TIMEOUT", 0.01,
+        ):
+            llm = await asyncio.wait_for(_grep_generation_llm(MagicMock(), "org-1", chat), timeout=2)
+
+        assert llm is chat
+        assert "org-1" not in pattern_match._grep_llm_cache
+
+    @pytest.mark.asyncio
+    async def test_cache_expires(self) -> None:
+        from cachetools import TTLCache
+
+        from app.utils.pattern_match import _GREP_LLM_TTL_SECS, _grep_generation_llm
+
+        now = [0.0]
+        config_service = MagicMock()
+        with patch(
+            "app.utils.pattern_match.get_llm_for_role",
+            new_callable=AsyncMock, return_value=(MagicMock(), {}),
+        ) as get_role, patch(
+            "app.utils.pattern_match._grep_llm_cache",
+            TTLCache(maxsize=4, ttl=_GREP_LLM_TTL_SECS, timer=lambda: now[0]),
+        ):
+            await _grep_generation_llm(config_service, "org-1", MagicMock())
+            now[0] += _GREP_LLM_TTL_SECS + 1
+            await _grep_generation_llm(config_service, "org-1", MagicMock())
+
+        assert get_role.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_each_org_gets_its_own_model(self) -> None:
+        from app.utils.pattern_match import _grep_generation_llm
+
+        org_a, org_b = MagicMock(name="org-a"), MagicMock(name="org-b")
+        config_service = MagicMock()
+        with patch(
+            "app.utils.pattern_match.get_llm_for_role",
+            new_callable=AsyncMock, side_effect=[(org_a, {}), (org_b, {})],
+        ) as get_role:
+            first = await _grep_generation_llm(config_service, "org-a", MagicMock())
+            second = await _grep_generation_llm(config_service, "org-b", MagicMock())
+            again = await _grep_generation_llm(config_service, "org-a", MagicMock())
+
+        assert get_role.await_count == 2
+        assert (first, second, again) == (org_a, org_b, org_a)
+
+
 class TestScaleConstants:
     def test_timeout_sufficient_for_large_datasets(self):
         assert _PATTERN_MATCH_TIMEOUT >= 30
@@ -2000,7 +2115,9 @@ class TestGenerateGrepCommandViaLlm:
             await asyncio.sleep(100)
 
         structured_llm = _mock_structured_llm(side_effect=_slow_invoke)
-        with self._patches(structured_llm):
+        with self._patches(structured_llm), \
+                patch("app.utils.pattern_match._LLM_GREP_TIMEOUT", 0.2), \
+                patch("app.utils.pattern_match._LLM_GREP_MIN_RETRY_SECS", 0.5):
             result = await generate_grep_command_via_llm(
                 query="test query",
                 llm=MagicMock(),
@@ -2008,9 +2125,138 @@ class TestGenerateGrepCommandViaLlm:
             )
 
         assert result is None
-        logger.info.assert_any_call(
-            "generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT,
+        assert structured_llm.ainvoke.await_count == 1, "no time left for a retry"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_attempt_is_retried_once(self) -> None:
+        good = GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .'])
+        structured_llm = _mock_structured_llm(side_effect=[RuntimeError("cut off"), good])
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
+        assert structured_llm.ainvoke.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_only_one_retry(self) -> None:
+        structured_llm = _mock_structured_llm(side_effect=RuntimeError("down"))
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result is None
+        assert structured_llm.ainvoke.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_commands_are_recovered_from_a_completion_cut_off_in_reasoning(self) -> None:
+        raw = MagicMock()
+        raw.content = '{"grep_commands": ["grep -rliZ \\"ttl\\" . | xargs -0 grep -Hci \\"cold\\""], "reasoning": "Core concepts: cache TTL and'
+        envelope = {"raw": raw, "parsed": None, "parsing_error": ValueError("truncated")}
+        structured_llm = _mock_structured_llm(return_value=envelope)
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rliZ "ttl" . | xargs -0 grep -Hci "cold"']
+        assert structured_llm.ainvoke.await_count == 1
+
+    @pytest.mark.parametrize("raw", [
+        AIMessage(content=[{
+            "type": "tool_use", "id": "t1", "name": "GrepCommandResult",
+            "input": {"grep_commands": ['grep -rci "ttl" .']},
+        }]),
+        AIMessage(content="", invalid_tool_calls=[{
+            "type": "invalid_tool_call", "id": "t1", "name": "GrepCommandResult", "error": None,
+            "args": '{"grep_commands": ["grep -rci \\"ttl\\" ."], "reasoning": "Core concepts: cache',
+        }]),
+    ], ids=["tool_use_input", "invalid_tool_call_args"])
+    @pytest.mark.asyncio
+    async def test_commands_are_recovered_from_tool_calling_output(self, raw: AIMessage) -> None:
+        envelope = {"raw": raw, "parsed": None, "parsing_error": ValueError("truncated")}
+        structured_llm = _mock_structured_llm(return_value=envelope)
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
+        assert structured_llm.ainvoke.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_malformed_tool_call_entries_are_skipped(self) -> None:
+        raw = MagicMock()
+        raw.content = ""
+        raw.tool_calls = ["not-a-dict", {"args": None}, {"args": {"grep_commands": ['grep -rci "ttl" .']}}]
+        raw.invalid_tool_calls = [None]
+        envelope = {"raw": raw, "parsed": None, "parsing_error": ValueError("truncated")}
+        structured_llm = _mock_structured_llm(return_value=envelope)
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
+
+    @pytest.mark.asyncio
+    async def test_parsed_envelope_is_used(self) -> None:
+        parsed = GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .'])
+        structured_llm = _mock_structured_llm(
+            return_value={"raw": MagicMock(), "parsed": parsed, "parsing_error": None},
         )
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(),
+            )
+
+        assert result == ['grep -rci "ttl" .']
+
+    @pytest.mark.asyncio
+    async def test_agent_query_leads_and_question_is_context(self) -> None:
+        structured_llm = _mock_structured_llm(
+            return_value=GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .']),
+        )
+        with self._patches(structured_llm):
+            await generate_grep_command_via_llm(
+                query="min cache TTL deploy cold-start",
+                llm=MagicMock(), logger_instance=MagicMock(),
+                user_query="What safeguard did the recommendation service add?",
+            )
+
+        human = structured_llm.ainvoke.call_args.args[0][1].content
+        assert human == (
+            'Search query: "min cache TTL deploy cold-start"\n'
+            'Original question (context only): "What safeguard did the recommendation service add?"'
+        )
+
+    @pytest.mark.parametrize(("query", "user_query", "expected"), [
+        ("ttl floor", None, 'Search query: "ttl floor"'),
+        ("ttl floor", "  ttl floor ", 'Search query: "ttl floor"'),
+        ("  ", "what is the ttl floor?", 'Search query: "what is the ttl floor?"'),
+    ])
+    def test_request_without_a_distinct_question(self, query, user_query, expected) -> None:
+        from app.utils.pattern_match import _grep_generation_request
+
+        assert _grep_generation_request(query, user_query) == expected
+
+    @pytest.mark.asyncio
+    async def test_raw_output_is_requested(self) -> None:
+        structured_llm = _mock_structured_llm(return_value=None)
+        with self._patches(structured_llm), patch(
+            "app.utils.streaming._apply_structured_output", return_value=structured_llm,
+        ) as apply:
+            await generate_grep_command_via_llm(query="q", llm=MagicMock(), logger_instance=MagicMock())
+
+        assert apply.call_args.kwargs["include_raw"] is True
 
     @pytest.mark.asyncio
     async def test_llm_exception_returns_none(self):
@@ -3026,6 +3272,31 @@ class TestRunPatternMatchWithLlmGrep:
         assert started.is_set() and cancelled.is_set()
 
     @pytest.mark.asyncio
+    async def test_budget_keeps_what_finished_commands_found(self) -> None:
+        # Slow searches used to return nothing at all once one command overran.
+        slow_cancelled = asyncio.Event()
+
+        async def _pipeline(**kwargs: object) -> list[dict[str, str]]:
+            if "fast" in kwargs["grep_command"]:
+                return [{"virtual_record_id": "vr-fast"}]
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+
+        with patch("app.utils.pattern_match._PATTERN_MATCH_TOTAL_BUDGET", 0.1), \
+                patch("app.utils.pattern_match.generate_grep_command_via_llm", new_callable=AsyncMock,
+                      return_value=['grep -rci "fast" .', 'grep -rci "slow" .']), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=_pipeline):
+            result = await asyncio.wait_for(
+                run_pattern_match_with_llm_grep(**self._base_kwargs(), llm=MagicMock()), timeout=5,
+            )
+
+        assert result == [{"virtual_record_id": "vr-fast"}]
+        assert slow_cancelled.is_set()
+
+    @pytest.mark.asyncio
     async def test_keyword_fallback_runs_inside_the_same_budget(self):
         # The fallback must not get a fresh per-connector timeout of its own.
         fallback_cancelled = asyncio.Event()
@@ -3209,6 +3480,37 @@ class TestRunPatternMatchWithLlmGrep:
         assert result[0]["virtual_record_id"] == "vr-good"
 
     @pytest.mark.asyncio
+    async def test_commands_are_generated_once_per_search_query(self) -> None:
+        with patch(
+            "app.utils.pattern_match.generate_grep_command_via_llm",
+            new_callable=AsyncMock, return_value=['grep -rci "test" .'],
+        ) as mock_gen, patch(
+            "app.utils.pattern_match.execute_pattern_match_pipeline",
+            new_callable=AsyncMock, return_value=[],
+        ) as pipeline:
+            for user_query in ("question", "question", "another question"):
+                await run_pattern_match_with_llm_grep(
+                    **self._base_kwargs(), llm=MagicMock(), user_query=user_query,
+                )
+
+        assert mock_gen.await_count == 2
+        assert [c.kwargs["grep_command"] for c in pipeline.call_args_list].count('grep -rci "test" .') == 3
+
+    @pytest.mark.asyncio
+    async def test_a_failed_generation_is_not_cached(self) -> None:
+        with patch(
+            "app.utils.pattern_match.generate_grep_command_via_llm",
+            new_callable=AsyncMock, return_value=None,
+        ) as mock_gen, patch(
+            "app.utils.pattern_match.execute_pattern_match_pipeline",
+            new_callable=AsyncMock, return_value=[],
+        ):
+            for _ in range(2):
+                await run_pattern_match_with_llm_grep(**self._base_kwargs(), llm=MagicMock())
+
+        assert mock_gen.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_user_query_passed_to_llm(self):
         """user_query is forwarded to generate_grep_command_via_llm."""
         with patch(
@@ -3279,3 +3581,22 @@ def test_a_blob_field_a_record_already_has_survives_the_conversion() -> None:
     converted = as_blob_record({"_key": "rec-1", "recordName": "msa.pdf", "mime_type": "application/pdf"})
 
     assert (converted["record_name"], converted["mime_type"], converted["id"]) == ("msa.pdf", "application/pdf", "rec-1")
+
+
+def test_a_grep_hit_never_replaces_a_record_loaded_from_the_blob() -> None:
+    from app.utils.chat_helpers import merge_into_records_map
+
+    loaded = {"id": "rec-1", "record_name": "msa.pdf", "block_containers": {"blocks": [{"index": 0}]}}
+    stub = {"_key": "rec-2", "recordName": "sow.pdf"}
+    live = {"vr-1": loaded, "vr-2": stub}
+    reloaded = {"id": "rec-2", "record_name": "sow.pdf", "block_containers": {"blocks": []}}
+
+    merge_into_records_map(live, {
+        "vr-1": {"_key": "rec-1", "recordName": "msa.pdf"},
+        "vr-2": reloaded,
+        "vr-3": {"_key": "rec-3", "recordName": "nda.pdf"},
+    })
+
+    assert live["vr-1"] is loaded
+    assert live["vr-2"] is reloaded
+    assert live["vr-3"]["recordName"] == "nda.pdf"

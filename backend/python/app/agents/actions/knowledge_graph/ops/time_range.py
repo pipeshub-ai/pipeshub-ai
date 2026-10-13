@@ -14,9 +14,10 @@ strong signal it guessed a timezone rather than took one from the user.
 """
 from __future__ import annotations
 
+import calendar
 import json
 import re
-from datetime import datetime, timedelta, timezone
+from datetime import MINYEAR, datetime, timedelta, timezone
 
 __all__ = ["parse_time_range", "time_range_to_kh_filters"]
 
@@ -47,6 +48,23 @@ def _error(message: str) -> str:
     return json.dumps({"status": "error", "message": message})
 
 
+def _calendar_date(value: str, *, is_upper_bound: bool) -> datetime | None:
+    """``YYYY-MM-DD`` at midnight UTC. A day past its month's end (models write
+    "before 2026-02-29" for "before the end of February") is clamped to the
+    month's last day for an upper bound and rolls over to the next month for a
+    lower one; anything else that is not a real date is None."""
+    year, month, day = (int(part) for part in value.split("-"))
+    if year < MINYEAR or not 1 <= month <= 12 or not 1 <= day <= 31:
+        return None
+    first = datetime(year, month, 1, tzinfo=timezone.utc)
+    last_day = calendar.monthrange(year, month)[1]
+    if day <= last_day:
+        return first.replace(day=day)
+    if is_upper_bound:
+        return first.replace(day=last_day)
+    return first.replace(day=last_day) + timedelta(days=1)
+
+
 def _parse_iso_to_epoch_ms(
     value: str, *, is_upper_bound: bool, field_label: str
 ) -> tuple[int | None, str | None]:
@@ -63,12 +81,12 @@ def _parse_iso_to_epoch_ms(
     Returns (epoch_ms, None) on success, (None, error_json) on failure.
     """
     if _DATE_ONLY_RE.match(value):
-        try:
-            dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        except ValueError:
+        dt = _calendar_date(value, is_upper_bound=is_upper_bound)
+        if dt is None:
             return None, _error(f"{field_label}: invalid calendar date {value!r}.")
         if is_upper_bound:
-            dt = dt + timedelta(days=1) - timedelta(milliseconds=1)
+            # Not "+1 day -1 ms": that overflows datetime on 9999-12-31.
+            dt = dt.replace(hour=23, minute=59, second=59, microsecond=999_000)
         return int(dt.timestamp() * 1000), None
 
     normalized = value[:-1] + "+00:00" if value.endswith(("Z", "z")) else value

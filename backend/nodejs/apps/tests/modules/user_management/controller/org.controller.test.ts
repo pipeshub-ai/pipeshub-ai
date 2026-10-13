@@ -1110,6 +1110,43 @@ describe('OrgController - additional coverage', () => {
         expect(jsonArg.mimeType).to.equal('image/jpeg')
       }
     })
+
+    it('rejects SVG bytes labelled as PNG and stores nothing', async () => {
+      const svg = Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>',
+      )
+      req.body = {
+        fileBuffer: { buffer: svg, mimetype: 'image/png' },
+      }
+      const update = sinon.stub(OrgLogos, 'findOneAndUpdate')
+
+      await controller.updateOrgLogo(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal(
+        'Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image',
+      )
+      expect(update.called).to.be.false
+    })
+
+    it('stores a declared SVG without decoding it', async () => {
+      const svg = Buffer.from(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>',
+      )
+      req.body = {
+        fileBuffer: { buffer: svg, mimetype: 'image/svg+xml' },
+      }
+      const update = sinon.stub(OrgLogos, 'findOneAndUpdate').resolves({} as any)
+
+      await controller.updateOrgLogo(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(res.json.firstCall.args[0].mimeType).to.equal('image/svg+xml')
+      const stored = update.firstCall.args[1].logo as string
+      expect(Buffer.from(stored, 'base64').equals(svg)).to.equal(true)
+    })
   })
 
   describe('getOrgLogo - edge cases', () => {

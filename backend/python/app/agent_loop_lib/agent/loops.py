@@ -84,13 +84,6 @@ class LoopStrategy(ABC):
 # than a real answer worth returning — see `_finish_after_max_turns`.
 _MIN_DEGRADED_OUTPUT_CHARS = 40
 
-_FINAL_ANSWER_MESSAGE = (
-    "[System: You have reached the maximum number of steps for this request. "
-    "Do not call any more tools. Reply now with your final answer to the "
-    "user's question, using only the information you have already gathered. "
-    "If something could not be determined, say so briefly.]"
-)
-
 
 def _last_turn_called_tools(agent: "Agent") -> bool:
     turns = agent.scope.turns if agent.scope is not None else []
@@ -120,7 +113,6 @@ async def _finish_after_max_turns(agent: "Agent", goal: Goal) -> AgentResult:
             f"Reached max_turns={agent.max_turns} after a tool turn — requesting a final answer",
             "calling_llm", {"turn_index": agent.max_turns},
         )
-        await agent.inject_user_message(_FINAL_ANSWER_MESSAGE)
         outcome = await agent.step(goal, agent.max_turns, final_answer_only=True)
         if outcome.status == "stop":
             return outcome.result

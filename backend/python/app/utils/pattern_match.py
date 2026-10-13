@@ -6,13 +6,13 @@ import logging
 import os
 import re
 import shlex
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
+from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
     _GREP_SHORT_VALUE_LETTERS,
@@ -31,6 +31,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
+from app.utils.env_utils import high_accuracy_mode
+from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
     _build_record_dict_from_graph_base,
@@ -39,10 +41,25 @@ from app.utils.chat_helpers import (
     get_record,
 )
 
+if TYPE_CHECKING:
+    from app.utils.stage_timer import RunTimer
+
+logger = logging.getLogger(__name__)
+
 _PATTERN_MATCH_TIMEOUT = 30
+# Whole command generation, a retry included.
 _LLM_GREP_TIMEOUT = 15.0
+_LLM_GREP_ATTEMPT_TIMEOUT = 10.0
+_LLM_GREP_MIN_RETRY_SECS = 4.0
+_GREP_LLM_ROLE = "query"
+_GREP_LLM_TTL_SECS = 300.0
+# Runs inside the total budget before any grep, so a stalled config read must not eat it.
+_GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
 _PATTERN_MATCH_TOTAL_BUDGET = 35.0
+# Reciprocal rank fusion constant (Cormack et al. 2009): damps the gap
+# between first and second place so one command cannot decide the order.
+_RRF_K = 60
 _MAX_PATTERN_MATCH_RECORDS = 50
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
@@ -170,15 +187,30 @@ def build_grep_command_from_query(query: str) -> str | None:
     return f'grep -rci -e "{pattern}" .'
 
 
+_MAX_GREP_REASONING_CHARS = 200
+
+
 class GrepCommandResult(BaseModel):
-    reasoning: str
+    # Commands first: a completion cut off mid-way still carries them.
     grep_commands: list[str]
+    # Capped by truncation, not max_length: several providers reject string
+    # length keywords in a response schema, and an over-long note is harmless.
+    reasoning: str = Field(description=f"One short sentence, under {_MAX_GREP_REASONING_CHARS} characters.")
+
+    @field_validator("reasoning", mode="before")
+    @classmethod
+    def _cap_reasoning(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value[:_MAX_GREP_REASONING_CHARS]
+        return value
 
 
 _MAX_LLM_GREP_COMMANDS = 3
 
 _GREP_GENERATION_SYSTEM_PROMPT = """\
-You are generating filesystem search commands to find JSON documents relevant to a user query.
+You are generating filesystem search commands to find JSON documents relevant to a search query.
+Build the commands from the search query. An original question, when given, is context only: \
+use it to disambiguate the search query, not as a source of extra terms.
 
 STEP 1 — Identify core concepts:
 Extract the 1-3 core concepts the user actually cares about. These are the nouns \
@@ -222,7 +254,7 @@ number with no filename prefix, which breaks result parsing. Always include -H.
 - Two-concept intersection: grep -rliZ "group_a1\\|group_a2" . | \
 xargs -0 grep -Hci "group_b1\\|group_b2"
 - When piping grep to xargs, ALWAYS use -Z on grep and -0 on xargs (handles filenames with spaces)
-- Allowed binaries: grep, egrep, fgrep, rg, xargs ONLY
+- Allowed binaries: grep, egrep, fgrep, xargs ONLY
 - No shell operators: ; && || $( ${ ` > <
 - Max 1000 characters per command
 - Do NOT include common words like "how", "what", "setup", "use", "explain" as \
@@ -383,7 +415,8 @@ async def generate_grep_command_via_llm(
     """Generate targeted grep commands via LLM structured output.
 
     Returns a list of 1-3 commands that passed ``validate_pattern_match_command``,
-    or None on timeout, LLM failure, or when every command is rejected.
+    or None on timeout, LLM failure, or when every command is rejected. A failed
+    attempt is retried once while ``_LLM_GREP_TIMEOUT`` leaves room for it.
 
     Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
     in the Opik trace alongside the rest of the agent loop.
@@ -391,34 +424,70 @@ async def generate_grep_command_via_llm(
     from app.agent_loop_lib.transport.opik_tracing import build_langchain_opik_callbacks
     from app.utils.streaming import _apply_structured_output
 
-    effective_query = user_query.strip() if user_query and user_query.strip() else query
-
     messages = [
         SystemMessage(content=_GREP_GENERATION_SYSTEM_PROMPT),
-        HumanMessage(content=f'User query: "{effective_query}"'),
+        HumanMessage(content=_grep_generation_request(query, user_query)),
     ]
 
     try:
-        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult)
-        opik_callbacks = build_langchain_opik_callbacks()
-        config = {"callbacks": opik_callbacks} if opik_callbacks else {}
-        response = await asyncio.wait_for(
-            structured_llm.ainvoke(messages, config=config),
-            timeout=_LLM_GREP_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        logger_instance.info("generate_grep_command_via_llm: timed out after %.1fs", _LLM_GREP_TIMEOUT)
-        return None
+        structured_llm = _apply_structured_output(llm, schema=GrepCommandResult, include_raw=True)
     except Exception as exc:
-        logger_instance.warning("generate_grep_command_via_llm: LLM call failed: %s", exc)
+        logger_instance.warning("generate_grep_command_via_llm: LLM setup failed: %s", exc)
         return None
+    opik_callbacks = build_langchain_opik_callbacks()
+    config = {"callbacks": opik_callbacks} if opik_callbacks else {}
 
-    result = _parse_grep_response(response, logger_instance)
-    if result is None:
-        return None
+    deadline = time.monotonic() + _LLM_GREP_TIMEOUT
+    for attempt in (1, 2):
+        remaining = deadline - time.monotonic()
+        if attempt > 1 and remaining < _LLM_GREP_MIN_RETRY_SECS:
+            break
+        try:
+            response = await asyncio.wait_for(
+                structured_llm.ainvoke(messages, config=config),
+                timeout=min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+        except asyncio.TimeoutError:
+            logger_instance.info(
+                "generate_grep_command_via_llm: attempt %d timed out after %.1fs",
+                attempt, min(_LLM_GREP_ATTEMPT_TIMEOUT, remaining),
+            )
+            continue
+        except Exception as exc:
+            logger_instance.warning(
+                "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
+            )
+            continue
+        commands = _parse_grep_response(response, logger_instance)
+        valid_commands = _valid_llm_grep_commands(commands or [], logger_instance)
+        if valid_commands:
+            logger_instance.info(
+                "generate_grep_command_via_llm: generated %d command(s) on attempt %d: %r",
+                len(valid_commands), attempt, valid_commands,
+            )
+            return valid_commands
+    return None
 
+
+def _grep_generation_request(query: str, user_query: str | None) -> str:
+    """The search query the agent wrote, with the user's question as context.
+
+    The agent's query carries the vocabulary it learned from earlier results
+    (often the documents' own terms); the question alone makes every search
+    in a turn grep for the same paraphrase.
+    """
+    search = (query or "").strip()
+    question = (user_query or "").strip()
+    if not search:
+        return f'Search query: "{question}"'
+    if not question or question == search:
+        return f'Search query: "{search}"'
+    return f'Search query: "{search}"\nOriginal question (context only): "{question}"'
+
+
+def _valid_llm_grep_commands(commands: list[str], logger_instance: logging.Logger) -> list[str]:
     valid_commands: list[str] = []
-    for cmd in result.grep_commands[:_MAX_LLM_GREP_COMMANDS]:
+    for cmd in commands[:_MAX_LLM_GREP_COMMANDS]:
         ok, reason = validate_pattern_match_command(cmd)
         if ok:
             valid_commands.append(cmd.strip())
@@ -427,55 +496,166 @@ async def generate_grep_command_via_llm(
                 "generate_grep_command_via_llm: rejected %r: %s",
                 cmd[:100] if cmd else "", reason,
             )
-
-    if not valid_commands:
-        return None
-
-    logger_instance.info(
-        "generate_grep_command_via_llm: generated %d command(s): %r",
-        len(valid_commands), valid_commands,
-    )
     return valid_commands
+
+
+_GREP_COMMANDS_KEY_RE = re.compile(r'"grep_commands"\s*:\s*\[')
+
+
+def _recover_grep_commands(text: str) -> list[str]:
+    """The complete strings of a ``grep_commands`` array in *text*, even when
+    the JSON around them was cut off."""
+    m = _GREP_COMMANDS_KEY_RE.search(text)
+    if not m:
+        return []
+    decoder = json.JSONDecoder()
+    commands: list[str] = []
+    pos = m.end()
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] != '"':
+            break
+        try:
+            value, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            break
+        if isinstance(value, str):
+            commands.append(value)
+    return commands
+
+
+def _message_text(message: object) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        )
+    return ""
+
+
+def _commands_in_args(args: object) -> list[str]:
+    if isinstance(args, str):
+        return _recover_grep_commands(args)
+    if isinstance(args, dict):
+        commands = args.get("grep_commands")
+        if isinstance(commands, list):
+            return [c for c in commands if isinstance(c, str)]
+    return []
+
+
+def _recover_raw_grep_commands(message: object) -> list[str]:
+    """Commands in a raw completion that failed to parse. Tool-calling structured
+    output (Bedrock) carries them in tool-call arguments, not in the text."""
+    recovered = _recover_grep_commands(_message_text(message))
+    if recovered:
+        return recovered
+    content = getattr(message, "content", None)
+    tool_args = [
+        block.get("input")
+        for block in (content if isinstance(content, list) else [])
+        if isinstance(block, dict) and block.get("type") == "tool_use"
+    ]
+    for attr in ("tool_calls", "invalid_tool_calls"):
+        calls = getattr(message, attr, None)
+        if isinstance(calls, list):
+            tool_args += [call.get("args") for call in calls if isinstance(call, dict)]
+    for args in tool_args:
+        recovered = _commands_in_args(args)
+        if recovered:
+            return recovered
+    return []
 
 
 def _parse_grep_response(
     response: Any,
     logger_instance: logging.Logger,
-) -> GrepCommandResult | None:
-    """Parse the LLM response into a ``GrepCommandResult``."""
+) -> list[str] | None:
+    """The generated commands in an LLM response, or None when it holds none.
+
+    Accepts the ``include_raw`` envelope (``{"raw", "parsed", "parsing_error"}``):
+    when parsing failed, the commands are recovered from the raw completion.
+    """
     if response is None:
         logger_instance.info("generate_grep_command_via_llm: LLM returned no output")
         return None
 
+    if isinstance(response, dict) and "raw" in response and "parsed" in response:
+        parsed = response.get("parsed")
+        if parsed is not None:
+            return _parse_grep_response(parsed, logger_instance)
+        recovered = _recover_raw_grep_commands(response.get("raw"))
+        logger_instance.info(
+            "generate_grep_command_via_llm: unparseable output (%s), recovered %d command(s)",
+            str(response.get("parsing_error"))[:200], len(recovered),
+        )
+        return recovered or None
+
     if isinstance(response, GrepCommandResult):
-        return response
+        return response.grep_commands
 
     if isinstance(response, dict):
         try:
-            return GrepCommandResult.model_validate(response)
+            return GrepCommandResult.model_validate(response).grep_commands
         except Exception:
+            recovered = response.get("grep_commands")
+            if isinstance(recovered, list) and all(isinstance(c, str) for c in recovered):
+                return recovered
             logger_instance.warning(
                 "generate_grep_command_via_llm: dict response failed validation",
             )
             return None
 
     if hasattr(response, "content"):
-        content = response.content
-        if isinstance(content, str):
-            try:
-                return GrepCommandResult.model_validate_json(content)
-            except Exception:
-                pass
-        if isinstance(content, list):
-            for block in content:
-                if isinstance(block, dict) and block.get("type") == "text":
-                    try:
-                        return GrepCommandResult.model_validate_json(block["text"])
-                    except Exception:
-                        pass
+        text = _message_text(response)
+        try:
+            return GrepCommandResult.model_validate_json(text).grep_commands
+        except Exception:
+            recovered = _recover_grep_commands(text)
+            if recovered:
+                return recovered
 
     logger_instance.info("generate_grep_command_via_llm: could not parse LLM response")
     return None
+
+
+# Keyed by org: the model carries that org's AI-model config and API key.
+_grep_llm_cache: TTLCache = TTLCache(maxsize=256, ttl=_GREP_LLM_TTL_SECS)
+# The agent often repeats a search query within a turn (retries, other sources).
+_grep_commands_cache: TTLCache = TTLCache(maxsize=512, ttl=600)
+
+
+async def _grep_generation_llm(
+    config_service: ConfigurationService, org_id: str, fallback: BaseChatModel,
+) -> BaseChatModel:
+    """The model for the ``query`` role (else the default model) at low
+    reasoning effort, cached; *fallback* (the chat's model) when none can be built.
+
+    The chat's own model runs at the conversation's effort, often high, and its
+    completions were often cut off before any command was written.
+    """
+    cached = _grep_llm_cache.get(org_id)
+    if cached is not None:
+        return cached
+    try:
+        llm, _ = await asyncio.wait_for(
+            get_llm_for_role(config_service, _GREP_LLM_ROLE, reasoning_effort="low"),
+            timeout=_GREP_LLM_LOOKUP_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.info(
+            "pattern_match: grep-generation model lookup timed out after %.1fs, using the chat's",
+            _GREP_LLM_LOOKUP_TIMEOUT,
+        )
+        return fallback
+    except Exception as exc:
+        logger.info("pattern_match: no low-effort LLM for grep generation, using the chat's: %s", exc)
+        return fallback
+    _grep_llm_cache[org_id] = llm
+    return llm
 
 
 async def check_pattern_match_eligible(
@@ -519,6 +699,7 @@ async def resolve_connector_ids_for_search(
         org_apps = await graph_provider.get_org_apps(org_id, active_only=False)
         return [app["_key"] for app in org_apps if app.get("_key")]
     except Exception:
+        logger.warning("pattern_match: org app lookup failed, grep searches nothing", exc_info=True)
         return []
 
 
@@ -814,22 +995,25 @@ async def run_pattern_match_with_llm_grep(
     Bounded by ``_PATTERN_MATCH_TOTAL_BUDGET`` as a whole: callers await it
     after semantic search, so without one bound the LLM call, its pipelines
     and the keyword fallback would each add their own timeout to the answer.
+    When the budget runs out, what the finished LLM commands found is kept.
     """
+    found: dict[str, dict[str, Any]] = {}
     try:
         return await asyncio.wait_for(
             _run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
+                found=found,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
     except asyncio.TimeoutError:
         logger_instance.warning(
-            "pattern_match: total budget of %.0fs exceeded, returning no matches",
-            _PATTERN_MATCH_TOTAL_BUDGET,
+            "pattern_match: total budget of %.0fs exceeded, returning %d match(es) found so far",
+            _PATTERN_MATCH_TOTAL_BUDGET, len(found),
         )
-        return []
+        return list(found.values())
 
 
 async def _run_pattern_match_with_llm_grep(
@@ -843,15 +1027,23 @@ async def _run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None,
     user_query: str | None,
+    found: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    """*found* collects the best hit per record as each LLM command finishes,
+    so the caller still has them if the total budget cancels this."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
-        llm_grep_cmds = await generate_grep_command_via_llm(
-            query=query, llm=llm, logger_instance=logger_instance,
-            user_query=user_query,
-        )
+        cache_key = (org_id, query.strip(), (user_query or "").strip())
+        llm_grep_cmds = _grep_commands_cache.get(cache_key)
+        if llm_grep_cmds is None:
+            llm_grep_cmds = await generate_grep_command_via_llm(
+                query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
+                logger_instance=logger_instance, user_query=user_query,
+            )
+            if llm_grep_cmds:
+                _grep_commands_cache[cache_key] = llm_grep_cmds
 
     common: dict[str, Any] = {
         "query": query,
@@ -863,33 +1055,74 @@ async def _run_pattern_match_with_llm_grep(
         "logger_instance": logger_instance,
     }
     if llm_grep_cmds:
-        results_lists = await asyncio.gather(
-            *(
-                execute_pattern_match_pipeline(
+        async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
+            try:
+                return cmd, await execute_pattern_match_pipeline(
                     **common, grep_command=cmd, skip_grep_validation=True,
                 )
-                for cmd in llm_grep_cmds
-            ),
-            return_exceptions=True,
-        )
-        best: dict[str, dict[str, Any]] = {}
-        for cmd, result in zip(llm_grep_cmds, results_lists):
-            if isinstance(result, BaseException):
-                logger_instance.warning(
-                    "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
-                )
-                continue
-            for rec in result:
-                vrid = rec.get("virtual_record_id")
-                if vrid and (vrid not in best or _record_rank(rec) > _record_rank(best[vrid])):
-                    best[vrid] = rec
-        if best:
-            return list(best.values())
+            except Exception as exc:
+                return cmd, exc
+
+        tasks = [asyncio.ensure_future(_pipeline(cmd)) for cmd in llm_grep_cmds]
+        try:
+            for next_done in asyncio.as_completed(tasks):
+                cmd, result = await next_done
+                if isinstance(result, BaseException):
+                    logger_instance.warning(
+                        "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
+                    )
+                    continue
+                _merge_command_hits(found, result)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if found:
+            return list(found.values())
         logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
 
     return await execute_pattern_match_pipeline(
         **common, grep_command=None, skip_grep_validation=False,
     )
+
+
+def _merge_command_hits(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Add one grep command's ranked hits to *found*. Rank fusion is opt-in
+    (``HIGH_ACCURACY_MODE``); otherwise each record keeps its best hit."""
+    if high_accuracy_mode():
+        _fuse_ranked(found, records)
+    else:
+        _keep_best(found, records)
+
+
+def _keep_best(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Keep each record's best hit across commands, by its own match counts."""
+    for rec in records:
+        vrid = rec.get("virtual_record_id")
+        if vrid and (vrid not in found or _record_rank(rec) > _record_rank(found[vrid])):
+            found[vrid] = rec
+
+
+def _fuse_ranked(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
+    """Add one command's hits to *found* by reciprocal rank fusion.
+
+    Commands search different term sets, so their match counts do not
+    compare; a record's place in each command's own ranking does. A record
+    several commands rank highly beats one only a broad command found.
+    """
+    command_hits: dict[str, dict[str, Any]] = {}
+    _keep_best(command_hits, records)
+    # *records* concatenates per-connector lists, each ranked from 0; within
+    # one command the counts compare across connectors, so rank them together.
+    ranked = sorted(command_hits.values(), key=_record_rank, reverse=True)
+    place = 0
+    for i, rec in enumerate(ranked):
+        if i and _record_rank(rec) != _record_rank(ranked[i - 1]):
+            place = i
+        vrid = rec["virtual_record_id"]
+        fused = _fusion_score(found.get(vrid)) + 1.0 / (_RRF_K + place)
+        best = found[vrid] if vrid in found and _record_rank(found[vrid]) >= _record_rank(rec) else rec
+        found[vrid] = {**best, "fusion_score": fused}
 
 
 async def execute_pattern_match_pipeline(
@@ -1053,6 +1286,9 @@ async def run_pattern_match(
         try:
             parsed = json.loads(output)
         except (json.JSONDecodeError, TypeError):
+            logger_instance.warning(
+                "pattern_match: unreadable grep output for cid=%s: %r", connector_id, str(output)[:200],
+            )
             return None
         return parsed.get("records", []) if isinstance(parsed, dict) else None
 
@@ -1172,6 +1408,7 @@ async def run_pattern_match(
 
 async def await_pattern_match(
     task: asyncio.Task, logger_instance: logging.Logger,
+    run_timer: "RunTimer | None" = None,
 ) -> list[dict[str, Any]]:
     """Result of a pattern-match task started beside semantic search; any
     failure is ``[]`` so semantic results are always returned.
@@ -1179,7 +1416,11 @@ async def await_pattern_match(
     A CancelledError from inside the task is a pattern-match failure too
     (``except Exception`` misses it); only cancellation of the caller itself
     is re-raised.
+
+    When ``run_timer`` is given, the time spent waiting here (semantic
+    results already in hand) is recorded as ``pattern_match_wait``.
     """
+    wait_started = time.perf_counter()
     try:
         return await task or []
     except asyncio.CancelledError:
@@ -1191,6 +1432,9 @@ async def await_pattern_match(
         logger_instance.warning(
             "Pattern match failed, continuing with semantic results only: %s", exc,
         )
+    finally:
+        if run_timer is not None:
+            run_timer.record("pattern_match_wait", (time.perf_counter() - wait_started) * 1000.0)
     return []
 
 
@@ -1204,19 +1448,32 @@ async def cancel_task_if_running(task: asyncio.Task | None) -> None:
             pass
 
 
+def _int_field(record: dict[str, Any] | None, key: str) -> int:
+    try:
+        return int((record or {}).get(key) or 0)
+    except (ValueError, TypeError):
+        return 0
+
+
+def _fusion_score(record: dict[str, Any] | None) -> float:
+    try:
+        return float((record or {}).get("fusion_score") or 0.0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
 def _record_rank(record: dict[str, Any]) -> tuple[int, int]:
     """(distinct search terms matched, total matches), as set by ``find_records``.
 
     Distinct terms come first: a record that repeats the company name fifty
     times must not outrank one that also contains the rare query term.
     """
-    def _int(key: str) -> int:
-        try:
-            return int(record.get(key) or 0)
-        except (ValueError, TypeError):
-            return 0
+    return _int_field(record, "matched_terms"), _int_field(record, "match_count")
 
-    return _int("matched_terms"), _int("match_count")
+
+def keyword_match_rank(record: dict[str, Any]) -> tuple[float, int, int]:
+    """Fused rank across commands first, then this record's own match counts."""
+    return (_fusion_score(record), *_record_rank(record))
 
 
 def _record_in_time_range(
@@ -1297,6 +1554,10 @@ async def merge_pattern_match_results(
     When *time_range* is set, graph records are fetched first (lightweight)
     and filtered before the expensive blob fetch.
     """
+    scope = requested_scope_ids(filters)
+    if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
+        return []
+
     seen: set[str] = set()
     unique: list[dict] = []
     for r in raw_records:
@@ -1307,7 +1568,7 @@ async def merge_pattern_match_results(
 
     # Rank across connectors before the cap; each connector's list is already
     # ranked, but concatenation order would otherwise decide who is dropped.
-    unique.sort(key=_record_rank, reverse=True)
+    unique.sort(key=keyword_match_rank, reverse=True)
     new_records = [
         r
         for r in unique
@@ -1330,7 +1591,6 @@ async def merge_pattern_match_results(
     except Exception:
         logger_instance.debug("Pattern match: container lookup failed", exc_info=True)
 
-    scope = requested_scope_ids(filters)
     try:
         accessible_vrids = await graph_provider.filter_accessible_virtual_record_ids(
             [r["virtual_record_id"] for r in new_records],

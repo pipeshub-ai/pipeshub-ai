@@ -17,6 +17,7 @@ from app.connectors.sources.dropbox.connector import (
 )
 from app.models.entities import AppUser, FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 def _make_connector():
@@ -132,8 +133,8 @@ class TestDropboxInitMethod:
             "credentials": {"access_token": "tok", "refresh_token": "ref"},
             "auth": {}
         })
-        result = await c.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await c.init()
 
     @pytest.mark.asyncio
     async def test_init_success(self):

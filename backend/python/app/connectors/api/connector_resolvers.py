@@ -14,6 +14,11 @@ from fastapi import HTTPException, Request
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.config.redaction import (
+    OAUTH_CLIENT_SECRET_FIELDS,
+    REDACTED_PLACEHOLDER,
+    hide_secrets_by_default,
+)
 from app.api.middlewares.auth import is_request_admin
 from app.utils.user_messages import not_found
 
@@ -104,8 +109,8 @@ async def authorize_connector_stats(
 
 
 def strip_redacted_fields(data: dict[str, Any]) -> dict[str, Any]:
-    """OSS: no redaction — return a shallow copy."""
-    return dict(data)
+    """Drop secrets sent back as the mask, so merging the save keeps what is stored."""
+    return {k: v for k, v in data.items() if v != REDACTED_PLACEHOLDER}
 
 
 def mask_oauth_config_for_response(
@@ -115,14 +120,17 @@ def mask_oauth_config_for_response(
     is_admin: bool,
     reveal: bool = False,
 ) -> dict[str, Any]:
-    """OSS: admins get raw config; callers build essential fields themselves for non-admin."""
-    del caller_org_id, reveal
-    if is_admin:
-        return {
-            "config": dict(oauth_config.get("config") or {}),
-            "inherited": False,
+    """OSS: admins get the config, its secrets masked under HIDE_SECRET_CONFIG unless revealed."""
+    del caller_org_id
+    if not is_admin:
+        return {"config": {}, "inherited": False}
+    raw_cfg = dict(oauth_config.get("config") or {})
+    if hide_secrets_by_default() and not reveal:
+        raw_cfg = {
+            k: (REDACTED_PLACEHOLDER if k in OAUTH_CLIENT_SECRET_FIELDS and v else v)
+            for k, v in raw_cfg.items()
         }
-    return {"config": {}, "inherited": False}
+    return {"config": raw_cfg, "inherited": False}
 
 
 async def resolve_oauth_configs(

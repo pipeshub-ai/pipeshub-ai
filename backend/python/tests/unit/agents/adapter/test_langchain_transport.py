@@ -23,6 +23,7 @@ from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop import langchain_transport as transport_module
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
@@ -238,6 +239,13 @@ class TestComplete:
         with pytest.raises(TransportError) as exc_info:
             await transport.complete([UserMessage(content="hi")])
         assert exc_info.value.retryable is True
+
+    async def test_empty_message_error_keeps_its_class_name(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=TimeoutError()))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert "TimeoutError" in str(exc_info.value)
+        assert classify_error(f"LLM call failed: {exc_info.value}")[0] == "timeout"
 
     async def test_unrelated_exception_with_no_status_code_is_not_retryable(self) -> None:
         transport = LangChainTransport(_FakeModel(raise_on_invoke=ValueError("bad input")))

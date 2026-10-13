@@ -27,6 +27,7 @@ from app.models.entities import (
     MessageRecord,
     OriginTypes,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordType,
     TicketRecord,
@@ -836,6 +837,9 @@ collection_map = {
                     # is built from a plain Record, which has no such field. Without
                     # this entry every code file renders with no path at all.
                     RecordType.CODE_FILE.value: "codeFiles",
+                    # Merge state, author and reviewers live only on the prs
+                    # node. Without this entry chat shows a PR with no status.
+                    RecordType.PULL_REQUEST.value: CollectionNames.PULLREQUESTS.value,
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -1013,6 +1017,23 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "record_group_type": graph_doc.get("recordGroupType"),
             }
             return MessageRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.PULL_REQUEST.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.PULL_REQUEST,
+                "status": graph_doc.get("status"),
+                "creator_name": graph_doc.get("creatorName"),
+                "creator_email": graph_doc.get("creatorEmail"),
+                "merged_by": graph_doc.get("mergedBy"),
+                "mergeable": graph_doc.get("mergeable"),
+                "assignee": graph_doc.get("assignee"),
+                "assignee_email": graph_doc.get("assigneeEmail"),
+                "review_name": graph_doc.get("reviewName"),
+                "review_email": graph_doc.get("reviewEmail"),
+                "labels": graph_doc.get("labels"),
+                "last_commit_sha": graph_doc.get("lastCommitSha"),
+            }
+            return PullRequestRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:
@@ -1121,6 +1142,22 @@ def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
     converted["org_id"] = record.get("orgId", "")
     # What the record already holds in the blob's shape wins over the conversion.
     return {**converted, **{key: value for key, value in record.items() if value is not None}}
+
+def merge_into_records_map(live: dict[str, Any], records: dict[str, Any]) -> None:
+    """Add a search's ``records`` to the request's records map, in place.
+
+    A graph record (a grep hit, not read from the blob) never replaces a record
+    already loaded from the blob for the same content: citations and
+    fetch_record read that one's blocks, and the graph record has none.
+    """
+    for vrid, record in records.items():
+        current = live.get(vrid)
+        if (
+            isinstance(current, dict) and "record_name" in current
+            and isinstance(record, dict) and "record_name" not in record
+        ):
+            continue
+        live[vrid] = record
 
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
     """Convert a graph base doc (camelCase) to a blob-like record_dict (snake_case)."""
@@ -2209,10 +2246,82 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def _point_position(meta: dict[str, Any]) -> int | None:
+    """Where a vector point's block sits, when the point says so itself.
+
+    A group point's index is in ``blockGroupIndex``; ``blockIndex`` always
+    means a position in ``blocks``. Points indexed before group points
+    carried either field return ``None`` and are located by block id.
+    """
+    index = meta.get("blockIndex")
+    if index is None and meta.get("isBlockGroup"):
+        index = meta.get("blockGroupIndex")
+    return index
+
+
+def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
+    containers = record.get("block_containers") or {}
+    items = containers.get("block_groups" if group else "blocks") or []
+    if 0 <= index < len(items) and isinstance(items[index], dict):
+        return items[index].get("id")
+    return None
+
+
+def _slot_check(
+    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,
+) -> tuple[bool, bool] | None:
+    """Check that ``index`` holds ``block_id``: ``(is_group, confirmed)``, or ``None`` if it holds another id.
+
+    A reconciled update keeps an unchanged block's vector, payload included,
+    so a position written at index time goes stale once earlier blocks are
+    added or removed. Older points also flagged a table stored as a block as
+    a group. A slot with no id, or past the stored blocks (the SQL blob keeps
+    only its first rows), is unconfirmed and keeps the point's own flag.
+    """
+    flagged = bool(is_block_group)
+    if not block_id or not isinstance(record, dict):
+        return flagged, False
+    flagged_id = _id_at(record, index, flagged)
+    if flagged_id == block_id:
+        return flagged, True
+    if _id_at(record, index, not flagged) == block_id:
+        logger.debug("Point for %s named the wrong container kind; reading it as %s",
+                     block_id, "a group" if not flagged else "a block")
+        return not flagged, True
+    if flagged_id is None:
+        return flagged, False
+    return None
+
+
+def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tuple[int, bool, bool] | None:
+    """The point's own position as ``(index, is_group, confirmed)``; ``None`` when absent or stale."""
+    index = _point_position(meta)
+    if index is None:
+        return None
+    check = _slot_check(record, meta.get("blockId"), index, meta.get("isBlockGroup"))
+    if check is None:
+        return None
+    return index, *check
+
+
+def _raise_group_score(unit: dict[str, Any], score: float) -> None:
+    """Give a list unit, and the children /search unpacks from it, its best hit's score."""
+    if score <= float(unit.get("score") or 0.0):
+        return
+    unit["score"] = score
+    content = unit.get("content")
+    if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
+        for child in content[1]:
+            if isinstance(child, dict):
+                child["score"] = score
+
+
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
+    # Hits arrive in query order, not score order, on the multi-query /search path.
+    emitted_groups: dict[str, dict[str, Any]] = {}
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
@@ -2300,7 +2409,14 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     for result in sorted_new_type_results:
         vrid = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-        if meta.get("blockIndex") is None and meta.get("blockId") and vrid and vrid not in virtual_record_id_to_recon_metadata:
+        located = _payload_location(meta, virtual_record_id_to_result.get(vrid))
+        if (
+            (located is None or not located[2])
+            and not meta.get("isRecordSummary")
+            and meta.get("blockId")
+            and vrid
+            and vrid not in virtual_record_id_to_recon_metadata
+        ):
             vrids_needing_recon.add(vrid)
 
     async def _prefetch_recon(vrid: str):
@@ -2347,20 +2463,28 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
-        index = meta.get("blockIndex")
+        index = None
         is_block_group = meta.get("isBlockGroup")
-
-        if index is None:
-            block_id = meta.get("blockId")
-            if block_id:
-                recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
-                if recon_metadata:
-                    block_id_to_index = recon_metadata.get("block_id_to_index", {})
-                    rm = ReconciliationMetadata.from_dict(recon_metadata)
-                    index_val = rm.block_id_to_index.get(block_id)
-                    if index_val is not None:
-                        index = index_val
-                        meta["blockIndex"] = index
+        block_id = meta.get("blockId")
+        record_for_check = virtual_record_id_to_result.get(virtual_record_id)
+        located = _payload_location(meta, record_for_check)
+        if located is not None and (located[2] or not block_id):
+            index, is_block_group = located[0], located[1]
+        elif block_id:
+            recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
+            index_val = (
+                ReconciliationMetadata.from_dict(recon_metadata).block_id_to_index.get(block_id)
+                if recon_metadata else None
+            )
+            if index_val is not None:
+                check = _slot_check(record_for_check, block_id, index_val, is_block_group)
+                if check is not None:
+                    index = index_val
+                    meta["blockIndex"] = index
+                    is_block_group = check[0]
+            elif located is not None:
+                # No id map to check against: the point's own position is the best left.
+                index, is_block_group = located[0], located[1]
 
         # Skip if index is still None - cannot access blocks without a valid index
         if index is None:
@@ -2439,6 +2563,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 target_index = container_parent_index
                 group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
                 if group_chunk_id in seen_chunks:
+                    if group_chunk_id in emitted_groups:
+                        _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
                     continue
                 fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
                 group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2460,6 +2586,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+                emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
             continue
 
@@ -2647,6 +2774,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             parent_index = block.get("parent_index")
 
             target_index = parent_index
+            # Every item of a list expands to the whole list, so hits on two of
+            # its items would otherwise take two ranked slots with one unit.
+            group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
+            if group_chunk_id in seen_chunks:
+                if group_chunk_id in emitted_groups:
+                    _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
+                continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
             group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2661,6 +2795,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
             if not group_text_result or not group_blocks:
                 continue
+            seen_chunks.add(group_chunk_id)
 
             label, first_child_block_index = group_text_result
             result["content"] = ("", group_blocks)
@@ -2669,6 +2804,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+            emitted_groups[group_chunk_id] = result
             flattened_results.append(result)
             continue
         else:
@@ -4741,9 +4877,10 @@ def build_message_content_array(
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
                     ),
                 })
-            elif block_type == BlockType.CODE.value:
-                # A code hit is addressed by (file path, symbol id) so the model
-                # can pass it straight to the codegraph tools.
+            elif block_type == BlockType.CODE.value and group_child_results(result) is None:
+                # A code group shares the "code" label; it is rendered by the group
+                # branch below. A code hit is addressed by (file path, symbol id) so
+                # the model can pass it straight to the codegraph tools.
                 current_record_has_blocks = True
                 locator = format_code_locator(
                     current_file_path, result.get("qualified_name", "") or ""

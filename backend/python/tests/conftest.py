@@ -12,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
+from app.utils.process_hardening import disable_vendor_telemetry
+
+# Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
+disable_vendor_telemetry()
 
 
 def pytest_unconfigure(config):

@@ -4106,8 +4106,54 @@ describe('UserController', () => {
 
       await controller.updateUserDisplayPicture(req, res, next);
 
-      // sharp will throw when given null, so next should be called
       expect(next.calledOnce).to.be.true;
+    });
+  });
+
+  describe('updateUserDisplayPicture - file bytes', () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>',
+    );
+
+    it('rejects SVG bytes labelled as PNG and does not store them', async () => {
+      req.body = {
+        fileBuffer: { buffer: svg, mimetype: 'image/png' },
+      };
+      const update = sinon.stub(UserDisplayPicture, 'findOneAndUpdate');
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Profile photo must be a PNG, JPEG, WebP or GIF image',
+      );
+      expect(update.called).to.be.false;
+    });
+
+    it('stores a JPEG for a real PNG', async () => {
+      const sharp = require('sharp');
+      const png = await sharp({
+        create: {
+          width: 8,
+          height: 8,
+          channels: 3,
+          background: { r: 10, g: 20, b: 30 },
+        },
+      })
+        .png()
+        .toBuffer();
+      req.body = { fileBuffer: { buffer: png, mimetype: 'image/png' } };
+      sinon.stub(UserDisplayPicture, 'findOneAndUpdate').resolves({} as any);
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.setHeader.calledWith('Content-Type', 'image/jpeg')).to.be.true;
+      const sent = res.send.firstCall.args[0] as Buffer;
+      expect(sent.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).to.equal(
+        true,
+      );
     });
   });
 

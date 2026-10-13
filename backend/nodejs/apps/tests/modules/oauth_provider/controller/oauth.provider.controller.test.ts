@@ -1027,6 +1027,41 @@ describe('OAuthProviderController', () => {
       expect(args[3]).to.deep.equal(['org:read'])
     })
 
+    it('returns invalid_scope when the app only has user scopes', async () => {
+      const mockApp = {
+        clientId: 'cid',
+        orgId: { toString: () => 'org-1' },
+        allowedScopes: ['openid', 'profile', 'email', 'offline_access'],
+        isConfidential: true,
+        createdBy: { toString: () => 'owner-1' },
+      }
+      mockOAuthAppService.verifyClientCredentials.resolves(mockApp)
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockOAuthTokenService.generateTokens.callsFake(
+        async (_app: unknown, _user: unknown, _org: unknown, scopes: string[]) => {
+          if (scopes.length === 0) {
+            throw new InvalidScopeError('A token must carry at least one scope')
+          }
+          return { accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: scopes.join(' ') }
+        },
+      )
+
+      const identity = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves({ fullName: 'Owner' }) }
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(identity as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(
+        tokenRequest({ grant_type: 'client_credentials', client_id: 'cid', client_secret: 'secret' }),
+        mockRes,
+        mockNext,
+      )
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[3]).to.deep.equal([])
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.json.firstCall.args[0].error).to.equal('invalid_scope')
+    })
+
     it('should use requested scopes when provided', async () => {
       const mockApp = {
         clientId: 'cid',

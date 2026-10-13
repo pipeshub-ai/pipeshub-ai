@@ -17,6 +17,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchTimedOut,
 )
 
 CONTEXT = EntityAccessContext(
@@ -96,6 +97,14 @@ class TestGuards:
         patched[1].side_effect = EntityAccessError("vector down")
         ok, _ = await execute_search_entities(_state(), "legal")
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_reported_as_one_not_as_no_matches(self, patched) -> None:
+        patched[1].side_effect = EntitySearchTimedOut("deadline")
+        ok, text = await execute_search_entities(_state(), "legal")
+        message = json.loads(text)["message"]
+        assert ok is False
+        assert "timed out" in message and "No accessible entities matched" not in message
 
 
 class TestSearch:

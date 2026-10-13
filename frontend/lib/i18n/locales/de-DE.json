@@ -344,7 +344,8 @@
     "statuses": "Status",
     "sources": "Quellen",
     "sizes": "Größen",
-    "clearFilter": "Filter löschen"
+    "clearFilter": "Filter löschen",
+    "applyFilters": "Filter anwenden"
   },
   "form": {
     "leaveBlankToKeep": "Leer lassen, um den vorhandenen Wert zu behalten.",

@@ -143,6 +143,8 @@ interface ConnectorsState {
    * re-runs OAuth credential hydration and captures a fresh baseline.
    */
   oauthCredentialBaselineTick: number;
+  /** OAuth registration whose stored secrets the admin asked to see; '' when none. */
+  revealedOAuthAppId: string;
 
   // ── Actions ───────────────────────────────────────────────────
   setRegistryConnectors: (connectors: Connector[]) => void;
@@ -204,6 +206,7 @@ interface ConnectorsState {
   setOAuthCredentialBaseline: (
     baseline: { key: string; values: Record<string, unknown> } | null
   ) => void;
+  setRevealedOAuthAppId: (id: string) => void;
   setIsLoadingRecords: (loading: boolean) => void;
   setSyncStrategy: (strategy: SyncStrategy) => void;
   setSyncInterval: (minutes: number) => void;
@@ -333,6 +336,7 @@ const initialState = {
   oauthAppsListConnectorType: '',
   oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
   oauthCredentialBaselineTick: 0,
+  revealedOAuthAppId: '',
 };
 
 // Panel-specific fields to reset when closing
@@ -370,6 +374,7 @@ const panelResetState = {
   oauthAppsListFetchError: null as string | null,
   oauthAppsListConnectorType: '',
   oauthCredentialBaseline: null as { key: string; values: Record<string, unknown> } | null,
+  revealedOAuthAppId: '',
 };
 
 // ========================================
@@ -550,6 +555,7 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setSchemaAndConfig: (schema, config) =>
         set((s) => {
           s.oauthCredentialBaseline = null;
+          s.revealedOAuthAppId = '';
           s.oauthCredentialBaselineTick += 1;
           s.connectorSchema = schema;
           s.connectorConfig = config ?? null;
@@ -778,6 +784,11 @@ export const useConnectorsStore = create<ConnectorsState>()(
       setOAuthCredentialBaseline: (baseline) =>
         set((s) => {
           s.oauthCredentialBaseline = baseline;
+        }),
+
+      setRevealedOAuthAppId: (id) =>
+        set((s) => {
+          s.revealedOAuthAppId = id;
         }),
 
       setIsLoadingRecords: (loading) =>

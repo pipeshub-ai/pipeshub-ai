@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useMemo } from 'react';
-import { Flex, Text } from '@radix-ui/themes';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon, FilterDropdown, DateRangePicker, type DateFilterType } from '@/app/components/ui';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useKnowledgeBaseStore } from '../store';
@@ -20,6 +20,42 @@ import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 
 interface KBFilterBarProps {
   pageViewMode: PageViewMode;
+}
+
+type StagedFilter = KnowledgeBaseFilter | AllRecordsFilter;
+
+function listKey(values?: readonly string[]): string {
+  return [...(values ?? [])].sort().join('\u0002');
+}
+
+// Empty and omitted values compare equal, and selection order does not.
+function managedFilterKey(filter: StagedFilter): string {
+  return [
+    listKey(filter.recordTypes),
+    listKey(filter.indexingStatus),
+    listKey(filter.origins),
+    listKey(filter.connectorIds),
+    filter.sizeRange ?? '',
+    filter.createdAfter ?? '',
+    filter.createdBefore ?? '',
+    filter.createdDateType ?? '',
+    filter.updatedAfter ?? '',
+    filter.updatedBefore ?? '',
+    filter.updatedDateType ?? '',
+  ].join('\u0001');
+}
+
+function appliedFilterKey(filter: StagedFilter): string {
+  return [
+    managedFilterKey(filter),
+    listKey(filter.nodeTypes),
+    listKey('kbIds' in filter ? filter.kbIds : undefined),
+    filter.searchQuery ?? '',
+  ].join('\u0001');
+}
+
+function filterHasValues(filter: StagedFilter): boolean {
+  return managedFilterKey(filter).replace(/\u0001/g, '') !== '';
 }
 
 export function FilterBar({ pageViewMode }: KBFilterBarProps) {
@@ -41,15 +77,34 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
 
   const isCollectionsMode = pageViewMode === 'collections';
 
-  // Active filter and actions based on current mode
+  // Applied filter (what the table is showing). Edits stay in `draft` until Apply.
   const activeFilter = isCollectionsMode ? filter : allRecordsFilter;
+  const appliedKey = `${isCollectionsMode ? 'collections' : 'all-records'}:${appliedFilterKey(activeFilter)}`;
+  const activeFilterRef = useRef(activeFilter);
+  activeFilterRef.current = activeFilter;
+  const [draft, setDraft] = useState<StagedFilter>(activeFilter);
+
+  // URL hydration, sidebar selection, mode switch, and Clear replace the draft.
+  useEffect(() => {
+    setDraft(activeFilterRef.current);
+  }, [appliedKey]);
 
   const updateFilter = (patch: Partial<KnowledgeBaseFilter> | Partial<AllRecordsFilter>) => {
-    if (isCollectionsMode) setFilter(patch as Partial<KnowledgeBaseFilter>);
-    else setAllRecordsFilter(patch as Partial<AllRecordsFilter>);
+    setDraft((current) => ({ ...current, ...patch }));
   };
 
-  const resetFilter = isCollectionsMode ? clearFilter : clearAllRecordsFilter;
+  const applyFilters = () => {
+    if (isCollectionsMode) setFilter(draft as KnowledgeBaseFilter);
+    else setAllRecordsFilter(draft as AllRecordsFilter);
+  };
+
+  const resetFilter = () => {
+    if (isCollectionsMode) clearFilter();
+    else clearAllRecordsFilter();
+    setDraft({});
+  };
+
+  const isDirty = managedFilterKey(draft) !== managedFilterKey(activeFilter);
 
   // Get available filters from store (returned by API)
   const availableFilters = isCollectionsMode
@@ -201,15 +256,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
     updateFilter({ updatedAfter: undefined, updatedBefore: undefined, updatedDateType: undefined });
   };
 
-  const hasAnyFilter = !!(
-    (activeFilter.recordTypes?.length ?? 0) > 0 ||
-    (activeFilter.indexingStatus?.length ?? 0) > 0 ||
-    (activeFilter.origins?.length ?? 0) > 0 ||
-    (activeFilter.connectorIds?.length ?? 0) > 0 ||
-    activeFilter.sizeRange ||
-    activeFilter.createdAfter || activeFilter.createdBefore ||
-    activeFilter.updatedAfter || activeFilter.updatedBefore
-  );
+  const hasAnyFilter = filterHasValues(draft) || filterHasValues(activeFilter);
 
   return (
     <Flex
@@ -238,7 +285,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         label={t('filter.type')}
         icon="source"
         options={typeOptions}
-        selectedValues={activeFilter.recordTypes || []}
+        selectedValues={draft.recordTypes || []}
         onSelectionChange={handleTypeChange}
         disabled={typeOptions.length === 0}
         searchable
@@ -250,7 +297,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         label={t('filter.status')}
         icon="contrast"
         options={statusOptions}
-        selectedValues={activeFilter.indexingStatus || []}
+        selectedValues={draft.indexingStatus || []}
         onSelectionChange={handleStatusChange}
         disabled={statusOptions.length === 0}
         pluralLabel={t('filter.statuses')}
@@ -262,7 +309,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           label={t('filter.source')}
           icon="cloud_upload"
           options={sourceOptions}
-          selectedValues={activeFilter.origins || []}
+          selectedValues={draft.origins || []}
           onSelectionChange={handleSourceChange}
           searchable
           disabled={sourceOptions.length === 0}
@@ -276,11 +323,11 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           label={t('filter.connector')}
           icon="hub"
           options={connectorOptions}
-          selectedValues={activeFilter.connectorIds || []}
+          selectedValues={draft.connectorIds || []}
           onSelectionChange={handleConnectorChange}
           searchable
           disabled={
-            connectorOptions.length === 0 && (activeFilter.connectorIds?.length ?? 0) === 0
+            connectorOptions.length === 0 && (draft.connectorIds?.length ?? 0) === 0
           }
           pluralLabel={t('filter.connectors')}
         />
@@ -291,7 +338,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
         label={t('filter.size')}
         icon="layers"
         options={SIZE_OPTIONS}
-        selectedValues={activeFilter.sizeRange ? [activeFilter.sizeRange] : []}
+        selectedValues={draft.sizeRange ? [draft.sizeRange] : []}
         onSelectionChange={handleSizeChange}
         pluralLabel={t('filter.sizes')}
         selectionMode="single"
@@ -301,9 +348,9 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       <DateRangePicker
         label={t('filter.dateCreated')}
         icon="calendar_today"
-        startDate={activeFilter.createdAfter}
-        endDate={activeFilter.createdBefore}
-        dateType={activeFilter.createdDateType}
+        startDate={draft.createdAfter}
+        endDate={draft.createdBefore}
+        dateType={draft.createdDateType}
         onApply={handleCreatedDateApply}
         onClear={handleCreatedDateClear}
         defaultDateType="between"
@@ -313,13 +360,29 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       <DateRangePicker
         label={t('filter.lastUpdated')}
         icon="calendar_today"
-        startDate={activeFilter.updatedAfter}
-        endDate={activeFilter.updatedBefore}
-        dateType={activeFilter.updatedDateType}
+        startDate={draft.updatedAfter}
+        endDate={draft.updatedBefore}
+        dateType={draft.updatedDateType}
         onApply={handleUpdatedDateApply}
         onClear={handleUpdatedDateClear}
         defaultDateType="between"
       />
+
+      {isDirty && (
+        <Button
+          type="button"
+          size="1"
+          variant="solid"
+          onClick={applyFilters}
+          style={{
+            height: '26px',
+            minHeight: isMobile ? '44px' : undefined,
+            cursor: 'pointer',
+          }}
+        >
+          {t('filter.applyFilters')}
+        </Button>
+      )}
 
       {/* Clear Filter */}
       {hasAnyFilter && (

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import threading
+import time
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Awaitable, List, TypeVar, cast
@@ -53,11 +54,80 @@ def _indexing_llm_semaphore() -> asyncio.Semaphore:
     return sem
 
 
+class _SlotStats:
+    """Process-wide totals for the indexing LLM slots, summed over every loop.
+
+    Wait time against hold time is what tells our own slot budget apart from
+    a provider limit: slots saturated with long waits and steady call times
+    mean the budget binds; rising call times or rate-limit retries mean the
+    provider does.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.in_use = 0
+        self.waiting = 0
+        self.acquired = 0
+        self.wait_s = 0.0
+        self.hold_s = 0.0
+        self.rate_limit_retries = 0
+
+    def snapshot(self) -> dict[str, float | int]:
+        with self._lock:
+            acquired = self.acquired
+            # hold_s only grows on release, so in-flight calls must not dilute its mean.
+            released = acquired - self.in_use
+            return {
+                "slots_per_loop": scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS),
+                "loops": len(_sem_by_loop),
+                "in_use": self.in_use,
+                "waiting": self.waiting,
+                "acquired": acquired,
+                "rate_limit_retries": self.rate_limit_retries,
+                "wait_s_total": round(self.wait_s, 1),
+                "hold_s_total": round(self.hold_s, 1),
+                "wait_s_mean": round(self.wait_s / acquired, 3) if acquired else 0.0,
+                "hold_s_mean": round(self.hold_s / released, 3) if released else 0.0,
+            }
+
+
+_slot_stats = _SlotStats()
+
+
+def indexing_llm_stats() -> dict[str, float | int]:
+    return _slot_stats.snapshot()
+
+
+def note_indexing_llm_rate_limit() -> None:
+    with _slot_stats._lock:
+        _slot_stats.rate_limit_retries += 1
+
+
 @asynccontextmanager
 async def indexing_llm_slot() -> AsyncGenerator[None, None]:
     """Hold a slot in the process-wide indexing LLM budget."""
-    async with _indexing_llm_semaphore():
+    stats = _slot_stats
+    sem = _indexing_llm_semaphore()
+    with stats._lock:
+        stats.waiting += 1
+    asked = time.perf_counter()
+    try:
+        await sem.acquire()
+    finally:
+        with stats._lock:
+            stats.waiting -= 1
+    granted = time.perf_counter()
+    with stats._lock:
+        stats.in_use += 1
+        stats.acquired += 1
+        stats.wait_s += granted - asked
+    try:
         yield
+    finally:
+        sem.release()
+        with stats._lock:
+            stats.in_use -= 1
+            stats.hold_s += time.perf_counter() - granted
 
 
 async def gather_with_concurrency(

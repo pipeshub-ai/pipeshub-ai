@@ -2750,9 +2750,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -2767,12 +2766,81 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response).to.have.property('searchId')
-        expect(response).to.have.property('searchResponse')
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.have.property('searchId')
+      expect(response).to.have.property('searchResponse')
+    })
+
+    it('saves every hit as a citation in one ordered insert and keeps hit order', async () => {
+      const handler = search(createMockAppConfig())
+
+      const hitCount = 250
+      const hits = Array.from({ length: hitCount }, (_, i) => ({
+        content: `hit ${i}`,
+        // Every third hit arrives without a chunkIndex and must still save as 0.
+        ...(i % 3 === 0 ? {} : { chunkIndex: i }),
+        citationType: 'vectordb|document',
+        metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+      }))
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: hits, records: [] },
+      } as any)
+
+      const insertedIds = hits.map(() => new mongoose.Types.ObjectId())
+      const insertManyStub = sinon
+        .stub(Citation, 'insertMany')
+        .callsFake(async (docs: any) =>
+          (docs as any[]).map((d, i) => ({ ...d, _id: insertedIds[i] })) as any,
+        )
+      // Resolves like a real save, so on the old code the test fails on the
+      // per-hit saves themselves rather than on a missing return value.
+      const saveStub = sinon
+        .stub(Citation.prototype, 'save')
+        .callsFake(async function (this: any) {
+          return this
+        })
+
+      let savedSearch: any
+      sinon
+        .stub(EnterpriseSemanticSearch.prototype, 'save')
+        .callsFake(async function (this: any) {
+          savedSearch = this
+          return this
+        })
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+
+      expect(saveStub.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      const [docs, options] = insertManyStub.firstCall.args as any[]
+      expect(options).to.deep.include({ ordered: true })
+      expect(docs).to.have.length(hitCount)
+      docs.forEach((doc: any, i: number) => {
+        expect(doc).to.deep.equal({
+          content: `hit ${i}`,
+          chunkIndex: i % 3 === 0 ? 0 : i,
+          citationType: 'vectordb|document',
+          metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+        })
+      })
+
+      expect(savedSearch.citationIds.map(String)).to.deep.equal(
+        insertedIds.map(String),
+      )
     })
 
     it('should call next when AI service returns no data', async () => {
@@ -4521,9 +4589,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -4538,9 +4605,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
     })
 
     it('should handle search with no search results in response', async () => {
@@ -9709,9 +9776,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
       sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
         _id: new mongoose.Types.ObjectId(),
       } as any)
@@ -9725,9 +9791,10 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect((insertManyStub.firstCall.args[0] as any[])[0].chunkIndex).to.equal(0)
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 

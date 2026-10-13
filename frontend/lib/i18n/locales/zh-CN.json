@@ -424,7 +424,8 @@
     "statuses": "状态",
     "sources": "来源",
     "sizes": "大小",
-    "clearFilter": "清除筛选"
+    "clearFilter": "清除筛选",
+    "applyFilters": "应用筛选"
   },
   "form": {
     "leaveBlankToKeep": "留空则保留现有值。",

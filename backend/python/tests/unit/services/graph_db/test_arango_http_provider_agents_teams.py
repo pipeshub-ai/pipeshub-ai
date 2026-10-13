@@ -1366,8 +1366,8 @@ class TestGetUserAppIds:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.get_user_apps = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_user_app_ids("u1")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_app_ids("u1")
 
 
 class TestGetUserPermissionAppIds:
@@ -1386,8 +1386,8 @@ class TestGetUserPermissionAppIds:
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_user_permission_app_ids("u1", "org1")
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_permission_app_ids("u1", "org1")
 
 
 # ===========================================================================
