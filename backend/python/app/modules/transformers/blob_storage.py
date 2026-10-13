@@ -49,6 +49,13 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
+# Decks repeat the same base64 image on every slide, further apart than the
+# default 4 MiB window at this level, so they barely compressed (112 -> 84 MiB).
+# A 128 MiB window with long-distance matching finds them (-> 13 MiB). 2^27 is
+# the default decoder's window limit; a bigger one would fail to decode. Level 6
+# matched level 10 on decks and was within 8% on text, at 2-3x the speed.
+COMPRESSION_LEVEL = 6
+COMPRESSION_WINDOW_LOG = 27
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
 
 # Decoding a large record holds ~2.4x its msgpack size as Python objects and,
@@ -576,7 +583,7 @@ def _versioned_json_form(
     if compressed:
         form_data.add_field(f'customMetadata[{idx}][key]', 'compression')
         form_data.add_field(f'customMetadata[{idx}][value][algorithm]', 'zstd')
-        form_data.add_field(f'customMetadata[{idx}][value][level]', '10')
+        form_data.add_field(f'customMetadata[{idx}][value][level]', str(COMPRESSION_LEVEL))
         form_data.add_field(f'customMetadata[{idx}][value][format]', 'msgspec')
         form_data.add_field(f'customMetadata[{idx}][value][version]', 'v1')
         form_data.add_field(f'customMetadata[{idx}][value][compressed]', 'true')
@@ -817,9 +824,13 @@ class BlobStorage(Transformer):
         msgpack_bytes = msgspec.msgpack.encode(record)
         original_size = len(msgpack_bytes)
 
-        # Compression level 10: maximum compression
-        compressor = zstd.ZstdCompressor(level=10)
-        compressed = compressor.compress(msgpack_bytes)
+        # level goes in from_level: ZstdCompressor ignores level= when given compression_params.
+        params = zstd.ZstdCompressionParameters.from_level(
+            COMPRESSION_LEVEL, window_log=COMPRESSION_WINDOW_LOG, enable_ldm=True,
+        )
+        # One-shot compress() writes the content size the reader's decode guard needs.
+        # A compressor per call: they are not thread-safe.
+        compressed = zstd.ZstdCompressor(compression_params=params).compress(msgpack_bytes)
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
@@ -1713,7 +1724,7 @@ class BlobStorage(Transformer):
                         "key": "compression",
                         "value": {
                             "algorithm": "zstd",
-                            "level": 10,
+                            "level": COMPRESSION_LEVEL,
                             "format": "msgspec",
                             "version": "v1",
                             "compressed": True
