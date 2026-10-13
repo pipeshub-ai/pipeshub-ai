@@ -50,6 +50,7 @@ from app.modules.agents.context.knowledge_context import _build_knowledge_contex
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.modules.agents.context.user_context import _format_user_context
 from app.modules.agents.qna.chat_state import is_custom_agent_system_prompt
+from app.utils.env_utils import accuracy_feature_enabled
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
@@ -301,6 +302,12 @@ _NO_KNOWLEDGE_SOURCES = (
 )
 
 
+# Opt-in (follows HIGH_ACCURACY_MODE when unset): hybrid search embeds the
+# query and matches it against document text, where meta-phrasing is noise.
+# Unmeasured, so not yet shown to every model.
+_KEYWORD_SEARCH_QUERIES_ENV_VAR = "KEYWORD_SEARCH_QUERIES"
+
+
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
@@ -404,6 +411,14 @@ def _build_finding_information(
             "comparative or multi-part question needs several. If a call "
             "returns nothing useful, reformulate the query rather than "
             "repeating it or giving up."
+        )
+
+    if surfaces.retrieval is not None and accuracy_feature_enabled(_KEYWORD_SEARCH_QUERIES_ENV_VAR):
+        parts.append(
+            f"Query text for `{surfaces.retrieval}`: keyword-dense, the entities, "
+            "terms and dates as they would appear in a document (e.g. 'parental "
+            "leave policy Germany 2024'), with no instructions or meta-phrases "
+            "such as 'find', 'search for' or 'use the tool'."
         )
 
     if surfaces.retrieval is not None:
