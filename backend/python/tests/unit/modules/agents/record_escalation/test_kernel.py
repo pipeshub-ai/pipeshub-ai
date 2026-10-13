@@ -522,9 +522,19 @@ class TestPolicyText:
         full skips the fetch."""
         text = policy_text("dynamic_fetch_full_record", read_in_full=True)
         assert "UNLESS you already hold the record in full or nearly so" in text
-        assert "A fact seen in one block still needs the rest of the record" in text
         assert "the exact fact needed is already visible" not in text
         assert len(text) < 2000
+
+    def test_read_in_full_scope_sentence_includes_the_single_fact(self) -> None:
+        """"This covers ..." must scope the call itself and name the single
+        fact; placed right after a one-block sentence it read as narrowing
+        that sentence to empty lookups and whole-document questions."""
+        text = policy_text("dynamic_fetch_full_record", read_in_full=True)
+        skip, scope = text.split("UNLESS ", 1)[1].split(" This covers both", 1)
+        assert skip == "you already hold the record in full or nearly so, or metadata alone (status, assignee) settles the goal."
+        scope_sentence = scope.split(". Never infer", 1)[0]
+        assert "a single fact seen in one block that your answer rests on" in scope_sentence
+        assert "the rest of the record can revise, qualify or complete it" in scope_sentence
 
     def test_read_in_full_changes_only_the_skip_case(self) -> None:
         default = policy_text("dynamic_fetch_full_record")
@@ -534,9 +544,10 @@ class TestPolicyText:
             "ONE call, then answer — UNLESS the exact fact needed is already visible in a block "
             "you hold, or metadata alone (status, assignee) settles the goal. This covers both"
         ) in default
+        assert "a single fact seen in one block" not in default
         head, tail = default.split("UNLESS ", 1)
         assert full.startswith(head + "UNLESS ")
-        assert full.endswith(tail.split(" This covers both", 1)[1])
+        assert full.endswith(tail.split(". Never infer content from a title.", 1)[1])
 
 
 class TestPolicyTextCoversTheZeroContentPath:

@@ -241,10 +241,17 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     skip_case = (
         "you already hold the record in full or nearly so, or metadata alone "
-        f"(status, assignee) settles the goal. {ONE_BLOCK_IS_NOT_ENOUGH}"
+        "(status, assignee) settles the goal."
         if read_in_full else
         "the exact fact needed is already visible in a block you hold, or "
         "metadata alone (status, assignee) settles the goal."
+    )
+    # In the scope sentence, not after the skip clause, where "This covers
+    # both..." would read as narrowing the one-block rule to its two cases.
+    single_fact = (
+        ", and a single fact seen in one block that your answer rests on: the "
+        "rest of the record can revise, qualify or complete it"
+        if read_in_full else ""
     )
     return (
         f"## Reading Records in Full\n\n"
@@ -257,7 +264,7 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
         f"ONE call, then answer — UNLESS {skip_case} This covers both no content yet from lookup/"
         f"navigate/list_files, and incomplete coverage for a whole-document "
         f"property (a summary, risks or key points, a comparison, whether it "
-        f"mentions something anywhere). Never infer content from a title.\n\n"
+        f"mentions something anywhere){single_fact}. Never infer content from a title.\n\n"
         f"A retrieval result may include a candidate list showing how much of "
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "
