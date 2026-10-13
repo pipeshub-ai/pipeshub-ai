@@ -1250,3 +1250,156 @@ class TestReindexEdgeCases:
 
         assert db.record_batches == []
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
+
+
+class TestUnfinishedUserRead:
+    """A user list that stops part-way must not shrink who can see what.
+
+    Carol is on the second page of ``/user/list``. She is in the devs group, in the
+    Developers role by name, she leads ENG and the ENG scheme names her directly.
+    """
+
+    FIRST_PAGE = {
+        "values": [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com")],
+        "nextPage": f"{BASE}{API}/user/list?cursor=abc&maxResults=100",
+        "isLast": False,
+    }
+
+    @staticmethod
+    def _stub_carol_everywhere(jira) -> None:
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+        ]))
+        browse = "BROWSE_PROJECTS"
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": browse, "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": browse, "holder": {"type": "user", "parameter": "carol-key"}},
+            {"permission": browse, "holder": {"type": "projectLead"}},
+        ]})
+
+    def _second_page(self, jira, answer) -> None:
+        def user_list(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return answer()
+            return json_response(self.FIRST_PAGE)
+
+        jira.on("GET", f"{API}/user/list", user_list)
+
+    @staticmethod
+    def _access(db: JiraRecordsDb) -> dict[str, Any]:
+        return {
+            "devs": sorted(m.email for m in db.groups_saved["devs"]),
+            "developers": sorted(m.email for m in db.app_roles["ENG_10002"]),
+            "lead": [m.email for m in db.app_roles["ENG_projectLead"]],
+            "project": acl_summary(db.record_group_permissions["10000"]),
+        }
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
+            pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
+            pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+        ],
+    )
+    async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
+        self, jira, db, store, search, answer
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+        assert "carol@example.com" in before["devs"]
+        assert "carol@example.com" in before["developers"]
+        assert before["lead"] == ["carol@example.com"]
+        assert any(email == "carol@example.com" for *_, email in before["project"])
+
+        self._second_page(jira, answer)
+        logs = record_logs(connector)
+        await connector.run_sync()
+
+        assert self._access(db) == before
+        assert any("could not be read in full" in m for m in logged(logs, "warning"))
+        assert "1001" in db.records, "issues are still synced"
+
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+            return json_response({"values": [{"key": "alice-key"}, {"key": "dave-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "dave@example.com"], (
+            "dave's email is hidden, so only the lookup by his PipesHub email finds him"
+        )
+
+        def lookups(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("username") == "dave@example.com":
+                return json_response({"errorMessages": ["busy"]}, status=503)
+            return json_response([])
+
+        jira.on("GET", f"{API}/user/search", lookups)
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "dave@example.com"]
+
+    async def test_a_complete_read_that_drops_a_user_removes_them(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+
+        # Carol leaves Jira: the user list no longer has her, though older answers still name her.
+        self._second_page(jira, lambda: json_response({"values": [user("dave-key", "dave", None)], "isLast": True}))
+        await connector.run_sync()
+
+        after = self._access(db)
+        assert after["devs"] == ["alice@example.com"]
+        assert after["developers"] == ["alice@example.com"]
+        assert after["lead"] == []
+        assert not any(email == "carol@example.com" for *_, email in after["project"])
+
+    async def test_a_user_list_refused_from_the_first_page_fails_closed(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+
+        # The account cannot list users at all, so no one is kept on stale access.
+        jira.on("GET", f"{API}/user/list", json_response({"errorMessages": ["denied"]}, status=403))
+        await connector.run_sync()
+
+        assert db.groups_saved["devs"] == []
+
+    @pytest.mark.parametrize(
+        ("failing_start", "unfinished"),
+        [pytest.param("50", True, id="a later page"), pytest.param("0", False, id="the first page")],
+    )
+    async def test_older_jira_user_search_refused_part_way_is_unfinished_but_refused_outright_is_not(
+        self, jira, db, store, search, failing_start, unfinished
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+        page1 = [user(f"u{i}-key", f"u{i}", f"u{i}@corp.example") for i in range(50)]
+
+        def directory(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("username") != ".":
+                return json_response([])
+            if q.get("startAt") == failing_start:
+                return json_response({"errorMessages": ["denied"]}, status=401)
+            return json_response(page1)
+
+        jira.on("GET", f"{API}/user/search", directory)
+        connector, _ = await make_connector(db, store)
+
+        await connector._fetch_users()
+
+        assert connector._user_read_unfinished is unfinished

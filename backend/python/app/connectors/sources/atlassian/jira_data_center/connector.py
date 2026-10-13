@@ -200,6 +200,20 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
     return normalized
 
 
+def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
+    """Whether a failed user lookup left the user unknown rather than absent.
+
+    Rate limits and server errors (still failing after the client's retries) may pass,
+    so the user is unknown. A 401/403 is the account's lasting answer when the bulk user
+    list was refused too; when the bulk list was allowed, it means the token stopped
+    working part-way. Any other status (400, 404) answers the same way on every sync,
+    so it is treated as "no such user".
+    """
+    if status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
+        return not bulk_forbidden
+    return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+
 def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
     """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``."""
     if isinstance(payload, list):
@@ -411,6 +425,12 @@ class JiraDataCenterConnector(BaseConnector):
         # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
         # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
         self._user_bulk_incomplete: bool = False
+        # True when this sync's user read stopped before the end for a reason that may not
+        # repeat (a later page refused or unreadable, a failed email lookup). Users missing
+        # from it may only be unread, so the writes that replace members or grants from it
+        # are held back. A read refused from its first page is the account's lasting answer
+        # and does not set this: the sync then fails closed.
+        self._user_read_unfinished: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
@@ -674,8 +694,11 @@ class JiraDataCenterConnector(BaseConnector):
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
-            # Fetch and sync user groups (returns mapping for role resolution)
-            group_memberships = await self._sync_user_groups(jira_users)
+            # Fetch and sync user groups (returns mapping for role resolution). Saving a
+            # group replaces its members, so an unfinished user read leaves groups as stored.
+            group_memberships = None
+            if not self._user_read_unfinished:
+                group_memberships = await self._sync_user_groups(jira_users)
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -704,7 +727,12 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
-            if group_memberships is None:
+            if self._user_read_unfinished:
+                self.logger.warning(
+                    "Keeping the stored members of every group and project role: "
+                    "the Jira user list could not be read in full"
+                )
+            elif group_memberships is None:
                 # A role saved without a group's members would take their access away.
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
@@ -1166,6 +1194,7 @@ class JiraDataCenterConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._dc_name_to_source_id = {}
+        self._user_read_unfinished = False
 
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
@@ -1257,6 +1286,11 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
+        if self._user_read_unfinished:
+            self.logger.warning(
+                "⚠️ The Jira user list could not be read in full; every group's members and project "
+                "role, and the lead and access of projects that name a missing user, are kept as stored this sync"
+            )
         return list(resolved.values())
 
     async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
@@ -1294,6 +1328,9 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self._user_bulk_forbidden = True
+                    if users or cursor is not None:
+                        # Earlier pages were allowed, so this is not "no users".
+                        self._user_read_unfinished = True
                     self.logger.warning(
                         "⚠️ DC /user/list returned %s — configuring user lacks "
                         "'Browse users and groups'. Returning %s users collected "
@@ -1317,6 +1354,7 @@ class JiraDataCenterConnector(BaseConnector):
             payload = self._safe_json_parse(response, "users list")
             if payload is None:
                 self.logger.error("Failed to parse /user/list response, stopping list fetch")
+                self._user_read_unfinished = True
                 break
 
             batch_users, next_cursor = _parse_jira_dc_user_list_page(payload)
@@ -1357,6 +1395,9 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self._user_bulk_forbidden = True
+                    if users or start_at > 0:
+                        # Earlier pages were allowed, so this is not "no users".
+                        self._user_read_unfinished = True
                     self.logger.warning(
                         "⚠️ DC /user/search returned %s — configuring user lacks "
                         "'Browse users and groups'. Returning %s users collected "
@@ -1380,6 +1421,7 @@ class JiraDataCenterConnector(BaseConnector):
             users_batch = self._safe_json_parse(response, "users fetch")
             if users_batch is None:
                 self.logger.error("Failed to parse users response, stopping user fetch")
+                self._user_read_unfinished = True
                 break
 
             if isinstance(users_batch, list):
@@ -1475,6 +1517,8 @@ class JiraDataCenterConnector(BaseConnector):
         new_found = 0
         semaphore = asyncio.Semaphore(10)
         datasource = await self._get_fresh_datasource()
+        # Emails whose lookup failed without an answer, as opposed to "no such user".
+        failed_lookups: list[str] = []
 
         async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
             """Returns (user_key, email, displayName) if found, else None."""
@@ -1486,9 +1530,14 @@ class JiraDataCenterConnector(BaseConnector):
                     )
 
                     if response.status != HttpStatusCode.OK.value:
+                        if _is_unanswered_user_lookup(response.status, bulk_forbidden=self._user_bulk_forbidden):
+                            failed_lookups.append(email)
                         return None
 
                     results = self._safe_json_parse(response, f"user_search({email})")
+                    if results is None:
+                        failed_lookups.append(email)
+                        return None
                     if not results or not isinstance(results, list):
                         return None
 
@@ -1519,6 +1568,7 @@ class JiraDataCenterConnector(BaseConnector):
                     return (user_key, email, display_name)
                 except Exception as e:
                     self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
+                    failed_lookups.append(email)
                     return None
 
         batch_size = 20
@@ -1553,6 +1603,15 @@ class JiraDataCenterConnector(BaseConnector):
 
             if not skip_early_exit and new_found >= unresolved_count:
                 break
+
+        # A failed lookup matters unless the bulk list was complete and every user on it
+        # is now resolved; then the failed email cannot belong to anyone missing.
+        if failed_lookups and (skip_early_exit or not unresolved_user_keys <= resolved.keys()):
+            self._user_read_unfinished = True
+            self.logger.warning(
+                "⚠️ %s Jira DC user lookup(s) by email failed; those users may be missing this sync",
+                len(failed_lookups),
+            )
 
         return new_found
 
@@ -1869,6 +1928,14 @@ class JiraDataCenterConnector(BaseConnector):
                             email=resolved_email,
                             type=PermissionType.READ
                         ))
+                    elif self._user_read_unfinished:
+                        # The user may be missing only because the read stopped early.
+                        self.logger.warning(
+                            "Keeping the stored access of project %s: it grants a user who was not "
+                            "in the Jira user list, which could not be read in full",
+                            project_key,
+                        )
+                        return None
                     else:
                         self.logger.debug(f"  {project_key}: User permission skipped - cannot resolve key '{holder_param}'")
 
@@ -2514,6 +2581,13 @@ class JiraDataCenterConnector(BaseConnector):
                     if lead_identifier:
                         lead_user = user_by_account_id.get(lead_identifier)
 
+                        if not lead_user and self._user_read_unfinished:
+                            self.logger.warning(
+                                "Keeping the stored lead of project %s: the lead was not in the "
+                                "Jira user list, which could not be read in full",
+                                project_key,
+                            )
+                            continue
                         if not lead_user:
                             self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
                     else:
