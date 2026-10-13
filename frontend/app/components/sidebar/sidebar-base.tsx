@@ -26,7 +26,7 @@ import type { SidebarBaseProps } from './types';
  * secondary panel render side-by-side in a horizontal flex container.
  * This is used for "More Chats", "More items", etc.
  */
-export function SidebarBase({ header, children, footer, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
+export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HEIGHT, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
   const { t } = useTranslation();
   // Every hook runs before the mobile branch returns: isMobile flips after mount
   // and on resize, and a render with fewer hooks than the last one crashes React.
@@ -172,7 +172,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         {footer && (
           <Box
             style={{
-              height: `${FOOTER_HEIGHT}px`,
+              height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
               flexShrink: 0,
             }}
           >
@@ -225,7 +225,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {footer && (
         <Box
           style={{
-            height: `${FOOTER_HEIGHT}px`,
+            height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
             flexShrink: 0,
           }}
         >

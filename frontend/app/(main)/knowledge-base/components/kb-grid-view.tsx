@@ -3,7 +3,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { Flex, Box, Text, Checkbox, IconButton, DropdownMenu } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { FileIcon, FolderIcon } from '@/app/components/ui';
+import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
+import { EmptyBadge } from './empty-badge';
+import { rowRevealDelay } from '../utils/row-reveal';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
@@ -49,6 +51,7 @@ interface GridCardProps {
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
   onDownload?: (item: TableItem) => void;
+  revealIndex?: number;
 }
 
 function GridCard({
@@ -65,6 +68,7 @@ function GridCard({
   onMove,
   onDelete,
   onDownload,
+  revealIndex = 0,
 }: GridCardProps) {
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
@@ -399,6 +403,7 @@ function GridCard({
   return (
     <Flex
       ref={cardRef}
+      className="kb-row-in"
       gap="1"
       align="start"
       tabIndex={0}
@@ -407,6 +412,7 @@ function GridCard({
       aria-label={item.name}
       style={{
         height: '156px',
+        animationDelay: rowRevealDelay(revealIndex),
         backgroundColor: isSelected
           ? 'var(--accent-3)'
           : isHovered
@@ -467,28 +473,22 @@ function GridCard({
           {/* Icon and action buttons row */}
           <Flex align="center" justify="between">
             {/* File/Folder icon */}
-            {isFolder ? (
-              <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
-                <FolderIcon variant="default" size={20} color="var(--emerald-11)" />
-              </Box>
-            ) : isKnowledgeHubNode(item) && item.isPlaceholder ? (
-              <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
-                <MaterialIcon name="description" size={24} color="var(--slate-9)" />
-              </Box>
-            ) : (
-              <Box style={{ width: '24px', height: '24px', flexShrink: 0 }}>
-                <FileIcon
-                  extension={
-                    isKnowledgeHubNode(item)
-                      ? item.extension || item.mimeType?.split('/')[1]
-                      : item.fileType
-                  }
-                  size={24}
-                  fallbackIcon="description"
-                />
-              </Box>
-            )}
-            
+            <Box style={{ width: 24, height: 24, flexShrink: 0, display: 'flex', alignItems: 'center' }}>
+              <KbNodeNameIcon
+                isKnowledgeHub={isKnowledgeHubNode(item)}
+                nodeType={isKnowledgeHubNode(item) ? item.nodeType : undefined}
+                connector={isKnowledgeHubNode(item) ? item.connector : undefined}
+                subType={isKnowledgeHubNode(item) ? item.subType : undefined}
+                extension={isKnowledgeHubNode(item) ? item.extension : undefined}
+                mimeType={isKnowledgeHubNode(item) ? item.mimeType ?? undefined : undefined}
+                legacyType={!isKnowledgeHubNode(item) ? item.type : undefined}
+                legacyFileType={!isKnowledgeHubNode(item) ? item.fileType : undefined}
+                name={item.name}
+                size={20}
+                isPlaceholder={isKnowledgeHubNode(item) ? item.isPlaceholder : undefined}
+              />
+            </Box>
+
             {/* Action buttons - always present but styled differently */}
             <Flex gap="1" style={{ width: '80px' }} justify="end">
               <DropdownMenu.Root open={isMenuOpen} onOpenChange={setIsMenuOpen}>
@@ -627,23 +627,7 @@ function GridCard({
             {!isEditing && isKnowledgeHubNode(item) && (
               <DemoSourceBadge connectorId={item.connectorId} style={{ alignSelf: 'flex-start' }} />
             )}
-            {isFolder && !item.hasChildren && (
-              <Text
-                size="1"
-                style={{
-                color: 'var(--slate-a11)',
-                background: 'var(--surface-1)',
-                border: '1px solid var(--slate-a7)',
-                borderRadius: 'var(--radius-2)',
-                padding: 'var(--space-1) var(--space-2)',
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-                maxWidth: 'fit-content',
-                }}
-              >
-                Empty
-              </Text>
-            )}
+            {isFolder && !item.hasChildren && <EmptyBadge style={{ alignSelf: 'flex-start' }} />}
             <Text
               size="2"
               style={{
@@ -708,7 +692,7 @@ interface KbGridViewProps {
   };
   onSelectItem: (id: string) => void;
   onItemClick: (item: TableItem) => void;
-  onCursorChange?: (cursor: string | null) => void;
+  onCursorChange?: (cursor: string | null, direction?: 'next' | 'prev') => void;
   onLimitChange?: (limit: number) => void;
   onPreview?: (item: TableItem) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
@@ -755,9 +739,10 @@ export function KbGridView({
             gap: 'var(--space-3)',
           }}
         >
-          {items.map((item) => (
+          {items.map((item, index) => (
             <GridCard
               key={item.id}
+              revealIndex={index}
               item={item}
               isSelected={selectedItems.has(item.id)}
               showCheckbox={showCheckbox}
@@ -774,6 +759,7 @@ export function KbGridView({
             />
           ))}
         </Box>
+        <Box style={{ height: 96 }} />
       </Box>
 
       {/* Pagination */}
@@ -782,28 +768,33 @@ export function KbGridView({
           justify="between"
           align="center"
           style={{
+            position: 'relative',
+            zIndex: 16,
             padding: 'var(--space-2) var(--space-4)',
             borderTop: '1px solid var(--olive-3)',
-            borderBottom: '1px solid var(--olive-3)',
             background: 'var(--olive-2)',
-            backdropFilter: 'blur(8px)',
             flexShrink: 0,
           }}
         >
-          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+          <Text size="2" style={{ color: 'var(--neutral-9)', fontWeight: 400, lineHeight: '20px' }}>
             Showing {pagination.startIndex ?? 0}-{pagination.endIndex ?? 0} of {pagination.totalItems} Items
           </Text>
-          <Flex gap="3" align="center">
+          <Flex gap="2" align="center">
             {/* Previous Button */}
             <Flex
               align="center"
-              gap="1"
+              gap="2"
               style={{
+                height: 32,
+                padding: '0 12px',
+                borderRadius: 'var(--radius-2)',
                 cursor: pagination.hasPrev ? 'pointer' : 'not-allowed',
-                opacity: pagination.hasPrev ? 1 : 0.5,
-                color: 'var(--slate-11)',
+                color: pagination.hasPrev ? 'var(--neutral-11)' : 'var(--neutral-a8)',
               }}
-              onClick={() => pagination.hasPrev && onCursorChange?.(pagination.prevCursor ?? null)}
+              onClick={() => {
+                if (!pagination.hasPrev) return;
+                onCursorChange?.(pagination.prevCursor ?? null, 'prev');
+              }}
             >
               <MaterialIcon name="chevron_left" size={16} />
               <Text size="2">Previous</Text>
@@ -812,14 +803,18 @@ export function KbGridView({
             {/* Derived position — see kb-list-view for why it is not a page number. */}
             <Box
               style={{
-                padding: 'var(--space-1) var(--space-3)',
-                backgroundColor: 'var(--slate-3)',
+                height: 32,
+                padding: '0 12px',
+                backgroundColor: 'var(--neutral-a5)',
                 borderRadius: 'var(--radius-2)',
                 minWidth: '32px',
-                textAlign: 'center',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                opacity: 0.92,
               }}
             >
-              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
                 {Math.floor(((pagination.startIndex ?? 1) - 1) / Math.max(1, pagination.limit)) + 1}
               </Text>
             </Box>
@@ -827,20 +822,25 @@ export function KbGridView({
             {/* Next Button */}
             <Flex
               align="center"
-              gap="1"
+              gap="2"
               style={{
+                height: 32,
+                padding: '0 12px',
+                borderRadius: 'var(--radius-2)',
                 cursor: pagination.hasNext ? 'pointer' : 'not-allowed',
-                opacity: pagination.hasNext ? 1 : 0.5,
-                color: 'var(--slate-11)',
+                color: pagination.hasNext ? 'var(--neutral-11)' : 'var(--neutral-a8)',
               }}
-              onClick={() => pagination.hasNext && onCursorChange?.(pagination.nextCursor ?? null)}
+              onClick={() => {
+                if (!pagination.hasNext) return;
+                onCursorChange?.(pagination.nextCursor ?? null, 'next');
+              }}
             >
               <Text size="2">Next</Text>
               <MaterialIcon name="chevron_right" size={16} />
             </Flex>
 
             {/* Separator */}
-            <Box style={{ width: '1px', height: '20px', backgroundColor: 'var(--olive-3)' }} />
+            <Box style={{ width: '1px', height: '8px', backgroundColor: 'var(--neutral-9)' }} />
 
             {/* Rows per page selector */}
             <DropdownMenu.Root>
@@ -850,15 +850,16 @@ export function KbGridView({
                   gap="1"
                   style={{
                     cursor: 'pointer',
-                    padding: 'var(--space-1) var(--space-2)',
-                    backgroundColor: 'var(--slate-3)',
+                    height: 32,
+                    padding: '0 12px',
+                    backgroundColor: 'var(--neutral-a3)',
                     borderRadius: 'var(--radius-2)',
                   }}
                 >
-                  <Text size="2" style={{ color: 'var(--slate-12)' }}>
+                  <Text size="2" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '20px' }}>
                     {pagination.limit}
                   </Text>
-                  <MaterialIcon name="expand_less" size={14} color="var(--slate-11)" />
+                  <MaterialIcon name="expand_less" size={16} color="var(--neutral-11)" />
                 </Flex>
               </DropdownMenu.Trigger>
               <DropdownMenu.Content align="end" sideOffset={4}>

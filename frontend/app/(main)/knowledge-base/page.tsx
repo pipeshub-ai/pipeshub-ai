@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -20,7 +20,9 @@ import {
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
   ReindexScopeDialog,
+  ChatWidgetWrapper,
 } from './components';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
 import { SelectionActionBar } from '@/config';
@@ -593,7 +595,7 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number) => {
     allRecordsFetchRef.current?.abort();
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
@@ -617,6 +619,11 @@ function KnowledgeBasePageContent() {
         currentAllRecordsSort,
         currentPagination
       );
+      // Sending a cursor as well would repeat this page: the cursor wins.
+      if (page && page > 1) {
+        delete params.cursor;
+        params.page = page;
+      }
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
       let data;
@@ -2867,7 +2874,7 @@ function KnowledgeBasePageContent() {
 
     if (isAllRecordsMode) {
       if (allRecordsSidebarSelection.type === 'all') {
-        return 'All';
+        return 'All Records';
       } else if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
@@ -2885,6 +2892,48 @@ function KnowledgeBasePageContent() {
     allRecordsSearchQuery,
     searchQuery,
     allRecordsTableData?.currentNode?.name,
+  ]);
+
+  const chatScopeNode = useMemo((): MentionNode | null => {
+    if (isAllRecordsMode) {
+      const nodeId = searchParams.get('nodeId');
+      const nodeType = searchParams.get('nodeType');
+      const current = allRecordsTableData?.currentNode;
+      if (nodeId && nodeType && current?.name && current.id === nodeId) {
+        return {
+          id: nodeId,
+          name: current.name,
+          nodeType: current.nodeType || nodeType,
+          connector: '',
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'collection') {
+        return {
+          id: allRecordsSidebarSelection.id,
+          name: allRecordsSidebarSelection.name,
+          nodeType: 'kb',
+          connector: '',
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'connector' && allRecordsSidebarSelection.itemId) {
+        return {
+          id: allRecordsSidebarSelection.itemId,
+          name: allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType,
+          nodeType: 'app',
+          connector: allRecordsSidebarSelection.connectorType,
+        };
+      }
+      return null;
+    }
+    const current = tableData?.currentNode;
+    if (!current?.id || !current.name) return null;
+    return { id: current.id, name: current.name, nodeType: current.nodeType, connector: '' };
+  }, [
+    isAllRecordsMode,
+    searchParams,
+    allRecordsTableData?.currentNode,
+    allRecordsSidebarSelection,
+    tableData?.currentNode,
   ]);
 
   // All Records mode: Prepend "All Records" root breadcrumb
@@ -2976,18 +3025,34 @@ function KnowledgeBasePageContent() {
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
-          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
-          onCursorChange={(cursor) => {
-            if (isAllRecordsMode) {
-              useKnowledgeBaseStore.getState().setAllRecordsCursor(cursor);
-            } else {
+          onCursorChange={(cursor, direction) => {
+            if (!isAllRecordsMode) {
               setCollectionsCursor(cursor);
+              return;
             }
+            const nt = searchParams.get('nodeType') ?? undefined;
+            const nid = searchParams.get('nodeId') ?? undefined;
+            if (cursor) {
+              // Mark it seen first so the cursor effect does not fetch again.
+              prevAllRecordsCursorRef.current = cursor;
+              useKnowledgeBaseStore.getState().setAllRecordsCursor(cursor);
+              void fetchAllRecordsTableData(nt, nid);
+              return;
+            }
+            // hasNext without a cursor: setting null does not change the position, so the effect never fetches.
+            if (direction !== 'next' && direction !== 'prev') return;
+            const pag = useKnowledgeBaseStore.getState().allRecordsTableData?.pagination;
+            const limit = Math.max(1, pag?.limit || 1);
+            const current = pag?.page && pag.page > 0
+              ? pag.page
+              : Math.floor(((pag?.startIndex ?? 1) - 1) / limit) + 1;
+            const target = direction === 'next' ? current + 1 : Math.max(1, current - 1);
+            void fetchAllRecordsTableData(nt, nid, target > 1 ? target : undefined);
           }}
           onLimitChange={(limit) => {
             if (isAllRecordsMode) {
@@ -3015,40 +3080,46 @@ function KnowledgeBasePageContent() {
           refreshData={refreshDataAfterDelete}
         />
 
-        {/* Selection Action Bar - shows when items are selected.
-            Hidden in All Records "All" and connector views (mirrors the checkbox guard
-            above). Rows in those views are top-level aggregates that aren't individually
-            reindexable, and stale selections from a prior view shouldn't surface here. */}
-        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
-          <SelectionActionBar
-            selectedCount={selectedCount}
-            onDeselectAll={handleDeselectAll}
-            onChat={handleBulkChat}
-            onReindex={handleBulkReindex}
-            onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
-            deletePermissionDenied={!canDeleteCollection}
-            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-          />
-        )}
+        {/* Rows in the All Records "All" and connector views are whole sources: they
+            can scope a chat but are not reindexed from here. */}
+        <SelectionActionBar
+          selectedCount={selectedCount}
+          onDeselectAll={handleDeselectAll}
+          onChat={handleBulkChat}
+          onReindex={
+            isAllRecordsMode &&
+            (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')
+              ? undefined
+              : handleBulkReindex
+          }
+          onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
+          deletePermissionDenied={!canDeleteCollection}
+          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+        />
 
-        {/* Chat Bar (temporarily disabled)
-        {selectedCount === 0 &&
-        <Box
-          style={{ 
-            position: 'absolute',
-            bottom: 'var(--space-6)',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-          }}
-        >
-          <ChatWidgetWrapper
-            currentTitle={currentTitle}
-            selectedKbId={selectedKbId}
-            isAllRecordsMode={isAllRecordsMode}
-          />
-        </Box>
-        } */}
+        {selectedCount === 0 && (
+          <>
+            <Flex
+              justify="center"
+              style={{
+                position: 'absolute',
+                bottom: 64,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 'min(800px, calc(100% - 48px))',
+                zIndex: 20,
+                pointerEvents: 'none',
+              }}
+            >
+              <ChatWidgetWrapper
+                currentTitle={currentTitle}
+                selectedKbId={selectedKbId}
+                isAllRecordsMode={isAllRecordsMode}
+                scopeNode={chatScopeNode}
+              />
+            </Flex>
+          </>
+        )}
       </Flex>
 
       {/* Force reindex confirmation (table, grid, and sidebar) */}

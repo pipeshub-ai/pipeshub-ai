@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Box, Checkbox, Flex, Spinner, Text, Tooltip } from '@radix-ui/themes';
+import { Box, Checkbox, Flex, Text, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KnowledgeHubApi } from '@/app/(main)/knowledge-base/api';
+import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/app/(main)/knowledge-base/utils';
 import type { KnowledgeHubNode, NodeType } from '@/app/(main)/knowledge-base/types';
 import { KbNodeNameIcon } from '@/app/(main)/knowledge-base/utils/kb-node-name-icon';
 import { useChatStore } from '@/chat/store';
@@ -73,6 +74,8 @@ export function useNodeSelection(
         name: node.name,
         nodeType: node.nodeType,
         connector: node.connector ?? '',
+        extension: node.extension,
+        mimeType: node.mimeType,
         // An unplaced search result must not be recorded as a root: leaving the
         // place out lets the place lookup fill it in.
         ancestorIds: node.placeUnknown
@@ -80,7 +83,7 @@ export function useNodeSelection(
           : node.ancestorIds,
       },
     });
-  }, [node.id, node.name, node.nodeType, node.connector, node.ancestorIds, node.placeUnknown, setCollectionMetaCache, setCollectionNamesCache]);
+  }, [node.id, node.name, node.nodeType, node.connector, node.extension, node.mimeType, node.ancestorIds, node.placeUnknown, setCollectionMetaCache, setCollectionNamesCache]);
 
   // A selection restored from an earlier message comes without its place in
   // the tree; its row supplies it, so the nodes above it show as partly selected.
@@ -163,7 +166,7 @@ export function ExpandArrow({
       }}
       style={{
         width: CHEVRON_BOX_PX,
-        alignSelf: 'stretch',
+        height: CHEVRON_BOX_PX,
         flexShrink: 0,
         display: 'inline-flex',
         alignItems: 'center',
@@ -209,19 +212,25 @@ interface ChildrenState {
   nextCursor: string | null;
   status: 'loading' | 'ready' | 'error';
   loadingMore: boolean;
+  /** The node `items` belong to. */
+  loadedFor: string;
 }
 
-function useNodeChildren(nodeType: string, nodeId: string) {
-  const [state, setState] = useState<ChildrenState>({
-    items: [],
-    nextCursor: null,
-    status: 'loading',
-    loadingMore: false,
-  });
+const NO_CHILDREN: ChildrenState = { items: [], nextCursor: null, status: 'loading', loadingMore: false, loadedFor: '' };
+
+/**
+ * An empty `nodeId` loads nothing. When `nodeId` changes, as when the @ menu
+ * opens another level, what was loaded for the old node is dropped, and a
+ * response that arrives for it late is ignored: its cursor is not valid for
+ * any other node.
+ */
+export function useNodeChildren(nodeType: string, nodeId: string) {
+  const [state, setState] = useState<ChildrenState>(NO_CHILDREN);
+  const currentRef = useRef(nodeId);
 
   const load = useCallback(
     async (cursor: string | null) => {
-      setState((s) => (cursor ? { ...s, loadingMore: true } : { ...s, status: 'loading' }));
+      setState((s) => (cursor ? { ...s, loadingMore: true } : { ...NO_CHILDREN, items: s.loadedFor === nodeId ? s.items : [] }));
       try {
         const res = await KnowledgeHubApi.getNodeChildren(nodeType as NodeType, nodeId, {
           onlyContainers: false,
@@ -230,17 +239,20 @@ function useNodeChildren(nodeType: string, nodeId: string) {
           sortOrder: 'asc',
           ...(cursor ? { cursor } : {}),
         });
+        if (currentRef.current !== nodeId) return;
         setState((s) => {
-          const kept = cursor ? s.items : [];
+          const kept = cursor && s.loadedFor === nodeId ? s.items : [];
           const seen = new Set(kept.map((item) => item.id));
           return {
             items: [...kept, ...res.items.filter((item) => !seen.has(item.id))],
             nextCursor: res.pagination?.nextCursor ?? null,
             status: 'ready',
             loadingMore: false,
+            loadedFor: nodeId,
           };
         });
       } catch {
+        if (currentRef.current !== nodeId) return;
         setState((s) => (cursor ? { ...s, loadingMore: false } : { ...s, status: 'error' }));
       }
     },
@@ -248,16 +260,65 @@ function useNodeChildren(nodeType: string, nodeId: string) {
   );
 
   useEffect(() => {
-    void load(null);
-  }, [load]);
+    currentRef.current = nodeId;
+    if (nodeId) void load(null);
+    else setState(NO_CHILDREN);
+  }, [load, nodeId]);
 
+  const current = state.loadedFor === nodeId;
   return {
     ...state,
+    // Nothing loaded for this node yet means no page after it either.
+    nextCursor: current ? state.nextCursor : null,
     retry: () => void load(null),
     loadMore: () => {
-      if (state.nextCursor && !state.loadingMore) void load(state.nextCursor);
+      if (current && state.nextCursor && !state.loadingMore) void load(state.nextCursor);
     },
   };
+}
+
+export function TreeLoadShimmer({ indent }: { indent?: string }) {
+  const widths = ['72%', '54%', '64%'];
+  return (
+    <Flex direction="column" role="status" aria-busy="true" style={{ width: '100%' }}>
+      {widths.map((width, i) => (
+        <Flex
+          key={i}
+          align="center"
+          gap="2"
+          style={{
+            paddingLeft: indent,
+            height: 32,
+            animation: 'kb-row-in 380ms ease both',
+            animationDelay: `${i * 70}ms`,
+          }}
+        >
+          <Box
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: 3,
+              flexShrink: 0,
+              backgroundColor: 'var(--olive-4)',
+              animation: 'shimmer-pulse 1.4s ease-in-out infinite',
+              animationDelay: `${i * 70}ms`,
+            }}
+          />
+          <Box
+            style={{
+              height: 10,
+              width,
+              maxWidth: 160,
+              borderRadius: 4,
+              backgroundColor: 'var(--olive-4)',
+              animation: 'shimmer-pulse 1.4s ease-in-out infinite',
+              animationDelay: `${i * 70}ms`,
+            }}
+          />
+        </Flex>
+      ))}
+    </Flex>
+  );
 }
 
 /** The rows under an expanded node. Mounted on first expand, kept while collapsed. */
@@ -274,11 +335,7 @@ export function KnowledgeTreeChildren({
   const note: React.CSSProperties = { paddingLeft: indent, height: 'var(--space-6)' };
 
   if (status === 'loading') {
-    return (
-      <Flex align="center" style={note}>
-        <Spinner size="1" />
-      </Flex>
-    );
+    return <TreeLoadShimmer indent={indent} />;
   }
   if (status === 'error') {
     return (
@@ -309,9 +366,15 @@ export function KnowledgeTreeChildren({
   const ancestorIds = [...parent.ancestorIds, parent.id];
   return (
     <Flex direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
-      {items.map((item) => (
-        <KnowledgeTreeRow
+      {items.map((item, index) => (
+        <Box
           key={item.id}
+          style={{
+            animation: 'kb-row-in 320ms ease both',
+            animationDelay: `${Math.min(index, 12) * 40}ms`,
+          }}
+        >
+        <KnowledgeTreeRow
           node={{
             id: item.id,
             name: item.name,
@@ -327,6 +390,7 @@ export function KnowledgeTreeChildren({
           onSelectionChange={onSelectionChange}
           readOnly={readOnly}
         />
+        </Box>
       ))}
       {nextCursor ? (
         <Flex align="center" style={note}>
@@ -440,7 +504,7 @@ const placeAttempts = new Map<string, number>();
  * `nodes` give each id the type its lookup needs; a record group looked up as a
  * record is a 400.
  */
-function useNodePlaces(nodes: Array<{ id: string; nodeType: string }>): void {
+export function useNodePlaces(nodes: Array<{ id: string; nodeType: string }>): void {
   const metaCache = useChatStore((s) => s.collectionMetaCache);
   const setCollectionMetaCache = useChatStore((s) => s.setCollectionMetaCache);
   const [retryTick, setRetryTick] = useState(0);
@@ -506,7 +570,7 @@ function useNodePlaces(nodes: Array<{ id: string; nodeType: string }>): void {
   }, [unplaced, retryTick, setCollectionMetaCache]);
 }
 
-function useSelectionPlaces(filters: ChatKnowledgeFilters): void {
+export function useSelectionPlaces(filters: ChatKnowledgeFilters): void {
   const groupIds = new Set(filters.recordGroups ?? []);
   useNodePlaces(
     BELOW_APP_KEYS.flatMap((key) => filters[key] ?? []).map((id) => ({
@@ -675,7 +739,7 @@ interface SearchPage {
 interface SearchState {
   items: KnowledgeHubNode[];
   more: SearchPage[];
-  status: 'idle' | 'loading' | 'ready' | 'error';
+  status: 'idle' | 'loading' | 'ready' | 'error' | 'short';
   loadingMore: boolean;
 }
 
@@ -729,8 +793,9 @@ function useKnowledgeSearch(query: string, scope: KnowledgeSearchScope) {
 
   useEffect(() => {
     controllerRef.current?.abort();
-    if (!query) {
-      setState(IDLE_SEARCH);
+    const trimmed = query.trim();
+    if (trimmed.length < KB_MIN_SEARCH_QUERY_LENGTH) {
+      setState(trimmed ? { ...IDLE_SEARCH, status: 'short' } : IDLE_SEARCH);
       return;
     }
     if (rootsKey === '') {
@@ -803,15 +868,17 @@ export function KnowledgeSearchResults({
 
   const note: React.CSSProperties = { paddingLeft: 'var(--space-1)', minHeight: 'var(--space-6)' };
   if (status === 'idle') return null;
-  if (status === 'loading') {
+  if (status === 'short') {
     return (
-      <Flex align="center" gap="2" style={note} role="status" aria-live="polite">
-        <Spinner size="1" />
-        <Text size="1" style={{ color: 'var(--slate-9)' }}>
-          {t('chat.treeSearching')}
+      <Flex align="center" style={note} role="status">
+        <Text size="1" style={{ color: 'var(--neutral-a10)' }}>
+          {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
         </Text>
       </Flex>
     );
+  }
+  if (status === 'loading') {
+    return <TreeLoadShimmer />;
   }
   if (status === 'error') {
     return (
@@ -839,12 +906,18 @@ export function KnowledgeSearchResults({
           {t('chat.treeSearchMatches')}
         </Text>
       </Flex>
-      {shown.map((item) => {
+      {shown.map((item, index) => {
         const ancestorIds = item.nodeType === 'app' ? [] : metaCache[item.id]?.ancestorIds;
         const path = (ancestorIds ?? []).map((id) => metaCache[id]?.name).filter(Boolean);
         return (
-          <KnowledgeTreeRow
+          <Box
             key={item.id}
+            style={{
+              animation: 'kb-row-in 320ms ease both',
+              animationDelay: `${Math.min(index, 12) * 40}ms`,
+            }}
+          >
+          <KnowledgeTreeRow
             node={{
               id: item.id,
               name: item.name,
@@ -863,6 +936,7 @@ export function KnowledgeSearchResults({
             onSelectionChange={onSelectionChange}
             readOnly={readOnly}
           />
+          </Box>
         );
       })}
       {hasMore ? (

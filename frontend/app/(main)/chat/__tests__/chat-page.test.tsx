@@ -28,9 +28,10 @@ vi.mock('../components', async () => {
   const { useChatStore } = await import('../store');
   return {
     // Stands in for the real list: shows the text of each message in the open thread.
-    MessageList: () => {
+    MessageList: ({ composer }: { composer?: React.ReactNode }) => {
       const messages = useChatStore((s) => (s.activeSlotId ? s.slots[s.activeSlotId]?.messages : undefined));
       return (
+        <>
         <ul aria-label="Messages">
           {(messages ?? []).map((m, i) => (
             <li key={i}>
@@ -40,6 +41,8 @@ vi.mock('../components', async () => {
             </li>
           ))}
         </ul>
+        {composer}
+        </>
       );
     },
     ChatInputWrapper: () => <textarea aria-label="Message composer" />,

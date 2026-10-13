@@ -78,6 +78,9 @@ export interface IAppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  mentioned?: boolean;
 }
 
 /** The nodes a user selected for a turn, by the filter key each is sent under. */

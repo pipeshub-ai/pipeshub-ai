@@ -3,6 +3,7 @@
 import { useCallback, useEffect } from 'react';
 import { useThreadRuntime } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
@@ -144,7 +145,7 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[]) => {
+  const handleSend = async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
@@ -228,6 +229,7 @@ export function ChatInputWrapper() {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
           attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          mentionIds: mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined,
         },
       },
       startRun: true,

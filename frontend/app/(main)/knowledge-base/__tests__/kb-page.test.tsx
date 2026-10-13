@@ -1490,6 +1490,68 @@ describe('Knowledge base page — All Records', () => {
     expect(screen.getByText('All Records')).toBeTruthy();
   });
 
+  it('loads the next page of all records', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { cursor?: string }) => {
+      const second = params?.cursor === 'p2';
+      return hubResponse([second ? later : CONNECTOR_FILE], {
+        pagination: {
+          page: second ? 2 : 1,
+          limit: 50,
+          totalItems: 20,
+          totalPages: 2,
+          startIndex: second ? 11 : 1,
+          endIndex: second ? 20 : 10,
+          hasNext: !second,
+          hasPrev: second,
+          nextCursor: second ? null : 'p2',
+          prevCursor: second ? 'p1' : null,
+        },
+      });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByText('Next'));
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+      expect.objectContaining({ cursor: 'p2' }),
+      expect.anything(),
+    );
+  });
+
+  it('requests the next page number when the response has no cursor', async () => {
+    withCollections();
+    const later = hubNode({ id: 'rec-later', name: 'Later.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE' });
+    api.hub.getAllRootItems.mockImplementation(async (params?: { page?: number }) => {
+      const second = params?.page === 2;
+      return hubResponse([second ? later : CONNECTOR_FILE], {
+        pagination: {
+          page: second ? 2 : 1,
+          limit: 50,
+          totalItems: 20,
+          totalPages: 2,
+          startIndex: second ? 11 : 1,
+          endIndex: second ? 20 : 10,
+          hasNext: !second,
+          hasPrev: second,
+        },
+      });
+    });
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    fireEvent.click(screen.getByText('Next'));
+
+    expect(await screen.findByRole('row', { name: 'Later.xlsx' })).toBeTruthy();
+    expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 2 }),
+      expect.anything(),
+    );
+  });
+
   it('shows an error with a Try again button that reloads the records', async () => {
     withCollections();
     api.hub.getAllRootItems.mockRejectedValueOnce(new Error('offline')).mockResolvedValue(hubResponse([CONNECTOR_FILE]));

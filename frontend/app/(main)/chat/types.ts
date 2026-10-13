@@ -305,6 +305,8 @@ export interface CollectionMeta {
   connector: string;
   /** Ids of the nodes above it in the picker tree, root first (absent for a root). */
   ancestorIds?: string[];
+  extension?: string | null;
+  mimeType?: string | null;
 }
 
 export interface AppliedFilterNode {
@@ -312,6 +314,10 @@ export interface AppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  /** Named in the question with @. Absent on messages saved before this was kept. */
+  mentioned?: boolean;
 }
 
 export interface AppliedFilters {

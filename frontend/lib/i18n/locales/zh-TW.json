@@ -623,6 +623,8 @@
     "noCollectionsAvailable": "沒有可用的集合",
     "noCollectionsCreatePrompt": "沒有可用的集合。請建立新的集合。",
     "seeMoreConnectors": "查看更多連接器",
+    "connectMoreApps": "連接更多應用程式",
+    "connectMoreAppsHint": "接入更多來源，答案更準確。",
     "suggestedInWorkspace": "工作區建議",
     "createSubFolder": "建立子資料夾",
     "more": "更多",
@@ -1348,6 +1350,16 @@
     "treeSearching": "正在搜尋…",
     "treeSearchFailed": "搜尋失敗，請重試。",
     "treeSearchMatches": "資料夾和項目",
+    "nodeSearchTooShort": "請至少輸入 2 個字元",
+    "mentionNodes": "項目",
+    "mentionNodesLabel": "相符的項目",
+    "mentionTypeToSearch": "輸入名稱以搜尋",
+    "mentionSearching": "正在搜尋…",
+    "mentionNone": "沒有相符的項目",
+    "mentionYourApps": "你的應用程式",
+    "mentionCollections": "集合",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {
       "generated_other": "已產生 {{count}} 個產物",
       "newerVersion": "有較新的版本 (v{{version}})",
@@ -4822,7 +4834,8 @@
     "isAnyOf": "是其中之一",
     "loadingOptions": "正在載入選項…",
     "refreshingOptions": "正在重新整理選項…",
-    "loadingMore": "正在載入更多…"
+    "loadingMore": "正在載入更多…",
+    "clear": "清除{{label}}篩選"
   },
   "moveFolder": {
     "moving": "正在移動...",

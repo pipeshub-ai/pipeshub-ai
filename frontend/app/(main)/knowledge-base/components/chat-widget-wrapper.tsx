@@ -9,6 +9,7 @@ import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import type { PendingChatContext } from '@/lib/store/pending-chat-store';
 import { ChatApi } from '@/chat/api';
 import type { AttachmentRef } from '@/chat/types';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 
 interface ChatWidgetWrapperProps {
   /** Currently displayed title (collection name, folder name, etc.) */
@@ -17,6 +18,11 @@ interface ChatWidgetWrapperProps {
   selectedKbId: string | null;
   /** Whether we're in all-records mode */
   isAllRecordsMode: boolean;
+  /**
+   * The folder (or collection, or connector) currently open. A question
+   * with no `@` mention is filtered to this node. `@` searches under it.
+   */
+  scopeNode?: MentionNode | null;
 }
 
 /**
@@ -28,6 +34,7 @@ export function ChatWidgetWrapper({
   currentTitle,
   selectedKbId,
   isAllRecordsMode,
+  scopeNode,
 }: ChatWidgetWrapperProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -75,12 +82,15 @@ export function ChatWidgetWrapper({
   }, []);
 
   const handleSend = useCallback(
-    (message: string, attachments?: AttachmentRef[]) => {
+    (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
       // Build page context from KB state
+      const mentioned = mentions ?? [];
+      const selectedNodes = mentioned.length > 0 ? mentioned : scopeNode ? [scopeNode] : undefined;
+
       const collections: Array<{ id: string; name: string }> = [];
-      if (selectedKbId && currentTitle) {
+      if (!selectedNodes && selectedKbId && currentTitle) {
         collections.push({ id: selectedKbId, name: currentTitle });
       }
 
@@ -92,6 +102,7 @@ export function ChatWidgetWrapper({
         attachments,
         pageContext: {
           collections: collections.length > 0 ? collections : undefined,
+          selectedNodes,
           selectedRecordIds,
           sourceLabel: currentTitle || undefined,
         },
@@ -101,7 +112,7 @@ export function ChatWidgetWrapper({
       usePendingChatStore.getState().setPending(context);
       router.push('/chat');
     },
-    [selectedKbId, currentTitle, selectedSet, pathname, router],
+    [selectedKbId, currentTitle, selectedSet, scopeNode, pathname, router],
   );
 
   return (
@@ -113,6 +124,9 @@ export function ChatWidgetWrapper({
       onSend={handleSend}
       onUploadFile={handleUploadFile}
       onDeleteFile={handleDeleteFile}
+      mentionParent={
+        scopeNode ? { nodeType: scopeNode.nodeType, id: scopeNode.id } : null
+      }
     />
   );
 }
