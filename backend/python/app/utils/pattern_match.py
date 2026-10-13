@@ -7,11 +7,12 @@ import os
 import re
 import shlex
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
@@ -407,17 +408,36 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _report_llm_usage(
+    response: Any,  # noqa: ANN401 - the include_raw structured-output dict
+    on_llm_usage: Callable[[BaseMessage], None] | None,
+    logger_instance: logging.Logger,
+) -> None:
+    raw = response.get("raw") if isinstance(response, dict) else None
+    if on_llm_usage is None or not isinstance(raw, BaseMessage):
+        return
+    try:
+        on_llm_usage(raw)
+    except Exception:
+        # Usage accounting must not cost the grep commands it accounts for.
+        logger_instance.warning("generate_grep_command_via_llm: usage callback failed", exc_info=True)
+
+
 async def generate_grep_command_via_llm(
     query: str,
     llm: BaseChatModel,
     logger_instance: logging.Logger,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[str] | None:
     """Generate targeted grep commands via LLM structured output.
 
     Returns a list of 1-3 commands that passed ``validate_pattern_match_command``,
     or None on timeout, LLM failure, or when every command is rejected. A failed
     attempt is retried once while ``_LLM_GREP_TIMEOUT`` leaves room for it.
+
+    ``on_llm_usage`` receives the raw model message of every attempt that
+    returned, for its token usage; an attempt cut off by the timeout has none.
 
     Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
     in the Opik trace alongside the rest of the agent loop.
@@ -459,6 +479,7 @@ async def generate_grep_command_via_llm(
                 "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
             )
             continue
+        _report_llm_usage(response, on_llm_usage, logger_instance)
         commands = _parse_grep_response(response, logger_instance)
         valid_commands = _valid_llm_grep_commands(commands or [], logger_instance)
         if valid_commands:
@@ -983,6 +1004,7 @@ async def run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None = None,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate grep commands via LLM, run pipelines in parallel, dedup.
 
@@ -1005,7 +1027,7 @@ async def run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
-                found=found,
+                found=found, on_llm_usage=on_llm_usage,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1029,6 +1051,7 @@ async def _run_pattern_match_with_llm_grep(
     llm: Any | None,
     user_query: str | None,
     found: dict[str, dict[str, Any]],
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
     so the caller still has them if the total budget cancels this."""
@@ -1042,6 +1065,7 @@ async def _run_pattern_match_with_llm_grep(
             llm_grep_cmds = await generate_grep_command_via_llm(
                 query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
                 logger_instance=logger_instance, user_query=user_query,
+                on_llm_usage=on_llm_usage,
             )
             if llm_grep_cmds:
                 _grep_commands_cache[cache_key] = llm_grep_cmds

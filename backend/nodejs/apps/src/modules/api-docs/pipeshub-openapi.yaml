@@ -7103,6 +7103,15 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7309,6 +7318,15 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7540,6 +7558,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7711,6 +7738,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -27367,7 +27403,7 @@ paths:
 
         **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
 
-        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+        **Request body:** Send `userIds`, `teamIds`, or both. Either array may be omitted; a request that names neither, or sends both empty, returns **400**.
 
         Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
 
@@ -36817,15 +36853,28 @@ paths:
         stored value, so the configuration can be sent back as it was read. The
         response masks stored secrets the same way.<br><br>
         <b>Signing out:</b><br>
-        Only a change to <code>auth</code>, or a different top-level
-        <code>oauthConfigId</code>, signs the connector out and clears its OAuth
-        tokens. Sending <code>auth</code> back unchanged, with secrets as the mask,
-        keeps it signed in.<br><br>
-        <b>OAuth apps:</b><br>
-        A new secret in <code>auth</code> replaces only this connector's own stored
-        value. It does not change the <code>clientSecret</code> of a linked OAuth app,
-        which is what sign-in uses. To rotate that, update the OAuth app
-        (<code>PUT /oauth/{connectorType}/{configId}</code>).
+        A change to <code>auth</code>, a different top-level <code>oauthConfigId</code>,
+        or a linked OAuth app that now holds a different client signs the connector
+        out and clears its OAuth tokens. Sending <code>auth</code> back as it was read,
+        with secrets as the mask or in full, keeps it signed in.<br><br>
+        <b>OAuth apps (OAUTH connectors):</b><br>
+        An OAUTH connector signs in with the client ID and secret of its linked OAuth
+        app, so client credentials an admin sends in <code>auth</code> go into an app,
+        as on <code>PUT /{connectorId}/config/auth</code>:
+        <ul>
+          <li>On a connector with no app, an app is created from them and linked
+          (<code>auth.oauthConfigId</code> in the response) once every required OAuth
+          field is present; until then the values are kept on the connector.</li>
+          <li>On a linked connector, changed values update the app named in
+          <code>auth.oauthConfigId</code>, and only the fields that changed. Without that
+          field a new app is created and linked; the previously linked app, which other
+          connectors may share, is not changed.</li>
+          <li>The new app is named <code>auth.oauthInstanceName</code>, or else after the
+          connector.</li>
+        </ul>
+        A linked connector stores no copy of its app's secret fields: they are not
+        stored, and not returned, in <code>config.auth</code>. Its client ID and provider
+        URLs are the app's. Only an admin's credentials create or change an app.
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
@@ -36859,10 +36908,23 @@ paths:
           description: |
             Invalid configuration or connector is active.
             Disable connector before updating.
+            For an OAUTH connector also: a new client ID sent without its client
+            secret; a replacement OAuth app that would lack a required field; or a
+            client secret sent while the connector still lacks its own authorize and
+            token URLs (ServiceNow). Nothing is stored.
         '401':
           description: Unauthorized
         '404':
-          description: Connector not found
+          description: Connector, or the OAuth app named in <code>auth.oauthConfigId</code>, not found
+        '409':
+          description: |
+            An OAuth app with the name the new app would take already exists in the
+            organization. Send a different <code>auth.oauthInstanceName</code>, or name the
+            app to update in <code>auth.oauthConfigId</code>.
+        '500':
+          description: |
+            The OAuth app or the connector's settings could not be stored. An app this
+            request created is removed, and an app it updated is put back.
 
   /connectors/{connectorId}/config/auth:
     put:

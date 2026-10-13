@@ -46,7 +46,9 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -71,6 +73,7 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
@@ -530,6 +533,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     prefetch_result.ranked_results,
                     prefetch_result.virtual_record_id_to_result,
                 )
+                note_retrieved_by(context.tool_state, "prefetch", [
+                    (vrid, record.get("id"), record.get("record_name"))
+                    for vrid, record in prefetch_result.virtual_record_id_to_result.items()
+                    if isinstance(record, dict)
+                ])
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`
@@ -617,6 +625,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ensure_fetch_full_record_available(
                     context, registry=_runtime.tool_registry,
                 )
+            # After the merge above, so the frame reports what actually
+            # reached the model. Emitted even when prefetch was skipped or
+            # found nothing, so a consumer can tell those apart.
+            await emit_prefetch_retrieval_context(
+                context, scheduled=prefetch_task is not None, result=prefetch_result,
+            )
             if resolved_attachments.context_text:
                 goal.constraints.append(resolved_attachments.context_text)
 
@@ -624,12 +638,15 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
                 )
+                await emit_run_usage(context, agent, model=model_name or None)
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
                 async for event in agent.stream(goal):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+
+                await emit_run_usage(context, agent, result, model=model_name or None)
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(
@@ -646,6 +663,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
+            # What the turn spent before failing; nothing when the frame
+            # already went out on the success path.
+            await emit_run_usage(context, agent, model=model_name or None)
             error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)

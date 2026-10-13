@@ -7,6 +7,9 @@ links to every merged PR. Generated with the `release-changelog` skill
 
 | Version | Date | Channel | Summary |
 |---|---|---|---|
+| [0.9.1](0.9.1.md) | September 28, 2026 | Stable | OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0 |
+| [0.9.0](0.9.0.md) | September 28, 2026 | Stable | Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors |
+| [0.8.0](0.8.0.md) | September 14, 2026 | Stable | Fair scheduling across connectors, an indexing pipeline that holds up under load, and Redis Cluster readiness |
 | [0.7.0](0.7.0.md) | August 26, 2026 | Stable | Personal access tokens, a GitHub connector, AWS Bedrock, and a one-command installer |
 | [0.6.0](0.6.0.md) | August 10, 2026 | Stable | The new agent loop ships stable, and the query service gets ~1.8× faster |
 | [0.6.0-beta](0.6.0-beta.md) | August 1, 2026 | Beta | New agent loop, standalone parsing & extraction services, OpenSearch arrives |

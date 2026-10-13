@@ -270,6 +270,7 @@ export async function fetchDeletedAgentKeysForUser(
 export {
   assignAgentCapabilitiesToPayload,
   assignCallerContextToAiPayload,
+  assignRetrievalContextToPayload,
   assignToolsToPayload,
   parseChatMode,
 } from '../utils/ai-chat-payload';

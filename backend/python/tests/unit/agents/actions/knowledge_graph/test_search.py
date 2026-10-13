@@ -873,6 +873,59 @@ class TestGrepHitsDoNotDisplaceLoadedRecords:
         assert records["vr-2"]["recordName"] == "sow.pdf"
 
 
+class TestRetrievalLayerProvenance:
+    """With the opt-in trace on, each record a search shows is noted with the
+    layer that found it: the semantic search, grep, or both."""
+
+    @staticmethod
+    async def _search(**extra: Any) -> dict[str, Any]:  # noqa: ANN401
+        loaded = {"id": "rec-1", "virtual_record_id": "vr-1", "record_name": "msa.pdf"}
+
+        async def flatten(
+            search_results, blob_store, org_id, is_multimodal_llm, vr_map, *args, **kwargs,
+        ) -> list[dict[str, Any]]:
+            vr_map["vr-1"] = loaded
+            return [{"virtual_record_id": "vr-1", "block_index": 0}]
+
+        async def merge(**kwargs) -> list[dict]:
+            graph_record = {"_key": "rec-2", "virtualRecordId": "vr-2", "recordName": "sow.pdf"}
+            kwargs["virtual_record_id_to_result"]["vr-2"] = graph_record
+            return [{"virtual_record_id": "vr-2", "graph_record": graph_record}]
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [{"virtual_record_id": "vr-1", "block_index": 0}],
+            "virtual_to_record_map": {},
+        }
+        state = {**_state(retrieval), **extra}
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep_hits = [{"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-2"}]
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep_hits)), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
+                patch(f"{search_mod}.get_flattened_results", side_effect=flatten), \
+                patch(f"{search_mod}.BlobStorage"):
+            await execute_search(state, "annual fee")
+        return state
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_each_record_lists_every_layer_that_found_it(self, mock_parse) -> None:
+        state = await self._search(include_retrieval_context=True)
+
+        provenance = state["retrieved_by"]
+        assert provenance["vr-1"].layers == ["vector", "pattern_match"]
+        assert provenance["vr-2"].layers == ["pattern_match"], "found only by grep"
+        assert (provenance["vr-2"].record_id, provenance["vr-2"].record_name) == ("rec-2", "sow.pdf")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_nothing_is_kept_unless_the_trace_was_asked_for(self, mock_parse) -> None:
+        state = await self._search()
+
+        assert "retrieved_by" not in state
+
+
 # ---------------------------------------------------------------------------
 # resolve_entity_filter_groups + execute_search entity-filter wiring
 # ---------------------------------------------------------------------------

@@ -42,6 +42,7 @@ from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
 from app.agents.agent_loop.hooks import CitationCollector
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
@@ -439,6 +440,8 @@ async def run_agent_loop_stream(
                     context, goal.description, clarifying_questions,
                     event_sink=context.event_sink,
                 )
+                # The intent call that asked the question has been paid for.
+                await emit_run_usage(context, agent, model=model_name or None)
                 run_finished = True
             else:
                 collector = CitationCollector(context)
@@ -450,6 +453,12 @@ async def run_agent_loop_stream(
                     run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+
+                # This path has no prefetch, so there is no prefetch frame to
+                # emit; tool `retrieval_context` frames come from the factory
+                # hook, and usage totals from here — the same contract the
+                # chat route gives, minus a stage that does not exist.
+                await emit_run_usage(context, agent, result, model=model_name or None)
 
                 finalizer = AnswerFinalizer(context, collector)
                 # Map the internal Confidence enum (low/medium/high) to the
@@ -486,6 +495,9 @@ async def run_agent_loop_stream(
                 run_finished = bool(result.success)
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
+            # What the turn spent before failing; nothing when the frame
+            # already went out on the success path.
+            await emit_run_usage(context, agent, model=model_name or None)
             error_code, user_message = classify_exception(exc)
             # Genuine unhandled failure (never reached AnswerFinalizer's
             # graceful error-answer path) -- RUN_ERROR in AG-UI mode, same

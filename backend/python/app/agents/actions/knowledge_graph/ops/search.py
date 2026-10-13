@@ -24,11 +24,13 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
+from app.modules.retrieval.provenance import note_retrieved_by
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ReciprocalRankFusionMerger,
@@ -106,6 +108,36 @@ def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
     for hit, score in fused:
         hit["score"] = score
     return [hit for hit, _ in fused]
+
+
+def _note_provenance(
+    state: "ChatState",
+    search_results: list[dict[str, Any]],
+    shown: dict[str, Any],
+    pm_record_entries: list[dict[str, Any]],
+    raw_pattern_records: list[dict[str, Any]],
+) -> None:
+    """Note which layer surfaced each record this search shows (opt-in trace only)."""
+    semantic_vrids = {hit.get("virtual_record_id") for hit in search_results if isinstance(hit, dict)}
+    grep_vrids = {record.get("virtual_record_id") for record in raw_pattern_records}
+    shown_refs = [
+        (vrid, record.get("id"), record.get("record_name"))
+        for vrid, record in shown.items() if isinstance(record, dict)
+    ]
+    note_retrieved_by(state, "vector", [ref for ref in shown_refs if ref[0] in semantic_vrids])
+    pm_refs = [
+        (
+            entry.get("virtual_record_id"),
+            graph_record.get("_key") or graph_record.get("id"),
+            graph_record.get("recordName") or graph_record.get("title"),
+        )
+        for entry in pm_record_entries
+        if isinstance(graph_record := entry.get("graph_record"), dict)
+    ]
+    note_retrieved_by(
+        state, "pattern_match",
+        [*(ref for ref in shown_refs if ref[0] in grep_vrids), *pm_refs],
+    )
 
 
 def resolve_entity_filter_groups(
@@ -429,6 +461,7 @@ async def execute_search(
                     logger_instance=logger_instance,
                     llm=state.get("llm"),
                     user_query=state.get("query"),
+                    on_llm_usage=grep_generation_usage_reporter(state),
                 )
             )
 
@@ -650,6 +683,10 @@ async def execute_search(
         # that is still an empty search and must answer like one.
         if not final_results and not pm_record_entries:
             return _empty_result()
+
+        _note_provenance(
+            state, search_results, virtual_record_id_to_result, pm_record_entries, raw_pattern_records,
+        )
 
         # Accumulate into state for citation pipeline
         from app.agents.actions.retrieval.retrieval import _dedupe_append_final_results
