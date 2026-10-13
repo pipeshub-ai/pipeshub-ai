@@ -435,6 +435,29 @@ describe('log-redaction.utils', () => {
       ['/debug?a=1&db=redis://:pass#TAILSECRET@redis:6379/0', ['TAILSECRET']],
       // A sensitive name that carries its own value after an encoded `=`.
       ['/cb?X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1', ['SECRETSIG']],
+      // A password that starts like a port, or with a separator.
+      ['mongodb://root:%2Fab%2Fcd==@mongo:27017/db', ['ab/cd', 'ab%2Fcd']],
+      ['https://user:8080%2Fhunter2@host/db', ['hunter2']],
+      ['redis://:%2Fhunter2@redis:6379/0', ['hunter2']],
+      ['postgres://app:%3Fmore%40pg/db', ['more']],
+      ['/debug?db=mongodb://root:%2Fab%2Fcd==@mongo:27017/db', ['ab/cd', 'ab%2Fcd']],
+      ['postgres://app:1234/xsecret@pg/db', ['xsecret']],
+      // A user name that holds an `@`.
+      ['mongodb://alice@example.com:hunter2@mongo:27017/db', ['hunter2']],
+      ['postgres://alice@example.com:sec/ret@pg/db', ['sec/ret', 'sec']],
+      ['smtp://alice@example.com:hunter2@mail.internal:587', ['hunter2']],
+      ['//alice@example.com:hunter2@host/db', ['hunter2']],
+      ['mongodb://ops@company.com:s3cret@mongo1:27017,mongo2:27017/db', ['s3cret']],
+      ['https://alice@example.com:hunter2%3Fextra@host/db', ['hunter2', 'extra']],
+      [
+        `/debug?db=${encodeURIComponent('mongodb://alice@example.com:hunter2@mongo:27017/db')}`,
+        ['hunter2'],
+      ],
+      // Spaces in the password.
+      ['https://user:correct horse@host/db', ['correct', 'horse']],
+      ['https://user:pass word@host/db?page=1', ['pass', 'word']],
+      // A replaced host that had held `?code`, before a value starting with `?`.
+      ['/login?returnTo%253D//user:?HEADX@TAILX@host/cb%253Fcode%3D?HEADX@TAILX', ['HEADX', 'TAILX']],
     ] as const) {
       it(`does not log the secret in ${url}`, () => {
         const out = decodeAll(redactSensitiveQueryParams(url))
@@ -473,7 +496,19 @@ describe('log-redaction.utils', () => {
     const SECRETS = ['HEADX', 'HEADX%26TAILX', 'HEADX%23TAILX', 'HEADX%40TAILX', 'HEADX/TAILX']
     // A password may also hold a raw `?`, `#` or `@`: each is then encoded
     // exactly as much as the separators around it.
-    const PASSWORD_SECRETS = [...SECRETS, 'HEADX?TAILX', 'HEADX#TAILX', 'HEADX@TAILX']
+    // It may also start with a separator or a port-like number, or hold spaces.
+    const PASSWORD_SECRETS = [
+      ...SECRETS,
+      'HEADX?TAILX',
+      'HEADX#TAILX',
+      'HEADX@TAILX',
+      '/HEADX/TAILX',
+      '?HEADX@TAILX',
+      '#HEADX',
+      '8080/HEADX',
+      '8080%2FHEADX',
+      'HEADX TAILX',
+    ]
     const MARKERS = ['HEADX', 'TAILX']
     const QUERY_TEMPLATES = [
       (s: string) => `/cb?code=${s}&page=1`,
@@ -494,12 +529,16 @@ describe('log-redaction.utils', () => {
       (s: string) => `postgres://app:${s}@pg/db`,
       (s: string) => `//user:${s}@host.example/db`,
       (s: string) => `https:user:${s}@host.example/db`,
+      // A user name that holds an `@`.
+      (s: string) => `mongodb://alice@example.com:${s}@mongo:27017/db`,
+      (s: string) => `//alice@example.com:${s}@host/db`,
     ]
     // Nested in a query, where a raw `#` would end the outer URL first.
     const NESTED_PASSWORD_TEMPLATES = [
       (s: string) => `/debug?db=postgres://app:${s}@pg/db`,
       (s: string) => `/debug?db=//user:${s}@host/db`,
       (s: string) => `/login?returnTo=//user:${s}@host/cb?code=${s}`,
+      (s: string) => `/debug?db=mongodb://alice@example.com:${s}@mongo:27017/db`,
     ]
     const SEPARATORS = ['=', '&', '?', '#', '@', ':', ';']
 
@@ -541,7 +580,7 @@ describe('log-redaction.utils', () => {
           checked += 1
         }
       }
-      expect(checked).to.be.greaterThan(10000)
+      expect(checked).to.be.greaterThan(20000)
     })
   })
 
@@ -630,6 +669,7 @@ describe('log-redaction.utils', () => {
         ['code%20%3DSECRETTOKEN', 'SECRETTOKEN'],
         [`db=${encodeURIComponent('//user:hunter2@host/db')}`, 'hunter2'],
         ['X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1', 'SECRETSIG'],
+        [`db=${encodeURIComponent('mongodb://alice@example.com:hunter2@mongo:27017/db')}`, 'hunter2'],
       ]) {
         const logged = JSON.stringify(redactQueryForLog(querystring.parse(raw)))
         expect(decodeAll(logged), logged).to.not.contain(secret)

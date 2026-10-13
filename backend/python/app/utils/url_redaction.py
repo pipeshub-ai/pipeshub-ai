@@ -132,10 +132,14 @@ _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
 # protocol-relative `//`, or `scheme:` written without the `//`.
 _USERINFO_START = re.compile(r"^(?:[a-z][a-z0-9+.-]*:)?//|^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _USERINFO_COLON = re.compile(r":|%(?:25)*3a", re.IGNORECASE)
-# A user name never holds the end of an authority, raw or encoded.
-_NOT_A_USER = re.compile(r"[\s/?#@\[\]]|%(?:25)*(?:2f|3f|23|40)", re.IGNORECASE)
-# `host:8080/…` is a port, not a password: digits, then the authority ends.
-_PORT = r"\d*(?:$|[\s/?#&;,]|%(?:25)*(?:2f|3f|23|26|3b|2c))"
+# A user name never holds the end of an authority, raw or encoded. It may
+# hold an `@` (`alice@example.com:pw@host`).
+_NOT_A_USER = re.compile(r"[\s/?#\[\]]|%(?:25)*(?:2f|3f|23)", re.IGNORECASE)
+# `host:8080/…` is a port, not a password: one or more digits, then a raw `/`,
+# `?`, `#`, `,` (several hosts), whitespace or the end, and no `@` raw or
+# encoded before the query, fragment or end. `app:1234/x@host` is a password;
+# `localhost:3001/invite?email=a@b.com` is a port.
+_PORT = r"\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:[?#]|$)"
 _ANY_AT = re.compile(r"@|%(?:25)*40", re.IGNORECASE)
 # Query or fragment syntax, raw or encoded, inside what is read as a password.
 _QUERY_MARK = re.compile(r"[?#;&]|%(?:25)*(?:3f|23|3b|26)", re.IGNORECASE)
@@ -147,13 +151,13 @@ def _split_password_url(url: str) -> tuple[str, str, str] | None:
     none. Kept deliberately simple, since every finer rule has missed an
     encoding; it matches the Node helper:
 
-    - The user name runs to the first ``:`` and holds no ``/``, ``?``, ``#``
-      or ``@``.
-    - If digits and then the end of the authority follow that ``:``, it is a
-      port (``localhost:3000/…``), not a password.
-    - Otherwise everything up to the last ``@`` is the password, whatever it
-      holds (``/``, ``?``, ``#``, a further ``@``, raw or encoded). Nothing is
-      decoded, so the text after that ``@`` stays exactly as written.
+    - The user name runs to the first ``:`` and holds no ``/``, ``?`` or
+      ``#``; it may hold an ``@``.
+    - If a port follows that ``:`` (see ``_PORT``), it is not a password.
+    - Otherwise everything up to the last ``@`` in the rest of the text is
+      the password, whatever it holds (``/``, ``?``, ``#``, spaces, a further
+      ``@``, raw or encoded). Nothing is decoded, so the text after that
+      ``@`` stays exactly as written.
     - The host after it is kept only when that ``@`` is the only one and no
       query or fragment syntax comes before it. Otherwise either reading
       could put part of a secret there, so the host is replaced too.
@@ -175,15 +179,14 @@ def _split_password_url(url: str) -> tuple[str, str, str] | None:
     rest = after[colon.end():]
     if re.match(_PORT, rest, re.IGNORECASE):
         return None
-    token = re.split(r"\s", rest, maxsplit=1)[0]
-    ats = list(_ANY_AT.finditer(token))
+    ats = list(_ANY_AT.finditer(rest))
     if not ats:
         if not start.group().endswith("//"):
             return None
-        query = re.search(r"[?#]|%(?:25)*(?:3f|23)", token, re.IGNORECASE)
-        return start.group(), user, rest[query.start() if query else len(token) :]
+        query = re.search(r"[?#]|%(?:25)*(?:3f|23)", rest, re.IGNORECASE)
+        return start.group(), user, rest[query.start() :] if query else ""
     last = ats[-1]
-    settled = len(ats) == 1 and not _QUERY_MARK.search(token[: last.start()])
+    settled = len(ats) == 1 and not _QUERY_MARK.search(rest[: last.start()])
     return start.group(), user, "@" + (rest[last.end() :] if settled else REDACTED)
 
 
@@ -329,24 +332,17 @@ def redact_sensitive_query_params(url: str) -> str:
 # wholesale instead of trusting the parse that missed it.
 _MAX_SCAN_LAYERS = 10
 # The shapes `_split_password_url` reads, anywhere in the text: a user name
-# after `//`, then a `:` followed by neither a port nor the redaction marker
-# (with or without an `@` yet), or a `scheme:user:password@` with no `//`;
-# and a redacted password with its `@` still to come.
+# (which may hold an `@`) after `//`, or a `scheme:user:` with no `//`, then a
+# `:` followed by neither a port nor `REDACTED@`, and an `@` somewhere after
+# it, past any spaces. A `user:REDACTED` with an `@` still to come is caught
+# too: the redaction stopped short of the real end of the password.
 _PASSWORD_URL = re.compile(
     "|".join(
-        [
-            *(
-                rf"{head}(?!REDACTED)(?!{_PORT})"
-                for head in (
-                    r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#@:\[\]]*:",
-                    r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#@:\[\]]+:(?=[^\s@]*@)",
-                )
-            ),
-            # A password cut short at a `?` or `#` with its `@` still to come:
-            # a raw `#` ended the outer URL inside it, and the rest is in the
-            # fragment.
-            r"//[^\s/?#@:\[\]]*:REDACTED(?!@)[^\s@]*@",
-        ]
+        rf"{head}(?!REDACTED@)(?!{_PORT})[^@]*@"
+        for head in (
+            r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#:\[\]]*:",
+            r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#:\[\]]+:",
+        )
     ),
     re.IGNORECASE,
 )
@@ -354,6 +350,9 @@ _REDACTED_VALUES = frozenset({"", REDACTED, "REDACTED", "%5BREDACTED%5D", "%5bre
 
 
 _ENDS_IN_MARKER = re.compile(r"(?:^|[^a-zA-Z0-9])\[?REDACTED\]?$")
+# The same, when the value starts with a separator (`[REDACTED]=?<code>`): a
+# marker followed by `=` and anything but an empty value or another marker.
+_MARKER_THEN_VALUE = re.compile(r"(?:^|[^a-zA-Z0-9])\[?REDACTED\]?=(?!=*(?:$|[&#;])|\[REDACTED\]|REDACTED\b)")
 
 
 def _shows_secret_pair(layer: str) -> bool:
@@ -364,6 +363,8 @@ def _shows_secret_pair(layer: str) -> bool:
     that ends in a redaction marker also counts: the marker may have
     replaced the sensitive name itself (``//u:p@[REDACTED]=<code>``, where
     the host held ``…?code``)."""
+    if _MARKER_THEN_VALUE.search(layer):
+        return True
     for segment in re.split(r"[?&#;]", layer):
         parts = segment.split("=")
         for k in range(len(parts) - 1):

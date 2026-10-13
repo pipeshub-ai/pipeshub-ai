@@ -266,9 +266,13 @@ const SCHEME = /^([a-z][a-z0-9+.-]*:\/\/)/i;
 const USERINFO_START = /^(?:[a-z][a-z0-9+.-]*:)?\/\/|^[a-z][a-z0-9+.-]*:/i;
 const USERINFO_COLON = /:|%(?:25)*3a/i;
 // A user name never holds the end of an authority, raw or encoded.
-const NOT_A_USER = /[\s/?#@[\]]|%(?:25)*(?:2f|3f|23|40)/i;
-// `host:8080/…` is a port, not a password: digits, then the authority ends.
-const PORT = /^\d*(?:$|[\s/?#&;,]|%(?:25)*(?:2f|3f|23|26|3b|2c))/i;
+// A user name may hold an `@` (`alice@example.com:pw@host`).
+const NOT_A_USER = /[\s/?#[\]]|%(?:25)*(?:2f|3f|23)/i;
+// `host:8080/…` is a port, not a password: one or more digits, then a raw
+// `/`, `?`, `#`, `,` (several hosts), whitespace or the end, and no `@` raw
+// or encoded before the query, fragment or end. `app:1234/x@host` is a
+// password; `localhost:3001/invite?email=a@b.com` is a port.
+const PORT = /^\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:[?#]|$)/i;
 const ANY_AT = /@|%(?:25)*40/gi;
 // Query or fragment syntax, raw or encoded, inside what is read as a password.
 const QUERY_MARK = /[?#;&]|%(?:25)*(?:3f|23|3b|26)/i;
@@ -284,12 +288,13 @@ interface PasswordUrl {
  * name, and what follows it, or return null when there is none.
  *
  * Kept deliberately simple, since every finer rule has missed an encoding:
- * - The user name runs to the first `:` and holds no `/`, `?`, `#` or `@`.
- * - If digits and then the end of the authority follow that `:`, it is a
- *   port (`localhost:3000/…`), not a password.
- * - Otherwise everything up to the last `@` is the password, whatever it
- *   holds (`/`, `?`, `#`, a further `@`, raw or encoded). Nothing is
- *   decoded, so the text after that `@` stays exactly as written.
+ * - The user name runs to the first `:` and holds no `/`, `?` or `#`; it may
+ *   hold an `@`.
+ * - If a port follows that `:` (see `PORT`), it is not a password.
+ * - Otherwise everything up to the last `@` in the rest of the text is the
+ *   password, whatever it holds (`/`, `?`, `#`, spaces, a further `@`, raw
+ *   or encoded). Nothing is decoded, so the text after that `@` stays
+ *   exactly as written.
  * - The host after it is kept only when that `@` is the only one and no
  *   query or fragment syntax comes before it. Otherwise either reading could
  *   put part of a secret there, so the host is replaced too.
@@ -309,20 +314,14 @@ function splitPasswordUrl(url: string): PasswordUrl | null {
   if (NOT_A_USER.test(user)) return null;
   const rest = after.slice(colon.index + colon[0].length);
   if (PORT.test(rest)) return null;
-  const end = rest.search(/\s/);
-  const token = end === -1 ? rest : rest.slice(0, end);
-  const ats = [...token.matchAll(ANY_AT)];
+  const ats = [...rest.matchAll(ANY_AT)];
   const last = ats[ats.length - 1];
   if (last === undefined) {
     if (!start.endsWith('//')) return null;
-    const query = token.search(/[?#]|%(?:25)*(?:3f|23)/i);
-    return {
-      start,
-      user,
-      rest: rest.slice(query === -1 ? token.length : query),
-    };
+    const query = rest.search(/[?#]|%(?:25)*(?:3f|23)/i);
+    return { start, user, rest: query === -1 ? '' : rest.slice(query) };
   }
-  const password = token.slice(0, last.index);
+  const password = rest.slice(0, last.index);
   const settled = ats.length === 1 && !QUERY_MARK.test(password);
   return {
     start,
@@ -418,19 +417,20 @@ export function redactSensitiveQueryParams(url: string): string {
 // wholesale instead of trusting the parse that missed it.
 const MAX_SCAN_LAYERS = 10;
 // The shapes `splitPasswordUrl` reads, anywhere in the text: a user name
-// after `//`, then a `:` followed by neither a port nor the redaction marker
-// (with or without an `@` yet), or a `scheme:user:password@` with no `//`;
-// and a redacted password with its `@` still to come.
+// (which may hold an `@`) after `//`, or a `scheme:user:` with no `//`, then a
+// `:` followed by neither a port nor `REDACTED@`, and an `@` somewhere after
+// it, past any spaces. A `user:REDACTED` with an `@` still to come is caught
+// too: the redaction stopped short of the real end of the password.
 const PASSWORD_URL = new RegExp(
   [
-    ...[
-      String.raw`(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#@:[\]]*:`,
-      String.raw`(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#@:[\]]+:(?=[^\s@]*@)`,
-    ].map((head) => String.raw`${head}(?!REDACTED)(?!${PORT.source.slice(1)})`),
-    // A password cut short at a `?` or `#` with its `@` still to come: a raw
-    // `#` ended the outer URL inside it, and the rest is in the fragment.
-    String.raw`//[^\s/?#@:[\]]*:REDACTED(?!@)[^\s@]*@`,
-  ].join('|'),
+    String.raw`(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#:[\]]*:`,
+    String.raw`(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#:[\]]+:`,
+  ]
+    .map(
+      (head) =>
+        String.raw`${head}(?!REDACTED@)(?!${PORT.source.slice(1)})[^@]*@`,
+    )
+    .join('|'),
   'i',
 );
 
@@ -452,10 +452,15 @@ const isRedactedValue = (value: string): boolean => {
 // redaction marker also counts: the marker may have replaced the sensitive
 // name itself (`//u:p@[REDACTED]=<code>`, where the host held `…?code`).
 const ENDS_IN_MARKER = /(?:^|[^a-z0-9])\[?REDACTED\]?$/;
+// The same, when the value starts with a separator (`[REDACTED]=?<code>`): a
+// marker followed by `=` and anything but an empty value or another marker.
+const MARKER_THEN_VALUE =
+  /(?:^|[^a-z0-9])\[?REDACTED\]?=(?!=*(?:$|[&#;])|\[REDACTED\]|REDACTED\b)/;
 const isRedactedName = (name: string): boolean =>
   isSensitiveQueryKey(name) || ENDS_IN_MARKER.test(name);
 
 function showsSecretPair(layer: string): boolean {
+  if (MARKER_THEN_VALUE.test(layer)) return true;
   for (const segment of layer.split(/[?&#;]/)) {
     const parts = segment.split('=');
     for (let k = 0; k < parts.length - 1; k += 1) {

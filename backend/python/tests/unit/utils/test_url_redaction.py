@@ -263,6 +263,26 @@ class TestRedactSensitiveQueryParams:
             ("/debug?a=1&db=redis://:pass#TAILSECRET@redis:6379/0", ["TAILSECRET"]),
             # A sensitive name that carries its own value after an encoded `=`.
             ("/cb?X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1", ["SECRETSIG"]),
+            # A password that starts like a port, or with a separator.
+            ("mongodb://root:%2Fab%2Fcd==@mongo:27017/db", ["ab/cd", "ab%2Fcd"]),
+            ("https://user:8080%2Fhunter2@host/db", ["hunter2"]),
+            ("redis://:%2Fhunter2@redis:6379/0", ["hunter2"]),
+            ("postgres://app:%3Fmore%40pg/db", ["more"]),
+            ("/debug?db=mongodb://root:%2Fab%2Fcd==@mongo:27017/db", ["ab/cd", "ab%2Fcd"]),
+            ("postgres://app:1234/xsecret@pg/db", ["xsecret"]),
+            # A user name that holds an `@`.
+            ("mongodb://alice@example.com:hunter2@mongo:27017/db", ["hunter2"]),
+            ("postgres://alice@example.com:sec/ret@pg/db", ["sec/ret", "sec"]),
+            ("smtp://alice@example.com:hunter2@mail.internal:587", ["hunter2"]),
+            ("//alice@example.com:hunter2@host/db", ["hunter2"]),
+            ("mongodb://ops@company.com:s3cret@mongo1:27017,mongo2:27017/db", ["s3cret"]),
+            ("https://alice@example.com:hunter2%3Fextra@host/db", ["hunter2", "extra"]),
+            ("/debug?db=" + quote("mongodb://alice@example.com:hunter2@mongo:27017/db", safe=""), ["hunter2"]),
+            # Spaces in the password.
+            ("https://user:correct horse@host/db", ["correct", "horse"]),
+            ("https://user:pass word@host/db?page=1", ["pass", "word"]),
+            # A replaced host that had held `?code`, before a value starting with `?`.
+            ("/login?returnTo%253D//user:?HEADX@TAILX@host/cb%253Fcode%3D?HEADX@TAILX", ["HEADX", "TAILX"]),
         ],
     )
     def test_the_secret_is_not_logged(self, url: str, secrets: list[str]) -> None:
@@ -314,7 +334,19 @@ def _encode_char(ch: str, level: int) -> str:
 _SECRETS = ["HEADX", "HEADX%26TAILX", "HEADX%23TAILX", "HEADX%40TAILX", "HEADX/TAILX"]
 # A password may also hold a raw `?`, `#` or `@`: each is then encoded exactly
 # as much as the separators around it.
-_PASSWORD_SECRETS = [*_SECRETS, "HEADX?TAILX", "HEADX#TAILX", "HEADX@TAILX"]
+# It may also start with a separator or a port-like number, or hold spaces.
+_PASSWORD_SECRETS = [
+    *_SECRETS,
+    "HEADX?TAILX",
+    "HEADX#TAILX",
+    "HEADX@TAILX",
+    "/HEADX/TAILX",
+    "?HEADX@TAILX",
+    "#HEADX",
+    "8080/HEADX",
+    "8080%2FHEADX",
+    "HEADX TAILX",
+]
 _MARKERS = ["HEADX", "TAILX"]
 _QUERY_TEMPLATES = [
     "/cb?code={s}&page=1",
@@ -335,12 +367,16 @@ _PASSWORD_TEMPLATES = [
     "postgres://app:{s}@pg/db",
     "//user:{s}@host.example/db",
     "https:user:{s}@host.example/db",
+    # A user name that holds an `@`.
+    "mongodb://alice@example.com:{s}@mongo:27017/db",
+    "//alice@example.com:{s}@host/db",
 ]
 # Nested in a query, where a raw `#` would end the outer URL first.
 _NESTED_PASSWORD_TEMPLATES = [
     "/debug?db=postgres://app:{s}@pg/db",
     "/debug?db=//user:{s}@host/db",
     "/login?returnTo=//user:{s}@host/cb?code={s}",
+    "/debug?db=mongodb://alice@example.com:{s}@mongo:27017/db",
 ]
 _SEPARATORS = ["=", "&", "?", "#", "@", ":", ";"]
 
@@ -374,4 +410,4 @@ def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
             for marker in _MARKERS:
                 assert marker not in out, f"{url} -> {out}"
             checked += 1
-    assert checked > 10000
+    assert checked > 20000
