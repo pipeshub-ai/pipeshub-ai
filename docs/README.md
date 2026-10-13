@@ -11,3 +11,4 @@ In-repo design docs:
 - [Non-streaming chat endpoints — HLD, LLD, data flow, error contract, and tests](./non-streaming-chat.md)
 - [Retrieval context — how search hits become the ranked, cited records the agent reads](./retrieval-context.md)
 - [Search record cut — fusing deeper and spreading a search's results across records (`FUSION_RECORD_CUT`)](./search-record-cut.md)
+- [Answer rules — the ANSWER_COMPOSITION_RULES, THOROUGH_RETRIEVAL and MULTI_STEP_ANSWER_RULES switches](./answer-rules.md)
