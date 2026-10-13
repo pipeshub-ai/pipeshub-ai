@@ -464,19 +464,40 @@ def _scaled_sqrt(value: Fraction) -> float:
 def _logarithm(name: str, values: list[Value]) -> float:
     if any(value <= 0 for value in values):
         raise CalculationError(f"{name}(): math domain error.")
-    try:
-        return _float_function(name, _FLOAT_FUNCTIONS[name], values)
-    except _OutsideFloatRange:
-        # The math module takes logs of integers of any size, so an exact
-        # value outside a double's range is the log of its numerator minus
-        # the log of its denominator.
-        log = math.log10 if name == "log10" else math.log
-        logs = [log(Fraction(v).numerator) - log(Fraction(v).denominator) for v in values]
+    if name == "log10":
+        return _bounded(_log10(values[0]))
+    logs = [_natural_log(value) for value in values]
     if len(logs) == 1:
         return _bounded(logs[0])
     if logs[1] == 0:
         raise CalculationError(f"{name}(): division by zero.")
     return _bounded(logs[0] / logs[1])
+
+
+def _natural_log(value: Value) -> float:
+    """ln of a positive value. Near 1 a double can round an exact value to 1
+    (1 + 1e-20), so its log comes from the exact gap; outside a double's
+    range the math module takes logs of the integers themselves."""
+    if isinstance(value, float):
+        return math.log(value)
+    gap = value - 1
+    if abs(gap) <= Fraction(1, 2):
+        return math.log1p(_as_float(gap)) if gap else 0.0
+    try:
+        return math.log(_as_float(value))
+    except _OutsideFloatRange:
+        return math.log(value.numerator) - math.log(value.denominator)
+
+
+def _log10(value: Value) -> float:
+    if isinstance(value, Fraction) and abs(value - 1) <= Fraction(1, 2):
+        return _natural_log(value) / math.log(10)
+    try:
+        # math.log10 keeps exact powers of ten exact: log10(1000) is 3.
+        return math.log10(_as_float(value))
+    except _OutsideFloatRange:
+        exact = Fraction(value)
+        return math.log10(exact.numerator) - math.log10(exact.denominator)
 
 
 def _unit_preserving(name: str, values: list[Value]) -> Value:

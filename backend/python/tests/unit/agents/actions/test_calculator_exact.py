@@ -200,12 +200,24 @@ class TestExactArithmetic:
             ("log(1e-400, 10)", -400),
             ("log10(10**400)", 400),
             ("log(10**400) / log(10)", 400),
+            # Values a double rounds to 1: the log comes from the exact gap.
+            ("log(1 + 1e-20)", 1e-20),
+            ("log10(1 + 1e-16)", 4.34294481903252e-17),
+            ("log(1 + 1e-300)", 1e-300),
+            ("log(1 - 1e-20)", -1e-20),
+            ("log(10, 1 + 1e-18)", 2.30258509299405e18),
+            ("log(10**400, 1 + 1e-20)", 9.21034037197618e22),
+            ("log10(1.5)", 0.176091259055681),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
         payload = _result(expression)
         assert payload["result"] == pytest.approx(expected, rel=1e-13, abs=0)
         assert payload["approximate"] is True
+
+    @pytest.mark.parametrize("expression", ["log(1)", "log10(1)", "log(1, 10)"])
+    def test_the_log_of_one_is_zero(self, expression: str) -> None:
+        assert _result(expression)["result"] == 0
 
     def test_floating_point_results_lose_binary_noise(self) -> None:
         # 15 significant digits: sqrt(2)**2 is 2.0000000000000004 in binary.
@@ -266,6 +278,7 @@ class TestRefusedExpressions:
             ("sin(1) * 1e-310", "too small"),
             ("0.5 ** 2000.5", "too small"),
             ("radians(1e-307)", "too small"),
+            ("log(1 + 1e-400)", "too small"),
             ("١٢ + 1", "Not a valid arithmetic expression"),
             ("2 +", "Not a valid arithmetic expression"),
             ("15% * 200", "Not a valid arithmetic expression"),
