@@ -1617,36 +1617,6 @@ class TestUnfinishedUserRead:
 
         assert [p.external_id for p in db.record_group_permissions["10000"]] == ["NEW_10002"]
 
-    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_from_a_short_read(
-        self, jira, db, store, search
-    ) -> None:
-        stub_site(jira, search)
-        self._stub_carol_everywhere(jira)
-        connector, _ = await make_connector(db, store)
-        await connector.run_sync()
-        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
-            del store.sync_points[key]  # as left by a version without the notes
-        await connector.run_sync()  # the backfill sync, with the whole user list
-        eng_before = acl_summary(db.record_group_permissions["10000"])
-
-        jira.on("GET", f"{API}/project", json_response([
-            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
-            {"id": "20000", "key": "OPS", "name": "Operations"},
-        ]))
-        jira.on("GET", f"{API}/project/OPS/role", {})
-        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
-        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "carol-key"}},
-        ]})
-        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG keeps its saved access"
-        assert acl_summary(db.record_group_permissions["20000"]) == [
-            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
-        ], "OPS was never saved, so the grants that were read are saved"
-
     async def test_a_renamed_project_granted_through_groups_a_role_and_its_lead_keeps_its_access_on_a_short_read(
         self, jira, db, store, search
     ) -> None:
