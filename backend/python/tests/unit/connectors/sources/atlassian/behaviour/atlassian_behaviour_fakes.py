@@ -153,6 +153,7 @@ class FakeRecordsDb:
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
+        self.fail_stored_permission_reads = False
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
@@ -192,6 +193,19 @@ class FakeRecordsDb:
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.user_groups.extend(groups)
+
+    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str) -> bool:
+        """Answers from what this fake stored: a non-empty member or grant list is stored edges."""
+        if self.fail_stored_permission_reads:
+            raise RuntimeError("database unavailable")
+        if entity == "record_group":
+            return bool(self.record_group_permissions.get(external_id))
+        if entity == "user_group":
+            saved = [members for group, members in self.user_groups if group.source_user_group_id == external_id]
+            return bool(saved and saved[-1])
+        if entity == "role":
+            return bool(getattr(self, "app_roles", {}).get(external_id))
+        raise ValueError(entity)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         if record_id in self.fail_delete_for:

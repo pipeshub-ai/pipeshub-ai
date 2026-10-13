@@ -35,6 +35,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -1163,21 +1164,6 @@ class TestUnreadApplicationRoles:
         # Nothing was stored before, so holding the project back would leave it with no access.
         assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
 
-    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
-        self, api, site_db, checkpoints, search, monkeypatch
-    ) -> None:
-        self._stub_application_role(api)
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        before = acl(site_db)
-
-        fail_checkpoint_reads(checkpoints, monkeypatch)
-        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert acl(site_db) == before, "the sync stops before replacing anything"
-
     async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
         self, api, site_db, checkpoints, search, monkeypatch
     ) -> None:
@@ -1198,38 +1184,6 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl(site_db) == before
-
-    async def test_a_note_that_cannot_be_written_stops_the_sync_before_the_project_is_saved(
-        self, api, site_db, checkpoints, search, monkeypatch
-    ) -> None:
-        self._stub_application_role(api)
-        connector, _ = await ready_connector(site_db, checkpoints)
-        fail_note_writes(checkpoints, monkeypatch)
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert "10000" not in site_db.record_group_permissions, "no access is saved without its note"
-
-    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(
-        self, api, site_db, checkpoints, search
-    ) -> None:
-        self._stub_application_role(api)
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        before = acl(site_db)
-        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
-            del checkpoints.sync_points[key]  # as left by a version without the notes
-
-        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        await connector.run_sync()
-
-        assert acl(site_db) == before
-        note = checkpoints.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles", "leads")), "every kind is noted once"
-        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
-            "the every-project flag is turned into the ids of the projects it stood for"
-        )
 
     async def test_a_project_whose_access_was_never_saved_is_saved_with_what_was_read(
         self, api, site_db, checkpoints, search
@@ -1258,50 +1212,35 @@ class TestUnreadApplicationRoles:
         ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
         assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
 
-    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_with_what_was_read(
-        self, api, site_db, checkpoints, search
-    ) -> None:
-        self._stub_application_role(api)
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
-            del checkpoints.sync_points[key]  # as left by a version without the notes
-        await connector.run_sync()  # the backfill sync, with a readable role list
-        eng_before = acl(site_db)
-
-        api.on("GET", f"{JIRA}/project/search", {"values": [
-            {"id": "10000", "key": "ENG", "name": "Engineering"},
-            {"id": "20000", "key": "OPS", "name": "Operations"},
-        ], "isLast": True})
-        api.on("GET", f"{JIRA}/project/OPS/role", {})
-        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 2})
-        api.on("GET", f"{JIRA}/permissionscheme/2/permission", {"permissions": [
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
-        ]})
-        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        await connector.run_sync()
-
-        assert acl(site_db) == eng_before, "ENG keeps its role's group"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
-        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS was never saved, so the grants that were read are saved"
-
-    async def test_a_backfill_sync_with_an_unread_role_list_records_the_projects_it_holds(
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_the_roles_groups(
         self, api, site_db, checkpoints, search
     ) -> None:
         self._stub_application_role(api)
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         before = acl(site_db)
-        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
-            del checkpoints.sync_points[key]  # as left by a version without the notes
 
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        checkpoints.sync_points.clear()
         api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
         await connector.run_sync()
 
-        assert acl(site_db) == before, "ENG is held"
-        note = checkpoints.values_for("stored_access") or {}
-        assert note.get("projects") is False and note.get("project_ids") == ["10000"]
+        assert acl(site_db) == before, "the role's group stays"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_the_project_is_saved(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        site_db.fail_stored_permission_reads = True
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert acl(site_db) == before, "a failed read is not taken for 'nothing stored'"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
         self._stub_application_role(api)

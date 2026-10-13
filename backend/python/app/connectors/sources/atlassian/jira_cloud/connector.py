@@ -80,7 +80,10 @@ from app.connectors.sources.atlassian.core.oauth import (
     OAUTH_JIRA_CONFIG_PATH,
     AtlassianScope,
 )
-from app.connectors.sources.atlassian.core.read_outcome import is_inconclusive_status
+from app.connectors.sources.atlassian.core.read_outcome import (
+    StoredAccessReadError,
+    is_inconclusive_status,
+)
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -411,17 +414,9 @@ class JiraConnector(BaseConnector):
         # 5xx, a network error, an unparseable body). Projects granted through an application
         # role then keep their stored access this sync instead of losing those groups.
         self._app_roles_unread: bool = False
-        # Kinds of access (STORED_ACCESS_KINDS) that earlier syncs saved and that this sync
-        # must not replace from a read that was cut short. Empty on a first sync and after a
-        # full sync's prep, which deletes the stored edges along with every sync point.
-        self._stored_access_kinds: frozenset[str] = frozenset()
-        # Projects whose access list earlier syncs saved, by project id (a project key can
-        # change), and projects whose lead role they saved, by key (the lead role's id is
-        # built from the key, so a renamed project gets a new lead role).
-        self._stored_project_ids: set[str] = set()
-        self._stored_lead_project_keys: set[str] = set()
-        # Project key -> id for the projects this sync has listed.
-        self._project_id_by_key: dict[str, str] = {}
+        # Keys of the projects whose scheme grants an application role the unread role list
+        # could not map: their access list may be partial this sync.
+        self._projects_naming_unread_roles: set[str] = set()
         # True when /users/search returned 401/403 — bulk user listing is unavailable, so user
         # resolution degrades to the PipesHub-directory reverse lookup.
         self._user_bulk_forbidden: bool = False
@@ -676,9 +671,7 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            if "projects" in self._stored_access_kinds:
-                await self._settle_project_backfill([group.external_group_id for group, _ in projects])
-            await self._note_stored_projects("project_ids", [group.external_group_id for group, _ in readable_projects])
+            readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
@@ -1089,6 +1082,47 @@ class JiraConnector(BaseConnector):
             )
             return True
         return bool(point) and point.get("last_sync_time") is not None
+
+    async def _has_stored_access(self, entity: str, external_id: str) -> bool:
+        """Whether this connector's ``entity`` (``record_group``, ``user_group`` or ``role``)
+        ``external_id`` already has permission edges stored.
+
+        Asked only when a write may be partial this sync: stored edges are access worth
+        keeping, and with none there is nothing to keep, so what was read is saved. A read
+        that fails raises ``StoredAccessReadError``, which stops the sync before the write:
+        a failed read is never taken for "nothing stored".
+        """
+        try:
+            return await self.data_entities_processor.has_stored_permissions(
+                entity, self.connector_id, external_id
+            )
+        except Exception as e:
+            raise StoredAccessReadError(
+                f"Could not read the stored access of {entity} {external_id}: {e}"
+            ) from e
+
+    async def _keep_stored_project_access(
+        self, projects: list[tuple[RecordGroup, list[Permission]]]
+    ) -> list[tuple[RecordGroup, list[Permission]]]:
+        """Leave out the projects whose access list may be partial this sync and that already
+        have stored access, so their stored list is kept. The rest are saved as read."""
+        kept: list[tuple[RecordGroup, list[Permission]]] = []
+        for group, permissions in projects:
+            if self._project_access_may_be_partial(group.short_name) and await self._has_stored_access(
+                "record_group", str(group.external_group_id)
+            ):
+                self.logger.warning(
+                    "Keeping the stored access of project %s: its access list may be incomplete this sync",
+                    group.short_name,
+                )
+                continue
+            kept.append((group, permissions))
+        return kept
+
+    def _project_access_may_be_partial(self, project_key: str) -> bool:
+        """Whether this project's access list may be partial: it grants an application role
+        that this sync's unread role list could not map to groups."""
+        return project_key in self._projects_naming_unread_roles
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """
@@ -1870,6 +1904,7 @@ class JiraConnector(BaseConnector):
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
         self._app_roles_unread = False
+        self._projects_naming_unread_roles = set()
 
         try:
             datasource = await self._get_fresh_datasource()
@@ -2190,11 +2225,15 @@ class JiraConnector(BaseConnector):
                         "applicationRole '%s' unresolvable (403) — granting Jira account '%s' direct access on %s",
                         role_key, jira_email, project_key
                     )
-            elif self._app_roles_unread and self._project_access_stored(project_key):
-                # Saving the project now would drop the role's groups from its access.
-                # With nothing stored (a first or full sync) the grants that were read
-                # are saved instead, below.
-                raise _ApplicationRolesUnread(role_key)
+            elif self._app_roles_unread:
+                # The role's groups are unknown, not none: run_sync keeps this project's
+                # stored access, or saves what was read when nothing is stored.
+                self._projects_naming_unread_roles.add(project_key)
+                self.logger.warning(
+                    "Cannot resolve applicationRole '%s' for project %s: the application roles "
+                    "could not be read",
+                    role_key, project_key,
+                )
             else:
                 self.logger.warning(
                     "Cannot resolve applicationRole '%s' for project %s — skipping",
@@ -2988,8 +3027,6 @@ class JiraConnector(BaseConnector):
                 web_url=project.get("url"),
             )
 
-            if project_key and project_id:
-                self._project_id_by_key[project_key] = str(project_id)
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_account_id
             )
