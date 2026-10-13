@@ -785,7 +785,11 @@ export const streamChat =
       const contentAccumulator = new StreamedContentAccumulator();
 
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !savedConversation) return;
+        if (streamSettled || !savedConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          void finalizeRun();
+          return;
+        }
         streamSettled = true;
         void savePartialConversation(
           savedConversation,
@@ -1071,7 +1075,7 @@ export const streamChat =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
@@ -1173,7 +1177,8 @@ export const streamChat =
         }
 
         res.end();
-      });
+      };
+      stream.on('end', finalizeRun);
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -1474,7 +1479,11 @@ export const addMessageStream =
       const contentAccumulator = new StreamedContentAccumulator();
 
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !existingConversation) return;
+        if (streamSettled || !existingConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          void finalizeRun();
+          return;
+        }
         streamSettled = true;
         void savePartialConversation(
           existingConversation,
@@ -1752,7 +1761,7 @@ export const addMessageStream =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
@@ -1904,7 +1913,8 @@ export const addMessageStream =
         }
 
         res.end();
-      });
+      };
+      stream.on('end', finalizeRun);
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -3362,7 +3372,11 @@ async function regenerateAnswersInternal(
     const contentAccumulator = new StreamedContentAccumulator();
 
     const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-      if (streamSettled || completeData || !existingConversation) return;
+      if (streamSettled || !existingConversation) return;
+      if (completeData || upstreamAiErrorEventForwarded) {
+        void finalizeRun();
+        return;
+      }
       streamSettled = true;
       void savePartialConversation(
         existingConversation,
@@ -3421,7 +3435,7 @@ async function regenerateAnswersInternal(
       );
     });
 
-    stream.on('end', async () => {
+    const finalizeRun = async (): Promise<void> => {
       streamSettled = true;
       logger.debug('Stream ended successfully', { requestId });
       try {
@@ -3586,7 +3600,8 @@ async function regenerateAnswersInternal(
 
       await releaseRun(reservation);
       res.end();
-    });
+    };
+    stream.on('end', finalizeRun);
 
     stream.on('error', async (error: Error) => {
       if (upstreamAbort.isAborted()) {
@@ -5714,7 +5729,11 @@ export const deleteAgent =
       const contentAccumulator = new StreamedContentAccumulator();
 
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !savedConversation) return;
+        if (streamSettled || !savedConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          void finalizeRun();
+          return;
+        }
         streamSettled = true;
         void savePartialConversation(
           savedConversation,
@@ -5998,7 +6017,7 @@ export const deleteAgent =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
@@ -6102,7 +6121,8 @@ export const deleteAgent =
         }
 
         res.end();
-      });
+      };
+      stream.on('end', finalizeRun);
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
@@ -6416,7 +6436,11 @@ export const addMessageStreamToAgentConversation =
       const contentAccumulator = new StreamedContentAccumulator();
 
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !existingConversation) return;
+        if (streamSettled || !existingConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          void finalizeRun();
+          return;
+        }
         streamSettled = true;
         void savePartialConversation(
           existingConversation,
@@ -6693,7 +6717,7 @@ export const addMessageStreamToAgentConversation =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
@@ -6844,7 +6868,8 @@ export const addMessageStreamToAgentConversation =
         }
 
         res.end();
-      });
+      };
+      stream.on('end', finalizeRun);
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {

@@ -129,6 +129,40 @@ describe('es_controller streaming answers', () => {
         expect(run.res.body.length).to.equal(bytesBeforeDisconnect)
       })
 
+      it('saves the finished answer when the AI service sent it but never closed the stream before the cap', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', finalAnswer('All done.'))
+        await settle()
+        run.res.disconnect()
+        await settle(10)
+        expect(run.conversation().status).to.equal('Inprogress')
+
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await settle(20)
+
+        expect(run.conversation().status, 'a finished answer is completed, not left running or stopped').to.equal('Complete')
+        expect(run.answer()?.content).to.equal('All done.')
+      })
+
+      it('keeps the failure the AI service reported when it never closed the stream before the cap', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const run = await startStream(flow)
+        const reason = 'This conversation is too long for the selected model. Start a new chat to continue.'
+
+        run.ai.send('RUN_ERROR', { runId: RUN, message: reason, code: 'context_length_exceeded' })
+        await settle()
+        run.res.disconnect()
+        await settle(10)
+
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await settle(20)
+
+        expect(run.conversation().status, 'the saved failure is not overwritten by a stop').to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(reason)
+      })
+
       it('abandons a run still waiting for the AI service to respond when the cap expires, as stopped and without retrying', async () => {
         const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
         const run = await startStream(flow, controllerModule, (ai) => ai.stallOpen(), { wait: false })
