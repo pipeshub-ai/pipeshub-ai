@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
     get_connector_egress_ips,
     get_connector_schema,
@@ -82,6 +83,43 @@ async def test_editing_lays_the_form_over_the_saved_settings(checking_connector)
     config_service.get_config.assert_awaited_once_with("/services/connectors/c1/config")
     auth, _logger = checking_connector.check_connection.await_args.args
     assert auth == {"host": "new.example.com", "password": "saved-pw", "database": "shop"}
+
+
+_PASSWORD_SCHEMA = {
+    "config": {"auth": {"schemas": {"BASIC": {"fields": [{"name": "password", "fieldType": "PASSWORD"}]}}}}
+}
+
+
+async def test_editing_keeps_a_saved_secret_sent_back_as_the_mask(checking_connector):
+    saved = {"auth": {"host": "db.example.com", "password": "saved-pw"}}
+    request, config_service = _make_request(
+        {"auth": {"host": "db.example.com", "password": REDACTED_PLACEHOLDER}, "connectorId": "c1"},
+        saved_config=saved,
+        metadata=_PASSWORD_SCHEMA,
+    )
+    with (
+        patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value={"type": "PostgreSQL"})),
+        patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+    ):
+        await run_test_connection("PostgreSQL", request)
+
+    auth, _logger = checking_connector.check_connection.await_args.args
+    assert auth == {"host": "db.example.com", "password": "saved-pw"}
+
+
+async def test_a_new_secret_replaces_the_saved_one(checking_connector):
+    saved = {"auth": {"host": "db.example.com", "password": "saved-pw"}}
+    request, config_service = _make_request(
+        {"auth": {"password": "new-pw"}, "connectorId": "c1"}, saved_config=saved, metadata=_PASSWORD_SCHEMA
+    )
+    with (
+        patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value={"type": "PostgreSQL"})),
+        patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+    ):
+        await run_test_connection("PostgreSQL", request)
+
+    auth, _logger = checking_connector.check_connection.await_args.args
+    assert auth == {"host": "db.example.com", "password": "new-pw"}
 
 
 async def test_editing_refuses_an_instance_of_another_type(checking_connector):
