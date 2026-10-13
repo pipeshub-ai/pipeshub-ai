@@ -99,6 +99,8 @@ class Case:
     status: int
     words: str = ""
     absent: tuple[str, ...] = ()
+    # Further text the reply must hold, beside ``words``.
+    also: tuple[str, ...] = ()
     # Replace the route's own query or body for this case.
     params: dict[str, str] | None = None
     body: Any = None
@@ -253,15 +255,18 @@ _TOOLSETS = "/api/v1/toolsets"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
 
 
+_HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") == "true"
+
+
 def _secrets(name: str, module: str, path: str, shown: str, hidden: tuple[str, ...], *,
-             admin_sees: str, admin_hidden: tuple[str, ...] = (),
+             admin_sees: str, admin_hidden: tuple[str, ...] = (), admin_also: tuple[str, ...] = (),
              params: dict[str, str] | None = None) -> ConditionalRoute:
     """A read that every member may make, with the secrets left out for them."""
     return ConditionalRoute(
         f"{module}::{name}", "GET", path,
         cases=(
             Case("secrets", MEMBER, False, 200, words=shown, absent=hidden),
-            Case("secrets", ADMIN, True, 200, words=admin_sees, absent=admin_hidden),
+            Case("secrets", ADMIN, True, 200, words=admin_sees, absent=admin_hidden, also=admin_also),
         ),
         params=params or {},
     )
@@ -380,12 +385,13 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              params={"search": "{toolset_name}"}),
     _secrets("get_toolset_instance", "api/routes/toolsets.py", f"{_TOOLSETS}/instances/{{toolset}}",
              "{toolset_name}", ('"auth":', "{toolset_key}"), admin_sees='"auth":'),
-    # The admin is shown the client id; the secret comes back masked for them only
-    # with HIDE_SECRET_CONFIG=true, which the stack and this process both read.
+    # The admin is shown the client id, and the secret too unless HIDE_SECRET_CONFIG=true.
+    # Compose passes the same shell variable to the stack, and no test dotenv file sets it.
     _secrets("list_toolset_oauth_configs", "api/routes/toolsets.py",
              f"{_TOOLSETS}/oauth-configs/{OAUTH_TOOLSET_TYPE}", "{toolset_oauth_name}",
              ("{toolset_client_id}", "{toolset_secret}"), admin_sees="{toolset_client_id}",
-             admin_hidden=("{toolset_secret}",) if os.getenv("HIDE_SECRET_CONFIG") == "true" else ()),
+             admin_hidden=("{toolset_secret}",) if _HIDE_SECRETS else (),
+             admin_also=() if _HIDE_SECRETS else ("{toolset_secret}",)),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.
     ConditionalRoute(
