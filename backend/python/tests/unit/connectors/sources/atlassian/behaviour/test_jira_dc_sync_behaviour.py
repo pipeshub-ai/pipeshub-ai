@@ -1733,3 +1733,35 @@ class TestUnfinishedUserRead:
         assert acl_summary(db.record_group_permissions["20000"]) == [
             ("EntityType.GROUP", "PermissionType.READ", "devs", None),
         ], "OPS was never saved, so the grants that were read are saved"
+
+    async def test_a_renamed_project_granted_through_groups_a_role_and_its_lead_keeps_its_access_on_a_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert sorted(p[2] for p in before) == ["ENG_10002", "ENG_projectLead", "devs"]
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == ["carol@example.com"]
+
+        # The same project (id 10000) now has the key NEW; Carol, its lead, is on the page that fails.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {"Developers": f"{BASE}{API}/project/NEW/role/10002"})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, (
+            "the Developers and project-lead grants under the old key stay"
+        )
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == ["carol@example.com"]
+        assert "NEW_projectLead" not in db.app_roles, "no empty lead is saved for a project whose access is stored"
+        assert "NEW" not in ((store.values_for("stored_access") or {}).get("lead_project_keys") or [])

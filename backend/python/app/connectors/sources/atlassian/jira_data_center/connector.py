@@ -2791,7 +2791,12 @@ class JiraDataCenterConnector(BaseConnector):
                     if lead_identifier:
                         lead_user = user_by_account_id.get(lead_identifier)
 
-                        if not lead_user and self._user_read_unfinished and self._project_lead_stored(project_key):
+                        if not lead_user and self._user_read_unfinished and (
+                            self._project_lead_stored(project_key) or self._project_access_stored(project_key)
+                        ):
+                            # A project with stored access may have been renamed: its saved lead
+                            # role is under the old key, so an empty one under the new key is
+                            # not saved either.
                             self.logger.warning(
                                 "Keeping the stored lead of project %s: the lead was not in the "
                                 "Jira user list, which could not be read in full",
