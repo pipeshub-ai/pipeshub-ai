@@ -162,8 +162,25 @@ By default the chart deploys the bundled Bitnami `redis` subchart in
 `replication` mode (`redis.mode: standalone`) — no extra configuration
 needed.
 
+To point at ElastiCache with cluster mode disabled (one primary, automatic
+failover, and a primary endpoint the app can use as a normal Redis), skip
+in-cluster Redis and set the host. Celery uses the same endpoint:
+
+```bash
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
+  ... \
+  --set redis.enabled=false \
+  --set redis.builtin.enabled=false \
+  --set redis.mode=standalone \
+  --set redis.external.enabled=true \
+  --set redis.external.host=master.my-redis.abc.use1.cache.amazonaws.com \
+  --set redis.clientTls.enabled=true \
+  --set redis.auth.password="<the AUTH token>"
+```
+
 To point at a self-hosted Redis Cluster or AWS MemoryDB instead, skip the
-bundled subchart and give the app the external endpoints:
+bundled subchart and give the app the external endpoints. Cluster mode has
+no Celery transport, so also set `celery.brokerUrl` to a standalone Redis:
 
 ```bash
 helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
@@ -180,8 +197,9 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 |---|---|
 | `redis.enabled` | Set `false` to skip deploying the Bitnami subchart entirely (wired via `condition: redis.enabled` in `Chart.yaml`). Leave `true` for the default bundled Redis. |
 | `redis.mode` | `standalone` (default) or `cluster`. Any other value is resolved via `redis.providerModule`, e.g. an enterprise-only MemoryDB provider that adds IAM auth rotation. |
-| `redis.external.enabled` / `redis.external.clusterEndpoints` | Point at an external cluster instead of the in-cluster Service. Comma-separated `host:port` list. |
-| `redis.clientTls.*` | TLS for the app's *client* connection to `redis.external.clusterEndpoints`. Deliberately not named `redis.tls` — that key is reserved by the Bitnami subchart for its own in-cluster server TLS and configures a different thing. |
+| `redis.external.enabled` / `redis.external.host` | Standalone primary, such as ElastiCache with cluster mode disabled. Requires `redis.mode=standalone`. Do not set `clusterEndpoints` as well. |
+| `redis.external.clusterEndpoints` | External Redis Cluster or MemoryDB. Comma-separated `host:port` list. Requires a cluster-capable `redis.mode`. |
+| `redis.clientTls.*` | TLS for the app's client connection to `redis.external.host` or `redis.external.clusterEndpoints`. Deliberately not named `redis.tls` — that key is reserved by the Bitnami subchart for its own in-cluster server TLS and configures a different thing. |
 | `redis.keyNamespace` | Prefix applied inside key builders (not a client-level prefix) so multiple releases/tenants can share one Redis/MemoryDB. Covers the config KV store and its invalidation channel, the session/app cache, the accessible-records cache, retry counters, leases, and the BullMQ crawling queue. It does **not** cover Redis Streams topic or consumer-group names, so setting it together with `MESSAGE_BROKER=redis` is **rejected at startup** rather than silently letting two releases consume each other's messages. Use a separate Redis per deployment for the stream broker, or `MESSAGE_BROKER=kafka`. |
 | `redis.clusterScaleReads` | `master` (default) \| `slave` \| `all` — cluster-mode read distribution. |
 | `redis.providerModule` | npm/Python module path for a `REDIS_MODE` this chart doesn't know natively (enterprise providers). |

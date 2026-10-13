@@ -43,7 +43,7 @@ from app.config.constants.arangodb import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Collection, Mapping
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
@@ -91,6 +91,11 @@ from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
+from app.services.graph_db.common.full_sync_unlink import (
+    FULL_SYNC_EDGE_COLLECTIONS,
+    split_unseen_by_window,
+    unseen_node_keys,
+)
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     cypher_live_record,
@@ -2637,7 +2642,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """Get all edges pointing to a node"""
         try:
@@ -2695,6 +2702,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_related_nodes(
@@ -9105,29 +9114,35 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
-        node_keys = [sid.split("/", 1)[1] for sid in node_ids if "/" in sid]
-        if not node_keys:
+        # Matched under each node's own label: ids are unique per collection, not
+        # across all of them, and a label lets the match use the id index instead
+        # of scanning every node.
+        keys_by_label: dict[str, list[str]] = {}
+        for sid in node_ids:
+            if "/" in sid:
+                collection, key = sid.split("/", 1)
+                keys_by_label.setdefault(collection_to_label(collection), []).append(key)
+        if not keys_by_label:
             return (0, [])
 
         rel_types = [edge_collection_to_relationship(ec) for ec in edge_collections]
         rel_pattern = "|".join(rel_types)
-        query = f"""
-        MATCH (n)
-        WHERE n.id IN $node_keys
-        MATCH (n)-[r:{rel_pattern}]-()
-        DELETE r
-        RETURN count(r) AS deleted_count
-        """
-        parameters = {"node_keys": node_keys}
 
         try:
-            results = await self.client.execute_query(
-                query,
-                parameters=parameters,
-                txn_id=transaction
-            )
-
-            deleted_count = sum(row.get("deleted_count", 0) for row in results) if results else 0
+            deleted_count = 0
+            for label, node_keys in keys_by_label.items():
+                results = await self.client.execute_query(
+                    f"""
+                    MATCH (n:{label})
+                    WHERE n.id IN $node_keys
+                    MATCH (n)-[r:{rel_pattern}]-()
+                    DELETE r
+                    RETURN count(r) AS deleted_count
+                    """,
+                    parameters={"node_keys": node_keys},
+                    txn_id=transaction,
+                )
+                deleted_count += sum(row.get("deleted_count", 0) for row in results) if results else 0
 
             self.logger.debug(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
 
@@ -9378,6 +9393,84 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
             return (0, False)
+
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            unseen = unseen_node_keys(collected, seen)
+            record_fields: dict[str, dict] = {}
+            group_fields: dict[str, dict] = {}
+            if window_start_ms is not None:
+                record_fields = await self._node_fields_by_id(
+                    CollectionNames.RECORDS.value,
+                    unseen[CollectionNames.RECORDS.value],
+                    ("sourceCreatedAtTimestamp", "recordGroupId"),
+                    transaction,
+                )
+                group_fields = await self._node_fields_by_id(
+                    CollectionNames.RECORD_GROUPS.value,
+                    unseen[CollectionNames.RECORD_GROUPS.value],
+                    ("sourceCreatedAtTimestamp", "groupType"),
+                    transaction,
+                )
+            unlink, outside_window = split_unseen_by_window(
+                unseen, record_fields, group_fields, window_start_ms, windowed_group_types
+            )
+            unlinked, failed = await self._delete_all_edges_for_nodes(
+                transaction or "", unlink, list(FULL_SYNC_EDGE_COLLECTIONS)
+            )
+            # Outside the window the source was not read, so who may see these
+            # nodes could not be checked: keep the structure, drop the grants.
+            ungranted, failed_grants = await self._delete_all_edges_for_nodes(
+                transaction or "", outside_window, [CollectionNames.PERMISSION.value]
+            )
+            if failed or failed_grants:
+                self.logger.warning(
+                    f"Full sync of {connector_id}: could not remove the links of the "
+                    f"{len(unlink)} node(s) it missed from {failed or []}, or the grants "
+                    f"of the {len(outside_window)} outside its window from {failed_grants or []}"
+                )
+            else:
+                self.logger.info(
+                    f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
+                    f"{len(outside_window)} outside its window kept their links"
+                )
+            return (unlinked + ungranted, not failed and not failed_grants)
+        except Exception as e:
+            self.logger.error(
+                f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True
+            )
+            return (0, False)
+
+    async def _node_fields_by_id(
+        self,
+        collection: str,
+        keys: list[str],
+        fields: tuple[str, ...],
+        transaction: str | None = None,
+    ) -> dict[str, dict]:
+        """``{key: {field: value}}`` for the nodes of one collection with these keys."""
+        if not keys:
+            return {}
+        projection = ", ".join(f"{field}: n.{field}" for field in fields)
+        rows = await self.client.execute_query(
+            f"""
+            UNWIND $keys AS key
+            MATCH (n:{collection_to_label(collection)} {{id: key}})
+            RETURN n.id AS id, {{{projection}}} AS fields
+            """,
+            parameters={"keys": keys},
+            txn_id=transaction,
+        )
+        return {row["id"]: dict(row["fields"]) for row in rows or []}
 
     async def delete_connector_instance(
         self,

@@ -201,6 +201,10 @@ tolerations: []
 
 affinity: {}
 
+# Prefer one app replica per node, matching this release's own pods. Ignored
+# when affinity is set.
+spreadAcrossNodes: false
+
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
   enabled: true
@@ -233,6 +237,9 @@ networkPolicy:
       - podSelector: {}
       ports:
         - protocol: TCP
+  # Appended after egress. Use this for a database outside the namespace,
+  # such as ElastiCache on 6379, without replacing the rules above.
+  extraEgress: []
 
 # Health check configuration
 healthCheck:
@@ -327,11 +334,25 @@ config:
   # built-in 1000000; 0 removes the limit.
   agentMaxTurnOutputChars: ""
   # true: features that trade some compute or tokens per question for better
-  # answers (keyword hits merged by rank fusion, keyword-dense search
-  # queries). Off by default. To override one feature, set its switch
-  # (GREP_RANK_FUSION, KEYWORD_SEARCH_QUERIES) to "true" or "false" through extraEnv.
+  # answers (keyword hits merged by rank fusion, search results with the
+  # most relevant record first, search hits fused deeper and cut by record,
+  # answer composition and multi-step rules, reading an answer's records in
+  # full). Off by default. To override one feature, set its switch
+  # (GREP_RANK_FUSION, RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT,
+  # ANSWER_COMPOSITION_RULES, MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to
+  # "true" or "false" through extraEnv. KEYWORD_SEARCH_QUERIES is opt-in only:
+  # the mode does not turn it on.
   # It also turns on named-entity extraction while indexing, and the entity
-  # tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
+  # tools that read it (search_entities, find_records_by_entity,
+  # find_records_by_value), whatever the Labs flag
+  # ENABLE_NAMED_ENTITY_EXTRACTION says.
+  # ENTITY_SEARCH_TOOL="true" (through extraEnv) also offers the agent
+  # search_by_entities, which links named people, organizations, products or
+  # places to extracted entities and searches the records that mention them.
+  # It stays off under this mode unless set, and needs named-entity extraction.
+  # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
+  # "false" through extraEnv. With it on, fetch_record reads as much of each
+  # record as fits a share of the context window instead of a block count.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network
@@ -624,7 +645,12 @@ redis:
   # or the app fails fast at startup naming the unregistered mode.
   providerModule: ""
   external:
-    enabled: false     # true: do not deploy the Bitnami subchart; use clusterEndpoints/host below
+    enabled: false     # true: do not deploy in-cluster Redis; use host or clusterEndpoints below
+    # Standalone endpoint (ElastiCache with cluster mode disabled, or any
+    # single primary). The primary DNS name follows a failover. Requires
+    # redis.mode=standalone. Do not set this together with clusterEndpoints.
+    host: ""
+    port: 6379
     clusterEndpoints: "" # comma-separated host:port list, REDIS_MODE=cluster only
     # Remaps a cluster node's advertised CLUSTER SLOTS/SHARDS address to the
     # address it is actually reachable at from inside this cluster (or from
@@ -641,7 +667,8 @@ redis:
   # reserved key consumed by the Bitnami subchart itself (in-cluster
   # server-side TLS, requiring mounted certs). This block configures the
   # app's client connection to redis.external.clusterEndpoints instead and
-  # must not collide with the subchart's own schema.
+  # must not collide with the subchart's own schema. Also applies to
+  # redis.external.host.
   clientTls:
     enabled: false
     rejectUnauthorized: true
@@ -855,6 +882,8 @@ qdrant:
   securityContext: {}
   nodeSelector: {}
   tolerations: []
+  # soft prefers one replica per node; hard requires it. Ignored when affinity is set.
+  antiAffinity: soft
   affinity: {}
   topologySpreadConstraints: []
   apiKey: "api_key"

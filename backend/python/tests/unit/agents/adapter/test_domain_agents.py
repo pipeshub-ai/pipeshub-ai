@@ -379,6 +379,26 @@ class TestInternalExplorationAgent:
         internal = registry.resolve_by_name("internal_exploration_agent")._spec
         assert ("Query text for `knowledgegraph__search`: keyword-dense" in internal.system_prompt) is enabled
 
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), [
+        (None, None, False),
+        ("true", None, True),
+        ("true", "false", False),
+        (None, "true", True),
+    ])
+    def test_multi_step_rules_reach_the_explorer_that_runs_the_lookups(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("MULTI_STEP_ANSWER_RULES", switch)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        registry = _full_registry()
+        _compose(registry)
+
+        internal = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert internal.system_prompt.count("Multi-step questions:") == (1 if expected else 0)
+
     def test_full_record_fetch_policy_names_the_dynamic_tool(self) -> None:
         """Regression guard — the policy must name the dynamic tool and
         explain how to call it (the 'when in doubt, call it' bias is

@@ -1,11 +1,11 @@
 """A full sync that does not finish leaves a full sync owed.
 
-A full sync starts by deleting the connector's sync points and its permission
-edges (BELONGS_TO, INHERIT_PERMISSIONS, PERMISSION, ...), then links each record
-again as the connector re-reads it. Cut short — a container restart cancels it,
-a crash kills it, a user stops it — the records it had not reached yet keep
-their recordGroupId but lose the edges the read path checks, so their own owner
-gets 403 opening them.
+A full sync starts by deleting the connector's sync points, and only once it
+has run to the end removes the links of what it did not see. Cut short — a
+container restart cancels it, a crash kills it, a user stops it — it has done
+neither the re-read nor the removal, so another full sync is owed. (It used to
+delete the connector's permission edges up front too, which left the records it
+had not reached readable by nobody; see test_full_sync_unlink.py.)
 
 Every route that ended such a run used to write a bare IDLE: the run's own
 finalizer (which a graceful shutdown reaches by cancelling the task), the boot

@@ -62,6 +62,7 @@ VARIANTS=(
   "defaults-dind|--set sandbox.dind.enabled=true --set persistence.accessModes={ReadWriteMany}"
   "cloud|-f values-cloud.yaml --set config.sandboxMode=e2b ${INGRESS[*]}"
   "eks|-f values-eks.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]}"
+  "eks-single-az|-f values-eks.yaml -f values-eks-single-az.yaml --set secretManagement.existingSecrets.enabled=true --set secretManagement.existingSecrets.appSecretName=pipeshub-ai-secrets --set config.frontendPublicUrl=https://pipeshub.example.com --set config.allowedOrigins=https://pipeshub.example.com ${INGRESS[*]} --set-string nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string mongodb.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string redis.builtin.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string qdrant.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set-string neo4j.nodeSelector.topology\\.kubernetes\\.io/zone=us-east-1a --set redis.builtin.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example.internal --set redis.clientTls.enabled=true"
 )
 
 KUBECONFORM=(
@@ -132,6 +133,8 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   expect eks 'value: "redis"' present 'name: KV_STORE_TYPE'
   expect eks 'pipeshubai/pipeshub-sandbox:0.8.0' present
   expect eks 'force-sigv4.js' absent
+  # The image drops root itself with setpriv, which fails once capabilities are dropped.
+  expect eks 'runAsUser: 1000' present 'name: DOCKER_PROXY_UPSTREAM'
   expect local-neo4j-kafka 'force-sigv4.js' absent
   expect eks 'name: ci-mongodb-initiate-1' present
   expect eks 'helm.sh/hook' absent
@@ -141,7 +144,20 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
   expect eks 'replicas: 3' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
+  expect eks 'requiredDuringSchedulingIgnoredDuringExecution' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
+fi
+if [[ -f "$OUT/eks-single-az.yaml" ]]; then
+  expect eks-single-az 'alb.ingress.kubernetes.io/scheme: internal' present
+  expect eks-single-az 'topology.kubernetes.io/zone: us-east-1a' present
+  expect eks-single-az 'rediss://' present
+  expect eks-single-az 'pipeshub/role' absent
+  expect eks-single-az 'topologyKey: topology.kubernetes.io/zone' absent
+  expect eks-single-az 'app.kubernetes.io/component: redis' absent
+  expect eks-single-az 'internet-facing' absent
+  # The release here is "ci"; a selector naming another release matches no pods.
+  expect eks-single-az 'topologyKey: kubernetes.io/hostname' present 'kind: Deployment'
+  expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
 fi
 
 # The DinD daemon must be reachable only through the policy proxy: no TCP
@@ -176,6 +192,7 @@ PY
 }
 check_docker_proxy defaults-dind
 check_docker_proxy eks
+check_docker_proxy eks-single-az
 
 # name | expected message fragment | helm arguments (after SECRETS)
 REFUSED=(
@@ -200,6 +217,8 @@ REFUSED=(
   "any hostPath of type Socket|mounts a Docker socket into the application container|${LOCAL[*]} --set extraVolumes[0].name=s --set extraVolumes[0].hostPath.path=/opt/engine/api.sock --set extraVolumes[0].hostPath.type=Socket --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/e"
   "docker socket picked out by subPath|mounts a Docker socket into the application container|${LOCAL[*]} --set-json extraVolumes=[{\"name\":\"s\",\"emptyDir\":{}}] --set extraVolumeMounts[0].name=s --set extraVolumeMounts[0].mountPath=/tmp/d --set extraVolumeMounts[0].subPath=docker.sock"
   "cluster mode on the bundled redis|requires redis.external.enabled=true|${LOCAL[*]} --set redis.mode=cluster"
+  "external host and cluster endpoints|cannot both be set|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example --set redis.external.clusterEndpoints=redis.example:6379 --set redis.mode=cluster"
+  "external host with cluster mode|requires redis.mode=standalone|${LOCAL[*]} --set redis.enabled=false --set redis.external.enabled=true --set redis.external.host=redis.example --set redis.mode=cluster"
   "neo4j community replicas|requires an Enterprise image|${LOCAL[*]} --set neo4j.replicaCount=2"
   "both mongodb charts|cannot both be true|--set mongodb.enabled=true --set mongodb.builtin.enabled=true --set persistence.enabled=false --set config.sandboxMode=local --set config.sandboxAllowLocal=true"
   "local sandbox without the dev flag|refuses it unless config.sandboxAllowLocal=true|${LOCAL[*]} --set config.sandboxAllowLocal=false"

@@ -1087,9 +1087,13 @@ class GraphTransactionStore(TransactionStore):
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_to_node(
+        self, node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges pointing to a specific node"""
-        return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_to_node(
+            node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
         """Get all edges originating from a specific node"""

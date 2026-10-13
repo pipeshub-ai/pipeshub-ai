@@ -677,7 +677,7 @@ class EventService:
 
         if lease.stop_requested.is_set():
             # Stopped while _ensure_connector ran. The full-sync prep below is
-            # destructive (sync points and edges), and the caller was already
+            # destructive (sync points), and the caller was already
             # told the sync stopped. A start that came from the drain left the
             # row QUEUED; /sync/stop saw the lease and did not repair it, so the
             # drain's stale arm would start it again two minutes later.
@@ -720,17 +720,12 @@ class EventService:
                     self.logger.error(f"❌ Error deleting sync points for connector {connector_id}: {sync_point_error}")
                     self.logger.warning("Continuing with sync despite sync point deletion failure")
 
-                # Delete sync edges
-                try:
-                    deleted_edges, success = await self.graph_provider.delete_connector_sync_edges(
-                        connector_id=connector_id
-                    )
-                    if success:
-                        self.logger.info(f"Successfully deleted {deleted_edges} sync edges for connector {connector_id}")
-                    else:
-                        self.logger.warning(f"Failed to delete some sync edges for connector {connector_id}, continuing with sync")
-                except Exception as edge_error:
-                    self.logger.error(f"Error deleting connector sync edges for {connector_id}: {edge_error}")
+                # The connector's links are not deleted here. Deleting them up front
+                # left everything a sync cut off partway had not reached yet
+                # readable by nobody, and emptied the connector's stats until the
+                # sync re-linked it. The sync replaces each node's links as it
+                # re-reads it, and once it has run to the end removes the links of
+                # the nodes it did not see (run_sync_task).
 
                 # Schedule the background sync task. Holding the lease means
                 # no other task in this process can be running this connector,

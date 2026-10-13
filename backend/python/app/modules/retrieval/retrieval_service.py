@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import math
 import os
 import time
@@ -31,6 +32,12 @@ from app.modules.retrieval.entity_filters import (
     TOO_BROAD_MESSAGE,
     EntityFilterResolver,
     EntityFilterUnavailableError,
+)
+from app.modules.retrieval.record_cut import (
+    RecordCut,
+    active_record_cut,
+    hit_record_id,
+    point_record_id,
 )
 from app.modules.retrieval.result_merging import (
     CollectionResults,
@@ -123,7 +130,8 @@ _OVERFETCH_MAX_MULTIPLIER = 3.0
 # The vector limit is already amplified downstream — OpenSearch takes
 # `max(limit*2, 20)` per leg, Redis `max(k*2, 20)`, Qdrant `limit*2` per prefetch
 # leg — and `_fan_out_searches` asks *each* collection for the full limit. This
-# bounds one leg; the product is bounded by the retry cap.
+# bounds one leg; the product is bounded by the retry cap. The record cut's
+# deeper fusion (`record_cut.py`) stays under it as well.
 _OVERFETCH_ABSOLUTE_CAP = 300
 
 @dataclass
@@ -168,6 +176,22 @@ ENTITY_FILTER_NO_MATCH_MESSAGE = "No documents match this search and its entity 
 ENTITY_FILTER_UNAVAILABLE_MESSAGE = (
     "We couldn't apply the entity filter just now. Please try again in a minute."
 )
+
+
+def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
+    """The record cut for a search, or None when it is off or has nothing to spread.
+
+    A search confined to one record (block selection inside a fetched record,
+    say) keeps the plain depth: there are no other records to reach, so the
+    deeper vector reads would buy nothing.
+    """
+    record_cut = active_record_cut()
+    if record_cut is None or scope_virtual_ids is None:
+        return record_cut
+    first = scope_virtual_ids[0] if scope_virtual_ids else None
+    if all(vid == first for vid in scope_virtual_ids):
+        return None
+    return record_cut
 
 
 def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[str]:
@@ -556,6 +580,9 @@ class RetrievalService:
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
+            # The virtual record ids the search is confined to; None when the
+            # containers decide and any number of records may match.
+            scope_virtual_ids: list[str] | None
             if use_containers:
                 clauses = self._build_container_clauses(
                     org_id, containers, virtual_record_ids_from_tool
@@ -566,6 +593,7 @@ class RetrievalService:
                 filter = await self.vector_db_service.filter_collection(
                     must=must, should=should
                 )
+                scope_virtual_ids = virtual_record_ids_from_tool or None
             elif virtual_record_ids_from_tool:
                 # Intersect before the vector query: rows outside the
                 # accessible set are dropped afterwards anyway, and letting
@@ -579,11 +607,14 @@ class RetrievalService:
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
                     )
+                scope_virtual_ids = scoped_virtual_ids
             else:
+                scope_virtual_ids = list(accessible_virtual_id_to_record_id.keys())
                 filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": list(accessible_virtual_id_to_record_id.keys())}
+                        must={"orgId": org_id, "virtualRecordId": scope_virtual_ids}
                     )
 
+            record_cut = _record_cut_for(scope_virtual_ids)
             if use_containers:
                 (
                     search_results,
@@ -593,6 +624,7 @@ class RetrievalService:
                     queries, filter, limit, org_id, user_id, containers,
                     allow_requery=not virtual_record_ids_from_tool,
                     scope_connector_ids=containers.scope_connector_ids,
+                    record_cut=record_cut,
                 )
                 if verification_degraded:
                     # The graph could not answer. Telling this user to upload
@@ -603,7 +635,7 @@ class RetrievalService:
                     )
             else:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, limit, org_id, user_id
+                    queries, filter, limit, org_id, user_id, record_cut=record_cut
                 )
 
             if not search_results:
@@ -1262,6 +1294,7 @@ class RetrievalService:
         *,
         allow_requery: bool,
         scope_connector_ids: frozenset[str] | None,
+        record_cut: RecordCut | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, str], bool]:
         """Search under a container filter, then resolve what the user may read.
 
@@ -1291,8 +1324,17 @@ class RetrievalService:
             # Per attempt, not per loop: a later attempt that fails verification
             # must not condemn an earlier one that succeeded.
             attempt_degraded = False
+            # Under the record cut each query is fetched at the fused depth and
+            # left uncut: cut before verification, its reserve would go to
+            # records this user cannot read and drop readable hits for good.
+            # The cut runs once, on what was admitted.
+            asked = (
+                record_cut.fused_limit(fetch_limit, _OVERFETCH_ABSOLUTE_CAP)
+                if record_cut is not None
+                else fetch_limit
+            )
             search_results = await self._execute_parallel_searches(
-                queries, filter, fetch_limit, org_id, user_id, plan=plan
+                queries, filter, asked, org_id, user_id, plan=plan
             )
             returned_vids = {
                 result["metadata"]["virtualRecordId"]
@@ -1355,7 +1397,7 @@ class RetrievalService:
                 surviving=surviving,
                 limit=budget,
                 raw=len(search_results),
-                fetch_limit=fetch_limit,
+                fetch_limit=asked,
                 max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
                 denied=denied,
                 allow_requery=allow_requery,
@@ -1368,11 +1410,12 @@ class RetrievalService:
             )
 
         # Over-fetching is a means, not a promise: drop the headroom this path
-        # added, best-scoring first. `budget` is the record-id path's *ceiling*,
-        # not its typical output — expanded queries overlap, so its deduped
-        # union usually lands under it. Matching the ceiling can therefore
-        # return somewhat more than the flag-off path; trimming to `limit`
-        # returned a fraction of it, which is the failure this replaces.
+        # added, best-scoring first, or by record under the record cut.
+        # `budget` is the record-id path's *ceiling*, not its typical output —
+        # expanded queries overlap, so its deduped union usually lands under
+        # it. Matching the ceiling can therefore return somewhat more than the
+        # flag-off path; trimming to `limit` returned a fraction of it, which
+        # is the failure this replaces.
         admitted = [
             result
             for result in best_results
@@ -1381,6 +1424,8 @@ class RetrievalService:
             and (result.get("metadata") or {}).get("virtualRecordId") in best_accessible
         ]
         admitted.sort(key=lambda r: r.get("score") or 0, reverse=True)
+        if record_cut is not None:
+            return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
 
     async def _get_accessible_virtual_ids_task(
@@ -1502,7 +1547,7 @@ class RetrievalService:
 
     async def _execute_parallel_searches(
         self, queries, filter, limit, org_id: str, user_id: str | None = None,
-        *, plan: "_QueryPlan | None" = None,
+        *, plan: "_QueryPlan | None" = None, record_cut: RecordCut | None = None,
     ) -> list[dict[str, Any]]:
         """Execute all searches in parallel using hybrid (dense + sparse) retrieval with RRF fusion.
 
@@ -1514,6 +1559,9 @@ class RetrievalService:
         Fans out to every collection the active strategy resolves for ``org_id``
         (one today; a per-connector/per-org strategy can resolve more) and
         merges the raw results before the caller's global rerank/sort.
+
+        With ``record_cut``, each query fuses deeper and is cut back to
+        ``limit`` by record; without it, by point.
         """
         # Embedding is the only genuinely expensive, uncached step here, and a
         # re-query differs from the first attempt in nothing but `limit`.
@@ -1522,7 +1570,7 @@ class RetrievalService:
             sparse_query_embeddings = plan.sparse
             return await self._run_searches(
                 queries, filter, limit, org_id, user_id,
-                dense_query_embeddings, sparse_query_embeddings, plan=plan,
+                dense_query_embeddings, sparse_query_embeddings, plan=plan, record_cut=record_cut,
             )
 
         dense_embeddings = await self.get_embedding_model_instance()
@@ -1561,7 +1609,7 @@ class RetrievalService:
 
         return await self._run_searches(
             queries, filter, limit, org_id, user_id,
-            dense_query_embeddings, sparse_query_embeddings, plan=plan,
+            dense_query_embeddings, sparse_query_embeddings, plan=plan, record_cut=record_cut,
         )
 
     async def _run_searches(
@@ -1575,6 +1623,7 @@ class RetrievalService:
         sparse_query_embeddings: list,
         *,
         plan: "_QueryPlan | None" = None,
+        record_cut: RecordCut | None = None,
     ) -> list[dict[str, Any]]:
         """Everything downstream of embedding: build requests, fan out, dedupe.
 
@@ -1582,6 +1631,11 @@ class RetrievalService:
         only field that differs between attempts is ``HybridSearchRequest.limit``.
         """
         all_results: list[tuple] = []
+        fused_limit = (
+            record_cut.fused_limit(limit, _OVERFETCH_ABSOLUTE_CAP)
+            if record_cut is not None
+            else limit
+        )
         supports_sparse = self._capabilities.supports_sparse_vectors
         supports_text = self._capabilities.supports_server_side_text_search
 
@@ -1593,7 +1647,7 @@ class RetrievalService:
                 # Send text query to providers that do server-side BM25 (OpenSearch, Redis)
                 text_query=query if supports_text else None,
                 filter=filter,
-                limit=limit,
+                limit=fused_limit,
                 fusion_method=FusionMethod.RRF,
             )
             for query, dense_embedding, sparse_embedding in zip(
@@ -1607,7 +1661,11 @@ class RetrievalService:
             collections = await self._resolve_search_collections(org_id, user_id)
             if plan is not None:
                 plan.collections = collections
-        search_results = await self._fan_out_searches(collections, requests, limit)
+        search_results = await self._fan_out_searches(collections, requests, fused_limit)
+        if record_cut is not None:
+            search_results = self._cut_batches(record_cut, search_results, limit)
+        # Measured after the cut, so "exhausted" still means a query came back
+        # short of `limit`; a retry at a larger limit keeps more of a deep batch.
         if plan is not None:
             plan.max_batch = max((len(batch) for batch in search_results), default=0)
 
@@ -1626,6 +1684,19 @@ class RetrievalService:
                 all_results.append((doc, point.score))
 
         return self._format_results(all_results)
+
+    def _cut_batches(self, record_cut: RecordCut, batches: list[list], limit: int) -> list[list]:
+        cut = [record_cut.cut(batch, limit, point_record_id) for batch in batches]
+        if self.logger.isEnabledFor(logging.DEBUG):
+            # Records a plain cut at `limit` would have shown, against the record cut.
+            self.logger.debug(
+                "record cut: points fused %s, kept %s; records %s -> %s",
+                [len(batch) for batch in batches],
+                [len(batch) for batch in cut],
+                [len({point_record_id(p) for p in batch[:limit]}) for batch in batches],
+                [len({point_record_id(p) for p in batch}) for batch in cut],
+            )
+        return cut
 
     async def _fan_out_searches(
         self, collections: list[str], requests: list[HybridSearchRequest], limit: int

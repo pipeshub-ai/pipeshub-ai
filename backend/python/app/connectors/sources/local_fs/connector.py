@@ -1557,7 +1557,8 @@ class LocalFsConnector(BaseConnector):
                     # longer one of this run's live records.
                     seen_external_ids.discard(old_ext_id)
                     seen_external_ids.add(record.external_record_id)
-            await self.data_entities_processor.on_records_moved(list(move_buffer))
+            # Each move carries the record's full permission list, as for a new record.
+            await self.data_entities_processor.on_records_moved(list(move_buffer), permissions_fetched=True)
             processed += self._count_processed_file_records(
                 [(record, perms) for _old_ext_id, record, perms in move_buffer]
             )

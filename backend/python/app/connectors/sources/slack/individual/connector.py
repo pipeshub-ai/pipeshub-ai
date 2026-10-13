@@ -99,6 +99,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -545,6 +546,22 @@ class SlackIndividualConnector(BaseConnector):
         FilterOperator.LAST_365_DAYS: 365 * 86400,
     }
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync reads messages from the sync window on, and a thread only
+        when its first message is inside the window. So a message or thread
+        older than the window that it did not see was not read, not deleted.
+
+        Asked after the sync: the window start is computed now, a little later
+        than the one the sync used, so nothing the sync could have read is
+        counted as outside it.
+        """
+        oldest = self._compute_sync_window_oldest()
+        return FullSyncCoverage(
+            complete=not getattr(self, "_full_sync_read_failed", False),
+            window_start_ms=int(float(oldest) * 1000) if oldest else None,
+            windowed_group_types=frozenset({RecordGroupType.SLACK_THREAD.value}),
+        )
+
     def _compute_sync_window_oldest(self) -> Optional[str]:
         """
         Compute the Slack ``oldest`` ts from the sync_window DATETIME filter.
@@ -729,6 +746,10 @@ class SlackIndividualConnector(BaseConnector):
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
 
+            # Set when a read fails and the sync carries on without it; see
+            # full_sync_coverage.
+            self._full_sync_read_failed = False
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack", self.connector_id, self.logger
             )
@@ -755,6 +776,7 @@ class SlackIndividualConnector(BaseConnector):
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
                     except Exception as exc:
+                        self._full_sync_read_failed = True
                         self.logger.error(
                             f"Channel message sync failed for "
                             f"{rg.external_group_id}: {exc}",
@@ -1145,6 +1167,9 @@ class SlackIndividualConnector(BaseConnector):
 
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
 
                     if rg.name:
@@ -1157,6 +1182,9 @@ class SlackIndividualConnector(BaseConnector):
                     total += 1
 
                 except Exception as exc:
+                    # Not written, so not seen: without this the unlink after the
+                    # sync would take the channel's links away.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to process channel {cd.get('name')}: {exc}"
                     )
@@ -1584,6 +1612,9 @@ class SlackIndividualConnector(BaseConnector):
                         f"channel={dt.ctx.channel_id}: {exc}",
                         exc_info=True,
                     )
+
+        if history_error or incomplete_threads:
+            self._full_sync_read_failed = True
 
         # Persist checkpoint ONLY after all pages succeed
         if history_error:
