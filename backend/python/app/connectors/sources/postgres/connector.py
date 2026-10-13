@@ -7,12 +7,17 @@ import asyncio
 import hashlib
 import json
 import os
+import re
+import socket
+import ssl
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from logging import Logger
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
+from urllib.parse import parse_qs, unquote, urlparse
 
+import asyncpg
 from aiolimiter import AsyncLimiter
 from pydantic import BaseModel
 
@@ -26,7 +31,11 @@ from app.config.constants.arangodb import (
     RecordRelations,
 )
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectionCheckResult,
+    ConnectorInitError,
+)
 from app.connectors.core.base.error.sql_stream_errors import (
     to_sql_response_error,
     to_sql_stream_error,
@@ -75,7 +84,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.postgres.postgres import PostgreSQLConfig
+from app.sources.client.postgres.postgres import PostgreSQLConfig, PostgreSQLResponse
 from app.sources.external.postgres.postgres_ import (
     PostgreSQLDataSource,
     ColumnInfo,
@@ -90,6 +99,7 @@ from app.sources.external.postgres.postgres_ import (
 )
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_fetcher import HostCheckError
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -103,6 +113,122 @@ SYNC_STATE_KEY = "postgres_tables_state"
 # a state saved under another version sends the next run to a full sync.
 # 2: states saved before it could list tables that were never synced.
 SYNC_STATE_VERSION = 2
+
+
+# The user waits on the setup form while this runs; a firewall that drops
+# packets otherwise holds them for the sync's 30 s connect timeout.
+CONNECTION_CHECK_TIMEOUT_S = 10
+SSL_MODES = ("disable", "allow", "prefer", "require", "verify-ca", "verify-full")
+# asyncpg's connect error for a refusal on every address carries only the errno text.
+_REFUSED_ERRNO_TEXT = re.compile(r"\[Errno (111|10061)\]")
+
+
+def connection_kwargs_from_auth(auth_config: dict[str, Any]) -> dict[str, Any]:
+    """host, port, database, user, password and sslmode from the auth settings.
+
+    Raises ValueError with a message the user can act on."""
+    connection_string = auth_config.get("connectionString")
+    sslmode = auth_config.get("sslmode", "prefer")
+
+    if connection_string:
+        parsed = urlparse(connection_string)
+        if parsed.scheme not in ("postgresql", "postgres"):
+            raise ValueError("The connection string must start with postgresql://")
+        try:
+            port = parsed.port or 5432
+        except ValueError as e:
+            raise ValueError("The port in the connection string must be a number from 1 to 65535.") from e
+        host = parsed.hostname
+        database = unquote(parsed.path.lstrip("/")) if parsed.path else ""
+        user = unquote(parsed.username) if parsed.username else None
+        password = unquote(parsed.password) if parsed.password else ""
+        # Dropping this silently would connect without the
+        # certificate checks the string asked for.
+        sslmode = parse_qs(parsed.query).get("sslmode", [sslmode])[0]
+        if not all([host, database, user]):
+            raise ValueError(
+                "The connection string needs a user, host and database, "
+                "like postgresql://user:password@host:5432/database"
+            )
+    else:
+        host = auth_config.get("host")
+        database = auth_config.get("database")
+        user = auth_config.get("username")
+        password = auth_config.get("password", "")
+        try:
+            port = int(auth_config.get("port", 5432))
+        except (TypeError, ValueError) as e:
+            raise ValueError("Port must be a number, such as 5432.") from e
+        if not all([host, database, user]):
+            raise ValueError("Host, database and username are required.")
+
+    if not 1 <= port <= 65535:
+        raise ValueError("Port must be a number from 1 to 65535.")
+    sslmode = (sslmode or "prefer").strip().lower()
+    if sslmode not in SSL_MODES:
+        raise ValueError(f"sslmode must be one of {', '.join(SSL_MODES)}.")
+    return {
+        "host": host,
+        "port": port,
+        "database": database,
+        "user": user,
+        "password": password,
+        "sslmode": sslmode,
+    }
+
+
+def describe_connection_error(
+    error: BaseException, host: str, port: int, database: str, user: str, sslmode: str
+) -> str:
+    """A message for the setup form saying why a connection attempt failed."""
+    firewall_hint = "that the database's firewall allows connections from PipesHub's IP address"
+    # Raised before anything is dialled; its message is already written for the user.
+    if isinstance(error, HostCheckError):
+        return str(error)
+    # Subclass of InvalidAuthorizationSpecificationError, so it goes first. The
+    # server sends it for an unknown user too, so it can't say which was wrong.
+    if isinstance(error, asyncpg.InvalidPasswordError):
+        return f'PostgreSQL rejected the login for user "{user}". Check the username and password.'
+    if isinstance(error, asyncpg.InvalidAuthorizationSpecificationError):
+        # pg_hba.conf refusals land here; their text names the address the server saw.
+        return f"PostgreSQL refused the login: {error}"
+    if isinstance(error, asyncpg.InvalidCatalogNameError):
+        return f'Database "{database}" does not exist on {host}.'
+    if isinstance(error, asyncpg.PostgresError):
+        return f"PostgreSQL returned an error: {error}"
+    if isinstance(error, socket.gaierror):
+        return f'Could not find a server named "{host}". Check the host name.'
+    if isinstance(error, TimeoutError):
+        return f"Timed out connecting to {host}:{port}. Check {firewall_hint}."
+    if "rejected SSL upgrade" in str(error):
+        # A real server without SSL only refuses the upgrade when SSL is required;
+        # under prefer/allow the refusal comes from something that isn't PostgreSQL.
+        if sslmode in ("require", "verify-ca", "verify-full"):
+            return f"{host}:{port} does not accept SSL connections, but sslmode={sslmode} requires SSL."
+        return f"{host}:{port} did not answer like a PostgreSQL server. Check the port."
+    if isinstance(error, ssl.SSLError):
+        return f"The SSL handshake with {host}:{port} failed: {error}"
+    # When every address of a host fails, asyncio raises one OSError without an
+    # errno, so a refusal shows up only in its text.
+    if isinstance(error, ConnectionRefusedError) or _REFUSED_ERRNO_TEXT.search(str(error)):
+        return f"{host}:{port} refused the connection. Check the host and port, and {firewall_hint}."
+    if isinstance(error, OSError):
+        # No error text: asyncio's names the addresses the host resolved to.
+        return f"Could not reach {host}:{port}. Check the host and port, and {firewall_hint}."
+    return f"Could not connect to {host}:{port}."
+
+
+def _is_ssl_only_server_refusal(error: BaseException, sslmode: str) -> bool:
+    # Under prefer, asyncpg retries a refused SSL login without SSL. A server that
+    # only takes SSL then answers with its no-encryption rule, which hides why the
+    # SSL login was refused (usually a wrong password).
+    return (
+        sslmode == "prefer"
+        and isinstance(error, asyncpg.InvalidAuthorizationSpecificationError)
+        and not isinstance(error, asyncpg.InvalidPasswordError)
+        # "SSL off" is how servers before PostgreSQL 12 word it.
+        and ("no encryption" in str(error) or "SSL off" in str(error))
+    )
 
 
 def table_fqn(schema_name: str, table_name: str) -> str:
@@ -501,65 +627,20 @@ class PostgreSQLConnector(BaseConnector):
                 self.logger.error("PostgreSQL configuration not found")
                 return False
 
-            auth_config = config.get("auth") or {}
+            try:
+                connection_kwargs = connection_kwargs_from_auth(config.get("auth") or {})
+            except ValueError as e:
+                self.logger.error(f"Invalid PostgreSQL configuration: {e}")
+                return False
 
-            # Check if using connection string or individual fields
-            connection_string = auth_config.get("connectionString")
-            sslmode = auth_config.get("sslmode", "prefer")
-
-            if connection_string:
-                # Parse connection string (postgresql://user:password@host:port/database)
-                try:
-                    from urllib.parse import parse_qs, unquote, urlparse
-                    parsed = urlparse(connection_string)
-
-                    if parsed.scheme not in ("postgresql", "postgres"):
-                        self.logger.error(
-                            f"Invalid PostgreSQL connection string scheme: {parsed.scheme!r}"
-                        )
-                        return False
-
-                    host = parsed.hostname
-                    port = parsed.port or 5432
-                    database = unquote(parsed.path.lstrip('/')) if parsed.path else ""
-                    user = unquote(parsed.username) if parsed.username else None
-                    password = unquote(parsed.password) if parsed.password else ""
-                    # Dropping this silently would connect without the
-                    # certificate checks the string asked for.
-                    sslmode = parse_qs(parsed.query).get("sslmode", [sslmode])[0]
-
-                    if not all([host, database, user]):
-                        self.logger.error("Invalid PostgreSQL connection string")
-                        return False
-
-                except Exception as e:
-                    self.logger.error(f"Failed to parse connection string: {e}")
-                    return False
-            else:
-                # Use individual fields
-                host = auth_config.get("host")
-                port = int(auth_config.get("port", 5432))
-                database = auth_config.get("database")
-                user = auth_config.get("username")
-                password = auth_config.get("password", "")
-
-                if not all([host, database, user]):
-                    self.logger.error("Missing required PostgreSQL configuration")
-                    return False
-
-            self.database_name = database
+            self.database_name = connection_kwargs["database"]
             self.scope = config.get("scope", self.scope or ConnectorScope.TEAM.value)
             self.connector_scope = self.scope
             self.created_by = config.get("created_by", self.created_by)
 
             pg_config_kwargs: Dict[str, Any] = {
-                "host": host,
-                "port": port,
-                "database": database,
-                "user": user,
-                "password": password,
+                **connection_kwargs,
                 "timeout": int(config.get("timeout", 30)),
-                "sslmode": sslmode,
             }
             if config.get("min_pool_size") is not None:
                 pg_config_kwargs["min_pool_size"] = int(config["min_pool_size"])
@@ -572,7 +653,12 @@ class PostgreSQLConnector(BaseConnector):
                 **pg_config_kwargs,
             )
             client = pg_config.create_client()
-            await client.connect()
+            try:
+                await client.connect()
+            except ConnectionError as e:
+                if isinstance(e.__cause__, HostCheckError):
+                    raise ConnectorInitError(str(e.__cause__)) from e
+                raise
 
             self.data_source = PostgreSQLDataSource(client)
 
@@ -580,6 +666,8 @@ class PostgreSQLConnector(BaseConnector):
             self.logger.info("PostgreSQL connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error(f"Failed to initialize PostgreSQL connector: {e}", exc_info=True)
             return False
@@ -1084,6 +1172,55 @@ class PostgreSQLConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
+
+    @staticmethod
+    async def _try_connection(
+        kwargs: dict[str, Any],
+    ) -> tuple[PostgreSQLResponse | None, BaseException | None]:
+        """The test query's response, or the driver error that stopped the connection."""
+        client = PostgreSQLConfig(
+            **kwargs, timeout=CONNECTION_CHECK_TIMEOUT_S, max_pool_size=1
+        ).create_client()
+        try:
+            await client.connect()
+            return await PostgreSQLDataSource(client).test_connection(), None
+        except ConnectionError as e:
+            return None, e.__cause__ or e
+        finally:
+            await client.close()
+
+    @classmethod
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger
+    ) -> ConnectionCheckResult:
+        try:
+            kwargs = connection_kwargs_from_auth(auth_config)
+        except ValueError as e:
+            return ConnectionCheckResult(success=False, message=str(e))
+
+        host, port, database, user = kwargs["host"], kwargs["port"], kwargs["database"], kwargs["user"]
+        response, cause = await cls._try_connection(kwargs)
+        if cause is not None and _is_ssl_only_server_refusal(cause, kwargs["sslmode"]):
+            ssl_response, ssl_cause = await cls._try_connection({**kwargs, "sslmode": "require"})
+            # A server without SSL fails the retry before the login, and then the
+            # first answer is the real one.
+            if ssl_cause is None or isinstance(ssl_cause, asyncpg.PostgresError):
+                response, cause = ssl_response, ssl_cause
+        if cause is not None:
+            logger.info("PostgreSQL connection check to %s:%s failed: %r", host, port, cause)
+            return ConnectionCheckResult(
+                success=False,
+                message=describe_connection_error(cause, host, port, database, user, kwargs["sslmode"]),
+            )
+
+        if not response.success:
+            return ConnectionCheckResult(
+                success=False,
+                message=f"Connected, but a test query failed: {response.error}",
+            )
+        return ConnectionCheckResult(
+            success=True, message=f'Connected to database "{database}" as "{user}".'
+        )
 
     async def cleanup(self) -> None:
         try:

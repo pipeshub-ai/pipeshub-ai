@@ -16,7 +16,7 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import sharp from 'sharp';
+import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import mongoose, { ClientSession, Types } from 'mongoose';
 import {
@@ -112,10 +112,7 @@ import {
 } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import {
-  validateNoXSS,
-  validateNoFormatSpecifiers,
-} from '../../../utils/xss-sanitization';
+import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
   applyProjectScope,
@@ -270,6 +267,7 @@ export async function fetchDeletedAgentKeysForUser(
 export {
   assignAgentCapabilitiesToPayload,
   assignCallerContextToAiPayload,
+  assignRetrievalContextToPayload,
   assignToolsToPayload,
   parseChatMode,
 } from '../utils/ai-chat-payload';
@@ -359,6 +357,22 @@ export const compressImageIfNeeded = async (
     return passthrough;
   }
 
+  // Magic bytes reject SVG, but they also accept a bare PNG signature.
+  // Decode before the size shortcut: that shortcut returns the original
+  // bytes, and the catch below keeps the original when compression fails.
+  const invalidImageMessage =
+    `${file.originalname} is not a valid JPEG, PNG or WebP image`;
+  const format = assertRasterImage(
+    file.buffer,
+    ['jpeg', 'png', 'webp'],
+    invalidImageMessage,
+  );
+  try {
+    await sharp(file.buffer).raw().toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
+  }
+
   if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
     logger.info(
       `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
@@ -374,7 +388,7 @@ export const compressImageIfNeeded = async (
     const metadata = await sharp(file.buffer).metadata();
     const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
-    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+    const hasAlpha = format === 'png' && metadata.hasAlpha;
 
     const buildBase = () => {
       const base = sharp(file.buffer).rotate();
@@ -4548,9 +4562,11 @@ export const search =
     try {
       const { query, limit, filters } = req.body;
 
-      // Validate query parameter for XSS and format specifiers
+      // The query is free text, like a chat question, so text in angle
+      // brackets such as "<id>" is allowed here as it is in chat. It is not
+      // rendered as HTML; see findQuestionField in
+      // libs/middlewares/xss-sanitization.middleware.ts.
       if (query && typeof query === 'string') {
-        validateNoXSS(query, 'search query');
         validateNoFormatSpecifiers(query, 'search query');
       }
 
@@ -4596,20 +4612,20 @@ export const search =
       const results = aiResponse.data.searchResults;
       let citationIds;
       if (results) {
-        // save the citations to the citations collection
-        citationIds = await Promise.all(
-          results.map(async (result: ICitation) => {
-            const citationDoc = new Citation({
-              content: result.content,
-              chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
-              citationType: result.citationType,
-              metadata: result.metadata,
-            });
-
-            const savedCitation = await citationDoc.save();
-            return savedCitation._id;
-          }),
+        // Save the citations to the citations collection in one ordered insert.
+        // A search can return hundreds of hits, and saving each one on its own
+        // cost a database round trip per hit. `ordered: true` returns the saved
+        // documents in hit order, so citationIds lines up with searchResults.
+        const savedCitations = await Citation.insertMany(
+          results.map((result: ICitation) => ({
+            content: result.content,
+            chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
+            citationType: result.citationType,
+            metadata: result.metadata,
+          })),
+          { ordered: true },
         );
+        citationIds = savedCitations.map((citation) => citation._id);
       }
 
       const recordsArray = aiResponse.data?.records || {};

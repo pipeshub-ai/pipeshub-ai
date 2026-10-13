@@ -1,8 +1,11 @@
 import logging
 import re
 from dataclasses import asdict, dataclass
+from http.cookiejar import DefaultCookiePolicy
 from typing import Any
 from urllib.parse import urlparse
+
+import httpx
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
@@ -13,11 +16,12 @@ from app.sources.client.resilience import ResiliencePolicy
 # bearer scheme ("PAT") and there is no OAuth or basic-auth endpoint.
 SUPPORTED_AUTH_TYPES = ("API_TOKEN",)
 API_VERSION = "1"
-# Plain JSON only. The spec never mentions a vendor media type, and both Onyx and
-# AnythingLLM read every endpoint with this, so anything more is a guess that can
-# only earn a 406.
+# Plain JSON only. The spec never mentions a vendor media type, so anything more is
+# a guess that can only earn a 406.
 ACCEPT_HEADER = "application/json"
 _API_SUFFIXES = ("/api/rest", "/api/spec", "/api")
+# Refuses every cookie, so no request carries one.
+_NO_COOKIES = DefaultCookiePolicy(allowed_domains=[])
 
 
 def normalize_personal_access_token(token: str) -> str:
@@ -78,6 +82,14 @@ class DrupalWikiRESTClientViaToken(HTTPClient):
             "Accept": ACCEPT_HEADER,
             "X-API-Version": API_VERSION,
         })
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        client = await super()._ensure_client()
+        # Drupal Wiki answers token calls with a SESSION cookie, then rejects a call
+        # that carries that cookie and the token together (HTTP 400, "trouble
+        # authenticating"), so every call after the first would fail.
+        client.cookies.jar.set_policy(_NO_COOKIES)
+        return client
 
     def get_base_url(self) -> str:
         return self.base_url

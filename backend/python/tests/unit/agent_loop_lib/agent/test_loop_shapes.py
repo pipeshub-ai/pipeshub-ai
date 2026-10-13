@@ -129,13 +129,15 @@ class TestReflexion:
         transport = ScriptedTransport()
         for i in range(2):
             transport.add_tool_call(ToolCall(id=f"c{i}", name="lookup", arguments={"q": "x"}))
+        transport.add_text("It shipped on March 3.")
         agent = _agent(transport, ReflexionLoop(critique_fn=_critic), max_turns=2)
 
         result = await agent.run(_GOAL)
 
+        # Two loop turns, each critiqued, then the answer-only turn after max_turns.
         assert seen == [1, 1]
-        assert result.success is False
-        assert result.error == "Exceeded max_turns=2"
+        assert len(transport.calls) == 3
+        assert result.output == "It shipped on March 3."
 
 
 class TestPlanThenExecute:

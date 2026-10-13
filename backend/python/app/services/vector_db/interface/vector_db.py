@@ -195,6 +195,18 @@ class IVectorDBService(ABC):
         """
         raise NotImplementedError
 
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        """``next_offset`` from ``scroll``, adjusted after the caller deleted
+        ``deleted`` of the points that page returned.
+
+        A key-based cursor (the next id, a ``search_after`` value) is
+        unaffected. A positional one must step back, or the next page skips
+        as many points as were deleted.
+        """
+        return next_offset
+
     @abstractmethod
     async def retrieve_points(
         self,

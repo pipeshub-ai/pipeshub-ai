@@ -74,9 +74,14 @@ class RunUsage(BaseModel):
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
+    # Per-request breakdown, kept because pricing is not always linear in
+    # the total: a long-context surcharge applies per request that crosses
+    # its threshold, which the cumulative counters cannot reconstruct.
+    per_request: list[TokenUsage] = Field(default_factory=list)
 
     def add(self, request_usage: TokenUsage) -> None:
         self.requests += 1
+        self.per_request.append(request_usage)
         self.input_tokens += request_usage.input_tokens
         self.output_tokens += request_usage.output_tokens
         self.cache_read_tokens += request_usage.cache_read_tokens

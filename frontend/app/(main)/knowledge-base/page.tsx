@@ -29,6 +29,7 @@ import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
+import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 // import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
@@ -108,8 +109,15 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
 import { useUserPermission } from '@/config';
+import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
+import { canOpenRecentlyDeleted } from './recently-deleted/utils';
+
+// Outlives a remount. The abort ref does not, so an older request's finally
+// would otherwise clear the loading flag a newer fetch just set.
+let allRecordsFetchGeneration = 0;
+let collectionsFetchGeneration = 0;
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -265,6 +273,15 @@ function KnowledgeBasePageContent() {
     }
     return crumbs?.[1]?.id || kbId;
   }, [isAllRecordsMode, allRecordsTableData, tableData, kbId, categorizedNodes]);
+
+  // Folder levels that can still be added under the open node. The limit comes
+  // from the server; Infinity where it does not apply or is not known yet.
+  const maxFolderDepth = isAllRecordsMode ? undefined : tableData?.maxFolderDepth;
+  const remainingFolderLevels =
+    maxFolderDepth == null
+      ? Infinity
+      : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
+  const canAddFolderHere = remainingFolderLevels > 0;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -560,8 +577,24 @@ function KnowledgeBasePageContent() {
     }
   }, [appNodes, isAllRecordsMode]);
 
+  // Superseded table fetches are aborted so a slower earlier response cannot
+  // overwrite the latest one, or clear its loading flag.
+  const allRecordsFetchRef = useRef<AbortController | null>(null);
+  const collectionsFetchRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      allRecordsFetchRef.current?.abort();
+      collectionsFetchRef.current?.abort();
+    };
+  }, []);
+
   // All Records mode: Fetch table data (reusable callback)
   const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
+    allRecordsFetchRef.current?.abort();
+    const controller = new AbortController();
+    allRecordsFetchRef.current = controller;
+    const fetchGeneration = ++allRecordsFetchGeneration;
     const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
@@ -589,13 +622,14 @@ function KnowledgeBasePageContent() {
         data = await KnowledgeHubApi.loadFolderData(
           nodeType as NodeType,
           nodeId,
-          params
+          params,
+          { signal: controller.signal }
         );
       } else {
         // Root level - fetch all records
-        data = await KnowledgeHubApi.getAllRootItems(params);
+        data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
-      if (!stillSignedIn()) return;
+      if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
       // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
       // without overwriting user-controlled page/limit to avoid triggering effect loops
@@ -603,11 +637,17 @@ function KnowledgeBasePageContent() {
         syncAllRecordsPaginationMeta(data.pagination);
       }
     } catch (error) {
-      if (!stillSignedIn()) return;
+      if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
       console.error('Error fetching all records:', error);
       setAllRecordsTableError('Failed to load records');
     } finally {
-      if (stillSignedIn()) setIsLoadingAllRecordsTable(false);
+      if (
+        allRecordsFetchRef.current === controller &&
+        fetchGeneration === allRecordsFetchGeneration &&
+        stillSignedIn()
+      ) {
+        setIsLoadingAllRecordsTable(false);
+      }
     }
   }, [
     // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
@@ -704,6 +744,10 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
+      collectionsFetchRef.current?.abort();
+      const controller = new AbortController();
+      collectionsFetchRef.current = controller;
+      const fetchGeneration = ++collectionsFetchGeneration;
       const stillSignedIn = kbSessionToken();
       setIsLoadingTableData(true);
       setTableDataError(null);
@@ -738,9 +782,9 @@ function KnowledgeBasePageContent() {
           nodeType as NodeType,
           nodeId,
           params,
-          { suppressErrorToast: suppressNotFoundToast }
+          { suppressErrorToast: suppressNotFoundToast, signal: controller.signal }
         );
-        if (!stillSignedIn()) return;
+        if (controller.signal.aborted || !stillSignedIn()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
@@ -783,7 +827,7 @@ function KnowledgeBasePageContent() {
             ];
 
             for (let i = 0; i < path.length; i += 1) {
-              if (!stillSignedIn()) return;
+              if (controller.signal.aborted || !stillSignedIn()) return;
               const { id, nodeType: pathNodeType } = path[i];
               const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
               expandFolderExclusive(id);
@@ -800,10 +844,10 @@ function KnowledgeBasePageContent() {
           }
         }
 
-        if (stillSignedIn()) restoreOpenFoldersInSidebar();
+        if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
-        if (!stillSignedIn()) return;
+        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
         const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
         const isNotFound =
           status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
@@ -847,7 +891,13 @@ function KnowledgeBasePageContent() {
           setTableData(null);
         }
       } finally {
-        if (stillSignedIn()) setIsLoadingTableData(false);
+        if (
+          collectionsFetchRef.current === controller &&
+          fetchGeneration === collectionsFetchGeneration &&
+          stillSignedIn()
+        ) {
+          setIsLoadingTableData(false);
+        }
       }
     },
     [
@@ -887,6 +937,10 @@ function KnowledgeBasePageContent() {
   // (flattened=false) so the API returns app-level collection nodes; with
   // filters, omit flattened and let the backend use search mode.
   const fetchAllCollectionsData = useCallback(async () => {
+    collectionsFetchRef.current?.abort();
+    const controller = new AbortController();
+    collectionsFetchRef.current = controller;
+    const fetchGeneration = ++collectionsFetchGeneration;
     const stillSignedIn = kbSessionToken();
     setIsLoadingTableData(true);
     setTableDataError(null);
@@ -921,9 +975,10 @@ function KnowledgeBasePageContent() {
               nodeTypes: 'app',
               origins: 'COLLECTION',
               flattened: false,
-            }
+            },
+        { signal: controller.signal }
       );
-      if (!stillSignedIn()) return;
+      if (controller.signal.aborted || !stillSignedIn()) return;
 
       setTableData(data);
       setSelectedNode(null);
@@ -931,7 +986,7 @@ function KnowledgeBasePageContent() {
         setCollectionsPagination(data.pagination);
       }
     } catch (error: unknown) {
-      if (!stillSignedIn()) return;
+      if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
       setTableDataError(
         getUserFacingErrorMessage(
           error,
@@ -939,7 +994,13 @@ function KnowledgeBasePageContent() {
         ),
       );
     } finally {
-      if (stillSignedIn()) setIsLoadingTableData(false);
+      if (
+        collectionsFetchRef.current === controller &&
+        fetchGeneration === collectionsFetchGeneration &&
+        stillSignedIn()
+      ) {
+        setIsLoadingTableData(false);
+      }
     }
   }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination, t]);
 
@@ -957,6 +1018,10 @@ function KnowledgeBasePageContent() {
       // auto-navigating into the first one.
       void fetchAllCollectionsData();
     } else {
+      // A list fetch started while collections still existed. Abort it so its
+      // response cannot put deleted rows back after the table is cleared.
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -966,6 +1031,7 @@ function KnowledgeBasePageContent() {
     fetchTableData,
     fetchAllCollectionsData,
     clearTableData,
+    setIsLoadingTableData,
     hasCollections,
   ]);
 
@@ -1230,6 +1296,8 @@ function KnowledgeBasePageContent() {
     } else if (hasCollections) {
       await fetchAllCollectionsData();
     } else {
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -1240,6 +1308,7 @@ function KnowledgeBasePageContent() {
     fetchAllCollectionsData,
     hasCollections,
     clearTableData,
+    setIsLoadingTableData,
   ]);
 
   // Handle refresh
@@ -1516,9 +1585,7 @@ function KnowledgeBasePageContent() {
             fileEntries.push({
               storeId: generateUploadId(),
               file: fwp.file,
-              filePath: fwp.relativePath
-                ? `${item.name}/${fwp.relativePath}`
-                : `${item.name}/${fwp.file.name}`,
+              filePath: uploadPathOf(item.name, fwp.relativePath, fwp.file.name),
             });
           }
         }
@@ -1842,6 +1909,15 @@ function KnowledgeBasePageContent() {
       name: collectionCrumb?.name ?? tableData?.currentNode?.name ?? 'Collection',
     };
   }, [selectedKbId, tableData?.breadcrumbs, tableData?.currentNode?.name]);
+
+  const softDeleteEnabled = useFeatureFlagsStore(selectSoftDeleteEnabled);
+  const showRecentlyDeleted =
+    softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId &&
+    canOpenRecentlyDeleted(tableData?.permissions?.collectionRole);
+  const handleRecentlyDeletedClick = useCallback(() => {
+    if (!selectedKbId) return;
+    router.push(`/knowledge-base/recently-deleted?kbId=${encodeURIComponent(selectedKbId)}`);
+  }, [router, selectedKbId]);
 
   const handleCollectionIndexingStatusClick = useCallback(() => {
     if (!collectionStatsTarget) return;
@@ -2798,9 +2874,10 @@ function KnowledgeBasePageContent() {
               onRefresh={handleRefresh}
               showIndexingStatus={showCollectionIndexingStatus}
               onIndexingStatusClick={handleCollectionIndexingStatusClick}
+              onRecentlyDeletedClick={showRecentlyDeleted ? handleRecentlyDeletedClick : undefined}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
-              onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
+              onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
@@ -2875,7 +2952,7 @@ function KnowledgeBasePageContent() {
           onMove={!isAllRecordsMode ? handleMoveClick : undefined}
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
@@ -3000,6 +3077,8 @@ function KnowledgeBasePageContent() {
             onOpenChange={setIsUploadSidebarOpen}
             onSave={handleUploadSave}
             isSaving={isUploading}
+            remainingFolderLevels={remainingFolderLevels}
+            maxFolderDepth={maxFolderDepth}
           />
 
           {/* Replace File Dialog */}

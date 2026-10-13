@@ -1,10 +1,12 @@
 """Tests for app.api.routes.agent helper functions and models."""
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 
@@ -219,6 +221,13 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
+def _readable_graph() -> MagicMock:
+    graph = MagicMock()
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    return graph
+
+
 class TestBuildPriorRoutingMessages:
     """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
 
@@ -323,12 +332,35 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-x",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=False,
         )
         assert len(msgs) == 1
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
         blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+
+    @pytest.mark.asyncio
+    async def test_attachment_the_caller_cannot_read_is_not_loaded(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock()
+        graph = _readable_graph()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        history = {
+            "previous_conversations": [{
+                "role": "user_query",
+                "content": "read this",
+                "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-other"}],
+            }],
+        }
+        for caller in ({"user_id": "u1", "graph_provider": graph}, {}):
+            msgs = await _build_prior_routing_messages(
+                history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
+            )
+            assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_pdf_row_when_vrid_missing(self) -> None:
@@ -380,6 +412,8 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-i",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=True,
         )
         assert isinstance(msgs[0], HumanMessage)
@@ -700,7 +734,7 @@ class TestGetUserDocument:
 # _get_org_info
 # ---------------------------------------------------------------------------
 
-class TestGetOrgInfo:
+class TestGetOrgInfoAccountTypes:
     """Tests for organization lookup and validation."""
 
     @pytest.mark.asyncio
@@ -1008,8 +1042,7 @@ class TestFilterKnowledgeByEnabledSources:
         assert ids == {"confluence-app", kb_uuid}
 
 
-
-class TestParseRequestBody:
+class TestParseRequestBodyEdgeCases:
     def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"name": "test"}')
@@ -1042,7 +1075,7 @@ class TestParseRequestBody:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichAgentModels:
+class TestEnrichAgentModelsOrgDefault:
     @pytest.mark.asyncio
     async def test_enriches_matching_model(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
@@ -1201,7 +1234,7 @@ class TestEnrichAgentModels:
 # ---------------------------------------------------------------------------
 
 
-class TestParseToolsetsExtended:
+class TestParseToolsetsSkipsAndMerges:
     def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(["not a dict", 42])
@@ -1260,26 +1293,11 @@ class TestParseToolsetsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateRequiredFieldsExtended:
+class TestValidateRequiredFieldsValues:
     def test_empty_string_value_fails(self) -> None:
         from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": ""}, ["name"])
-
-    def test_whitespace_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": "   "}, ["name"])
-
-    def test_none_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": None}, ["name"])
-
-    def test_zero_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"count": 0}, ["count"])
 
     def test_valid_numeric_value_passes(self) -> None:
         from app.api.routes.agent import _validate_required_fields
@@ -1291,7 +1309,7 @@ class TestValidateRequiredFieldsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestParseModelsExtended:
+class TestParseModelsInputShapes:
     def test_string_entries(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
@@ -1300,27 +1318,6 @@ class TestParseModelsExtended:
         assert len(entries) == 2
         assert entries[0] == "mk1_mn1"
         assert entries[1] == "mk2"
-
-    def test_dict_without_model_key_skipped(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelName": "mn1"}]  # no modelKey
-        entries, _ = _parse_models(raw, log)
-        assert entries == []
-
-    def test_dict_with_key_and_name(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1", "modelName": "mn1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1_mn1"]
-
-    def test_dict_with_key_only(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1"]
 
     def test_non_list_input(self) -> None:
         from app.api.routes.agent import _parse_models
@@ -1334,7 +1331,7 @@ class TestParseModelsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichUserInfoExtended:
+class TestEnrichUserInfoNameFields:
     @pytest.mark.asyncio
     async def test_adds_all_name_fields(self) -> None:
         from app.api.routes.agent import _enrich_user_info
@@ -1888,7 +1885,6 @@ class TestFilterKnowledgeFull:
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 0
-
 
 
 class TestEnrichUserInfoExtended:
@@ -2923,7 +2919,7 @@ class TestUpdateAgent:
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
-        services["graph_provider"].delete_edge = AsyncMock()
+        services["graph_provider"].batch_delete_edges = AsyncMock(return_value=1)
 
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"shareWithOrg":false}')
@@ -2934,7 +2930,13 @@ class TestUpdateAgent:
 
             result = await update_agent(request, "a1")
             assert result.status_code == 200
-            services["graph_provider"].delete_edge.assert_awaited()
+            # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+            services["graph_provider"].batch_delete_edges.assert_awaited_once_with(
+                [{"from_id": "o1", "from_collection": "organizations", "to_id": "a1",
+                  "to_collection": "agentInstances"}],
+                "permission",
+            )
+            services["graph_provider"].delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_update_with_toolsets(self) -> None:
@@ -3190,6 +3192,7 @@ class TestCreateAgentWithToolsetsAndKnowledge:
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
         services["graph_provider"].batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db error"))
         services["graph_provider"].rollback_transaction = AsyncMock()
+        services["graph_provider"].is_write_conflict = MagicMock(return_value=False)
 
         request = MagicMock()
         body = json.dumps({
@@ -3206,6 +3209,108 @@ class TestCreateAgentWithToolsetsAndKnowledge:
                 await create_agent(request)
             assert exc.value.status_code == 500
             services["graph_provider"].rollback_transaction.assert_awaited()
+
+
+class TestCreateAgentTransactionOutcome:
+    """Every way the create's transaction can end: commit, rollback on an
+    ordinary failure, rollback on cancellation, and a begin that never opened."""
+
+    @staticmethod
+    def _graph() -> AsyncMock:
+        graph = AsyncMock()
+        graph.begin_transaction = AsyncMock(return_value="txn-1")
+        graph.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph.batch_create_edges = AsyncMock(return_value=True)
+        graph.commit_transaction = AsyncMock()
+        graph.rollback_transaction = AsyncMock()
+        # Synchronous on the real providers.
+        graph.is_write_conflict = MagicMock(return_value=False)
+        graph.is_transient_error = MagicMock(return_value=False)
+        return graph
+
+    @staticmethod
+    async def _create(graph: AsyncMock) -> JSONResponse:
+        from app.api.routes.agent import create_agent
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=json.dumps({
+            "name": "Agent",
+            "models": [{"modelKey": "mk1", "modelName": "mn1", "isReasoning": True}],
+        }).encode())
+        services = {"graph_provider": graph, "logger": MagicMock()}
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            return await create_agent(request)
+
+    async def test_success_commits_the_one_transaction(self) -> None:
+        graph = self._graph()
+
+        result = await self._create(graph)
+
+        assert result.status_code == 200
+        graph.begin_transaction.assert_awaited_once()
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        graph.rollback_transaction.assert_not_awaited()
+        for call in graph.batch_upsert_nodes.await_args_list + graph.batch_create_edges.await_args_list:
+            assert call.kwargs["transaction"] == "txn-1"
+
+    async def test_failed_write_after_the_agent_node_rolls_back_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=RuntimeError("lock wait timed out"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_cancellation_mid_create_rolls_back_and_stays_a_cancellation(self) -> None:
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._create(graph)
+
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_begin_answers_500_without_touching_a_transaction(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.begin_transaction = AsyncMock(side_effect=RuntimeError("Neo4j client not connected"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        assert not isinstance(exc.value.__cause__, NameError)
+        graph.batch_upsert_nodes.assert_not_awaited()
+        graph.rollback_transaction.assert_not_awaited()
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_commit_aborts_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.commit_transaction = AsyncMock(side_effect=RuntimeError("Transaction failed"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        # ArangoDB leaves the transaction open after a failed commit.
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
 
 
 # ===========================================================================
@@ -4485,3 +4590,25 @@ class TestServiceAccountAgentRoutes:
 
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2
+
+
+class TestAgentModelDefaultEffort:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "expected"), [
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "low"}}, "low"),
+        ({"configuration": {"model": "qwen"}, "defaultReasoningEffort": "medium"}, "medium"),
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "extreme"}}, None),
+        ({"configuration": {"model": "qwen"}}, None),
+    ], ids=["in-configuration", "top-level", "invalid", "not-stored"])
+    async def test_a_models_own_default_effort_is_passed_on(self, stored, expected) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {"models": ["mk1_qwen"]}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={
+            "llm": [{"modelKey": "mk1", "provider": "openAICompatible", "isReasoning": True, **stored}]
+        })
+
+        await _enrich_agent_models(agent, config_service, logging.getLogger("test"))
+        assert agent["models"][0].get("defaultReasoningEffort") == expected
+        assert agent["models"][0]["modelName"] == "qwen"

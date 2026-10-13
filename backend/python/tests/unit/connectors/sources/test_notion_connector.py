@@ -27,33 +27,25 @@ from app.models.blocks import (
 )
 from app.models.entities import FileRecord, RecordType, WebpageRecord
 from collections import defaultdict
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock
 import aiohttp
 from fastapi import HTTPException
 from app.models.blocks import (
-    Block,
     BlockComment,
     BlockContainerIndex,
-    BlockGroup,
     BlockGroupChildren,
-    BlockSubType,
-    BlockType,
     ChildRecord,
     ChildType,
     CommentAttachment,
-    DataFormat,
     GroupSubType,
     GroupType,
     TableRowMetadata,
 )
 from app.models.entities import (
     AppUser,
-    FileRecord,
     Record,
     RecordGroup,
     RecordGroupType,
-    RecordType,
-    WebpageRecord,
 )
 
 
@@ -1054,7 +1046,7 @@ class TestNotionSyncUsersWorkspace:
         connector.data_entities_processor.on_new_app_users.assert_awaited()
 
 
-class TestNotionSyncObjectsByType:
+class TestNotionSyncObjectsByTypeModes:
     @pytest.mark.asyncio
     async def test_sync_pages_full_sync(self):
         """Test full page sync with records, attachments, comments."""
@@ -1147,7 +1139,7 @@ class TestNotionSyncObjectsByType:
             await connector._sync_objects_by_type("page")
 
 
-class TestNotionRunSync:
+class TestNotionRunSyncSteps:
     @pytest.mark.asyncio
     async def test_run_sync_calls_all_steps(self):
         """run_sync loads filters then syncs users, data_sources, and pages."""
@@ -1383,7 +1375,7 @@ class TestNotionExtractBlockText:
         assert result is None
 
 
-class TestNotionFetchBlockChildrenRecursive:
+class TestNotionFetchBlockChildrenRecursiveBasic:
     @pytest.mark.asyncio
     async def test_fetch_block_children_single_page(self):
         """Fetches a single page of children blocks."""
@@ -1399,15 +1391,15 @@ class TestNotionFetchBlockChildrenRecursive:
         assert len(result) == 2
 
     @pytest.mark.asyncio
-    async def test_fetch_block_children_api_failure(self):
-        """Returns empty list on API failure."""
+    async def test_fetch_block_children_api_failure_without_status_raises(self):
+        """A failed read with no HTTP status raises instead of streaming a truncated page."""
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.retrieve_block_children = AsyncMock(return_value=_make_api_response(success=False, error="Fail"))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        result = await connector._fetch_block_children_recursive("page-1")
-        assert result == []
+        with pytest.raises(RuntimeError, match="Fail"):
+            await connector._fetch_block_children_recursive("page-1")
 
     @pytest.mark.asyncio
     async def test_fetch_block_children_non_dict_response(self):
@@ -3659,7 +3651,7 @@ class TestProcessBlocksRecursive:
 # _convert_image_blocks_to_base64
 # ===================================================================
 
-class TestConvertImageBlocksToBase64:
+class TestConvertImageBlocksToBase64Conversion:
     @pytest.mark.asyncio
     async def test_no_image_blocks(self):
         conn = _make_connector_fullcov()
@@ -4551,7 +4543,7 @@ class TestTransformToCommentFileRecord:
 # _extract_comment_attachment_file_records
 # ===================================================================
 
-class TestExtractCommentAttachmentFileRecords:
+class TestExtractCommentAttachmentFileRecordsBasic:
     @pytest.mark.asyncio
     async def test_extracts_file_records(self):
         conn = _make_connector_fullcov()
@@ -6779,7 +6771,6 @@ class TestNotionConnectorResilience:
 from app.config.constants.arangodb import CollectionNames, RecordRelations  # noqa: E402
 from app.connectors.sources.notion.connector import (  # noqa: E402
     RECORD_GONE,
-    _DatabaseGone,
     _DatabaseUnavailable,
 )
 

@@ -528,6 +528,55 @@ export class CrawlingSchedulerService {
   }
 
   /**
+   * Remove every schedule a connector has, reading its type from the queued
+   * runs. A deleted connector's type can't always be looked up: the connector
+   * service shows a personal connector's config only to its creator, so an
+   * admin deleting a member's connector never learns it.
+   */
+  async removeJobsForConnector(
+    connectorId: string,
+    orgId: string,
+  ): Promise<void> {
+    const connectorTypes = new Set<string>();
+    const queued = (await this.queue.getJobs([
+      ...PENDING_STATES,
+      'active',
+    ])) as Job<CrawlingJobData>[];
+    for (const job of queued) {
+      if (job.data.connectorId === connectorId && job.data.orgId === orgId) {
+        connectorTypes.add(job.data.connector);
+      }
+    }
+    for (const paused of this.pausedJobs.values()) {
+      if (paused.connectorId === connectorId && paused.orgId === orgId) {
+        connectorTypes.add(paused.connector);
+      }
+    }
+
+    // One type's failure must not leave the others' schedules running.
+    const notRemoved: string[] = [];
+    for (const connector of connectorTypes) {
+      try {
+        await this.removeJob(connector, connectorId, orgId);
+      } catch (error) {
+        notRemoved.push(connector);
+        this.logger.warn('Could not remove a schedule of a deleted connector', {
+          connector,
+          connectorId,
+          orgId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        });
+      }
+    }
+    if (notRemoved.length > 0) {
+      throw new InternalServerError(SCHEDULE_NOT_REMOVED_MESSAGE, {
+        connectorId,
+        connectorTypes: notRemoved,
+      });
+    }
+  }
+
+  /**
    * Get job status for a specific connector type
    */
   async getJobStatus(
@@ -906,16 +955,40 @@ export class CrawlingSchedulerService {
   /**
    * Get queue statistics
    */
-  async getQueueStats(): Promise<any> {
-    this.logger.debug('Getting queue statistics');
+  async getQueueStats(orgId: string): Promise<any> {
+    this.logger.debug('Getting queue statistics', { orgId });
 
     try {
-      const waiting = await this.queue.getWaiting();
-      const active = await this.queue.getActive();
-      const completed = await this.queue.getCompleted();
-      const failed = await this.queue.getFailed();
-      const delayed = await this.queue.getDelayed();
-      const repeatableJobs = await this.queue.getRepeatableJobs();
+      const ofOrg = (jobs: Job[]): Job<CrawlingJobData>[] =>
+        (jobs as Job<CrawlingJobData>[]).filter(
+          (job) => job.data.orgId === orgId,
+        );
+      const waiting = ofOrg(await this.queue.getWaiting());
+      const active = ofOrg(await this.queue.getActive());
+      const completed = ofOrg(await this.queue.getCompleted());
+      const failed = ofOrg(await this.queue.getFailed());
+      const delayed = ofOrg(await this.queue.getDelayed());
+      // A schedule carries no job data: it is the org's when one of the org's
+      // queued runs has its name and repeat options. The name matters because
+      // orgs often pick the same cron pattern.
+      const orgRuns = ofOrg(
+        await this.queue.getJobs([...PENDING_STATES, 'active']),
+      );
+      const orgRunsByName = new Map<string, Job<CrawlingJobData>[]>();
+      for (const job of orgRuns) {
+        const runs = orgRunsByName.get(job.name);
+        if (runs) runs.push(job);
+        else orgRunsByName.set(job.name, [job]);
+      }
+      const repeatableJobs = (await this.queue.getRepeatableJobs()).filter(
+        (repeatableJob) =>
+          (orgRunsByName.get(repeatableJob.name) ?? []).some((job) =>
+            this.repeatOptsMatch(job.opts.repeat, repeatableJob),
+          ),
+      );
+      const paused = [...this.pausedJobs.values()].filter(
+        (pausedJob) => pausedJob.orgId === orgId,
+      ).length;
 
       const stats = {
         waiting: waiting.length,
@@ -923,7 +996,7 @@ export class CrawlingSchedulerService {
         completed: completed.length,
         failed: failed.length,
         delayed: delayed.length,
-        paused: this.pausedJobs.size,
+        paused,
         repeatable: repeatableJobs.length,
         total:
           waiting.length +
@@ -931,7 +1004,7 @@ export class CrawlingSchedulerService {
           completed.length +
           failed.length +
           delayed.length +
-          this.pausedJobs.size,
+          paused,
       };
 
       this.logger.debug('Queue statistics retrieved', stats);

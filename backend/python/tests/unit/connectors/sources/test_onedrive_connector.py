@@ -26,7 +26,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -2120,7 +2119,7 @@ class TestProcessDeltaItemCoverage:
 # ===========================================================================
 
 
-class TestConvertToPermissionsCoverage:
+class TestConvertToPermissionsIdentitiesAndRoles:
 
     @pytest.mark.asyncio
     async def test_granted_to_identities_v2_group(self):
@@ -2235,7 +2234,7 @@ class TestConvertToPermissionsCoverage:
 # ===========================================================================
 
 
-class TestPermissionsEqualCoverage:
+class TestPermissionsEqualOrdering:
 
     def test_same_perms_different_order(self):
         connector = _make_connector_cov()

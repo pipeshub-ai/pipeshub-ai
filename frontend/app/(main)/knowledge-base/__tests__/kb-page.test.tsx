@@ -5,13 +5,14 @@ import '@/lib/__tests__/test-i18n';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUploadStore } from '@/lib/store/upload-store';
 import { useAuthStore } from '@/lib/store/auth-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useKnowledgeBaseStore } from '../store';
 import { resetKnowledgeBaseSession } from '../utils/sidebar-session';
 import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
 import { mergeChildrenIntoTree } from '../utils/tree-builder';
-import type { EnhancedFolderTreeNode } from '../types';
+import type { EnhancedFolderTreeNode, NodePermissions } from '../types';
 import {
   collection,
   createNavigation,
@@ -19,6 +20,7 @@ import {
   hubChildrenFake,
   hubNode,
   hubResponse,
+  OWNER_PERMISSIONS,
   openRowMenu,
   queryRow,
   installBrowserShims,
@@ -188,6 +190,7 @@ beforeEach(() => {
   useKnowledgeBaseStore.setState(useKnowledgeBaseStore.getInitialState(), true);
   useToastStore.setState({ toasts: [] });
   useUploadStore.setState(useUploadStore.getInitialState(), true);
+  useFeatureFlagsStore.setState({ flags: {} });
   api.kb.getUploadLimits.mockResolvedValue({ maxFileSizeBytes: 5 * 1024 * 1024 });
   api.hub.getNodeChildren.mockResolvedValue(hubResponse([]));
   share.getSharedMembers.mockResolvedValue([]);
@@ -465,6 +468,82 @@ describe('Knowledge base page — inside a collection', () => {
     expect(await screen.findByText('Results')).toBeTruthy();
   });
 
+  it('offers its Recently deleted page only while the trash is on', async () => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(
+      folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC], {
+        permissions: { ...OWNER_PERMISSIONS, collectionRole: 'OWNER' },
+      }),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+    await screen.findByRole('row', { name: SPEC.name });
+    expect(screen.queryByRole('button', { name: /Recently deleted/ })).toBeNull();
+
+    act(() => useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } }));
+    fireEvent.click(await screen.findByRole('button', { name: /Recently deleted/ }));
+
+    expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
+  });
+
+  // Knowledge Hub's context role: at the collection root it is the collection permission's
+  // role; inside a folder it ranks record permissions, which have no FILEORGANIZER, so a
+  // file organizer reads as READER there. collectionRole is the role the trash API checks.
+  for (const [where, collectionRole, contextRole, shown] of [
+    ['the collection', 'OWNER', 'OWNER', true],
+    ['the collection', 'WRITER', 'WRITER', true],
+    ['the collection', 'FILEORGANIZER', 'FILEORGANIZER', true],
+    ['the collection', 'READER', 'READER', false],
+    ['the collection', 'COMMENTER', 'COMMENTER', false],
+    ['a folder', 'FILEORGANIZER', 'READER', true],
+    ['a folder', 'WRITER', 'WRITER', true],
+    ['a folder', 'READER', 'READER', false],
+  ] as const) {
+    it(`${shown ? 'offers' : 'does not offer'} Recently deleted to a ${collectionRole.toLowerCase()} inside ${where}`, async () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+      withCollections();
+      const canDelete = contextRole === 'OWNER' || contextRole === 'WRITER';
+      const permissions = {
+        ...OWNER_PERMISSIONS,
+        role: contextRole as NodePermissions['role'],
+        canDelete,
+        canEdit: canDelete,
+        collectionRole,
+      };
+      const inFolder = where === 'a folder';
+      api.hub.loadFolderData.mockResolvedValue(
+        inFolder
+          ? folderResponse(
+              { id: 'folder-designs', name: 'Designs', nodeType: 'folder' },
+              [...ENGINEERING_TRAIL, { id: 'folder-designs', name: 'Designs', nodeType: 'folder' }],
+              [hubNode({ id: 'rec-logo', name: 'logo.png', parentId: 'folder-designs' })],
+              { permissions },
+            )
+          : folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC], { permissions }),
+      );
+      openAt(inFolder ? '/knowledge-base?nodeType=folder&nodeId=folder-designs' : '/knowledge-base?nodeType=app&nodeId=kb-eng');
+      await screen.findByRole('row', { name: inFolder ? 'logo.png' : SPEC.name });
+
+      const button = screen.queryByRole('button', { name: /Recently deleted/ });
+      expect(Boolean(button)).toBe(shown);
+      if (button) {
+        fireEvent.click(button);
+        expect(router.push).toHaveBeenCalledWith('/knowledge-base/recently-deleted?kbId=kb-eng');
+      }
+    });
+  }
+
+  it('hides Recently deleted while the collection role is unknown', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_SOFT_DELETE: true } });
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(
+      folderResponse({ id: 'kb-eng', name: 'Engineering', nodeType: 'app' }, ENGINEERING_TRAIL, [SPEC]),
+    );
+    openAt('/knowledge-base?nodeType=app&nodeId=kb-eng');
+    await screen.findByRole('row', { name: SPEC.name });
+
+    expect(screen.queryByRole('button', { name: /Recently deleted/ })).toBeNull();
+  });
+
   it('reloads the collection when Refresh is clicked', async () => {
     await openEngineering();
     api.hub.loadFolderData.mockClear();
@@ -600,6 +679,36 @@ describe('Knowledge base page — failures the user must be able to recover from
         "Failed to replace file — We couldn't replace the file. Please try again in a moment.",
       ),
     );
+  });
+
+  it('does not restore collections when a list request finishes after the last one is gone', async () => {
+    const pending: { resolve: (value: unknown) => void; signal?: AbortSignal }[] = [];
+    api.hub.getNavigationNodes.mockImplementation((params?: { nodeTypes?: string }, options?: { signal?: AbortSignal }) => {
+      if (params?.nodeTypes === 'app') {
+        return new Promise((resolve) => {
+          pending.push({ resolve, signal: options?.signal });
+        });
+      }
+      return Promise.resolve(hubResponse([ENGINEERING]));
+    });
+    openAt('/knowledge-base');
+
+    await waitFor(() => expect(pending.length).toBeGreaterThan(0));
+    const listRequest = pending[pending.length - 1];
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setCategorizedNodes({ shared: [], private: [] });
+    });
+
+    expect(listRequest.signal?.aborted).toBe(true);
+    expect(useKnowledgeBaseStore.getState().isLoadingTableData).toBe(false);
+
+    await act(async () => {
+      listRequest.resolve(hubResponse([ENGINEERING]));
+    });
+
+    expect(useKnowledgeBaseStore.getState().tableData).toBeNull();
+    expect(screen.queryByRole('row', { name: 'Engineering' })).toBeNull();
   });
 
   it('after the last collection is deleted, says there are no collections left', async () => {
@@ -1282,7 +1391,12 @@ describe('Knowledge base page — All Records', () => {
     fireEvent.click(await screen.findByRole('row', { name: 'Shared Drive' }));
 
     expect(await screen.findByRole('row', { name: 'Budget.xlsx' })).toBeTruthy();
-    expect(api.hub.loadFolderData).toHaveBeenCalledWith('recordGroup', 'rg-drive', expect.any(Object));
+    expect(api.hub.loadFolderData).toHaveBeenCalledWith(
+      'recordGroup',
+      'rg-drive',
+      expect.any(Object),
+      expect.objectContaining({ signal: expect.any(AbortSignal) }),
+    );
     expect(currentUrl()).toContain('view=all-records');
   });
 
@@ -1296,12 +1410,65 @@ describe('Knowledge base page — All Records', () => {
     typeInto(screen.getByPlaceholderText('eg: Sales Docs'), 'budget');
 
     await waitFor(() =>
-      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(expect.objectContaining({ q: 'budget' })),
+      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+        expect.objectContaining({ q: 'budget' }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
     );
 
     const searchButtons = within(screen.getByPlaceholderText('eg: Sales Docs').parentElement!.parentElement!).getAllByRole('button');
     fireEvent.click(searchButtons[searchButtons.length - 1]);
-    await waitFor(() => expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(expect.not.objectContaining({ q: 'budget' })));
+    await waitFor(() =>
+      expect(api.hub.getAllRootItems).toHaveBeenLastCalledWith(
+        expect.not.objectContaining({ q: 'budget' }),
+        expect.objectContaining({ signal: expect.any(AbortSignal) }),
+      ),
+    );
+  });
+
+  it('shows the latest filter results when an earlier request finishes last', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+
+    const pending: { resolve: (value: unknown) => void; signal?: AbortSignal }[] = [];
+    api.hub.getAllRootItems.mockImplementation((_params, options?: { signal?: AbortSignal }) =>
+      new Promise((resolve) => {
+        pending.push({ resolve, signal: options?.signal });
+      }),
+    );
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setAllRecordsFilter({ indexingStatus: ['QUEUED'] });
+    });
+    await waitFor(() => expect(pending).toHaveLength(1));
+
+    act(() => {
+      useKnowledgeBaseStore.getState().setAllRecordsFilter({ indexingStatus: ['IN_PROGRESS'] });
+    });
+    await waitFor(() => expect(pending).toHaveLength(2));
+
+    expect(pending[0].signal?.aborted).toBe(true);
+    expect(pending[1].signal?.aborted).toBe(false);
+    expect(screen.getByRole('status')).toBeTruthy();
+
+    const newer = hubNode({ id: 'rec-new', name: 'Newer.pdf', origin: 'CONNECTOR' });
+    const stale = hubNode({ id: 'rec-stale', name: 'Stale.pdf', origin: 'CONNECTOR' });
+
+    await act(async () => {
+      pending[1].resolve(hubResponse([newer]));
+    });
+
+    expect(await screen.findByRole('row', { name: 'Newer.pdf' })).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+
+    await act(async () => {
+      pending[0].resolve(hubResponse([stale]));
+    });
+
+    expect(screen.queryByRole('row', { name: 'Stale.pdf' })).toBeNull();
+    expect(screen.getByRole('row', { name: 'Newer.pdf' })).toBeTruthy();
   });
 });
 

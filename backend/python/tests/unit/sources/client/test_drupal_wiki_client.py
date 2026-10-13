@@ -3,6 +3,7 @@
 import logging
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 
 from app.sources.client.drupal_wiki.drupal_wiki import (
@@ -12,6 +13,8 @@ from app.sources.client.drupal_wiki.drupal_wiki import (
     normalize_base_url,
     normalize_personal_access_token,
 )
+from app.sources.client.resilience import ResiliencePolicy
+from app.sources.external.drupal_wiki.drupal_wiki import DrupalWikiDataSource
 
 BASE_URL = "https://wiki.example.com"
 
@@ -68,6 +71,27 @@ class TestDrupalWikiRESTClientViaToken:
         assert "Content-Type" not in client.headers
         assert client.get_base_url() == BASE_URL
         assert client.get_token() == "secret"
+
+    @pytest.mark.asyncio
+    async def test_never_sends_back_the_session_cookie(self) -> None:
+        # The wiki rejects a request carrying its SESSION cookie and the token with 400.
+        sent: list[tuple[str, str | None]] = []
+
+        async def wiki(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+            sent.append((request.url.path, request.headers.get("cookie")))
+            return httpx.Response(200, headers={"Set-Cookie": "SESSION=abc; Path=/; Secure; HttpOnly"}, json={})
+
+        policy = ResiliencePolicy(rate_limit=10, max_retries=3)
+        data_source = DrupalWikiDataSource(
+            DrupalWikiClient.build_with_config(DrupalWikiTokenConfig(base_url=BASE_URL, token="pat:t"), policy)
+        )
+        with patch.object(httpx.AsyncHTTPTransport, "handle_async_request", wiki):
+            await data_source.list_users(size=1)
+            await data_source.list_spaces(size=1)
+            await data_source.list_spaces(page=1, size=1)
+
+        assert [path for path, _ in sent] == ["/api/rest/scope/api/user"] + ["/api/rest/scope/api/space"] * 2
+        assert [cookie for _, cookie in sent] == [None, None, None]
 
 class TestDrupalWikiClient:
     def test_build_with_config(self) -> None:

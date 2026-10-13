@@ -244,6 +244,8 @@ class MessageErrorClassifier:
 
         Classification rules:
         0. Walk exception chain to find root cause (handles wrapped exceptions)
+        0b2. ServiceAuthRefusedError = TRANSIENT (an internal service refused
+            our service token: a deployment fault, not a document fault)
         0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
             failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
@@ -282,6 +284,18 @@ class MessageErrorClassifier:
             aiohttp_result = _classify_aiohttp_transport_error(chain_exc)
             if aiohttp_result is not None:
                 return aiohttp_result
+
+        # 0b2. An internal service refused this process's own service token.
+        # Every record would be refused alike until the deployment is fixed
+        # (secret mismatch, services upgraded out of order), so it is retried
+        # rather than read as a client error by the HTTP status rule below.
+        try:
+            from app.services.base_client import ServiceAuthRefusedError
+
+            if any(isinstance(chain_exc, ServiceAuthRefusedError) for chain_exc in chain):
+                return MessageErrorType.TRANSIENT
+        except ImportError:
+            pass
 
         # 0c. Parsing-service structured errors: PARSE_BACKPRESSURE means the
         # service is saturated but healthy (admission gate timed out) and

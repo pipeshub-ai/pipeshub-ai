@@ -676,18 +676,7 @@ class TestCreateEmbeddingsDeeper:
 # _normalize_image_to_base64
 # ===================================================================
 
-class TestNormalizeImageToBase64:
-    @pytest.mark.asyncio
-    async def test_data_url(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64,iVBORw0KGgo=")
-        assert result == "iVBORw0KGgo="
-
-    @pytest.mark.asyncio
-    async def test_data_url_no_comma(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64")
-        assert result is None
+class TestNormalizeImageToBase64RawInput:
 
     @pytest.mark.asyncio
     async def test_raw_base64(self):
@@ -701,18 +690,6 @@ class TestNormalizeImageToBase64:
         result = await vs._normalize_image_to_base64("aGVsbG8")
         assert result is not None
         assert result.endswith("=")
-
-    @pytest.mark.asyncio
-    async def test_none_input(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64(None)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_empty_string(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("")
-        assert result is None
 
     @pytest.mark.asyncio
     async def test_non_string_input(self):
@@ -905,6 +882,109 @@ class TestIndexDocumentsTableBlocks:
         vs._create_embeddings.assert_awaited_once()
         chunks = vs._create_embeddings.call_args[0][0]
         assert any("Summary of sales" in getattr(c, "page_content", "") for c in chunks)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("block_type", "field"),
+        [("TABLE_ROW", "row_natural_language_text"), ("TABLE", "table_summary")],
+    )
+    async def test_oversized_table_text_is_split_to_the_token_ceiling(
+        self, block_type: str, field: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Table rows and summaries went to the embedder whole. One over the
+        model's token limit is rejected only after the full retry budget, which
+        stalls the record."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+        from app.modules.transformers.vectorstore import _exceeds_token_ceiling
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        text = "Header: value, " * 2_000
+        block = Block(
+            type=getattr(BlockType, block_type),
+            format=DataFormat.JSON,
+            data={field: text},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert len(docs) > 1
+        assert not any(_exceeds_token_ceiling(d.page_content, 512) for d in docs)
+        assert "".join(d.page_content for d in docs) == text
+        assert {d.metadata["blockId"] for d in docs} == {block.id}
+
+    @pytest.mark.asyncio
+    async def test_table_row_under_the_ceiling_stays_one_document(self) -> None:
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        block = Block(
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"row_natural_language_text": "Name: Alice, Age: 30"},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert [d.page_content for d in docs] == ["Name: Alice, Age: 30"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["table_group", "sql_row", "sql_table", "sql_view"])
+    async def test_oversized_group_and_sql_text_is_split_to_the_token_ceiling(
+        self, source: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Table block-group summaries, SQL rows, DDL and view text reached the
+        embedder whole, the same failure as an oversized table row."""
+        from app.models.blocks import BlockGroup, GroupSubType, GroupType
+        from app.modules.transformers.vectorstore import _exceeds_token_ceiling
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        text = "Header: value, " * 2_000
+        blocks, groups = [], []
+        if source == "table_group":
+            groups.append(BlockGroup(type=GroupType.TABLE, index=0, data={"table_summary": text}))
+        elif source == "sql_row":
+            blocks.append(_make_block(
+                "sql-row-1", "table_row", {"row_natural_language_text": text}, sub_type="sql_table",
+            ))
+        elif source == "sql_table":
+            groups.append(BlockGroup(
+                type=GroupType.TABLE, sub_type=GroupSubType.SQL_TABLE, index=0,
+                data={"fqn": "db.s.t", "ddl": text},
+            ))
+        else:
+            groups.append(BlockGroup(
+                type=GroupType.VIEW, sub_type=GroupSubType.SQL_VIEW, index=0,
+                data={"fqn": "db.s.v", "definition": text},
+            ))
+
+        await vs.index_documents(
+            _make_blocks_container(blocks=blocks, block_groups=groups),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert len(docs) > 1
+        assert not any(_exceeds_token_ceiling(d.page_content, 512) for d in docs)
+        assert text in "".join(d.page_content for d in docs)
+        assert len({d.metadata["blockId"] for d in docs}) == 1
 
 
 # ===================================================================
@@ -1163,7 +1243,6 @@ dropped in the multi-vector-DB changeset:
 - Empty table_summary / row_natural_language_text produce no embedding.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 

@@ -134,6 +134,18 @@ describe('MailSenderService', () => {
     expect(opts.auth, 'auth').to.equal(undefined);
   });
 
+  it('never lets an attachment read a local file or fetch a URL', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    await sender.send(
+      { ...body, attachments: [{ filename: 'x', path: '/etc/passwd' }] },
+      smtp,
+    );
+
+    const opts = (nodemailer.createTransport as sinon.SinonStub).firstCall.args[0];
+    expect(opts.disableFileAccess, 'disableFileAccess').to.be.true;
+    expect(opts.disableUrlAccess, 'disableUrlAccess').to.be.true;
+  });
+
   it('abandons a stalled send at the deadline without dropping the pool', async () => {
     const clock = sinon.useFakeTimers();
     const closeStub = sinon.stub();

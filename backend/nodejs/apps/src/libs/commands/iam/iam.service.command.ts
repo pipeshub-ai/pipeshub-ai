@@ -1,7 +1,7 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { BaseCommand } from '../command.interface';
 import { Logger } from '../../services/logger.service';
-import { logSafeUrl } from '../log-safe-url';
+import { redactSensitiveQueryParams } from '../../utils/log-redaction.utils';
 
 const logger = Logger.getInstance({
   service: 'IAMServiceCommand',
@@ -56,7 +56,7 @@ export class IAMServiceCommand extends BaseCommand<IAMResponse> {
       logger.debug('IAM service command response', {
         statusCode: response.status,
         statusText: response.statusText,
-        url: logSafeUrl(url),
+        url: redactSensitiveQueryParams(url),
         method: this.method,
       });
 
@@ -70,7 +70,7 @@ export class IAMServiceCommand extends BaseCommand<IAMResponse> {
     } catch (error: any) {
       logger.error('IAM service command failed', {
         error: error.message,
-        url: logSafeUrl(url),
+        url: redactSensitiveQueryParams(url),
         // Headers carry the caller's bearer token and bodies carry user details.
         method: this.method,
       });

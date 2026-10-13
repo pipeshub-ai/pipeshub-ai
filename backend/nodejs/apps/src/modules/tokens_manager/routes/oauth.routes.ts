@@ -78,6 +78,7 @@ const oauthConfigListSchema = z.object({
       .optional(),
     search: z.string().optional(),
     scope: z.enum(['personal', 'team']).optional(),
+    reveal: z.string().optional(),
   }),
 });
 
@@ -91,6 +92,7 @@ const createOAuthConfigSchema = z.object({
   body: z.object({
     oauthInstanceName: z.string().min(1, 'OAuth instance name is required'),
     config: z.any(),
+    baseUrl: z.string().optional(),
   }),
 });
 
@@ -115,6 +117,7 @@ const updateOAuthConfigSchema = z.object({
   body: z.object({
     oauthInstanceName: z.string().min(1, 'OAuth instance name is required').optional(),
     config: z.any().optional(),
+    baseUrl: z.string().optional(),
   }),
 });
 

@@ -425,6 +425,9 @@ class TokenRefreshService:
         # auth_config.
         if config_data.get(AuthFieldKeys.INSTANCE_URL):
             oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = config_data[AuthFieldKeys.INSTANCE_URL]
+        # A Salesforce refresh must go to the login host that issued the token.
+        if config_data.get(AuthFieldKeys.LOGIN_URL):
+            oauth_flow_config[AuthFieldKeys.LOGIN_URL] = config_data[AuthFieldKeys.LOGIN_URL]
 
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
@@ -475,6 +478,8 @@ class TokenRefreshService:
             base_config[AuthFieldKeys.REDIRECT_URI] = auth_config.get(AuthFieldKeys.REDIRECT_URI, "")
         if not base_config.get(OAuthConfigKeys.SCOPES):
             base_config[OAuthConfigKeys.SCOPES] = auth_config.get(OAuthConfigKeys.SCOPES, [])
+        if not base_config.get(AuthFieldKeys.LOGIN_URL) and auth_config.get(AuthFieldKeys.LOGIN_URL):
+            base_config[AuthFieldKeys.LOGIN_URL] = auth_config[AuthFieldKeys.LOGIN_URL]
 
         return base_config
 
@@ -520,12 +525,6 @@ class TokenRefreshService:
                 if client_id and client_secret:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
-                    # Self-managed connectors (e.g. GitLab EE) store the user's
-                    # instance host in auth_config.instanceUrl. Propagate so
-                    # get_oauth_config() can redirect SaaS-default OAuth URLs
-                    # to the user's instance during token refresh.
-                    if auth_config.get(AuthFieldKeys.INSTANCE_URL):
-                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 

@@ -65,6 +65,22 @@ export const assignAgentCapabilitiesToPayload = (
   }
 };
 
+/**
+ * Forward the opt-in telemetry flag. Deliberately NOT folded into
+ * `assignAgentCapabilitiesToPayload`: that one is only called in agent mode,
+ * and this flag has to reach Python on every stream mode — `internal_search`
+ * most of all, since that is the mode evaluations measure. Omitted when
+ * absent so Python sees no key rather than an explicit false.
+ */
+export const assignRetrievalContextToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  if (body.includeRetrievalContext === true) {
+    payload.includeRetrievalContext = true;
+  }
+};
+
 /** Which AI-backend chat a turn is for: the assistant, or one saved agent. */
 export type ChatTarget =
   | { kind: 'assistant' }
@@ -115,6 +131,7 @@ export const buildAiChatRequest = (
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
   };
+  assignRetrievalContextToPayload(payload, body);
 
   let path: string;
   if (target.kind === 'agent') {

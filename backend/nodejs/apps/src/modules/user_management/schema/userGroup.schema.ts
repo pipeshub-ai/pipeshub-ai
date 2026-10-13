@@ -37,6 +37,18 @@ const userGroupsSchema = new Schema<UserGroup>(
   { timestamps: true },
 );
 
+// Built by UserGroupNameIndexMigration rather than declared on the schema:
+// autoIndex would try to build it at boot and fail on installs that already
+// hold duplicate names, so the migration checks for those first.
+export const ACTIVE_GROUP_NAME_INDEX = {
+  keys: { orgId: 1, name: 1 },
+  options: {
+    name: 'orgId_1_name_1_active_unique',
+    unique: true,
+    partialFilterExpression: { isDeleted: false },
+  },
+} as const;
+
 userGroupsSchema.pre<UserGroup>('save', async function (next) {
   try {
     if (!this.slug) {

@@ -15,6 +15,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
 
 const logger = Logger.getInstance({
@@ -764,7 +765,7 @@ export const getToolsetInstance =
       };
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`,
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}${revealQuery(req)}`,
         HttpMethod.GET,
         headers
       );
@@ -1124,7 +1125,7 @@ export const listToolsetOAuthConfigs =
       };
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${encodeURIComponent(toolsetType)}`,
+        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${encodeURIComponent(toolsetType)}${revealQuery(req)}`,
         HttpMethod.GET,
         headers
       );

@@ -26,6 +26,7 @@ from app.connectors.sources.dropbox_individual.connector import (
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import FileRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 MODULE = "app.connectors.sources.dropbox_individual.connector"
 _VALID_REV = "0123456789abcdef"
@@ -291,8 +292,8 @@ class TestDropboxIndividualInit:
             "credentials": {"access_token": "t"},
             "auth": {},
         })
-        result = await dropbox_connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await dropbox_connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)

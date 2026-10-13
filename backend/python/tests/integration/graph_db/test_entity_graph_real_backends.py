@@ -12,6 +12,8 @@ These check what only a server can show:
 - On ArangoDB, records that create the same canonical node, and add aliases
   to it, enrich concurrently without errorNum 1200, and the belongsTo* edges
   they write (with extractedName) pass the strict edge schema.
+- On both, a record whose writes to a new topic arrive while another record's
+  create or alias update of it is still uncommitted completes its enrichment.
 
 Needs the graph services, and skips cleanly when they are not reachable:
 
@@ -24,6 +26,7 @@ Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import uuid
@@ -33,6 +36,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.config.constants.neo4j import collection_to_label
 from app.models.blocks import SemanticMetadata
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
@@ -47,7 +51,9 @@ from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 
@@ -68,6 +74,12 @@ logger = logging.getLogger("entity-graph-it")
 
 @pytest.fixture
 async def neo4j(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
+    async with _neo4j_backend(monkeypatch) as backend:
+        yield backend
+
+
+@contextlib.asynccontextmanager
+async def _neo4j_backend(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[tuple[Neo4jProvider, str]]:
     monkeypatch.setenv("NEO4J_URI", NEO4J_URI)
     monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
     monkeypatch.setenv("NEO4J_PASSWORD", NEO4J_PASSWORD)
@@ -152,7 +164,7 @@ class TestNeo4jTaxonomyAliases:
         })
         await provider.add_taxonomy_aliases(
             TOPICS, key, ["Onboarding checklist", "New hire onboarding"],
-            ["onboarding checklist", "new hire onboarding"],
+            ["onboarding checklist", "new hire onboarding"], org_id=org_id,
         )
         captured = _capture_queries(provider)
 
@@ -176,7 +188,7 @@ class TestNeo4jTaxonomyAliases:
         writers = 12
 
         await asyncio.gather(*(
-            provider.add_taxonomy_aliases(TOPICS, key, [f"Release {i}"], [f"release {i}"])
+            provider.add_taxonomy_aliases(TOPICS, key, [f"Release {i}"], [f"release {i}"], org_id=org_id)
             for i in range(writers)
         ))
 
@@ -301,6 +313,12 @@ class TestNeo4jRecordGroupInheritance:
 
 @pytest.fixture
 async def arango() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
+    async with _arango_backend() as backend:
+        yield backend
+
+
+@contextlib.asynccontextmanager
+async def _arango_backend() -> AsyncIterator[tuple[ArangoHTTPProvider, str]]:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
         "url": ARANGO_URL, "username": "root", "password": ARANGO_PASSWORD, "db": ARANGO_DB,
@@ -358,13 +376,13 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
         provider, org_id = arango
         key, node = _topic(org_id, "Release")
         await provider.create_taxonomy_node_if_absent(TOPICS, node)
-        await provider.add_taxonomy_aliases(TOPICS, key, ["Release notes"], ["release notes"])
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Release notes"], ["release notes"], org_id=org_id)
         t1 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
         t2 = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
         try:
             for txn in (t1, t2):
                 await provider.add_taxonomy_aliases(
-                    TOPICS, key, ["Release notes"], ["release notes"], transaction=txn,
+                    TOPICS, key, ["Release notes"], ["release notes"], transaction=txn, org_id=org_id,
                 )
         finally:
             for txn in (t1, t2):
@@ -419,3 +437,572 @@ class TestArangoTaxonomyWritesUnderConcurrentTransactions:
             {"to": f"{TOPICS}/{key}"},
         )
         assert sorted(edges) == sorted(f"records/{r}" for r in record_ids)
+
+
+# ---------------------------------------------------------------------------
+# Both backends
+# ---------------------------------------------------------------------------
+
+# How long the in-flight write keeps Neo4j writes queued behind its lock.
+HOLD_SECONDS = 1.0
+
+
+@pytest.fixture(params=["neo4j", "arango"])
+async def graph(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch,
+) -> AsyncIterator[tuple[IGraphDBProvider, str]]:
+    backend = _neo4j_backend(monkeypatch) if request.param == "neo4j" else _arango_backend()
+    async with backend as connected:
+        yield connected
+
+
+async def _write_in_flight(
+    provider: IGraphDBProvider, node: dict[str, Any], *, alias_update: bool, alias: str,
+) -> Callable[[], Awaitable[None]]:
+    """Another record's write to ``node``, left uncommitted so it holds the
+    node's lock: its create of the node or, with ``alias_update``, its alias
+    update of the node it already created. Returns the commit."""
+    if alias_update:
+        await provider.create_taxonomy_node_if_absent(TOPICS, dict(node))
+    if isinstance(provider, ArangoHTTPProvider):
+        txn = await provider.begin_transaction(read=[TOPICS], write=[TOPICS])
+        if alias_update:
+            await provider.add_taxonomy_aliases(
+                TOPICS, node["id"], [alias], [alias.casefold()], transaction=txn, org_id=node["orgId"],
+            )
+        else:
+            await provider.create_taxonomy_node_if_absent(TOPICS, dict(node), transaction=txn)
+        return lambda: provider.commit_transaction(txn)
+
+    # The provider's own transactions are auto-commit unless
+    # NEO4J_EXPLICIT_TRANSACTIONS is set, and those hold no lock.
+    label = collection_to_label(TOPICS)
+    session = provider.client.driver.session(database="neo4j")
+    tx = await session.begin_transaction()
+    if alias_update:
+        await tx.run(
+            f"MATCH (n:{label} {{id: $id}}) SET n.aliases = [$alias], n.normalizedAliases = [$normalized]",
+            id=node["id"], alias=alias, normalized=alias.casefold(),
+        )
+    else:
+        props = {k: v for k, v in node.items() if k != "id"}
+        await tx.run(f"MERGE (n:{label} {{id: $id}}) ON CREATE SET n += $props", id=node["id"], props=props)
+
+    async def commit() -> None:
+        try:
+            await tx.commit()
+        finally:
+            await session.close()
+
+    return commit
+
+
+class _WriteDuringWrite:
+    """Sends the record's writes to the topic while another writer holds it,
+    and releases that writer once one of them fails (ArangoDB refuses a locked
+    key at once) or ``HOLD_SECONDS`` after the first was sent (Neo4j queues
+    them behind the lock)."""
+
+    def __init__(self, release: Callable[[], Awaitable[None]]) -> None:
+        self._release = release
+        self._released = False
+        self._in_flight = 0
+        self._lock = asyncio.Lock()
+        self.sent = asyncio.Event()
+        self.first_error: BaseException | None = None
+        self.queued_behind_lock = False
+
+    async def release(self) -> None:
+        async with self._lock:
+            if not self._released:
+                self._released = True
+                self.queued_behind_lock = self._in_flight > 0
+                await self._release()
+
+    async def release_after_hold(self) -> None:
+        await self.sent.wait()
+        await asyncio.sleep(HOLD_SECONDS)
+        await self.release()
+
+    def install(self, provider: IGraphDBProvider) -> None:
+        if isinstance(provider, ArangoHTTPProvider):
+            owner, name = provider.http_client, "batch_insert_documents"
+
+            def is_topic_write(collection: str, *_: object, txn_id: str | None = None, **__: object) -> bool:
+                return collection == TOPICS and txn_id is None
+        else:
+            # MERGE matches an existing node without locking it, so with the
+            # node already created it is the alias update that queues.
+            owner, name = provider.client, "execute_query"
+            label = collection_to_label(TOPICS)
+            writes = (f"MERGE (n:{label} {{id: $id}})", f"MATCH (n:{label} {{id: $key}})")
+
+            def is_topic_write(query: str, *_: object, txn_id: str | None = None, **__: object) -> bool:
+                return txn_id is None and any(write in query for write in writes)
+
+        real = getattr(owner, name)
+
+        async def watched(*args: object, **kwargs: object) -> object:
+            if self._released or not is_topic_write(*args, **kwargs):
+                return await real(*args, **kwargs)
+            self.sent.set()
+            self._in_flight += 1
+            try:
+                return await real(*args, **kwargs)
+            except Exception as exc:
+                self.first_error = self.first_error or exc
+                raise
+            finally:
+                self._in_flight -= 1
+                if self.first_error is not None:
+                    await self.release()
+
+        setattr(owner, name, watched)
+
+
+class TestConcurrentEnrichmentOfOneNewTopic:
+    @pytest.mark.parametrize("alias_update", [False, True], ids=["during-its-create", "during-its-alias-update"])
+    async def test_a_record_creating_a_topic_another_record_is_writing_succeeds(
+        self, graph, alias_update: bool,
+    ) -> None:
+        """Two records resolve the same new topic and enrich at the same
+        moment: the second record's writes to the topic arrive while the
+        first record's write to it is still in flight. Both enrichments
+        complete, with one topic node linked from both records."""
+        provider, org_id = graph
+        key, node = _topic(org_id, "Quarterly planning")
+        record_ids = [f"{org_id}-rec-{i}" for i in range(2)]
+        await provider.batch_upsert_nodes([
+            {
+                "id": record_id, "orgId": org_id, "recordName": f"Doc {i}",
+                "externalRecordId": record_id, "recordType": "FILE", "origin": "CONNECTOR",
+                "connectorId": f"{org_id}-conn", "createdAtTimestamp": get_epoch_timestamp_in_ms(),
+            }
+            for i, record_id in enumerate(record_ids)
+        ], CollectionNames.RECORDS.value)
+
+        def resolution(record_index: int) -> EntityResolution:
+            res = EntityResolution(org_id=org_id, mode=ResolutionMode.APPLY)
+            res.add(ResolvedEntity(
+                kind=TOPIC, key=key, name="Quarterly planning", normalized="quarterly planning",
+                is_new=True, decision="new",
+                aliases=[f"Q planning {record_index}"], new_aliases=[f"Q planning {record_index}"],
+                extracted_names=[f"Q planning {record_index}"],
+            ))
+            return res
+
+        transformer = GraphDBTransformer(graph_provider=provider, logger=logger)
+
+        async def enrich(record_index: int) -> list[Any]:
+            return await transformer.save_metadata_to_db(
+                record_ids[record_index],
+                SemanticMetadata(categories=[], topics=["Quarterly planning"], languages=[], departments=[]),
+                f"vr-{record_ids[record_index]}",
+                resolution=resolution(record_index),
+            )
+
+        overlap = _WriteDuringWrite(
+            await _write_in_flight(provider, node, alias_update=alias_update, alias="Q planning 0"),
+        )
+        overlap.install(provider)
+        try:
+            second, _ = await asyncio.gather(
+                enrich(1), overlap.release_after_hold(), return_exceptions=True,
+            )
+        finally:
+            await overlap.release()
+        first = await enrich(0)
+
+        # The second record's write really ran into the first one's.
+        if isinstance(provider, ArangoHTTPProvider):
+            assert "1200" in str(overlap.first_error), overlap.first_error
+        else:
+            assert overlap.first_error is None and overlap.queued_behind_lock
+        assert not isinstance(second, BaseException), second
+        assert [e.entity_id for e in first] == [key] and [e.entity_id for e in second] == [key]
+
+        nodes = await provider.get_nodes_by_filters(TOPICS, {"orgId": org_id})
+        assert [GraphDBTransformer._node_key(n) for n in nodes] == [key]
+        assert sorted(nodes[0]["normalizedAliases"]) == ["q planning 0", "q planning 1"]
+        for record_id in record_ids:
+            edges = await provider.get_edges_from_node_with_target_name(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.BELONGS_TO_TOPIC.value,
+            )
+            assert [e["_to"] for e in edges] == [f"{TOPICS}/{key}"]
+            record = await provider.get_document(record_id, CollectionNames.RECORDS.value)
+            assert record["extractionStatus"] == "COMPLETED"
+
+
+class TestAliasWritesAreOrgScoped:
+    """An org's spellings never land on a legacy node all orgs share, or on
+    another org's node (KG-25)."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        mine, theirs, legacy = (f"{org_id}-{n}" for n in ("mine", "theirs", "legacy"))
+        await provider.client.execute_query(
+            "CREATE (:Topics {id: $mine, name: 'A', normalizedName: 'a', orgId: $org}) "
+            "CREATE (:Topics {id: $theirs, name: 'A', normalizedName: 'a', orgId: $org + '-other'}) "
+            "CREATE (:Topics {id: $legacy, name: 'A', itOrg: $org})",
+            parameters={"mine": mine, "theirs": theirs, "legacy": legacy, "org": org_id},
+        )
+        try:
+            for key in (mine, theirs, legacy):
+                await provider.add_taxonomy_aliases(TOPICS, key, ["Alpha"], ["alpha"], org_id=org_id)
+            rows = await provider.client.execute_query(
+                "MATCH (n:Topics) WHERE n.id IN $ids RETURN n.id AS id, n.aliases AS aliases",
+                parameters={"ids": [mine, theirs, legacy]},
+            )
+            aliases = {r["id"]: r["aliases"] for r in rows}
+            assert aliases == {mine: ["Alpha"], theirs: None, legacy: None}
+        finally:
+            await provider.client.execute_query(
+                "MATCH (n:Topics) WHERE n.id IN $ids DETACH DELETE n",
+                parameters={"ids": [theirs, legacy]},
+            )
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        mine, theirs, legacy = (f"{org_id}-{n}" for n in ("mine", "theirs", "legacy"))
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {TOPICS}",
+            {"docs": [
+                {"_key": mine, "name": "A", "normalizedName": "a", "orgId": org_id},
+                {"_key": theirs, "name": "A", "normalizedName": "a", "orgId": f"{org_id}-other"},
+                {"_key": legacy, "name": "A"},
+            ]},
+        )
+        try:
+            for key in (mine, theirs, legacy):
+                await provider.add_taxonomy_aliases(TOPICS, key, ["Alpha"], ["alpha"], org_id=org_id)
+            rows = await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key IN @keys RETURN {{k: d._key, a: d.aliases}}",
+                {"keys": [mine, theirs, legacy]},
+            )
+            assert {r["k"]: r["a"] for r in rows} == {mine: ["Alpha"], theirs: None, legacy: None}
+        finally:
+            await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key IN @keys REMOVE d IN {TOPICS}",
+                {"keys": [theirs, legacy]},
+            )
+
+
+async def _assert_fenced_clear(provider: Neo4jProvider | ArangoHTTPProvider, key: str) -> None:
+    """The flag clear is fenced on the due time the sweep read: a stale fence
+    changes nothing, the current one merges (other fields are kept), and the
+    attempt counter fits ArangoDB's strict records schema."""
+    records = CollectionNames.RECORDS.value
+    cleared = {"duplicateReconcilePending": False, "duplicateReconcileAttempts": 2,
+               "duplicateReconcileDueAt": None}
+    stale = {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 999}
+    assert await provider.update_node_fields_if_match(key, records, cleared, stale) is False
+    current = {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000}
+    assert await provider.update_node_fields_if_match(key, records, cleared, current) is True
+    doc = await provider.get_document(key, records)
+    assert doc["duplicateReconcilePending"] is False
+    assert doc["duplicateReconcileAttempts"] == 2
+    assert doc.get("duplicateReconcileDueAt") is None
+    assert doc["orgId"]  # merged, not replaced
+    absent = {"duplicateReconcileDueAt": None, "duplicateReconcilePending": False}
+    assert await provider.update_node_fields_if_match(
+        key, records, {"duplicateReconcileAttempts": 3}, absent,
+    ) is True
+
+
+class TestFieldsIfMatchUnderConcurrentWrite:
+    async def test_neo4j_reads_a_write_that_commits_while_it_waits(self, neo4j) -> None:
+        """Another writer changes the record and holds its lock until after this
+        write has read it; the change must survive, not be overwritten."""
+        provider, org_id = neo4j
+        key = f"{org_id}-fenced"
+        records = CollectionNames.RECORDS.value
+        await provider.client.execute_query(
+            "CREATE (r:Record) SET r = $row",
+            parameters={"row": {"id": key, "orgId": org_id,
+                                "duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000}},
+        )
+        session = provider.client.driver.session(database="neo4j")
+        tx = await session.begin_transaction()
+        try:
+            await tx.run("MATCH (r:Record {id: $id}) SET r.duplicateReconcileDueAt = 2000", id=key)
+            write = asyncio.create_task(provider.update_node_fields_if_match(
+                key, records, {"duplicateReconcilePending": False, "duplicateReconcileDueAt": None},
+                {"duplicateReconcilePending": True, "duplicateReconcileDueAt": 1000},
+            ))
+            await asyncio.sleep(HOLD_SECONDS)
+            assert not write.done()
+            await tx.commit()
+        finally:
+            await session.close()
+        assert await write is False
+        stored = await provider.get_document(key, records)
+        assert stored["duplicateReconcilePending"] is True
+        assert stored["duplicateReconcileDueAt"] == 2000
+        assert "matchLock" not in stored
+
+
+class TestPendingDuplicateReconcile:
+    """The retry sweep's query, and the attempt counter on ArangoDB's strict
+    records schema (KG-51)."""
+
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        await provider.client.execute_query(
+            "UNWIND $rows AS row CREATE (r:Record) SET r = row",
+            parameters={"rows": [
+                {"id": f"{org_id}-old", "orgId": org_id, "duplicateReconcilePending": True,
+                 "duplicateReconcileDueAt": 1000},
+                {"id": f"{org_id}-new", "orgId": org_id, "duplicateReconcilePending": True,
+                 "duplicateReconcileDueAt": 9000},
+                {"id": f"{org_id}-done", "orgId": org_id, "duplicateReconcilePending": False,
+                 "duplicateReconcileDueAt": 1000},
+            ]},
+        )
+        rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
+        mine = [r for r in rows if r["_key"].startswith(org_id)]
+        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+                         "duplicateReconcileDueAt": 1000}]
+        await _assert_fenced_clear(provider, f"{org_id}-old")
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.models.entities import Record, RecordType
+
+        def _record(suffix: str, **fields: object) -> dict[str, Any]:
+            doc = Record(
+                id=f"{org_id}-{suffix}", org_id=org_id, record_name="doc", record_type=RecordType.FILE,
+                external_record_id=f"ext-{suffix}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id="c-it",
+            ).to_arango_base_record()
+            return {**doc, **fields}
+
+        docs = [
+            _record("old", duplicateReconcilePending=True, duplicateReconcileDueAt=1000),
+            _record("new", duplicateReconcilePending=True, duplicateReconcileDueAt=9000),
+            _record("done", duplicateReconcilePending=False, duplicateReconcileDueAt=1000),
+        ]
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {CollectionNames.RECORDS.value}", {"docs": docs},
+        )
+        rows = await provider.get_records_pending_duplicate_reconcile(due_before_ms=5000, limit=100)
+        mine = [r for r in rows if r["_key"].startswith(org_id)]
+        assert mine == [{"_key": f"{org_id}-old", "duplicateReconcileAttempts": None,
+                         "duplicateReconcileDueAt": 1000}]
+        await _assert_fenced_clear(provider, f"{org_id}-old")
+
+
+class TestDuplicatePathRowsCarryTheNodesOrg:
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        rec, mine, legacy = f"{org_id}-rec", f"{org_id}-t-mine", f"{org_id}-t-legacy"
+        await provider.client.execute_query(
+            "CREATE (r:Record {id: $rec, orgId: $org}) "
+            "CREATE (a:Topics {id: $mine, name: 'Mine', orgId: $org}) "
+            "CREATE (b:Topics {id: $legacy, name: 'Legacy', itOrg: $org}) "
+            "CREATE (r)-[:BELONGS_TO_TOPIC]->(a) CREATE (r)-[:BELONGS_TO_TOPIC]->(b)",
+            parameters={"rec": rec, "mine": mine, "legacy": legacy, "org": org_id},
+        )
+        try:
+            rows = await provider.get_taxonomy_entities_for_record(rec)
+            assert {r["entityId"]: r["orgId"] for r in rows} == {mine: org_id, legacy: None}
+        finally:
+            await provider.client.execute_query(
+                "MATCH (n:Topics {id: $legacy}) DETACH DELETE n", parameters={"legacy": legacy},
+            )
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        mine, legacy = f"{org_id}-t-mine", f"{org_id}-t-legacy"
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {TOPICS}",
+            {"docs": [{"_key": mine, "name": "Mine", "orgId": org_id}, {"_key": legacy, "name": "Legacy"}]},
+        )
+        rec = f"{org_id}-rec"
+        await provider.http_client.execute_aql(
+            f"FOR t IN @targets INSERT {{_from: CONCAT('records/', @rec), _to: CONCAT('{TOPICS}/', t), "
+            f"createdAtTimestamp: 1}} INTO {CollectionNames.BELONGS_TO_TOPIC.value}",
+            {"targets": [mine, legacy], "rec": rec},
+        )
+        try:
+            rows = await provider.get_taxonomy_entities_for_record(rec)
+            assert {r["entityId"]: r["orgId"] for r in rows} == {mine: org_id, legacy: None}
+        finally:
+            await provider.http_client.execute_aql(
+                f"FOR d IN {TOPICS} FILTER d._key == @k REMOVE d IN {TOPICS}", {"k": legacy},
+            )
+
+
+class TestNeo4jLegacyAliasHeal:
+    """KG-50: aliases stored as node lists before TaxonomyAlias nodes existed
+    are healed once at startup, so tier 0 matches them again."""
+
+    # A deadlocked heal (the batches waiting on a lock the outer query holds)
+    # hangs for ever; fail fast instead.
+    @pytest.mark.timeout(60)
+    async def test_list_only_aliases_get_alias_nodes_once(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = f"{org_id}-legacy-alias"
+        await provider.client.execute_query(
+            "CREATE (:Topics {id: $key, name: 'Release', normalizedName: 'release', orgId: $org, "
+            "aliases: ['Go live'], normalizedAliases: ['go live']})",
+            parameters={"key": key, "org": org_id},
+        )
+        await provider.client.execute_query(
+            "MATCH (m:SchemaMigration {id: 'taxonomy_alias_nodes_v1'}) DELETE m",
+        )
+        assert await provider.find_taxonomy_nodes(TOPICS, org_id, ["go live"]) == []
+
+        assert await provider.heal_taxonomy_alias_nodes() > 0
+        rows = await provider.find_taxonomy_nodes(TOPICS, org_id, ["go live"])
+        assert [r["id"] for r in rows] == [key]
+        assert await provider.heal_taxonomy_alias_nodes() == 0
+        await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org}) DETACH DELETE a", parameters={"org": org_id},
+        )
+
+
+class TestNeo4jAliasWrites:
+    """An alias write merges alias nodes for the spellings it was given only,
+    not for every stored alias: with up to MAX_TAXONOMY_ALIASES per node, a
+    full re-merge was that many constraint lookups under the node's lock on
+    every write. List-only aliases are the startup heal's (KG-50)."""
+
+    @staticmethod
+    async def _alias_nodes(provider: Neo4jProvider, org_id: str, key: str) -> set[str]:
+        rows = await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org})-[:ALIAS_OF]->(:Topics {id: $key}) RETURN a.normalized AS n",
+            parameters={"org": org_id, "key": key},
+        )
+        return {r["n"] for r in rows}
+
+    async def test_only_the_written_spellings_are_merged(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "release")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Release", "normalizedName": "release", "orgId": org_id,
+        })
+        await provider.add_taxonomy_aliases(
+            TOPICS, key, ["Go live", "Ship"], ["go live", "ship"], org_id=org_id,
+        )
+        # As if "ship" had been stored before alias nodes existed.
+        await provider.client.execute_query(
+            "MATCH (a:TaxonomyAlias {orgId: $org, normalized: 'ship'}) DETACH DELETE a", parameters={"org": org_id},
+        )
+
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Launch"], ["launch"], org_id=org_id)
+        assert await self._alias_nodes(provider, org_id, key) == {"go live", "launch"}
+
+        # Writing a stored spelling again gives it its node back.
+        await provider.add_taxonomy_aliases(TOPICS, key, ["Ship"], ["ship"], org_id=org_id)
+        assert await self._alias_nodes(provider, org_id, key) == {"go live", "launch", "ship"}
+        assert [r["id"] for r in await provider.find_taxonomy_nodes(TOPICS, org_id, ["ship"])] == [key]
+
+    async def test_a_spelling_past_the_cap_gets_no_alias_node(self, neo4j) -> None:
+        provider, org_id = neo4j
+        key = taxonomy_node_key(org_id, TOPICS, "pricing")
+        await provider.create_taxonomy_node_if_absent(TOPICS, {
+            "id": key, "name": "Pricing", "normalizedName": "pricing", "orgId": org_id,
+        })
+        await provider.add_taxonomy_aliases(
+            TOPICS, key, ["Prices", "Price list", "Rates"], ["prices", "price list", "rates"],
+            org_id=org_id, max_aliases=2,
+        )
+        assert await self._alias_nodes(provider, org_id, key) == {"prices", "price list"}
+
+
+async def _assert_batched_fields_if_match(
+    provider: Neo4jProvider | ArangoHTTPProvider, keys: dict[str, str]
+) -> None:
+    """One statement writes every row whose expectation holds and nothing else:
+    the read-time connector-off write relies on it to leave a record another
+    delivery has moved on alone."""
+    records = CollectionNames.RECORDS.value
+    off = {"indexingStatus": "AUTO_INDEX_OFF", "reason": "off", "processingStartedAt": None}
+    applied = await provider.update_nodes_fields_if_match(records, [
+        (keys["queued"], off, {"indexingStatus": "QUEUED"}),
+        (keys["moved_on"], off, {"indexingStatus": "QUEUED"}),
+        (keys["missing"], off, {"indexingStatus": "QUEUED"}),
+        (keys["no_reason"], {"reason": "set"}, {"reason": None}),
+    ])
+    assert sorted(applied) == sorted([keys["queued"], keys["no_reason"]])
+    queued = await provider.get_document(keys["queued"], records)
+    assert queued["indexingStatus"] == "AUTO_INDEX_OFF"
+    assert queued["reason"] == "off"
+    assert queued.get("processingStartedAt") is None
+    assert queued["orgId"]  # merged, not replaced
+    moved_on = await provider.get_document(keys["moved_on"], records)
+    assert moved_on["indexingStatus"] == "IN_PROGRESS"
+    assert moved_on["processingStartedAt"] == 42
+    assert await provider.update_nodes_fields_if_match(records, []) == []
+
+
+class TestBatchedFieldsIfMatch:
+    async def test_neo4j(self, neo4j) -> None:
+        provider, org_id = neo4j
+        keys = {n: f"{org_id}-{n}" for n in ("queued", "moved_on", "missing", "no_reason")}
+        await provider.client.execute_query(
+            "UNWIND $rows AS row CREATE (r:Record) SET r = row",
+            parameters={"rows": [
+                {"id": keys["queued"], "orgId": org_id, "indexingStatus": "QUEUED", "processingStartedAt": 7},
+                {"id": keys["moved_on"], "orgId": org_id, "indexingStatus": "IN_PROGRESS",
+                 "processingStartedAt": 42},
+                {"id": keys["no_reason"], "orgId": org_id, "indexingStatus": "QUEUED"},
+            ]},
+        )
+        await _assert_batched_fields_if_match(provider, keys)
+
+    async def test_neo4j_reads_a_write_that_commits_while_it_waits(self, neo4j) -> None:
+        """Another delivery claims the record and holds its lock until after this
+        write has read it; the claim must survive, not be overwritten."""
+        provider, org_id = neo4j
+        key = f"{org_id}-claimed"
+        records = CollectionNames.RECORDS.value
+        await provider.client.execute_query(
+            "CREATE (r:Record) SET r = $row",
+            parameters={"row": {"id": key, "orgId": org_id, "indexingStatus": "QUEUED"}},
+        )
+        session = provider.client.driver.session(database="neo4j")
+        tx = await session.begin_transaction()
+        try:
+            await tx.run(
+                "MATCH (r:Record {id: $id}) SET r.indexingStatus = 'IN_PROGRESS'", id=key,
+            )
+            write = asyncio.create_task(provider.update_nodes_fields_if_match(records, [
+                (key, {"indexingStatus": "AUTO_INDEX_OFF"}, {"indexingStatus": "QUEUED"}),
+            ]))
+            await asyncio.sleep(HOLD_SECONDS)
+            assert not write.done()
+            await tx.commit()
+        finally:
+            await session.close()
+        assert await write == []
+        stored = await provider.get_document(key, records)
+        assert stored["indexingStatus"] == "IN_PROGRESS"
+        assert "matchLock" not in stored
+
+    async def test_arango(self, arango) -> None:
+        provider, org_id = arango
+        from app.config.constants.arangodb import Connectors, OriginTypes
+        from app.models.entities import Record, RecordType
+
+        keys = {n: f"{org_id}-{n}" for n in ("queued", "moved_on", "missing", "no_reason")}
+
+        def _record(name: str, **fields: object) -> dict[str, Any]:
+            doc = Record(
+                id=keys[name], org_id=org_id, record_name="doc", record_type=RecordType.FILE,
+                external_record_id=f"ext-{name}", version=0, origin=OriginTypes.CONNECTOR,
+                connector_name=Connectors.KNOWLEDGE_BASE, connector_id="c-it",
+            ).to_arango_base_record()
+            doc.pop("reason", None)
+            return {**doc, **fields}
+
+        await provider.http_client.execute_aql(
+            f"FOR d IN @docs INSERT d INTO {CollectionNames.RECORDS.value}",
+            {"docs": [
+                _record("queued", indexingStatus="QUEUED", processingStartedAt=7),
+                _record("moved_on", indexingStatus="IN_PROGRESS", processingStartedAt=42),
+                _record("no_reason", indexingStatus="QUEUED"),
+            ]},
+        )
+        await _assert_batched_fields_if_match(provider, keys)

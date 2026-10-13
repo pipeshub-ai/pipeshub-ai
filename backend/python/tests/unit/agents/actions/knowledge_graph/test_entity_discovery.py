@@ -17,6 +17,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchTimedOut,
 )
 
 CONTEXT = EntityAccessContext(
@@ -79,10 +80,43 @@ class TestGuards:
 
     @pytest.mark.asyncio
     async def test_only_unknown_entity_types_fails(self, patched) -> None:
-        ok, text = await execute_search_entities(_state(), "legal", entity_types=["person"])
+        ok, text = await execute_search_entities(_state(), "legal", entity_types=["planet"])
         assert ok is False
         assert "Unsupported" in json.loads(text)["message"]
         patched[1].assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "ask",
+        [{"entity_types": ["named_entity"]}, {"named_entity_kinds": ["currency"]}],
+    )
+    async def test_a_named_entity_search_with_the_flag_off_does_not_search_every_type(
+        self, patched, monkeypatch, ask,
+    ) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, text = await execute_search_entities(_state(), "acme", **ask)
+        assert ok is False
+        assert json.loads(text)["message"] == entity_discovery.NAMED_ENTITIES_DISABLED_MSG
+        patched[1].assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_flag_off_drops_only_the_named_entity_type(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=False))
+        ok, _ = await execute_search_entities(
+            _state(), "acme", entity_types=["named_entity", "topic"], named_entity_kinds=["currency"],
+        )
+        assert ok is True
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["topic"], None)
+
+    @pytest.mark.asyncio
+    async def test_a_kind_given_as_an_entity_type_searches_named_entities(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+        ok, text = await execute_search_entities(_state(), "ValeHealth", entity_types=["organization", "record"])
+        assert ok is True
+        assert "ignoredEntityTypes" not in json.loads(text)
+        _, search_kwargs = patched[1].call_args
+        assert (search_kwargs["entity_types"], search_kwargs["kinds"]) == (["record", "named_entity"], ["organization"])
 
     @pytest.mark.asyncio
     async def test_access_failure_is_a_failed_call_not_empty_results(self, patched) -> None:
@@ -96,6 +130,14 @@ class TestGuards:
         patched[1].side_effect = EntityAccessError("vector down")
         ok, _ = await execute_search_entities(_state(), "legal")
         assert ok is False
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_is_reported_as_one_not_as_no_matches(self, patched) -> None:
+        patched[1].side_effect = EntitySearchTimedOut("deadline")
+        ok, text = await execute_search_entities(_state(), "legal")
+        message = json.loads(text)["message"]
+        assert ok is False
+        assert "timed out" in message and "No accessible entities matched" not in message
 
 
 class TestSearch:
@@ -139,11 +181,27 @@ class TestSearch:
         assert "records" in results[3]
         assert "records" not in results[4]
         assert "connectedEntities" not in topic
+        # The fused rank score is not a similarity; the order already shows rank.
+        assert all("score" not in r for r in results)
 
         assert state["known_record_ids"] == {"r1", "r2", "r3", "rec-9", "r4"}
         assert state[ENTITY_INDEX_CACHE_KEY]["rec-9"]["type"] == "record"
         assert state[ENTITY_ID_FILTER_KEY_CACHE_KEY]["t1"] == ("topics", "name t1")
         assert state[RECORD_SCOPED_ENTITY_CACHE_KEY] == {"rg-1": "record_group"}
+
+    @pytest.mark.asyncio
+    async def test_records_it_shows_are_noted_as_found_by_entity(self, patched) -> None:
+        patched[1].return_value = [
+            _hit(f"t{i}", "topic", records=[{**_row(f"r{i}"), "virtualRecordId": f"vr-{i}"}])
+            for i in range(1, 5)
+        ]
+        state = _state(include_retrieval_context=True)
+
+        await execute_search_entities(state, "legal")
+
+        assert state["retrieved_by"]["vr-1"].layers == ["entity"]
+        # Only the first three entities' records are previewed.
+        assert set(state["retrieved_by"]) == {"vr-1", "vr-2", "vr-3"}
 
     @pytest.mark.asyncio
     async def test_record_ids_go_through_shortener(self, patched) -> None:
@@ -189,3 +247,13 @@ class TestStrictAndExcludedScope:
         assert json.loads(text)["results"] == []
         graph.get_entity_access_context.assert_not_called()
         store.search_entities.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_aliases_are_not_shown(patched) -> None:
+    """KG-17: an alias is a spelling from some record, possibly one the user
+    cannot read; it stays a matching aid and never reaches the tool output."""
+    patched[1].return_value = [_hit("t1", "topic", records=[_row("r1")])]
+    ok, text = await execute_search_entities(_state(), "legal")
+    assert ok is True
+    assert all("aliases" not in r for r in json.loads(text)["results"])

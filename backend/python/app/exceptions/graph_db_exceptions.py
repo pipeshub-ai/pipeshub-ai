@@ -14,10 +14,26 @@ class GraphQueryError(GraphDBError):
     """
 
 
+class GraphWriteError(GraphDBError):
+    """A provider reported a write as failed (returned False) rather than raising.
+
+    Raised inside a transaction block so the block rolls back: a reported
+    failure would otherwise commit the writes around it.
+    """
+
+
 class PermissionVerificationUnavailableError(Exception):
     """The graph could not adjudicate which retrieved records a user may read.
 
     Raised rather than returning an empty map, because an empty map is also the
     honest answer when every candidate is denied — and the two need opposite
     responses: retry later versus "nothing you can read matched".
+    """
+
+
+class GraphLockUnavailableError(GraphDBError):
+    """A write could not take the locks it needs, so nothing was attempted.
+
+    Says nothing about the records involved: a caller that counts failures per
+    record must not count this one.
     """

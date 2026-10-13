@@ -12,7 +12,7 @@ import { SessionService } from '../../../../src/modules/auth/services/session.se
 import {
   NotFoundError,
   UnauthorizedError,
-  BadRequestError,
+  ForbiddenError,
 } from '../../../../src/libs/errors/http.errors';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -173,9 +173,10 @@ describe('userAuthentication middlewares', () => {
       await adminValidator(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(ForbiddenError);
+      expect(next.firstCall.args[0].statusCode).to.equal(403);
       expect(next.firstCall.args[0].message).to.equal(
-        'Admin access required',
+        'You need admin access to do this. Ask an admin in your organisation.',
       );
     });
 

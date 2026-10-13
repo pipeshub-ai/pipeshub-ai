@@ -3,7 +3,12 @@
 import logging
 from unittest.mock import AsyncMock
 
-from app.utils.record_access import caller_can_read_virtual_record
+from app.schema.arango.edges import permissions_schema
+from app.utils.record_access import (
+    SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE,
+    caller_can_read_virtual_record,
+    service_account_upload_permission_edges,
+)
 
 LOGGER = logging.getLogger("test")
 
@@ -83,3 +88,21 @@ class TestCallerCanReadVirtualRecord:
             graph, user_id="user-1", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
         )
         graph.get_edge.assert_not_called()
+
+
+class TestServiceAccountUploadEdges:
+    def test_the_edges_grant_the_org_read_access_with_the_type_the_check_accepts(self) -> None:
+        edges = service_account_upload_permission_edges("org-1", ["rec-1", "rec-2"], 1700)
+
+        assert [e["to_id"] for e in edges] == ["rec-1", "rec-2"]
+        for edge in edges:
+            assert edge["from_id"] == "org-1"
+            assert edge["from_collection"] == "organizations"
+            assert edge["to_collection"] == "records"
+            assert edge["type"] == SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE
+            assert edge["role"] == "READER"
+
+    def test_arango_accepts_the_edge_type(self) -> None:
+        """ArangoDB validates permission edges; a type missing here fails every upload there."""
+        allowed = permissions_schema["rule"]["properties"]["type"]["enum"]
+        assert SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE in allowed

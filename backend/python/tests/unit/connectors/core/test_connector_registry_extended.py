@@ -116,13 +116,13 @@ class TestCanAccessConnector:
     @pytest.mark.asyncio
     async def test_team_scope_admin_can_access(self):
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": "team", "createdBy": "other_user"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": "team", "createdBy": "other_user"}
         assert await registry._can_access_connector(instance, "admin_user", "org-1", is_admin=True) is True
 
     @pytest.mark.asyncio
     async def test_team_scope_creator_can_access(self):
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": "team", "createdBy": "user1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": "team", "createdBy": "user1"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=False) is True
 
     @pytest.mark.asyncio
@@ -134,7 +134,7 @@ class TestCanAccessConnector:
     @pytest.mark.asyncio
     async def test_personal_scope_creator_can_access(self):
         registry, _ = _make_registry()
-        instance = {"_key": "conn-1", "scope": "personal", "createdBy": "user1"}
+        instance = {"_key": "conn-1", "orgId": "org-1", "scope": "personal", "createdBy": "user1"}
         assert await registry._can_access_connector(instance, "user1", "org-1", is_admin=False) is True
 
     @pytest.mark.asyncio

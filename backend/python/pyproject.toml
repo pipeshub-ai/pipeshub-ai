@@ -200,8 +200,9 @@ dependencies = [
     "cachetools==6.2.4",
     "cloudscraper==1.2.71",
     "cryptography==50.0.0",
+    "dateparser>=1.2.0",
     "crawl4ai==0.9.0",
-    "curl-cffi==0.14.0",
+    "curl-cffi==0.15.0",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.44.0",
     "discord.py==2.6.3",
@@ -212,13 +213,16 @@ dependencies = [
     "docx2python==3.5.0",
     "etcd3 @ git+https://github.com/kragniz/python-etcd3.git@e58a899579ba416449c4e225b61f039457c8072a",
     "evernote3>=1.25.14",
-    "fastapi==0.115.6",
+    "fastapi==0.136.3",
+    # Starlette comes in through FastAPI, whose range admits releases with known advisories.
+    "starlette==1.7.0",
     "fastmcp==3.2.0",
     "fastembed==0.5.1",
     "faster-whisper>=1.0.0",
     "feedparser>=6.0.0",
     "trafilatura>=2.0.0",
     "html-to-markdown==2.3.0",
+    "json_repair>=0.30.0",
     "markdownify==1.2.2",
     "httpx==0.28.1",
     "prometheus-client==0.21.1",
@@ -274,6 +278,8 @@ dependencies = [
     "opik==2.0.20",
     "pagerduty>=5.0.0",
     "pandas==2.2.3",
+    "phonenumbers>=8.13.0",
+    "price-parser>=0.3.4",
     "Pillow<12.0.0",
     "pdfplumber==0.11.9",
     "pillow-avif-plugin==1.5.5",
@@ -287,6 +293,7 @@ dependencies = [
     "python-dotenv==1.2.2",
     "pyyaml>=6.0",
     "redshift_connector==2.1.8",
+    "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
     # when the agent declares packages=["reportlab"] / ["fpdf2"].
@@ -310,7 +317,7 @@ dependencies = [
     "thrift>=0.16.0",
     "trafilatura>=1.6.0",
     "uuid==1.30",
-    "uvicorn==0.35",
+    "uvicorn==0.37.0",
     "zstandard==0.25.0",
     "mariadb[binary,pool]>=2.0.0rc2,<3",
     "asyncpg>=0.31.0",
@@ -357,7 +364,7 @@ parsing-service = "app.parsing_main:app"
 extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
-dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]"]
+dev = ["ruff==0.11.9", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis"]
 
 [tool.pyright]
 pythonVersion = "3.12"

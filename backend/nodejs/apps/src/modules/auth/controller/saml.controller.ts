@@ -33,15 +33,8 @@ import {
 } from '../services/samlDesktopHandoff.service';
 
 const orgIdToSamlEmailKey: Record<string, string> = {};
-passport.serializeUser((user, done) => {
-  done(null, user);
-});
-
-passport.deserializeUser((obj, done) => {
-  if (obj) {
-    done(null, obj);
-  }
-});
+export const SAML_LOGOUT_UNSUPPORTED_MESSAGE =
+  "Signing out through your identity provider isn't supported. To sign out, use Sign out in PipesHub.";
 @injectable()
 export class SamlController {
   constructor(
@@ -158,10 +151,11 @@ export class SamlController {
             return done(err as Error);
           }
         },
-        async (_req: Request, profile: Profile, done: VerifiedCallback) => {
-          // Optional: Handle logout request here
-          // For now, just pass profile through
-          return done(null, profile);
+        (_req: Request, _profile: Profile, done: VerifiedCallback) => {
+          // Failing here makes passport-saml report one error, before it would
+          // build a logout response and call req.logout(), which needs a session
+          // this app does not keep and then writes to an already-sent response.
+          done(new Error(SAML_LOGOUT_UNSUPPORTED_MESSAGE));
         },
       ),
     );
@@ -203,6 +197,7 @@ export class SamlController {
       req.query.RelayState = relayStateEncoded;
 
       passport.authenticate('saml', {
+        session: false,
         failureRedirect: `/${this.config.frontendUrl}/auth/sign-in`,
         successRedirect: '/',
       })(req, res, next);

@@ -14,6 +14,7 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.chat_modes.bridge import (
     _apply_policy_to_chat_state,
     _fetch_available_connectors,
@@ -71,6 +72,23 @@ def _patch_connectors(has_sql: bool = False, has_slack: bool = False):
             new=AsyncMock(return_value=[]),
         ),
     )
+
+
+# 2026-07-27 03:00:00 UTC, a Monday; Sunday 8:00 PM in California.
+_MON_0300_UTC = 1785121200000
+
+
+def _record_header_created_at() -> str:
+    """The `Created At:` line a tool renders for a record, as the model sees it."""
+    from app.config.constants.arangodb import OriginTypes
+    from app.models.entities import Record, RecordType
+
+    record = Record(
+        record_name="r", record_type=RecordType.FILE, external_record_id="e", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id="c",
+        source_created_at=_MON_0300_UTC,
+    )
+    return next(line for line in record.to_llm_context().splitlines() if line.startswith("Created At:"))
 
 
 class TestModeInstructions:
@@ -287,6 +305,39 @@ class TestRunChatStream:
         assert events[0].startswith("event: complete\n")
         assert json.loads(events[0].split("data: ", 1)[1].strip()) == {"answer": "42"}
 
+    async def test_record_dates_in_the_run_use_the_users_time_zone(self) -> None:
+        """Tools run inside the run's task render record dates in the user's
+        zone, weekday included; nothing outside the run is affected."""
+        seen: dict[str, str] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            # As a tool would: in a task started by the run.
+            seen["header"] = await asyncio.create_task(asyncio.to_thread(_record_header_created_at))
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(constraints=[]), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "timezone": "America/Los_Angeles",
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=AGENT_POLICY))]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
+
     async def test_sql_and_slack_flags_come_from_one_connector_query(self) -> None:
         """Both flags are derived from a single `get_user_connector_instances`
         call — they used to be two identical queries."""
@@ -501,6 +552,64 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+
+    async def test_prefetched_records_are_remembered_in_rank_order(self) -> None:
+        """An unknown-id fetch lists the 20 most recent records; for a prefetch
+        those must be the ones the search ranked highest, not the first by
+        virtual record id."""
+        top = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+        ranked_ids = [top] + [f"{i:08x}-1111-4222-8333-944445555666" for i in range(1, 30)]
+        vr_map = {f"vr-{29 - rank:02d}": {"id": rid, "record_name": f"Rank {rank}"}
+                  for rank, rid in enumerate(ranked_ids)}
+        ranked = [{"virtual_record_id": f"vr-{29 - rank:02d}"} for rank in range(30)]
+        prefetch_result = PrefetchResult(
+            formatted_context="Excerpts.",
+            final_results=sorted(ranked, key=lambda r: r["virtual_record_id"]),
+            virtual_record_id_to_result=vr_map,
+            tool_records=list(vr_map.values()),
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            ranked_results=ranked,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: object, *,  # noqa: ANN401
+            query: str, model_name: str = "", model_key: str | None = None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
+            captured["context"] = context
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self: object, *, event_sink: Any, agent_output: Any = None, **_: object) -> dict[str, Any]:  # noqa: ANN401
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch(
+                "app.agents.chat_modes.bridge.prefetch_retrieval",
+                new=AsyncMock(return_value=prefetch_result),
+            ),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        mistyped = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
+        hint = unresolved_id_hint(
+            [mistyped], requested=[mistyped],
+            known_record_names=captured["context"].tool_state.get("known_record_names"),
+        )
+        bullets = [line[2:] for line in hint.splitlines() if line.startswith("- ")]
+        assert bullets == [f"{ranked_ids[r]} (Rank {r})" for r in range(20)]
+        assert f"The closest to the id you used is {top} (Rank 0)." in hint
 
     async def test_prefetch_appends_candidate_list_when_records_are_incomplete(self) -> None:
         """In prefetch mode the retrieval tool never runs, so candidate-list
@@ -872,3 +981,30 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_internal_search_prefetch_renders_dates_in_the_users_time_zone(self) -> None:
+        """The no-tools prefetch renders the record headers the model reads, so
+        it uses the user's zone like the tool-calling path, and leaves the
+        caller in UTC afterwards."""
+        seen: dict[str, str] = {}
+
+        async def _fake_prefetch(**kwargs) -> PrefetchResult:
+            seen["header"] = _record_header_created_at()
+            return PrefetchResult(
+                formatted_context="Context.", final_results=[], virtual_record_id_to_result={},
+                tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=False,
+            )
+
+        async def _fake_handle_simple_mode(**kwargs):
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        kwargs = self._base_kwargs(INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"]["timezone"] = "America/Los_Angeles"
+        with (
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=_fake_prefetch),
+            patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_fake_handle_simple_mode),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")

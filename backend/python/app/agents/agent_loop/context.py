@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 
 class AgentContext(BaseModel):
@@ -34,6 +34,12 @@ class AgentContext(BaseModel):
     # and re-renders a few KB of routing text; prompt_builder + domain_agents
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
+    # One ledger per request so `retrieval_context` frames carry only what
+    # is new since the last tool call, not the whole accumulated set.
+    _retrieval_ledger: Any = PrivateAttr(default=None)
+    # Every model call of the request, for the opt-in `run_usage` frame.
+    _usage_ledger: Any = PrivateAttr(default=None)
+    _run_usage_claimed: bool = PrivateAttr(default=False)
 
     # Identity
     org_id: str
@@ -99,6 +105,12 @@ class AgentContext(BaseModel):
     # (mirrored here for typed access) before minting a shortener — never
     # created when this is False, so full record ids pass through unchanged.
     enable_record_id_shortening: bool = False
+
+    # Opt-in per request (`ChatQuery.includeRetrievalContext`). When True the
+    # stream carries CUSTOM `retrieval_context` frames naming the records and
+    # blocks that reached the model, and a `run_usage` frame. Off by default:
+    # it is measurement surface, not product behaviour.
+    include_retrieval_context: bool = False
 
     # Image attachment blocks (LangChain ``image_url`` dicts) resolved by
     # ``resolve_attachments_for_goal`` for the current turn. Consumed by
@@ -276,6 +288,10 @@ class AgentContext(BaseModel):
     # go through get_llm_for_chat.
     llm_provider: str = ""
     context_length: int | None = None
+    # The model's contextLength exactly as configured: None when unset, where
+    # `context_length` may hold a route's default. Sizes the agent's context
+    # budget, which otherwise comes from a table keyed by model name.
+    configured_context_window: int | None = None
     is_reasoning_model: bool = False
 
     # Record IDs for which dynamic_fetch_full_record was called this request.
@@ -290,6 +306,20 @@ class AgentContext(BaseModel):
     # through unchanged — see module docstring. Populated by
     # `model_post_init`.
     tool_state: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("configured_context_window", mode="before")
+    @classmethod
+    def _window_or_none(cls, value: Any) -> int | None:  # noqa: ANN401
+        # Model config is admin-entered JSON. Only a whole number, or one written
+        # as digits, is a window: `true` or 1.5 means "not configured", never 1.
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, float):
+            value = int(value) if value.is_integer() else None
+        elif isinstance(value, str):
+            text = value.strip()
+            value = int(text) if text.isascii() and text.isdigit() else None
+        return value if isinstance(value, int) and value > 0 else None
 
     @property
     def model_profile(self) -> Any:
@@ -346,6 +376,7 @@ class AgentContext(BaseModel):
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
         llm_provider: str = "", context_length: int | None = None,
+        configured_context_window: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
     ) -> "AgentContext":
@@ -396,6 +427,7 @@ class AgentContext(BaseModel):
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
+            include_retrieval_context=bool(state.get("include_retrieval_context", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
@@ -409,6 +441,7 @@ class AgentContext(BaseModel):
             protocol=protocol,
             llm_provider=llm_provider,
             context_length=context_length,
+            configured_context_window=configured_context_window,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
             cancellation_token=cancellation_token,
@@ -418,6 +451,30 @@ class AgentContext(BaseModel):
     def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
         for key, value in self._seed_tool_state().items():
             self.tool_state.setdefault(key, value)
+
+    @property
+    def retrieval_ledger(self) -> Any:  # noqa: ANN401
+        from app.agents.agent_loop.retrieval_ledger import RetrievalContextLedger
+
+        if self._retrieval_ledger is None:
+            self._retrieval_ledger = RetrievalContextLedger()
+        return self._retrieval_ledger
+
+    @property
+    def usage_ledger(self) -> Any:  # noqa: ANN401
+        from app.agents.agent_loop.protocol.run_usage import UsageLedger
+
+        if self._usage_ledger is None:
+            self._usage_ledger = UsageLedger()
+        return self._usage_ledger
+
+    def claim_run_usage_frame(self) -> bool:
+        """True the first time it is called for this request: the `run_usage`
+        frame is sent from every way a turn ends, but only once."""
+        if self._run_usage_claimed:
+            return False
+        self._run_usage_claimed = True
+        return True
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -493,6 +550,12 @@ class AgentContext(BaseModel):
             "is_multimodal_llm": self.is_multimodal_llm,
             "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,
+            # Mirrored so a tool can see the flag without reaching for the
+            # context (`fetch.py` records render outcomes only when it is on).
+            "include_retrieval_context": self.include_retrieval_context,
+            # Tools that call a model themselves (grep-command generation)
+            # report into it; absent unless the request opted in.
+            "usage_ledger": self.usage_ledger if self.include_retrieval_context else None,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
@@ -505,6 +568,7 @@ class AgentContext(BaseModel):
             # Written by the knowledge tools that surface Record IDs without a
             # citation payload — see `remember_record_ids()` in chat_state.py.
             "known_record_ids": set(),
+            "known_record_names": {},
             "tool_records": [],
             "citation_ref_mapper": None,
             # TEMPORARY token-savings experiment — see `RecordIdShortener` in

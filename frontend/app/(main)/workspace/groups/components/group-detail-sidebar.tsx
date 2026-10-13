@@ -16,6 +16,7 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { groupSaveRefusalMessage } from '../save-error';
 import { hasLockedGroupName, isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
@@ -204,13 +205,14 @@ export function GroupDetailSidebar({
 
       exitEditMode();
       onUpdateSuccess?.();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t(
           'workspace.groups.edit.saveError',
           'Failed to update group'
         ),
+        description: groupSaveRefusalMessage(error),
         duration: 5000,
       });
     } finally {

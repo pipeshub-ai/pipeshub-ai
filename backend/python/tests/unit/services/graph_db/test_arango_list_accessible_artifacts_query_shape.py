@@ -168,12 +168,13 @@ class TestArangoGalleryReadFailuresPropagate:
 class TestArangoListAllRecordsExcludesArtifacts:
     @pytest.mark.asyncio
     async def test_kb_subquery_excludes_artifact_type(self, provider):
-        provider.execute_query = AsyncMock(side_effect=[[], [0]])
+        provider.execute_query = AsyncMock(return_value=[{"records": [], "total": 0}])
         await provider.list_all_records(
             "user-key", "org-1", 0, 10, None, None, None, None, None, None, None, None,
             "createdAtTimestamp", "desc", "all",
         )
-        list_query = provider.execute_query.await_args_list[0].args[0]
-        count_query = provider.execute_query.await_args_list[1].args[0]
-        assert 'record.recordType != "ARTIFACT"' in list_query
-        assert 'record.recordType != "ARTIFACT"' in count_query
+        # Page and total come from one query, so the total counts the same filtered list.
+        assert provider.execute_query.await_count == 1
+        query = provider.execute_query.await_args_list[0].args[0]
+        assert 'record.recordType != "ARTIFACT"' in query
+        assert "total: LENGTH(allRecords)" in query

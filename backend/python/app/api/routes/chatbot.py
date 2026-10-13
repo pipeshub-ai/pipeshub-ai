@@ -67,6 +67,7 @@ from app.utils.attachment_mime_types import (
 )
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -112,6 +113,10 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Opt-in measurement surface for evaluation clients: streams CUSTOM
+    # `retrieval_context` frames naming the records and blocks that reached
+    # the model, plus a `run_usage` frame. No effect on the answer.
+    includeRetrievalContext: bool = False
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` can target it. Absent for callers
     # that predate this field or don't need cancellation (the agent loop
@@ -214,12 +219,9 @@ def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
 async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     """Parse a plain-text or markdown file into a BlocksContainer using the default MarkdownParser."""
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
-    try:
-        text = file_content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = file_content.decode("latin-1")
+    from app.modules.parsers.text_decoding import decode_text
     parser = MarkdownItParser()
-    return await parser.parse_to_blocks(text.strip())
+    return await parser.parse_to_blocks(decode_text(file_content).strip())
 
 
 async def _build_docx_blocks(
@@ -792,19 +794,9 @@ async def upload_chat_attachments(
             # can be created. Grant an org-scoped permission edge instead so the
             # uploaded file is readable org-wide through the standard ACL path
             # (orgAccessPermissionEdge in check_record_access_with_details).
-            permission_edges = [
-                {
-                    "from_id": org_id,
-                    "from_collection": CollectionNames.ORGS.value,
-                    "to_id": rd["_key"],
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "ORGANIZATION",
-                    "role": "READER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                }
-                for rd in record_docs
-            ]
+            permission_edges = service_account_upload_permission_edges(
+                org_id, [rd["_key"] for rd in record_docs], ts,
+            )
             await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
         else:
             permission_edges = [
@@ -1251,6 +1243,24 @@ async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None: 
         return None
 
 
+async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
+    """Load the entity store's embedding models at startup. Loaded lazily,
+    they used up the first entity search's deadline, which then dropped every
+    match unchecked. Skipped without an entities collection: initialising
+    would create one, and chat hides the tools until there is one. Never
+    raises; a failed load is retried after the store's back-off, as a failed
+    first search would be."""
+    store = await load_entity_vector_store(container, logger_)
+    if store is None:
+        return
+    try:
+        logger_.info("🔥 Warming up entity vector store in background")
+        await store.embedding_fingerprint()
+        logger_.info("✅ Entity vector store warmup complete")
+    except Exception as exc:
+        logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
+
+
 async def load_system_prompts(
     config_service: ConfigurationService, logger_: Any,
 ) -> dict[str, Any]:
@@ -1387,6 +1397,7 @@ async def _generate_chat_stream_via_agent_loop(
         "projectInstructions": query_info.projectInstructions,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "includeRetrievalContext": query_info.includeRetrievalContext,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
@@ -1447,6 +1458,7 @@ async def _generate_chat_stream_via_agent_loop(
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+        configured_context_window=model_config.get("contextLength"),
         llm_provider=model_config.get("provider") or "",
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,

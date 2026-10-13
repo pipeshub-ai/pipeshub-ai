@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from app.config.constants.arangodb import (
     CollectionNames,
@@ -17,7 +17,7 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
-from app.modules.transformers.transformer import TransformContext, Transformer
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS, TransformContext, Transformer
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -27,7 +27,9 @@ from app.exceptions.indexing_exceptions import IndexingError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.models.entities import Record
     from app.modules.entity_resolution import EntityResolver
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 
 class SinkOrchestrator(Transformer):
@@ -52,6 +54,7 @@ class SinkOrchestrator(Transformer):
         # Canonicalises taxonomy names between classification and the graph
         # write; optional so the sink stays constructible without it.
         self.entity_resolver = entity_resolver
+        self.config_service = config_service
         self.logger = logger
         # Runs before the blob write below, which is the only reason it lives
         # here: a description generated later would never reach the stored
@@ -219,98 +222,54 @@ class SinkOrchestrator(Transformer):
             await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             await self._save_reconciliation_metadata(ctx)
-            await self._sync_record_name_entity(ctx)
-            await self._sync_record_group_entity(ctx)
+            await self._sync_record_identity_entities(ctx)
 
-    async def _sync_record_group_entity(self, ctx: TransformContext) -> None:
-        """Sync the record's RecordGroup (e.g. Jira project, Drive folder) into
-        the entities vector collection as a Layer-0 deterministic entity.
+    async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
+        """Write the record's own entity points, its title and its record group
+        (a Jira project, a Drive folder), in one batch.
 
-        Runs for every record regardless of connector, rather than being
-        wired per-connector, since ``record_group_id`` is a generic field on
-        every ``Record`` once ``_handle_record_group``/connector sync has
-        resolved it. Best-effort.
+        Runs after the record is searchable, for every connector, since
+        ``record_group_id`` is generic. Membership is replaced, not merged:
+        a record has exactly one connector and one group (a union kept a
+        moved record matching its old group's users), and a group point lists
+        itself so users with group-level access reach it. Best-effort: the
+        record is already searchable through the records collection.
         """
         if not self.entity_vector_store:
             return
+        from app.models.entities import EntityRecord
+
         record = ctx.record
-        if not record.record_group_id:
+        entities: list[EntityRecord] = []
+        if isinstance(record.record_name, str) and record.record_name.strip():
+            entities.append(EntityRecord.for_record(
+                record.id, record.record_name, record.org_id, record.connector_id, record.record_group_id,
+            ))
+        if record.record_group_id:
+            try:
+                group_doc = await self.graph_provider.get_record_group_by_id(record.record_group_id)
+            except Exception as exc:
+                group_doc = None
+                self.logger.warning(
+                    "Record group lookup failed for record %s (non-fatal): %s", record.id, exc,
+                )
+            group_name = (group_doc or {}).get("groupName") or (group_doc or {}).get("name")
+            if isinstance(group_name, str) and group_name.strip():
+                entities.append(EntityRecord.for_record_group(
+                    record.record_group_id, group_name, record.org_id, record.connector_id,
+                ))
+        if not entities:
             return
         try:
-            group_doc = await self.graph_provider.get_record_group_by_id(
-                record.record_group_id
-            )
-            if not group_doc:
-                return
-            group_name = group_doc.get("groupName") or group_doc.get("name")
-            if not group_name or not group_name.strip():
-                return
-
-            from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
-
-            # Always this connector and the group itself, so there is nothing
-            # to merge and the membership read is skipped.
-            await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord(
-                    entity_id=record.record_group_id,
-                    entity_type=EntityType.RECORD_GROUP,
-                    name=group_name,
-                    org_id=record.org_id,
-                    connector_ids=[record.connector_id] if record.connector_id else [],
-                    # Self-reference: a record group entity is only reachable
-                    # via `should={connectorIds}` in Stage 1's vector filter
-                    # without this — a user with record-group-level (but not
-                    # connector-level) access would otherwise never see it.
-                    record_group_ids=[record.record_group_id],
-                    type_category=EntityTypeCategory.PREDEFINED,
+            outcome = await self.entity_vector_store.upsert_entities_batch(entities, merge_membership=False)
+            if outcome.failed:
+                self.logger.warning(
+                    "Entity points for record %s not written (%d of %d)", record.id, outcome.failed, len(entities),
                 )
-            ], merge_membership=False)
         except Exception as exc:
-            self.logger.warning(
-                "Record group entity sync failed for record %s (non-fatal): %s",
-                record.id,
-                exc,
-            )
+            self.logger.warning("Record entity sync failed for record %s (non-fatal): %s", record.id, exc)
 
-    async def _sync_record_name_entity(self, ctx: TransformContext) -> None:
-        """Sync the record's name into the entities vector collection.
-
-        Runs after successful vector-store indexing so the record's name is
-        resolvable as a filter facet (entityType=record) alongside categories,
-        topics, etc. Best-effort: failures here must not fail the record
-        pipeline since the record is already searchable via the records
-        collection.
-        """
-        if not self.entity_vector_store:
-            return
-        record = ctx.record
-        if not record.record_name or not record.record_name.strip():
-            return
-        try:
-            from app.models.entities import EntityRecord, EntityType, EntityTypeCategory
-
-            # A record has one connector and one group; a union kept the old
-            # group after the record moved, so its old group's users kept
-            # matching it.
-            await self.entity_vector_store.upsert_entities_batch([
-                EntityRecord(
-                    entity_id=record.id,
-                    entity_type=EntityType.RECORD,
-                    name=record.record_name,
-                    org_id=record.org_id,
-                    connector_ids=[record.connector_id] if record.connector_id else [],
-                    record_group_ids=[record.record_group_id] if record.record_group_id else [],
-                    type_category=EntityTypeCategory.PREDEFINED,
-                )
-            ], merge_membership=False)
-        except Exception as exc:
-            self.logger.warning(
-                "Record name entity sync failed for record %s (non-fatal): %s",
-                record.id,
-                exc,
-            )
-
-    async def sync_entities_for_duplicate(self, record_doc: dict) -> None:
+    async def sync_entities_for_duplicate(self, record_doc: dict) -> bool:
         """Re-project a deduplicated record's taxonomy into the entities
         vector collection, and create its own record / record_group points.
 
@@ -323,21 +282,29 @@ class SinkOrchestrator(Transformer):
         only the *other* record's connectorId/recordGroupId, and this record
         has no ``record``/``record_group`` point at all, since the dedup
         path skips ``index()``/``enrich()`` (and therefore
-        ``_sync_record_name_entity``/``_sync_record_group_entity``) entirely.
+        ``_sync_record_identity_entities``) entirely.
 
         ``upsert_entities_batch`` merges membership rather than replacing it,
         so this appends this record's connectorId/recordGroupId to whatever
         is already stored.
 
+        Only nodes of the record's org are projected with their aliases. A
+        node without an org (legacy, or a global department) is projected
+        with none, since its aliases may be any org's; another org's node is
+        skipped.
+
         Takes the raw graph record document (not a parsed ``Record``/
         ``TransformContext``) since the dedup path never parses one.
+
+        Returns whether every point was written; reconciliation keeps its
+        pending flag otherwise. Nothing to do counts as success.
         """
         if not self.entity_vector_store:
-            return
+            return True
         record_key = record_doc.get("_key") or record_doc.get("id")
         org_id = record_doc.get("orgId")
         if not record_key or not org_id:
-            return
+            return True
         connector_id = record_doc.get("connectorId")
         record_group_id = record_doc.get("recordGroupId")
         connector_ids = [connector_id] if connector_id else []
@@ -356,6 +323,13 @@ class SinkOrchestrator(Transformer):
                 entity_type = row.get("entityType")
                 if not entity_id or entity_type not in valid_types:
                     continue
+                node_org = row.get("orgId")
+                if node_org and node_org != org_id:
+                    self.logger.warning(
+                        "Duplicate record %s links to %s %s of another org; not projected",
+                        record_key, entity_type, entity_id,
+                    )
+                    continue
                 entities.append(
                     EntityRecord(
                         entity_id=str(entity_id),
@@ -363,7 +337,9 @@ class SinkOrchestrator(Transformer):
                         name=str(row.get("name") or entity_id),
                         org_id=org_id,
                         level=row.get("level"),
-                        aliases=[str(a) for a in (row.get("aliases") or []) if a],
+                        aliases=(
+                            [str(a) for a in (row.get("aliases") or []) if a] if node_org else []
+                        ),
                         connector_ids=connector_ids,
                         record_group_ids=record_group_ids,
                         # Matches GraphDBTransformer.save_metadata_to_db —
@@ -373,19 +349,37 @@ class SinkOrchestrator(Transformer):
                     )
                 )
 
-            record_name = record_doc.get("recordName")
-            if record_name and record_name.strip():
+            from app.modules.named_entities.domain.kinds import spec_for
+
+            for row in await self.graph_provider.get_named_entities_for_record(str(record_key)) or []:
+                kind = row.get("kind")
+                spec = spec_for(kind) if kind else None
+                entity_id = row.get("_key") or row.get("id")
+                if not entity_id or spec is None or not spec.embeddable or spec.is_pii:
+                    continue
+                if row.get("orgId") and row.get("orgId") != org_id:
+                    continue
                 entities.append(
                     EntityRecord(
-                        entity_id=str(record_key),
-                        entity_type=EntityType.RECORD,
-                        name=record_name,
+                        entity_id=str(entity_id),
+                        entity_type=EntityType.NAMED_ENTITY,
+                        name=str(row.get("name") or entity_id),
                         org_id=org_id,
+                        kind=str(kind),
                         connector_ids=connector_ids,
                         record_group_ids=record_group_ids,
                         type_category=EntityTypeCategory.PREDEFINED,
                     )
                 )
+
+            # A record and its group are written like on the index path:
+            # their membership is replaced, never unioned.
+            identities: list[EntityRecord] = []
+            record_name = record_doc.get("recordName")
+            if record_name and record_name.strip():
+                identities.append(EntityRecord.for_record(
+                    str(record_key), record_name, org_id, connector_id, record_group_id,
+                ))
 
             if record_group_id:
                 group_doc = await self.graph_provider.get_record_group_by_id(
@@ -397,26 +391,30 @@ class SinkOrchestrator(Transformer):
                     else None
                 )
                 if group_name and group_name.strip():
-                    entities.append(
-                        EntityRecord(
-                            entity_id=record_group_id,
-                            entity_type=EntityType.RECORD_GROUP,
-                            name=group_name,
-                            org_id=org_id,
-                            connector_ids=connector_ids,
-                            record_group_ids=[record_group_id],
-                            type_category=EntityTypeCategory.PREDEFINED,
-                        )
-                    )
+                    identities.append(EntityRecord.for_record_group(
+                        record_group_id, group_name, org_id, connector_id,
+                    ))
 
+            failed = 0
             if entities:
-                await self.entity_vector_store.upsert_entities_batch(entities)
+                failed += (await self.entity_vector_store.upsert_entities_batch(entities)).failed
+            if identities:
+                failed += (await self.entity_vector_store.upsert_entities_batch(
+                    identities, merge_membership=False,
+                )).failed
+            if failed:
+                self.logger.warning(
+                    "Entity vector sync for deduplicated record %s left %d entities unwritten",
+                    record_key, failed,
+                )
+            return not failed
         except Exception as exc:
             self.logger.warning(
                 "Entity vector sync failed for deduplicated record %s (non-fatal): %s",
                 record_key,
                 exc,
             )
+            return False
 
     # A record with a handful of images is cheaper to describe outright than
     # to fetch its previous version for; past this many, the fetch pays for
@@ -455,22 +453,41 @@ class SinkOrchestrator(Transformer):
         await self.image_describer.annotate(containers, inherited=inherited)
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
-        """Mark indexingStatus=COMPLETED without touching extractionStatus."""
+        """Mark indexingStatus=COMPLETED.
+
+        With ``ENRICHMENT_FOLLOWS`` set, the same write marks extractionStatus
+        IN_PROGRESS and keeps ``processingStartedAt``: no reader may see the
+        record indexed with its enrichment not yet started, which a duplicate
+        would copy as finished, and stale recovery ages a stuck enrichment by
+        that timestamp. Enrichment clears it when it ends.
+        """
         record = ctx.record
         timestamp = get_epoch_timestamp_in_ms()
-        await self.graph_provider.batch_upsert_nodes(
-            [
-                {
-                    "id": record.id,
-                    "virtualRecordId": record.virtual_record_id,
-                    "indexingStatus": ProgressStatus.COMPLETED.value,
-                    "processingStartedAt": None,
-                    "lastIndexTimestamp": timestamp,
-                    "isDirty": False,
-                }
-            ],
+        status: dict[str, Any] = {
+            "id": record.id,
+            "virtualRecordId": record.virtual_record_id,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "lastIndexTimestamp": timestamp,
+            "isDirty": False,
+        }
+        if ctx.settings.get(ENRICHMENT_FOLLOWS):
+            status["extractionStatus"] = ProgressStatus.IN_PROGRESS.value
+        else:
+            status["processingStartedAt"] = None
+        # Update, never upsert: a record deleted mid-indexing would come back as
+        # a bare node that keeps its vectors from the orphan sweep.
+        updated = await self.graph_provider.batch_update_nodes(
+            [status],
             CollectionNames.RECORDS.value,
         )
+        if not updated:
+            self.logger.warning(
+                "⚠️ Record %s no longer exists; indexingStatus=COMPLETED not recorded",
+                record.id,
+            )
+            return
+        record.record_status = ProgressStatus.COMPLETED
+        record.indexing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
@@ -489,10 +506,10 @@ class SinkOrchestrator(Transformer):
     # ------------------------------------------------------------------
 
     async def resolve_entities(self, ctx: TransformContext) -> None:
-        """Canonicalise the record's extracted taxonomy names.
+        """Resolve the record's extracted taxonomy names to canonical nodes.
 
         Must run after classification and before the blob write and
-        ``enrich()``, so every store sees the same canonical names. A no-op
+        ``enrich()``, so every store sees the same cleaned names. A no-op
         without a resolver or without semantic metadata; the resolver itself
         decides between off, shadow and apply.
         """
@@ -530,6 +547,120 @@ class SinkOrchestrator(Transformer):
                     exc,
                 )
 
+    async def extract_named_entities(self, ctx: TransformContext, *, client=None, reextract: bool = False):
+        """Bounded extraction. A failure returns FAILED and does not raise.
+        ``reextract``: completing an earlier extraction that left text unread."""
+        import time
+
+        from app.modules.named_entities.domain.models import NamedEntityExtraction
+        from app.modules.named_entities.stage import extract_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.telemetry.modules.named_entity_metrics import observe_extract
+
+        started = time.perf_counter()
+        strategy = "none"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            extraction = await extract_named_entities(
+                ctx, config_service=self.config_service, client=client, enabled=enabled, reextract=reextract,
+            )
+            strategy = extraction.strategy
+            return extraction
+        except Exception as exc:
+            # Tracebacks from the model or extraction client can echo document text.
+            self.logger.warning(
+                "Named-entity extraction failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            return NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
+        finally:
+            observe_extract(strategy, time.perf_counter() - started)
+
+    async def reproject_named_entities(
+        self, ctx: TransformContext, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str | None:
+        """Write the record's named entities again from the extraction its blob
+        holds: no model call. Returns the persist outcome, or None when the blob
+        holds no extraction. ``retry_due`` makes it a persist retry's write."""
+        from app.modules.named_entities.domain.models import read_stored_extraction
+
+        metadata = ctx.record.semantic_metadata
+        extraction = read_stored_extraction(getattr(metadata, "named_entities", None) if metadata else None)
+        if extraction is None:
+            return None
+        return await self.persist_named_entities(
+            ctx, extraction, retry_due=retry_due, retry_attempts=retry_attempts,
+        )
+
+    def attach_named_entities(self, ctx: TransformContext, extraction) -> None:
+        from app.modules.named_entities.stage import attach_named_entities
+
+        attach_named_entities(ctx.record, extraction)
+
+    async def persist_named_entities(
+        self, ctx: TransformContext, extraction, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str:
+        """Never raises, and never fails the document's own indexing. A failed
+        write is recorded as a durable retry: the recovery pass writes the record's
+        stored extraction again when it is due (see named_entity_persist_retry)."""
+        from app.modules.named_entities.stage import persist_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+        error = "persist_failed"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            outcome = await persist_named_entities(
+                ctx,
+                extraction,
+                graph_provider=self.graph_provider,
+                graph_data_store=self.graphdb.graph_data_store,
+                entity_vector_store=self.entity_vector_store,
+                enabled=enabled,
+                retry_due=retry_due,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Named-entity persist failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            outcome, error = "failed", type(exc).__name__
+        if outcome == "failed":
+            await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
+        elif outcome == "written":
+            await self._schedule_named_entity_reextract(ctx.record, extraction)
+        return outcome
+
+    async def _schedule_named_entity_reextract(self, record: "Record", extraction: "NamedEntityExtraction") -> None:
+        """After the write: the write itself drops any pending job for the record."""
+        from app.modules.named_entities.stage import needs_reextract
+
+        if not needs_reextract(extraction):
+            return
+        try:
+            await self.graph_provider.schedule_named_entity_reextract(record.org_id, record.id)
+            self.logger.info("Named entities of record %s left text unread; queued to extract again", record.id)
+        except Exception as exc:
+            # The record keeps the entities just written until it is next indexed.
+            self.logger.warning(
+                "Named-entity re-extraction for record %s could not be queued: %s", record.id, type(exc).__name__
+            )
+
+    async def _schedule_named_entity_retry(self, record, error: str, attempts_so_far: int = 0) -> None:
+        try:
+            attempts = await self.graph_provider.schedule_named_entity_persist_retry(
+                record.org_id, record.id, error, attempts_so_far,
+            )
+            self.logger.info("Named-entity persist for record %s queued for retry (failure %d)", record.id, attempts)
+        except Exception as exc:
+            # The record keeps its last good entities until it is next indexed.
+            self.logger.warning(
+                "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
+            )
+
+    async def enrich_named_entities(self, ctx: TransformContext, *, client=None) -> None:
+        """Extract, attach and persist. Safe to call on its own; never raises."""
+        extraction = await self.extract_named_entities(ctx, client=client)
+        self.attach_named_entities(ctx, extraction)
+        await self.persist_named_entities(ctx, extraction)
+
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:
             record = ctx.record
@@ -538,4 +669,7 @@ class SinkOrchestrator(Transformer):
                 record.id,
                 record.virtual_record_id,
                 ctx.reconciliation_context.new_metadata,
+                document_path=ctx.settings.get("storage_path"),
+                connector_id=getattr(record, "connector_id", None),
+                record_group_id=getattr(record, "record_group_id", None),
             )

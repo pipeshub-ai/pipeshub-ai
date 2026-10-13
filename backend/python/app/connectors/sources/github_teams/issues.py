@@ -525,13 +525,14 @@ class IssuesSync:
         repo_id = int(external_group_id.split("-")[0])
         issue_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
@@ -543,6 +544,7 @@ class IssuesSync:
                 has_payload=bool(issue_res.data),
                 connector=c.display_name,
                 status=issue_res.status_code,
+                retry_after=issue_res.retry_after_seconds,
                 message=issue_res.error,
             )
         issue = issue_res.data
@@ -600,7 +602,7 @@ class IssuesSync:
             self.logger.warning("Cannot reindex-check GitHub ticket %s: missing/malformed external ids", record.id)
             return None
         repo_id, number = parsed
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             self.logger.error("Failed to resolve repo id=%s for reindex %s: %s", repo_id, record.id, repo_res.error)
             return None

@@ -147,6 +147,35 @@ class TestSuccessfulPrefetch:
         graph_enrich.assert_awaited_once()
 
 
+    async def test_ranked_results_keep_the_search_order(self) -> None:
+        """`final_results` is re-sorted by virtual record id for display; what the
+        search ranked first is what a later id-recovery list must keep."""
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [{"metadata": {}}], "virtual_to_record_map": {},
+        }
+        flattened = [
+            {"virtual_record_id": "vr-b", "block_index": 0},
+            {"virtual_record_id": "vr-a", "block_index": 0},
+        ]
+        with patch(
+            "app.agents.chat_modes.prefetch.get_flattened_results",
+            new=AsyncMock(return_value=flattened),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
+            new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock(),
+        ), patch(
+            "app.agents.chat_modes.prefetch.build_message_content_array",
+            side_effect=lambda fr, vr, **kw: ([[{"type": "text", "text": "x"}]], kw["ref_mapper"]),
+        ):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert [r["virtual_record_id"] for r in result.final_results] == ["vr-a", "vr-b"]
+        assert [r["virtual_record_id"] for r in result.ranked_results] == ["vr-b", "vr-a"]
+
+
 class TestPrefetchImageCollection:
     """`bridge.py` merges `PrefetchResult.collected_images` into
     `context.attachment_image_blocks` so `shape_image_injection` can
@@ -230,3 +259,32 @@ class TestPrefetchImageCollection:
             )
 
         assert captured["image_budget"] is shared_budget
+
+
+class TestRefusedFilter:
+    async def test_a_refused_entity_filter_is_a_notice_not_an_empty_search(self) -> None:
+        from app.agents.chat_modes.prefetch import filter_notice_constraint
+
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status_code": 422,
+            "message": "This entity filter matches too many documents. Narrow it.",
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(
+            retrieval_service=retrieval_service,
+            filters={"kb": ["kb-1"], "entityFilters": {"kinds": ["date"]}},
+        ))
+
+        assert result.is_empty is True
+        assert result.filter_notice == "This entity filter matches too many documents. Narrow it."
+        assert retrieval_service.search_with_filters.await_args.kwargs["filter_groups"]["entityFilters"] == {"kinds": ["date"]}
+        constraint = filter_notice_constraint(result.filter_notice)
+        assert "Narrow it." in constraint and "Do not answer as if no documents matched" in constraint
+
+    @pytest.mark.parametrize("status_code", [202, 404, 500, 503])
+    async def test_other_failures_carry_no_filter_notice(self, status_code) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {"status_code": status_code, "message": "x"}
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+        assert result.filter_notice is None

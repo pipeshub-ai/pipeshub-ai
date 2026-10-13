@@ -122,6 +122,10 @@ from app.connectors.sources.local_fs.connector import (
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
 from app.models.entities import AppMetadata, FileRecord, Record, User
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.connectors.sources.test_connector_workflow_integration import (
     MockArangoProvider,
@@ -155,7 +159,7 @@ class _GraphProviderView:
     def __init__(self, store) -> None:
         self._s = store
 
-    async def get_document(self, document_key, collection, transaction=None) -> dict | None:
+    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         return self._s.get_node(collection, document_key)
 
     async def get_documents_paginated(
@@ -231,6 +235,7 @@ class LocalFsTransactionStore(MockTransactionStore):
         is_placeholder=None,
         after_key=None,
         exclude_statuses=None,
+        visibility=RecordVisibility.LIVE,
     ) -> list:
         docs = [
             d
@@ -238,6 +243,7 @@ class LocalFsTransactionStore(MockTransactionStore):
             if d.get("orgId") == org_id
             and d.get("connectorId") == connector_id
             and d.get("indexingStatus") in status_filters
+            and matches_visibility(d, visibility)
         ]
         if exclude_statuses:
             docs = [d for d in docs if d.get("indexingStatus") not in exclude_statuses]
@@ -252,9 +258,11 @@ class LocalFsTransactionStore(MockTransactionStore):
             docs = docs[:limit]
         return [await self.get_file_record_by_id(d["_key"]) or self._doc_to_record(d) for d in docs]
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """The base document plus a files document, as both graph providers write a FileRecord."""
-        await super().batch_upsert_records(records)
+        await super().batch_upsert_records(records, release_trashed_external_ids=release_trashed_external_ids)
         for record in records:
             if isinstance(record, FileRecord):
                 self._s.upsert_node(CollectionNames.FILES.value, record.to_arango_record())
@@ -543,6 +551,23 @@ class TestRunSync:
         remaining = {doc.get("externalRecordId") for doc in records.values()}
         assert connector._external_record_id_for_rel_path("kept.txt") in remaining
         assert connector._external_record_id_for_rel_path("stale.txt") not in remaining
+
+    async def test_full_run_prunes_a_vanished_record_that_is_in_the_trash(
+        self, connector: LocalFsConnector, graph_store
+    ) -> None:
+        # The prune lists every record, trash included; a LIVE listing would
+        # never retire a trashed record whose file is gone.
+        await _seed_files(connector, "stale.txt", "kept.txt")
+        stale_id = connector._external_record_id_for_rel_path("stale.txt")
+        for doc in _records_snapshot(graph_store).values():
+            if doc.get("externalRecordId") == stale_id:
+                graph_store.collections[CollectionNames.RECORDS.value][doc["_key"]]["isDeleted"] = True
+
+        await self._run(connector, [(_events_for("kept.txt"), False)])
+
+        remaining = {doc.get("externalRecordId") for doc in _records_snapshot(graph_store).values()}
+        assert connector._external_record_id_for_rel_path("kept.txt") in remaining
+        assert stale_id not in remaining
 
     @staticmethod
     def _resume_point() -> dict[str, Any]:

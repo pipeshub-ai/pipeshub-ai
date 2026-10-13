@@ -95,6 +95,9 @@ export const selectProjectsEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_PROJECTS === true;
 /** Skills default to enabled (Beta); admins opt out from Labs. */
 export const selectSkillsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_SKILLS !== false;
+/** The trash ("Move Deleted Records to the Trash") defaults to disabled; admins opt in from Labs. */
+export const selectSoftDeleteEnabled = (s: FeatureFlagsStore) =>
+  s.flags?.ENABLE_SOFT_DELETE === true;
 /** User/org prompt context defaults to enabled; admins opt out from Labs. */
 export const selectUserContextEnabled = (s: FeatureFlagsStore) =>
   s.flags?.ENABLE_USER_CONTEXT !== false;

@@ -59,6 +59,7 @@ from app.connectors.core.base.error.stream_errors import (
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -383,12 +384,18 @@ class ReposSync:
         external_group_id = f"{repo.id}-code-repository"
         try:
             existing = await self._list_code_records_by_path(external_group_id)
+            # Listed apart so the valve below judges the walk by live records only,
+            # and a trashed record sharing a live one's path cannot hide it.
+            trashed = await self._list_code_records_by_path(
+                external_group_id, visibility=RecordVisibility.DELETED
+            )
         except Exception as e:
             self.logger.error("Could not list code records for pruning in %s: %s", repo.full_name, e, exc_info=True)
             return
 
         stale = {path: rec_id for path, rec_id in existing.items() if path not in walked_paths}
-        if not stale:
+        stale_trashed = {path: rec_id for path, rec_id in trashed.items() if path not in walked_paths}
+        if not stale and not stale_trashed:
             return
         if (
             len(stale) > REPO_DELETE_VALVE_MIN_ABSOLUTE
@@ -402,16 +409,36 @@ class ReposSync:
             )
             return
 
-        self.logger.info("Pruning %s deleted code record(s) from %s", len(stale), repo.full_name)
+        self.logger.info(
+            "Pruning %s deleted code record(s) from %s", len(stale) + len(stale_trashed), repo.full_name
+        )
         # Deepest-first so a stale folder is deleted only after its stale
         # children — the same bottom-up order _cleanup_emptied_folders uses.
-        ordered_ids = [stale[p] for p in sorted(stale, key=lambda p: p.count("/"), reverse=True)]
+        pruned = [*stale.items(), *stale_trashed.items()]
+        ordered_ids = [rec_id for _, rec_id in sorted(pruned, key=lambda item: item[0].count("/"), reverse=True)]
         try:
-            await c.data_entities_processor.on_records_deleted_cascade(ordered_ids, c.connector_id)
+            result = await c.data_entities_processor.on_records_deleted_cascade(
+                ordered_ids, c.connector_id, include_trashed_roots=True
+            )
         except Exception as e:
             self.logger.error("Failed to prune deleted code records in %s: %s", repo.full_name, e, exc_info=True)
+            return
+        # With the trash on, a record already in it stays there for the purge.
+        already_trashed = set(stale_trashed.values()) if (result or {}).get("softDeleted") else set()
+        failed = [
+            f.get("record_id") for f in (result or {}).get("failed_records") or []
+            if f.get("record_id") not in already_trashed
+        ]
+        if not (result or {}).get("success", False) or failed:
+            self.logger.error(
+                "Could not prune %s of %s deleted code record(s) in %s: %s",
+                len(failed) or len(ordered_ids), len(ordered_ids), repo.full_name,
+                failed[:20] or (result or {}).get("reason"),
+            )
 
-    async def _list_code_records_by_path(self, external_group_id: str) -> dict[str, str]:
+    async def _list_code_records_by_path(
+        self, external_group_id: str, visibility: RecordVisibility = RecordVisibility.LIVE
+    ) -> dict[str, str]:
         """``{repo_path: record_id}`` for every record under a code record group.
 
         Folders are ``FileRecord``s with no ``file_path`` attribute, so their
@@ -429,6 +456,7 @@ class ReposSync:
                 external_group_id=external_group_id,
                 limit=page_size,
                 after_key=after_key,
+                visibility=visibility,
             )
             if not page:
                 break
@@ -841,13 +869,14 @@ class ReposSync:
                 f"Cannot resolve repo path for record {record.id}",
             )
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         repo = repo_res.data
@@ -855,12 +884,39 @@ class ReposSync:
         content_res = await c.runtime.ds_call(
             c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
         )
+        if content_res.status_code == HttpStatusCode.NOT_FOUND.value:
+            # The lookup may be remembered from before the default branch was
+            # renamed; the old ref 404s and the record would fail for good.
+            # Ask again, and retry once only if the answer changed. A 404 on
+            # the current branch is a file that is really gone.
+            await c.runtime.forget_repo_lookup(repo_id)
+            fresh_res = await c.runtime.get_repo_by_id(repo_id)
+            if not fresh_res.success or not fresh_res.data:
+                # A failed lookup (rate limit, auth, 5xx) proves nothing about
+                # the file. Report it, so indexing can retry, not the 404.
+                raise_for_stream_fetch(
+                    success=fresh_res.success,
+                    has_payload=bool(fresh_res.data),
+                    connector=c.display_name,
+                    status=fresh_res.status_code,
+                    retry_after=fresh_res.retry_after_seconds,
+                    message=fresh_res.error,
+                )
+            fresh = fresh_res.data
+            if (fresh.owner.login, fresh.name, fresh.default_branch) != (
+                repo.owner.login, repo.name, repo.default_branch,
+            ):
+                repo = fresh
+                content_res = await c.runtime.ds_call(
+                    c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
+                )
         if not content_res.success or content_res.data is None:
             raise_for_stream_fetch(
                 success=content_res.success,
                 has_payload=content_res.data is not None,
                 connector=c.display_name,
                 status=content_res.status_code,
+                retry_after=content_res.retry_after_seconds,
                 message=content_res.error,
             )
         content_file = content_res.data
@@ -918,6 +974,7 @@ class ReposSync:
                 has_payload=blob_res.data is not None,
                 connector=c.display_name,
                 status=blob_res.status_code,
+                retry_after=blob_res.retry_after_seconds,
                 message=blob_res.error,
             )
         blob_content = getattr(blob_res.data, "content", None)

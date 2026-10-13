@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 
@@ -511,11 +512,16 @@ export const ToolsetsApi = {
    * GET /api/v1/toolsets/instances/:id — full org instance (includes `auth` / authConfig stored on instance).
    * Use for admin hydrate; list rows from my-toolsets may omit or null `auth` for non-OAuth.
    */
-  async getToolsetInstance(instanceId: string): Promise<Record<string, unknown>> {
+  async getToolsetInstance(
+    instanceId: string,
+    options?: { reveal?: boolean }
+  ): Promise<Record<string, unknown>> {
     const { data } = await apiClient.get<{
       status?: string;
       instance?: Record<string, unknown>;
-    }>(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`);
+    }>(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`, {
+      params: options?.reveal ? REVEAL_PARAMS : undefined,
+    });
     const body = data ?? {};
     const inst = body.instance;
     if (inst && typeof inst === 'object' && !Array.isArray(inst)) {

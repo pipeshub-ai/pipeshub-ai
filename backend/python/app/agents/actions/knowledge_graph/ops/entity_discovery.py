@@ -18,14 +18,17 @@ from app.agents.actions.knowledge_graph.ops.entity_filters import (
 )
 from app.agents.actions.knowledge_graph.views import _compact_date, _short, _trunc
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.retrieval.entity_permissions import (
     RECORD_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     EntityAccessContext,
     EntityAccessError,
     EntityHit,
+    EntitySearchTimedOut,
     search_entities_for_user,
 )
+from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 
 if TYPE_CHECKING:
@@ -34,10 +37,20 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+NAMED_ENTITIES_DISABLED_MSG = "Named-entity lookup is not enabled."
+
+
+async def _named_entities_enabled(state: "ChatState") -> bool:
+    from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+    return await is_named_entity_extraction_enabled(state.get("config_service"))
+
 _MAX_TOP_K = 25
 _DEFAULT_TOP_K = 10
 _PREVIEW_ENTITY_COUNT = 3
-_MAX_ALIASES_SHOWN = 5
+
+
+_ENTITY_KIND_NAMES: frozenset[str] = frozenset(kind.value for kind in EntityKind)
 
 
 def _error(message: str) -> str:
@@ -49,6 +62,7 @@ async def execute_search_entities(
     query: str | None,
     entity_types: list[str] | None = None,
     top_k: int | None = _DEFAULT_TOP_K,
+    named_entity_kinds: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Returns ``(success, json)``. A failure to resolve access or run the
     search is reported as a failed call, never as "no matching entities"."""
@@ -63,6 +77,22 @@ async def execute_search_entities(
         return False, _error("Entity search is not available in this deployment")
 
     requested = [str(t).strip().lower() for t in (entity_types or []) if str(t).strip()]
+    kinds = [str(k).strip().lower() for k in (named_entity_kinds or []) if str(k).strip()]
+    # A kind put in entity_types ("organization") was ignored, leaving only the
+    # other types searched; it is a named-entity kind.
+    kinds = list(dict.fromkeys([*kinds, *(t for t in requested if t in _ENTITY_KIND_NAMES)]))
+    requested = [t for t in requested if t not in _ENTITY_KIND_NAMES]
+    enabled = await _named_entities_enabled(state)
+    if not enabled:
+        wanted_named = bool(kinds) or "named_entity" in requested
+        requested = [t for t in requested if t != "named_entity"]
+        kinds = []
+        # An empty type list means "every type"; never let the flag turn a
+        # named-entity search into that.
+        if wanted_named and not requested:
+            return False, _error(NAMED_ENTITIES_DISABLED_MSG)
+    elif kinds and "named_entity" not in requested:
+        requested.append("named_entity")
     valid_types = [t for t in dict.fromkeys(requested) if t in SEARCHABLE_ENTITY_TYPES]
     if requested and not valid_types:
         supported = ", ".join(sorted(SEARCHABLE_ENTITY_TYPES))
@@ -79,7 +109,15 @@ async def execute_search_entities(
             context,
             query,
             entity_types=valid_types or None,
+            kinds=kinds or None,
             top_k=bounded_top_k,
+            include_named=enabled,
+        )
+    except EntitySearchTimedOut:
+        logger.warning("search_entities timed out", exc_info=True)
+        return False, _error(
+            "Entity search timed out before it could confirm which matches you can access — "
+            "this is not an empty result. Try again, or use knowledgegraph__search."
         )
     except EntityAccessError:
         logger.warning("search_entities failed", exc_info=True)
@@ -98,11 +136,25 @@ async def execute_search_entities(
 
     remember_entities(
         state,
-        [{"entityId": h.entity_id, "entityType": h.entity_type, "name": h.name} for h in hits],
+        [
+            {
+                "entityId": h.entity_id, "entityType": h.entity_type, "name": h.name,
+                "filterName": h.graph_filter_name,
+            }
+            for h in hits
+        ],
     )
     shortener = get_record_id_shortener_if_enabled(state)
     results, shown_record_ids = _render_hits(hits, context, shortener)
-    remember_record_ids(state, shown_record_ids)
+    names = {h.entity_id: h.name for h in hits}
+    names.update(
+        (r["_key"], r.get("recordName") or "") for h in hits for r in h.records if r.get("_key")
+    )
+    remember_record_ids(state, shown_record_ids, names=names)
+    shown = set(shown_record_ids)
+    note_retrieved_by(state, "entity", graph_record_refs(
+        row for hit in hits for row in hit.records if row.get("_key") in shown
+    ))
 
     payload = {"status": "success", "results": results}
     if ignored:
@@ -123,12 +175,7 @@ def _render_hits(
             "entityId": hit.entity_id,
             "entityType": hit.entity_type,
             "name": _trunc(hit.name),
-            "score": round(hit.score, 4),
         }
-        if hit.aliases:
-            # Other spellings merged into this entity, so the model can tell
-            # the user's wording apart from the canonical name.
-            item["aliases"] = [_trunc(a) for a in hit.aliases[:_MAX_ALIASES_SHOWN]]
         apps = sorted({
             context.app_names[r["connectorId"]]
             for r in hit.records

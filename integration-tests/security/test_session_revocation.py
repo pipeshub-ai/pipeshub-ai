@@ -7,11 +7,10 @@ refused, the refresh token as well as the access token, since a live refresh
 token can mint a fresh access token at will.
 
 The public entry point is Node (port 3000), which checks the account's recent
-session-ending events on every request. The Python services behind it check a
-session token's signature and expiry only (``app/api/middlewares/auth.py``), so
-an ended session still passes there until its token expires. Those checks are
-marked ``xfail(strict=True)``: they fail today, and the day the gap closes they
-pass, strict mode turns that into a failure, and the mark comes off.
+session-ending events on every request. The Python services behind it ask Node
+whether a session is still live (``resolve_request_role`` in
+``app/api/middlewares/auth.py``) and reuse the answer for
+``SESSION_CHECK_CACHE_SECONDS``, which the integration stacks set to 2.
 
 Lockout is the only way an account becomes blocked: there is no admin action
 that blocks a user, only one that unblocks. The tests lock an account through
@@ -30,7 +29,6 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
-from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -40,6 +38,7 @@ from pymongo import MongoClient
 from helper import local_auth
 from helper.clients.auth_client import UserAccountClient
 from helper.config import MONGO_DB_NAME, MONGO_URI, TEST_USER_PASSWORD
+from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 from helper.pipeshub_client import PipeshubClient
 from helper.second_user import (
     SecondUser,
@@ -72,17 +71,6 @@ PYTHON_ROUTE = "/api/v1/connectors/registry"
 _USER_ACTION_KEY_CONTEXT = b"pipeshub/jwt/user-action/v1"
 _REFRESH_SCOPE = "token:refresh"
 
-PYTHON_SESSION_GAP = (
-    "The Python services verify a session token's signature and expiry but not "
-    "whether the session has since been ended by a password change, lockout or "
-    "deletion (backend/python/app/api/middlewares/auth.py; Node consults that "
-    "only for OAuth and personal access tokens). Remove this mark once they do."
-)
-python_session_gap = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason=PYTHON_SESSION_GAP
-)
-
-
 @dataclass(frozen=True)
 class Session:
     access: str
@@ -110,14 +98,6 @@ SESSIONS = pytest.mark.parametrize(
 )
 
 
-def _python_service_url(base_url: str) -> str:
-    explicit = os.getenv("PIPESHUB_CONNECTOR_URL", "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    parsed = urlparse(base_url)
-    return f"{parsed.scheme}://{parsed.hostname}:8088"
-
-
 def _node_status(user: SecondUser, token: str) -> int:
     return requests.get(
         f"{user.base_url}{NODE_ROUTE}",
@@ -129,7 +109,7 @@ def _node_status(user: SecondUser, token: str) -> int:
 def _python_status(user: SecondUser, token: str) -> int | None:
     try:
         return requests.get(
-            f"{_python_service_url(user.base_url)}{PYTHON_ROUTE}",
+            f"{connector_service_url(user.base_url)}{PYTHON_ROUTE}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=user.timeout,
         ).status_code
@@ -140,16 +120,6 @@ def _python_status(user: SecondUser, token: str) -> int | None:
 # A refusal is the status that means "sign in again", with no new token. Other
 # 4xx and 5xx answers are also no token, but they are not the product refusing.
 REFRESH_REFUSED_STATUS = 401
-
-DELETED_USER_REFRESH_GAP = (
-    "Refreshing a deleted user's token answers 500 with no token, not 401: "
-    "deleteUser records no session-ending activity, and the IAM lookup's 404 "
-    "arrives as an "
-    "unhandled axios error. Fixed by #3686; remove this mark when it merges."
-)
-deleted_user_refresh_gap = pytest.mark.xfail(
-    strict=True, raises=AssertionError, reason=DELETED_USER_REFRESH_GAP
-)
 
 
 def _new_user(client: PipeshubClient) -> SecondUser:
@@ -246,15 +216,8 @@ def _assert_refresh_refused(
     which: str,
     event: str,
     account: UserAccountClient,
-    known_gap_status: int | None = None,
 ) -> None:
-    """The refresh must be refused with 401 and no new token.
-
-    ``known_gap_status`` is the one wrong answer a test's xfail stands for. Only
-    that answer is raised as an ``AssertionError`` for the xfail to absorb; a
-    minted token, or any other status, is a ``pytest.fail`` (``Failed`` is not an
-    ``AssertionError``), so no xfail can hide it.
-    """
+    """The refresh must be refused with 401 and no new token."""
     response = account.refresh_token(sessions.session(which).refresh)
     status = response.status_code
     # The body is left out of every message: when it holds a token, it is live.
@@ -270,9 +233,7 @@ def _assert_refresh_refused(
         f"A refresh token from the {which} session, issued before {event}, got "
         f"HTTP {status}, not {REFRESH_REFUSED_STATUS}; no new token was returned."
     )
-    if known_gap_status is not None and status != known_gap_status:
-        pytest.fail(f"{message} That is not the known HTTP {known_gap_status} either.")
-    raise AssertionError(message)
+    pytest.fail(message)
 
 
 def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: str) -> None:
@@ -280,7 +241,7 @@ def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: s
     if before is None:
         pytest.skip(
             f"The connector service is not reachable at "
-            f"{_python_service_url(sessions.user.base_url)}; set PIPESHUB_CONNECTOR_URL."
+            f"{connector_service_url(sessions.user.base_url)}; set {CONNECTOR_URL_ENV}."
         )
     if before != 200:
         pytest.fail(
@@ -288,19 +249,9 @@ def _assert_access_refused_at_python(sessions: TwoSessions, which: str, event: s
             "before the event, so a refusal afterwards would prove nothing."
         )
     status = _python_status(sessions.user, sessions.session(which).access)
-    if status == 401:
-        return
-    # The xfail stands for exactly one answer: the token still accepted (200).
-    # Anything else is a different problem and must not be absorbed by it.
-    if status != 200:
-        pytest.fail(
-            f"An access token from the {which} session, issued before {event}, got "
-            f"HTTP {status} from the Python service: neither refused (401) nor "
-            "the known gap (200)."
-        )
-    raise AssertionError(
-        f"An access token from the {which} session, issued before {event}, still "
-        f"works at the Python service (HTTP {status})."
+    assert status == 401, (
+        f"An access token from the {which} session, issued before {event}, got "
+        f"HTTP {status} from the Python service instead of being refused (401)."
     )
 
 
@@ -397,7 +348,6 @@ class TestPasswordChangeEndsEverySession:
             after_password_change, which, "the password change", user_account_client
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_change(
         self, after_password_change: TwoSessions, which: str
@@ -422,7 +372,6 @@ class TestLockedAccountEndsEverySession:
             after_lockout, which, "the account was locked", user_account_client
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_lock(
         self, after_lockout: TwoSessions, which: str
@@ -474,7 +423,6 @@ class TestDeletedUserEndsEverySession:
     ) -> None:
         _assert_access_refused_at_node(after_deletion, which, "the user was deleted")
 
-    @deleted_user_refresh_gap
     @SESSIONS
     def test_refresh_tokens_from_before_the_deletion_are_refused(
         self, after_deletion: TwoSessions, which: str, user_account_client: UserAccountClient
@@ -484,10 +432,8 @@ class TestDeletedUserEndsEverySession:
             which,
             "the user was deleted",
             user_account_client,
-            known_gap_status=500,
         )
 
-    @python_session_gap
     @SESSIONS
     def test_the_python_services_refuse_access_tokens_from_before_the_deletion(
         self, after_deletion: TwoSessions, which: str

@@ -345,10 +345,26 @@ class TestAnswerConfidence:
     """`AnswerFinalizer` parses a trailing `---\\nConfidence: <level>` off the
     answer (`parse_confidence_from_answer`) and puts it on `completion_data`
     for the frontend's confidence indicator — the section is gated behind
-    PIPESHUB_ENABLE_CONFIDENCE (default False)."""
+    PIPESHUB_ENABLE_CONFIDENCE (default True)."""
+
+    def test_confidence_on_when_env_var_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Pins the documented default: with the variable unset, confidence is on
+        and the prompt asks for the trailer."""
+        from app.agents.agent_loop.confidence import confidence_enabled
+
+        monkeypatch.delenv("PIPESHUB_ENABLE_CONFIDENCE", raising=False)
+        assert confidence_enabled() is True
+        assert "## Answer Confidence" in _build(make_context())
+
+    def test_confidence_off_when_env_var_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.agents.agent_loop.confidence import confidence_enabled
+
+        monkeypatch.setenv("PIPESHUB_ENABLE_CONFIDENCE", "false")
+        assert confidence_enabled() is False
+        assert "## Answer Confidence" not in _build(make_context())
 
     def test_confidence_section_absent_when_flag_off(self) -> None:
-        """By default (flag off) the answer_confidence section is omitted."""
+        """With the flag turned off the answer_confidence section is omitted."""
         with patch("app.agents.agent_loop.prompt_builder.confidence_enabled", return_value=False):
             result = _build(make_context())
         assert "## Answer Confidence" not in result
@@ -475,6 +491,58 @@ class TestFindingInformation:
         result = _build(context, tool_names=["retrieval__search_internal_knowledge", "web_search"])
         section = result.split("## Finding Information", 1)[1]
         assert "disagree" in section.lower()
+
+    @pytest.mark.parametrize(
+        ("high_accuracy", "feature", "expected"),
+        [
+            (None, None, False),
+            ("true", None, True),
+            ("true", "", True),
+            ("true", "false", False),
+            (None, "true", True),
+            ("false", "TRUE", True),
+            (None, "1", False),
+        ],
+    )
+    def test_keyword_query_rule_follows_its_switch_then_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
+    ) -> None:
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("KEYWORD_SEARCH_QUERIES", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        result = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert ("Query text for `retrieval__search_internal_knowledge`: keyword-dense" in section) is expected
+
+    def test_keyword_query_rule_not_given_to_a_parent_that_delegates_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The exploration delegate takes a self-contained goal; keyword text
+        there would drop the task. Its child gets the rule instead."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        result = _build(make_context(has_knowledge=True), tool_names=["internal_exploration_agent"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert "internal_exploration_agent" in section
+        assert "keyword-dense" not in section
+
+    def test_keyword_query_rule_needs_a_granted_search_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+
+        assert "keyword-dense" not in _build(context, tool_names=["web_search", "fetch_url"])
+
+    def test_keyword_query_rule_is_identical_across_requests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It sits in the cached prompt prefix, so it must not vary per request."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        first = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        second = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+
+        assert first.split("## Finding Information", 1)[1] == second.split("## Finding Information", 1)[1]
 
     def test_no_forbidden_bullets_style(self) -> None:
         context = make_context(has_knowledge=True)
@@ -794,6 +862,28 @@ class TestComposedFindingInformation:
         section = result.split("## Finding Information", 1)[1]
         assert "web_agent" in section
         assert "`web_search`" not in section
+
+
+class TestAttachmentsInFindingInformation:
+    """Finding Information is the same text with and without uploads (it sits
+    in the cached stable block), and says itself that uploads come first, so
+    "call proactively" never contradicts the Attachments section."""
+
+    @staticmethod
+    def _section(context) -> str:
+        result = _build(context, tool_names=["retrieval__search_internal_knowledge"])
+        return result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+    def test_same_text_with_and_without_uploads_and_uploads_first(self) -> None:
+        plain = make_context(has_knowledge=True)
+        attached = make_context(has_knowledge=True)
+        attached.tool_state["attachments"] = [{"recordName": "q3.pdf", "mimeType": "application/pdf"}]
+
+        section = self._section(plain)
+
+        assert section == self._section(attached)
+        assert "Call proactively on your first turn" in section
+        assert "When a User Attachments section is present, those files come first" in section
 
 
 class TestFullRecordEscalation:

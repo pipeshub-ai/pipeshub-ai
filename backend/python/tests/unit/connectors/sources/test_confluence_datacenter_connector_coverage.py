@@ -24,6 +24,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceDataCenterConnector,
+    ContentListing,
 )
 from app.models.entities import (
     AppUser,
@@ -984,11 +985,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -1819,7 +1820,7 @@ class TestRunSync:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_content = AsyncMock()
+        c._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()

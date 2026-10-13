@@ -36,6 +36,7 @@ from app.connectors.sources.dropbox_individual.connector import (
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -121,51 +122,6 @@ def mock_data_entities_processor():
     proc.get_first_user_with_permission_to_node = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
     return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    return _make_mock_data_store_provider()
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "credentials": {
-            "access_token": "test-access-token",
-            "refresh_token": "test-refresh-token",
-            "isTeam": True,
-        },
-        "auth": {
-            "oauthConfigId": "oauth-config-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def connector(mock_logger, mock_data_entities_processor,
-              mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.dropbox.connector.DropboxApp"):
-        conn = DropboxConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="conn-123",
-            scope="team",
-            created_by="test-user",
-        )
-    conn.sync_filters = FilterCollection()
-    conn.indexing_filters = FilterCollection()
-    conn.data_source = AsyncMock()
-    conn.dropbox_cursor_sync_point = AsyncMock()
-    conn.dropbox_cursor_sync_point.read_sync_point = AsyncMock(return_value={})
-    conn.dropbox_cursor_sync_point.update_sync_point = AsyncMock()
-    conn.user_sync_point = AsyncMock()
-    conn.user_group_sync_point = AsyncMock()
-    return conn
 
 
 # ===========================================================================
@@ -346,7 +302,8 @@ class TestDropboxConnectorInit:
             scope="team",
             created_by="test-user",
         )
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await conn.init()
 
 
 # ===========================================================================
@@ -1703,14 +1660,16 @@ class TestDropboxInitMethod:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_no_oauth_config_id(self):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         c = _make_connector()
         c.config_service.get_config = AsyncMock(return_value={
             "credentials": {"access_token": "tok", "refresh_token": "ref"},
-            "auth": {}
+            "auth": auth,
         })
-        result = await c.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await c.init()
 
     @pytest.mark.asyncio
     async def test_init_success(self):

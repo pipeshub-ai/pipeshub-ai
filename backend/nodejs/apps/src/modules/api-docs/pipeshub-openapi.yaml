@@ -290,6 +290,15 @@ tags:
   - name: Toolset OAuth
     description: OAuth 2.0 authorization flow for toolsets requiring user consent
 
+  - name: MCP Servers
+    description: |
+      Catalog and org-scoped instances of external MCP servers that agents can call.
+
+      Catalog servers always run the command, arguments and transport from the
+      PipesHub catalog. Custom servers using the `stdio` transport run a command on
+      the PipesHub server itself, so they are available only when the deployment
+      operator sets `MCP_ALLOW_CUSTOM_STDIO=true` (Helm: `config.mcpAllowCustomStdio`).
+
   # Configuration Manager
   - name: Storage Configuration
     description: Configure storage backend for file uploads and documents. Supports AWS S3, Azure Blob Storage, or local filesystem.
@@ -378,13 +387,25 @@ tags:
     description: Health of the deployment, and the build that it runs
 components:
   parameters:
+    RevealStoredSecrets:
+      name: reveal
+      in: query
+      required: false
+      description: |
+        Set to `true` to receive stored secrets instead of placeholders. Honoured only for an
+        admin's own configuration where the deployment allows it (see `GET
+        /configurationManager/secretReveal`); ignored for OAuth-app tokens and any other value.
+      schema:
+        type: string
+        enum: ['true']
     InternalDocumentId:
       name: documentId
       in: path
       required: true
-      description: The document's id.
+      description: The document's id, as returned when it was uploaded or created.
       schema:
         type: string
+        pattern: '^[0-9a-fA-F]{24}$'
   headers:
     X-Conversation-Id:
       description: |
@@ -537,6 +558,158 @@ components:
           nullable: true
           description: When the build was made, in UTC. Null for a run from source.
           example: '2026-09-30T10:12:00Z'
+    OpenAIModel:
+      type: object
+      required: [id, object, created, owned_by, task, root, parent]
+      properties:
+        id:
+          type: string
+        object:
+          type: string
+          enum: [model]
+        created:
+          type: integer
+          description: Unix timestamp in seconds. 0 when the stored entry has no timestamp.
+        owned_by:
+          type: string
+          description: Provider id that owns this model.
+        task:
+          type: string
+          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition]
+        root:
+          type: string
+        parent:
+          type: string
+          nullable: true
+    OpenAIModelList:
+      type: object
+      required: [object, data]
+      properties:
+        object:
+          type: string
+          enum: [list]
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/OpenAIModel'
+    OpenAIModelError:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [message, type, code]
+          properties:
+            message:
+              type: string
+            type:
+              type: string
+            param:
+              type: string
+            code:
+              type: string
+    DiscoveredAIModel:
+      type: object
+      required: [id, displayName, capabilities, source]
+      properties:
+        id:
+          type: string
+        displayName:
+          type: string
+        capabilities:
+          type: array
+          items:
+            type: string
+        contextLength:
+          type: integer
+          nullable: true
+        isMultimodal:
+          type: boolean
+          nullable: true
+        isReasoning:
+          type: boolean
+          nullable: true
+        supportsTools:
+          type: boolean
+          nullable: true
+        deprecated:
+          type: boolean
+        source:
+          type: string
+          enum: [provider_api, catalog, heuristic]
+    AIModelDiscoveryResult:
+      type: object
+      required: [success, supported, models]
+      properties:
+        success:
+          type: boolean
+          description: False when the provider could not be listed.
+        supported:
+          type: boolean
+          description: False when this provider has no list or search endpoint.
+        models:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscoveredAIModel'
+        warnings:
+          type: array
+          items:
+            type: string
+        errorCode:
+          type: string
+          nullable: true
+          enum: [auth_error, unreachable, rate_limited, timeout, not_supported, invalid_response]
+          description: Set when the provider list failed. models may be empty.
+        message:
+          type: string
+          nullable: true
+    AIModelBatchSSEEvent:
+      type: object
+      description: |
+        Server-Sent Event envelope for `POST /configurationManager/ai-models/providers/batch`.
+
+        `data` is the decoded JSON object for the frame. Shape depends on `event`:
+
+        - `progress` — one model. `status` is `checking`, `failed` (plus `message`),
+          or `healthy` (plus `modelKey` and `connectionId`). Keep healthy models.
+          Retry only the failed ones with the `connectionId` from `done`.
+        - `done` — `{ connectionId, saved, aborted }`. The stream closes after it.
+        - `error` — `{ message }`. Only after headers were sent. Treat unchecked
+          models as not saved.
+      properties:
+        event:
+          type: string
+          enum: [progress, done, error]
+        data:
+          type: object
+          additionalProperties: true
+          description: Decoded JSON payload. Shape depends on `event`.
+          properties:
+            model:
+              type: string
+            status:
+              type: string
+              enum: [checking, failed, healthy]
+            message:
+              type: string
+            modelKey:
+              type: string
+            connectionId:
+              type: string
+              format: uuid
+            saved:
+              type: integer
+            aborted:
+              type: boolean
+    StoragePurgeResult:
+      type: object
+      required:
+        - purged
+      properties:
+        purged:
+          type: integer
+          minimum: 0
+          description: Number of documents removed.
     # ==================== COMMON SCHEMAS ====================
 
     ArtifactGalleryItem:
@@ -1356,11 +1529,11 @@ components:
               description: |
                 Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
-              example: HTTP_BAD_REQUEST
+              example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
-              example: Admin access required
+              example: You need admin access to do this. Ask an admin in your organisation.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -5216,6 +5389,308 @@ components:
           type: integer
           format: int64
           nullable: true
+        softDeleted:
+          type: boolean
+          description: True when the record went to the trash instead of being removed
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch; restoring any record in it restores all of it
+        vectorCleanupPending:
+          type: boolean
+          description: The record is deleted, but removing its embeddings is still owed
+        vectorCleanupFailedRecordIds:
+          type: array
+          items:
+            type: string
+        vectorCleanupFailedVirtualRecordIds:
+          type: array
+          items:
+            type: string
+
+    RestoredRecordSchema:
+      type: object
+      additionalProperties: false
+      required:
+        - recordId
+      properties:
+        recordId:
+          type: string
+        name:
+          type: string
+          nullable: true
+          description: The name it has now
+        renamedFrom:
+          type: string
+          description: Its name before restore, when another item next to it had taken that name
+
+    RestoreRecordResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/record/{recordId}/restore.
+      required:
+        - success
+        - message
+        - restoredRecords
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+
+    TrashItemSchema:
+      type: object
+      additionalProperties: false
+      description: What one delete removed (a folder with its contents, or every item of a multi-select); restoring it brings back all of it.
+      required:
+        - id
+        - isFolder
+        - parentInTrash
+        - itemCount
+        - deletedAtTimestamp
+      properties:
+        id:
+          type: string
+          description: Record ID to restore
+        name:
+          type: string
+          nullable: true
+        recordType:
+          type: string
+          nullable: true
+        isFolder:
+          type: boolean
+          description: A folder, deleted with everything in it
+        mimeType:
+          type: string
+          nullable: true
+        sizeInBytes:
+          type: integer
+          format: int64
+          nullable: true
+        parentId:
+          type: string
+          nullable: true
+          description: The folder it was in; null at the collection's top level
+        parentName:
+          type: string
+          nullable: true
+        parentInTrash:
+          type: boolean
+          description: That folder is in the trash too; restore it first
+        itemCount:
+          type: integer
+          minimum: 0
+          description: Records this delete removed, all of which a restore brings back
+        rootCount:
+          type: integer
+          minimum: 1
+          description: Items selected in the delete; more than one for a multi-select delete, which is one item here
+        otherRootNames:
+          type: array
+          items:
+            type: string
+          description: Names of up to three of the other items selected with this one
+        deletedAtTimestamp:
+          type: integer
+          format: int64
+        deletedBy:
+          type: object
+          nullable: true
+          additionalProperties: false
+          properties:
+            name:
+              type: string
+              nullable: true
+            email:
+              type: string
+              nullable: true
+        removableAfterTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: From when the scheduled cleanup may remove it for good; null when unknown
+
+    ListTrashResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by GET /knowledgeBase/{kbId}/trash.
+      required:
+        - success
+        - items
+        - pagination
+      properties:
+        success:
+          type: boolean
+          enum: [true]
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/TrashItemSchema'
+        pagination:
+          type: object
+          additionalProperties: false
+          required:
+            - page
+            - limit
+            - totalCount
+            - totalPages
+          properties:
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalCount:
+              type: integer
+            totalPages:
+              type: integer
+        retention:
+          type: object
+          nullable: true
+          additionalProperties: false
+          required:
+            - minAgeMs
+          properties:
+            minAgeMs:
+              type: integer
+              format: int64
+              description: Items stay at least this long before the cleanup may remove them
+
+    RestoreRecordsRequestBody:
+      type: object
+      additionalProperties: false
+      required:
+        - recordIds
+      properties:
+        recordIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            minLength: 1
+
+    RestoreRecordsResponseSchema:
+      type: object
+      additionalProperties: false
+      description: Response returned by POST /knowledgeBase/records/restore.
+      required:
+        - success
+        - restoredCount
+        - failedCount
+        - results
+      properties:
+        success:
+          type: boolean
+          description: True when every requested record was restored
+        restoredCount:
+          type: integer
+          description: Records restored, counting those restored along with them
+        failedCount:
+          type: integer
+        results:
+          type: array
+          description: |
+            One entry per requested id: `recordId`, `success`, `code`, and either the
+            restore response fields or a `reason` that says what to do next.
+          items:
+            $ref: '#/components/schemas/RestoreRecordsResultItemSchema'
+
+    RestoreRecordsResultItemSchema:
+      type: object
+      additionalProperties: false
+      description: |
+        The outcome for one id of POST /knowledgeBase/records/restore. A restored item
+        carries the fields of RestoreRecordResponseSchema; a refused one carries `reason`,
+        and, when the refusal names other records, `blockedRecordId` plus the snake_case
+        fields below (`external_id`, `conflicting_record_id`, `conflicting_record_name`).
+      required:
+        - recordId
+        - success
+      properties:
+        recordId:
+          type: string
+        success:
+          type: boolean
+        code:
+          type: integer
+        reason:
+          type: string
+          description: Why it was not restored, and what to do next
+        message:
+          type: string
+        batchId:
+          type: string
+          nullable: true
+          description: The delete batch that was restored
+        restoredRecords:
+          type: array
+          items:
+            $ref: '#/components/schemas/RestoredRecordSchema'
+        reindexPending:
+          type: boolean
+          description: Some restored files could not be queued for indexing
+        reindexPendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Files to reindex by hand to make them searchable again
+        reindexPendingReason:
+          type: string
+        renamePendingRecordIds:
+          type: array
+          items:
+            type: string
+          description: Items restored under a name another item next to them has; rename them
+        renamePendingReason:
+          type: string
+        blockedRecordId:
+          type: string
+          description: The item a refusal is about
+        external_id:
+          type: string
+          description: The source item two of the restored items came from
+        conflicting_record_id:
+          type: string
+          description: The live item that holds this item's place
+        conflicting_record_name:
+          type: string
+          nullable: true
+        missing:
+          type: array
+          items:
+            type: string
+          description: Items of the batch that were no longer in the trash
+        parentId:
+          type: string
+          nullable: true
+          description: The folder still in the trash that must be restored first
 
     reIndexRecordResponseSchema:
       type: object
@@ -5759,7 +6234,11 @@ components:
         - breadcrumbs
         - counts
         - permissions
+        - maxFolderDepth
       properties:
+        maxFolderDepth:
+          type: integer
+          description: Deepest a collection folder may be nested; a folder directly in the collection is depth 1.
         success:
           type: boolean
           enum: [true]
@@ -6016,6 +6495,15 @@ components:
               type: boolean
             canManagePermissions:
               type: boolean
+            collectionRole:
+              type: string
+              nullable: true
+              description: |
+                The caller's own role on the collection (knowledge base) this node is in, as
+                restore and `GET /knowledgeBase/{kbId}/trash` check it: OWNER, WRITER,
+                FILEORGANIZER, COMMENTER or READER. Unlike `role`, which ranks record
+                permissions inside a folder, it is the same at every level of the collection.
+                Null outside a collection.
 
     KBPermission:
       type: object
@@ -6259,6 +6747,126 @@ components:
           description: |
             Knowledge-base app ids to scope retrieval for this turn.
             Each element must be a valid UUID.
+        entityFilters:
+          type: object
+          additionalProperties: false
+          x-pipeshub-stability: experimental
+          description: |
+            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`, or `HIGH_ACCURACY_MODE`).
+            Every constraint must hold for the same record: an amount and a date match a record
+            that mentions both, not one entity that is both. `name`/`entityIds` match entity nodes;
+            `mentionedDate`, `amount`, `quantity` and `percent` match typed values the record
+            mentions (any date mentioned, not a role such as "signed on"). A kind of a typed
+            constraint's own kind narrows it (`currency` with `amount`); other kinds are a
+            constraint of their own. Only records the caller may read are considered: every empty
+            result reads the same.
+
+            An unusable filter (unknown kind, bad currency, a range whose low end is above its high
+            end, or a blank name) fails request validation with 400, including on conversation
+            requests. On `POST /search`, a valid filter matching too many readable records is
+            refused with 422. Conversation operations apply a valid filter to every search behind
+            the answer; if retrieval refuses it, the request does not fail and the answer says why
+            the filter could not be applied.
+          properties:
+            kinds:
+              type: array
+              minItems: 1
+              maxItems: 23
+              description: Lowercase, as listed. The server trims and lowercases each kind before checking it.
+              items:
+                type: string
+                enum:
+                  - person
+                  - person_type
+                  - organization
+                  - event
+                  - product
+                  - skill
+                  - location
+                  - city
+                  - state
+                  - country_region
+                  - address
+                  - date
+                  - date_range
+                  - date_time
+                  - duration
+                  - currency
+                  - percentage
+                  - age
+                  - dimension
+                  - email
+                  - url
+                  - phone
+                  - ip
+            name:
+              type: string
+              minLength: 1
+              maxLength: 256
+              description: Case-insensitive prefix of an entity name; surrounding blanks are trimmed and a blank name is refused.
+            entityIds:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+                format: uuid
+              description: Entity node ids, as returned by entity search. Typed values have no id.
+            mentionedDate:
+              type: object
+              additionalProperties: false
+              description: Overlap with a date the record mentions; half-open, `from` must not be after `to`.
+              properties:
+                from:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+                to:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+            amount:
+              type: object
+              additionalProperties: false
+              description: "`min` must not be after `max`."
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                currency:
+                  type: string
+                  pattern: "^[A-Za-z]{3}$"
+                  description: ISO 4217 code, case-insensitive.
+            quantity:
+              type: object
+              additionalProperties: false
+              description: In SI units of the dimension. `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                dimension:
+                  type: string
+                  pattern: "^[A-Za-z_]{1,32}$"
+                  description: For example `length`, `weight`, `speed`, `temperature`, `age`.
+            percent:
+              type: object
+              additionalProperties: false
+              description: Fractions (0.125 is 12.5%). `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+        where:
+          description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
+          not: {}
 
     AppliedFilterNode:
       type: object
@@ -6461,7 +7069,9 @@ components:
           type: string
           description: |
             Identifier for the AI model configuration to use.
-            Available models depend on organization settings.
+            Available models depend on organization settings. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the conversation's `modelInfo`.
           example: "gpt-5.6-luna"
         modelName:
           type: string
@@ -6519,6 +7129,15 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -6725,6 +7344,15 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -6884,7 +7512,10 @@ components:
         query:
           type: string
           minLength: 1
-          description: The follow-up question or message content
+          maxLength: 100000
+          description: |
+            The follow-up question or message content. Held to the same
+            100,000-character limit as the first message of a conversation.
           example: "Can you elaborate on the revenue trends?"
         filters:
           $ref: '#/components/schemas/Filters'
@@ -6899,7 +7530,10 @@ components:
             `POST /conversations/attachments/upload`).
         modelKey:
           type: string
-          description: Override the model for this specific message
+          description: |
+            Override the model for this specific message. When neither
+            `modelKey` nor `modelName` is sent, the organization's default
+            model answers and is saved in the message's `modelInfo`.
         modelName:
           type: string
           description: Display name of the model
@@ -6950,6 +7584,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7041,6 +7684,7 @@ components:
         query:
           type: string
           minLength: 1
+          maxLength: 100000
           description: |
             User follow-up prompt to append to the existing agent conversation.
             Saved as a new `user_query` message before the upstream AI stream
@@ -7120,6 +7764,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -9933,6 +10586,182 @@ components:
                   (its `@tool` was removed). Read-only; ignored on create/update
                   bodies. Not stamped on the `GET /agents` list projection.
 
+    McpTransport:
+      type: string
+      enum: [stdio, sse, streamable_http]
+
+    McpAuthMode:
+      type: string
+      enum: [none, api_token, oauth, headers]
+
+    McpCatalogTemplate:
+      type: object
+      additionalProperties: true
+      description: A catalog entry. Pure metadata; never carries credentials.
+      required: [typeId, displayName, description, transport, defaultAuthMode]
+      properties:
+        typeId:
+          type: string
+          example: slack
+        displayName:
+          type: string
+        description:
+          type: string
+        icon:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        defaultAuthMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        supportedAuthModes:
+          type: array
+          items:
+            $ref: '#/components/schemas/McpAuthMode'
+        command:
+          type: string
+          nullable: true
+          description: STDIO only. Always the command an instance of this server runs.
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        defaultUrl:
+          type: string
+          nullable: true
+
+    McpServerInstanceRequest:
+      type: object
+      additionalProperties: true
+      description: |
+        Create/update body. With `typeId`, `transport` must match the catalog
+        server's and `command`/`args` must be omitted or equal the catalog values
+        (otherwise 400). Without `typeId` and with `transport: stdio`, the request
+        is refused with 403 unless the operator set `MCP_ALLOW_CUSTOM_STDIO=true`.
+        Env var names (`requiredEnv`, keys of `env`) must match
+        `^[A-Z][A-Z0-9_]{0,63}$` and may not be loader/runtime variables such as
+        `PATH`, `LD_*`, `NODE_*` or `PYTHON*` (otherwise 400).
+      required: [name, transport, authMode]
+      properties:
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        url:
+          type: string
+          nullable: true
+        headerName:
+          type: string
+          nullable: true
+        authorizationUrl:
+          type: string
+          nullable: true
+        tokenUrl:
+          type: string
+          nullable: true
+        scopes:
+          type: array
+          items:
+            type: string
+
+    McpServerInstance:
+      type: object
+      additionalProperties: true
+      description: Stored instance metadata. No secrets.
+      required: [_id, orgId, createdBy, name, transport, authMode, isCustom]
+      properties:
+        _id:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        name:
+          type: string
+        typeId:
+          type: string
+          nullable: true
+        transport:
+          $ref: '#/components/schemas/McpTransport'
+        authMode:
+          $ref: '#/components/schemas/McpAuthMode'
+        useAdminAuth:
+          type: boolean
+        description:
+          type: string
+          nullable: true
+        command:
+          type: string
+          nullable: true
+        args:
+          type: array
+          items:
+            type: string
+        requiredEnv:
+          type: array
+          items:
+            type: string
+        optionalEnv:
+          type: array
+          items:
+            type: string
+        url:
+          type: string
+          nullable: true
+        isCustom:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+        hasOAuthClientConfig:
+          type: boolean
+          description: Set on list/get responses only.
+        disabledReason:
+          type: string
+          nullable: true
+          enum: [custom_stdio_disabled, null]
+          description: |
+            Set on list/get responses only. `custom_stdio_disabled` means this is a
+            custom STDIO server and the deployment does not allow those
+            (`MCP_ALLOW_CUSTOM_STDIO` is not `true`): it will not connect, and its
+            tools are not offered to agents, until the operator enables the flag.
+
     McpServer:
       type: object
       additionalProperties: false
@@ -10123,6 +10952,16 @@ components:
                     example: llm
                   modelFriendlyName:
                     type: string
+                  defaultReasoningEffort:
+                    type: string
+                    enum: [none, low, medium, high, max]
+                    description: >-
+                      The model's own reasoning effort, read from its stored
+                      configuration. It applies only when the chat request sets
+                      no `reasoningEffort` and the agent has no
+                      `defaultReasoningEffort`. Omitted when nothing valid is
+                      stored; `none` is a legacy value that runs as `low`.
+                    example: low
         usesOrgDefault:
           type: boolean
           description: |
@@ -12725,7 +13564,7 @@ components:
           properties:
             auth:
               type: object
-              description: Authentication configuration (sensitive data redacted)
+              description: "Authentication configuration. Each stored secret is returned as `••••••••`: a field the connector type's auth schema marks secret (such as an API token or password), a secret field of its OAuth app registration (such as `clientSecret`), or the `private_key` of an older Google Workspace service account."
             sync:
               type: object
               description: Sync configuration (schedule, options)
@@ -12762,11 +13601,17 @@ components:
           items:
             type: string
           description: Required field names
+        supportsConnectionCheck:
+          type: boolean
+          description: |
+            Whether <code>POST /connectors/registry/{connectorType}/test-connection</code>
+            can try this connector's auth settings before they are saved.
+
 
     # Sub-schemas for connector configuration
     ConnectorAuthConfig:
       type: object
-      description: Authentication configuration for a connector instance
+      description: "Authentication configuration for a connector instance. A secret field sent as `••••••••` (the mask the config routes return) keeps the stored value; send a new value to replace it."
       properties:
         values:
           type: object
@@ -13180,9 +14025,9 @@ components:
               example: "12345678-1234-1234-1234-123456789abc"
         baseUrl:
           type: string
-          description: "Base URL for self-hosted instances (e.g., GitLab Self-Managed)"
+          description: "PipesHub's public origin, prefixed to the connector's redirect path to build the stored redirectUri. When omitted, the frontend public endpoint is used. Not the provider's URL; a self-hosted provider's address goes in config."
           format: uri
-          example: "https://gitlab.mycompany.com"
+          example: "https://pipeshub.mycompany.com"
 
     ConnectorPagination:
       type: object
@@ -13261,6 +14106,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+            - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -13315,6 +14161,15 @@ components:
           type: string
           description: Unique identifier for this model configuration
           readOnly: true
+        configuredFields:
+          type: array
+          items:
+            type: string
+          readOnly: true
+          description: |
+            Sorted names of the stored configuration keys that have a value
+            (for example `apiKey`, `endpoint`), so the UI can show which fields
+            are already set. Never the values.
 
     AIModelsConfig:
       type: object
@@ -13456,7 +14311,8 @@ components:
       description: |
         Success response from getAIModelsProviders. Returns the stored models
         bucket map. Each entry's `configuration` includes only `model`,
-        `modelFriendlyName`, and `dimensions` when those keys were stored.
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` when
+        those keys were stored.
       required:
         - status
         - models
@@ -13480,7 +14336,7 @@ components:
         Success response from getModelsByType. Returns stored provider entries
         for a single model type bucket (not the flattened available-models shape).
         Each entry's `configuration` includes only `model`, `modelFriendlyName`,
-        and `dimensions` when stored.
+        `dimensions`, and `defaultReasoningEffort` when stored.
       required:
         - status
         - models
@@ -13946,7 +14802,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT.
+            ENABLE_USER_CONTEXT, ENABLE_NAMED_ENTITY_EXTRACTION.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -14288,8 +15144,8 @@ components:
         Provider-specific configuration stored on each AI model entry.
 
         **Read shape:** user-facing GET responses return only `model`,
-        `modelFriendlyName`, and `dimensions` (when stored). Values are copied as-is;
-        other keys including credentials are omitted.
+        `modelFriendlyName`, `dimensions`, and `defaultReasoningEffort` (when stored).
+        Values are copied as-is; other keys including credentials are omitted.
 
         **Write shape:** create and update still accept the full provider payload
         (Zod `configurationSchema` with `.passthrough()`). An omitted key retains
@@ -14395,6 +15251,15 @@ components:
         cache_folder:
           type: string
           description: Cache folder for models
+        defaultReasoningEffort:
+          type: string
+          nullable: true
+          enum: ['none', 'low', 'medium', 'high', 'max', '', null]
+          description: |
+            Reasoning effort for this model when a chat or agent request doesn't
+            choose one. Applies only when `isReasoning` is true. Empty or absent
+            means the platform default (`high`). `none` is accepted for
+            compatibility and treated as `low`.
 
     AddAIModelProviderRequest:
       type: object
@@ -15673,6 +16538,70 @@ paths:
                         type: string
                   build:
                     $ref: '#/components/schemas/BuildInfo'
+  /models:
+    get:
+      tags:
+        - AI Models Providers
+      summary: List configured models (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models` shape for the models this organization has
+        configured. One object per stored model name (a legacy comma-separated
+        entry expands into one object per name). Credentials are not included.
+
+        The same handler is mounted at `{instance}/v1/models` for clients whose
+        base URL is `{instance}/v1`.
+      operationId: listConfiguredModelsOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelList'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing config:read
+  /models/{modelId}:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Retrieve one configured model (OpenAI-compatible)
+      description: |
+        OpenAI `GET /v1/models/{model}` for a model id configured in this
+        organization. `modelId` may contain slashes (for example `org/name`).
+        Also mounted at `{instance}/v1/models/{modelId}`.
+      operationId: retrieveConfiguredModelOpenAI
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      parameters:
+        - name: modelId
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Model id as stored in the configuration
+      responses:
+        '200':
+          description: The model
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModel'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Missing config:read
+        '404':
+          description: No configured model has this id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OpenAIModelError'
 
   # ==================== IN-APP NOTIFICATIONS ====================
   /notifications:
@@ -17505,9 +18434,9 @@ paths:
         compromised laptop, where only the token's own creator could
         otherwise see or revoke it.
 
-        Requires org-admin privileges (`userAdminCheck`) — note this returns
-        **`400`**, not `403`, for a non-admin caller (shared middleware
-        behavior across the codebase, not specific to this route).
+        Requires org-admin privileges (`userAdminCheck`): a non-admin caller
+        gets `403` (`ForbiddenError`, message
+        "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminListPersonalAccessTokens
       x-pipeshub-sdk: true
       security:
@@ -17536,13 +18465,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/AdminPatListResponse'
         '400':
-          description: Invalid query parameters, or the caller is not an org admin
+          description: Invalid query parameters
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -17563,8 +18498,8 @@ paths:
         Revokes a token by id, scoped to the org's PAT client but **not** to
         a specific owning user — the admin counterpart to
         `DELETE /personal-access-tokens/{tokenId}`. Requires org-admin
-        privileges (`userAdminCheck`); returns `400` (not `403`) for a
-        non-admin caller, same as `GET /personal-access-tokens/admin`.
+        privileges (`userAdminCheck`); a non-admin caller gets `403`
+        (`ForbiddenError`), same as `GET /personal-access-tokens/admin`.
       operationId: adminRevokePersonalAccessToken
       x-pipeshub-sdk: true
       security:
@@ -17592,13 +18527,19 @@ paths:
               schema:
                 $ref: '#/components/schemas/RevokePatResponse'
         '400':
-          description: Invalid token ID, or the caller is not an org admin
+          description: Invalid token ID
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationJsonErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18051,8 +18992,9 @@ paths:
         **Flow:**
 
         1. User requests email change and receives a token via email
-        2. This endpoint validates the token and returns success if valid
-        3. If valid, user can proceed to change their email address
+        2. This endpoint validates the token, updates MongoDB, then PATCHes
+           `/api/v1/entity/user/email` on the connectors service so the graph
+           user email matches. Graph is not updated when the change is only requested.
       operationId: validateEmailChangeToken
       security:
         - scopedToken: []
@@ -18120,19 +19062,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/RefreshTokenResponse'
         '400':
-          description: Disabled user account
+          description: The account is locked after repeated failed sign-ins
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Invalid or expired refresh token - user must re-authenticate
+          description: |
+            The user must sign in again. Either the refresh token is invalid or
+            expired, or the session was ended by signing out or a password change.
+
+            If the account has been deleted or disabled, the message is
+            "Your account is no longer active. Contact your admin." Signing in
+            again will not help until an admin restores the account.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: User not found (account may have been deleted), User credentials not found, or Organization not found
+          description: The user's credentials or organization could not be found
           content:
             application/json:
               schema:
@@ -18313,7 +19261,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - User not authenticated (token decoded but `req.user` is null)
             - Organization ID missing from token payload
           content:
@@ -18322,6 +19269,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18424,7 +19377,6 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
             - `samlSso` used in a policy with more than one step
@@ -18437,6 +19389,12 @@ paths:
             Unauthorized. Possible causes:
             - Invalid or expired access token
             - User not authenticated (token decoded but `req.user` is null)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -18493,13 +19451,18 @@ paths:
         '400':
           description: |
             Bad request. Possible causes:
-            - User is not an organization admin
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19106,13 +20069,18 @@ paths:
             - Invalid mobile number format
             - `password` given for an address outside `@acme-demo.example`
             - `password` fails the complexity rules or is longer than 72 bytes
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19389,7 +20357,6 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod validation)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Target user is in the admin group and cannot be deleted directly
           content:
             application/json:
@@ -19397,6 +20364,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19417,6 +20390,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The deletion could not be recorded, so the user was not deleted. Safe to retry:
+            "We couldn't delete this user just now. They are still a member; please try
+            again in a moment." If the write timed out it may still have been saved, in
+            which case the user's existing sessions have ended and they sign in again.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /users/{id}/email:
     get:
@@ -19427,8 +20410,8 @@ paths:
         Retrieve the email address for a specific user. Requires admin privileges.
 
         The `id` path parameter is validated as a 24-character hex string. The `userAdminCheck`
-        middleware runs before `userExists`, so missing token context returns `404` before the
-        admin check can throw `400`.
+        middleware runs before `userExists`: missing token context returns `404`, and a
+        non-admin caller gets `403` (`ForbiddenError`).
 
         Returns `{ email }` for the matched user.
       operationId: getUserEmailById
@@ -19464,13 +20447,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod validation)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -19648,6 +20636,7 @@ paths:
 
             - No file uploaded
             - File type not allowed (must be PNG, JPEG, JPG, WebP, or GIF)
+            - File bytes are not a PNG, JPEG, WebP, or GIF image
             - File exceeds 1 MB limit
           content:
             application/json:
@@ -19789,8 +20778,9 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP host/port/fromEmail are configured; throws `404` if
           missing fields, `500` if config fetch fails.
-        - `userAdminCheck` — requires admin privileges; throws `400` if not admin, `404` if token
-          context is missing.
+        - No admin check on the route: any member of the organization may invite.
+          Members may invite only as `member` and without `groupIds`; inviting as `admin` or
+          assigning groups needs an org admin, and a member asking for either gets `403`.
         - `accountTypeCheck` — rejects `individual` account type; throws `400`.
 
         If all provided emails already have active accounts, returns `200` with
@@ -19867,7 +20857,6 @@ paths:
 
             - Missing or empty `emails` field
             - Invalid email format in array
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
             - Inviting as admin would exceed the organization limit of 5 admins
           content:
@@ -19880,12 +20869,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -19925,7 +20921,8 @@ paths:
 
         Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
         users to the specified groups. Same middleware chain as `POST /users/bulk/invite`
-        (`smtpConfigCheck`, `userAdminCheck`, `accountTypeCheck`).
+        (`smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may invite: any member,
+        but only an org admin may invite as `admin` or assign `groupIds` (`403` otherwise).
       operationId: bulkInviteUsersFromFile
       security:
         - bearerAuth: []
@@ -19968,7 +20965,7 @@ paths:
             - No email addresses found in the file
             - More than 1000 addresses
             - `groupIds` contains an invalid ObjectId
-            - Requester is not an admin (`userAdminCheck`), or individual account (`accountTypeCheck`)
+            - Individual account (`accountTypeCheck`)
           content:
             application/json:
               schema:
@@ -19979,12 +20976,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            A member (not an org admin) asked to invite as `admin` or to assign `groupIds`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Not found. Possible reasons:
 
             - SMTP configuration missing host, port, or fromEmail (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -20004,7 +21008,8 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP is configured; throws `404` if fields missing,
           `500` if config fetch fails.
-        - `userAdminCheck` — admin only; throws `400` if not admin, `404` if token context missing.
+        - No admin check on the route: any member of the organization may resend an invite to a
+          pending user in the same organization, as any member may invite.
         - `accountTypeCheck` — rejects individual account type; throws `400`.
 
         **Controller behavior:**
@@ -20049,7 +21054,6 @@ paths:
 
             - Invalid user ID format (Zod)
             - User has already logged in (`hasLoggedIn: true`)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - Organization is an individual account (`accountTypeCheck`)
           content:
             application/json:
@@ -20070,7 +21074,7 @@ paths:
             Not found. Possible reasons:
 
             - SMTP configuration missing fields (`smtpConfigCheck`)
-            - `userId` or `orgId` missing from token (`userAdminCheck`)
+            - Requester missing from the token context (controller)
             - Organization not found (`accountTypeCheck`)
           content:
             application/json:
@@ -20184,8 +21188,8 @@ paths:
 
         **Path validation:** `id` must be a 24-character hex MongoDB ObjectId (Zod at route layer).
 
-        **Authorization:** `userAdminCheck` middleware — throws `400` if requester is not admin,
-        `404` if `userId`/`orgId` are missing from the token.
+        **Authorization:** `userAdminCheck` middleware — throws `403` (`ForbiddenError`) if the
+        requester is not an admin, `404` if `userId`/`orgId` are missing from the token.
       operationId: unblockUser
       security:
         - bearerAuth: []
@@ -20219,7 +21223,6 @@ paths:
 
             - Invalid user ID format in path (Zod validation)
             - `userId` or `orgId` missing from request context (controller check)
-            - Requester does not have admin privileges (`userAdminCheck`)
             - User not found or not currently blocked
           content:
             application/json:
@@ -20227,6 +21230,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -20713,8 +21722,8 @@ paths:
         The `{id}` path parameter is validated for ObjectId format but is not used to look up a
         user — the check is performed on `req.user` (the token bearer), not on the target ID.
 
-        Returns `200` if the requester is an admin. Returns `400` if not (from `userAdminCheck`
-        which throws `BadRequestError`, not `ForbiddenError`).
+        Returns `200` if the requester is an admin. Returns `403` if not (from `userAdminCheck`,
+        which throws `ForbiddenError` with the message "You need admin access to do this. Ask an admin in your organisation.").
       operationId: adminCheck
       security:
         - bearerAuth: []
@@ -20746,13 +21755,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid user ID format (Zod)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -20861,11 +21875,11 @@ paths:
         '200':
           description: Identity changed
         '400':
-          description: The service account is disabled, or admin access required
+          description: The service account is disabled
         '401':
           description: Not authenticated
         '403':
-          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account
+          description: Bearer token is an OAuth access token or personal access token rather than a user session, or the caller is a service account, or the caller is not an admin of this organization
         '404':
           description: No such application, or no such service account in this organisation
 
@@ -20895,12 +21909,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ServiceAccount'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
     post:
       tags:
         - Service Accounts
@@ -20937,11 +21949,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
-          description: Invalid name, or admin access required
+          description: Invalid name
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '409':
           description: A service account of that name already exists
 
@@ -20972,12 +21984,10 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     patch:
@@ -21007,11 +22017,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ServiceAccount'
         '400':
-          description: Empty body, invalid field, or admin access required
+          description: Empty body or invalid field
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     delete:
@@ -21029,12 +22039,10 @@ paths:
       responses:
         '204':
           description: Deleted
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
 
@@ -21071,12 +22079,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ServiceToken'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
     post:
@@ -21118,11 +22124,11 @@ paths:
           description: |
             No scopes chosen, a scope this instance does not allow,
             `agent:execute` (service tokens are read-only), an expiry over 365
-            days, a disabled service account, or admin access required.
+            days, or a disabled service account.
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such service account in this organisation
 
@@ -21164,12 +22170,10 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/OAuthScopeInfo'
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
 
   /service-tokens/{tokenId}:
     delete:
@@ -21201,12 +22205,10 @@ paths:
       responses:
         '204':
           description: Revoked
-        '400':
-          description: Admin access required
         '401':
           description: Not authenticated
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '404':
           description: No such token for that service account
 
@@ -22042,13 +23044,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid request body (Zod validation — malformed `contactEmail`, wrong types, invalid `permanentAddress` shape)
-            - Requester does not have admin privileges (`userAdminCheck`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22099,14 +23106,14 @@ paths:
                     example: "Organization marked as deleted successfully"
                   data:
                     $ref: '#/components/schemas/Organization'
-        '400':
-          description: Requester does not have admin privileges
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22195,15 +23202,21 @@ paths:
 
             - No file provided
             - File type not allowed (must be PNG, JPEG, WebP, GIF, or SVG)
+            - File bytes are not a PNG, JPEG, WebP, GIF, or SVG image
             - File exceeds 2MB size limit
             - SVG contains dangerous content (script tags, event handlers, javascript: protocols, iframe/object/embed tags)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22304,14 +23317,14 @@ paths:
                     format: ObjectId
                   __v:
                     type: integer
-        '400':
-          description: user is not an admin
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22433,13 +23446,18 @@ paths:
             Invalid request. Possible reasons:
 
             - Missing or invalid status value (must be one of: configured, notConfigured, skipped)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22522,13 +23540,18 @@ paths:
             - `type` is not one of: standard, everyone, custom
             - Group name or type `admin` is not allowed
             - A group with the same name already exists in the same organization
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22657,14 +23680,14 @@ paths:
                         type: boolean
                       hasPrevPage:
                         type: boolean
-        '400':
-          description: Requester does not have admin privileges
+        '401':
+          description: Unauthorized - Valid bearer token required
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Unauthorized - Valid bearer token required
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22786,7 +23809,6 @@ paths:
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
             - New name `admin`, `everyone` or `standard` is not allowed
             - Another group with the same name already exists in the same organization
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
@@ -22798,7 +23820,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed
+          description: Forbidden - Groups of type `admin` or `everyone` cannot be renamed, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22854,7 +23876,6 @@ paths:
             Invalid request. Possible reasons:
 
             - Invalid `groupId` format (must be a 24-character hex ObjectId)
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
@@ -22866,7 +23887,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Forbidden - Only custom groups can be deleted
+          description: Forbidden - Only custom groups can be deleted, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -22952,13 +23973,18 @@ paths:
 
             - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -23038,13 +24064,18 @@ paths:
 
             - Invalid request body (Zod validation — missing/empty `userIds` or `groupIds`, malformed ObjectIds)
             - No matching groups found or updated
-            - Requester does not have admin privileges
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid bearer token required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -23357,7 +24388,9 @@ paths:
         '200':
           description: The file was stored and its document record created.
         '400':
-          description: The request was missing the file, or the file was rejected.
+          description: |
+            The request was missing the file, the file was rejected, or the storage
+            token's organization or user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '503':
@@ -23413,7 +24446,9 @@ paths:
         '200':
           description: The document record was created.
         '400':
-          description: The request body was incomplete.
+          description: |
+            The request body was incomplete, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}:
@@ -23430,6 +24465,10 @@ paths:
       responses:
         '200':
           description: The document record.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23450,10 +24489,256 @@ paths:
       responses:
         '200':
           description: The document was marked deleted.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
           description: No such document.
+  /document/internal/{documentId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a document and its stored files (service-to-service)
+      description: |
+        Removes every stored copy of the document's file (the current file and
+        each version), then the document record. Called when the record that
+        owned the document is deleted. A document that is already gone counts
+        as purged, so the call is safe to repeat. If a stored file cannot be
+        removed the record is kept and the call answers 503, so it can be retried.
+      operationId: internalPurgeDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          description: The document's id, a 24-character hex MongoDB ObjectId.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if it was already gone).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The document id is not a 24-character hex id.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; the document was kept so the removal can be retried.
+  /document/internal/records/{virtualRecordId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove a processed record's documents and stored files (service-to-service)
+      description: |
+        Removes the virtual record's processed-content documents
+        (`record_{virtualRecordId}` and `metadata_{virtualRecordId}`) wherever
+        they are filed in the organisation, plus anything at the older flat
+        path `records/{virtualRecordId}`, together with their stored files.
+        Records with identical content share one virtual record id, so the
+        caller purges only once no record uses it. Safe to repeat.
+      operationId: internalPurgeVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if none were filed there).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; its document was kept so the removal can be retried.
+  /document/internal/records/relocate:
+    post:
+      tags:
+        - Internal Storage
+      summary: Hand a deleted connector's shared content over to another connector (service-to-service)
+      description: |
+        Records with identical content share one virtual record id, and its
+        processed-content documents (`record_{id}`, `metadata_{id}`) are filed
+        under whichever connector indexed it first. Before that connector's
+        storage is deleted, each shared copy is moved to `newPath` and re-tagged
+        with `connectorId`, so the records that remain keep reading it. Only
+        documents the `fromConnectorId` delete would remove are moved; document
+        ids do not change. A copy already at `newPath` with the new tag counts
+        as moved, so the call is safe to repeat. `missing` lists ids with no
+        such document.
+      operationId: internalRelocateVirtualRecords
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fromConnectorId, moves]
+              properties:
+                fromConnectorId:
+                  type: string
+                moves:
+                  type: array
+                  minItems: 1
+                  maxItems: 100
+                  items:
+                    type: object
+                    required: [virtualRecordId, newPath, connectorId]
+                    properties:
+                      virtualRecordId:
+                        type: string
+                        pattern: '^[A-Za-z0-9_-]{1,128}$'
+                      newPath:
+                        type: string
+                        description: Relative path under `records/`, without `..` segments.
+                      connectorId:
+                        type: string
+                      recordGroupId:
+                        type: string
+      responses:
+        '200':
+          description: Which virtual record ids were handed over, failed, or had nothing to move.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  moved:
+                    type: array
+                    items:
+                      type: string
+                  failed:
+                    type: array
+                    items:
+                      type: string
+                  missing:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: The body is not valid (empty or more than 100 moves, or an unsafe path).
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/connector/{connectorId}/virtual-records:
+    get:
+      tags:
+        - Internal Storage
+      summary: List the virtual records a connector's storage holds (service-to-service)
+      description: |
+        Pages the virtual record ids of the documents that deleting this
+        connector's storage would remove (under its storage prefixes, or tagged
+        with its id), in document-id order.
+      operationId: internalListConnectorVirtualRecords
+      security:
+        - scopedToken: []
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: after
+          in: query
+          required: false
+          description: The `next` value of the previous page.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: limit
+          in: query
+          required: false
+          description: Documents scanned per page (default 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of virtual record ids, and the cursor of the next page (null on the last).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  virtualRecordIds:
+                    type: array
+                    items:
+                      type: string
+                  next:
+                    type: string
+                    nullable: true
+        '400':
+          description: The paging parameters are not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/missing:
+    post:
+      tags:
+        - Internal Storage
+      summary: Report which documents do not exist (service-to-service)
+      description: |
+        Answers which of the given document ids the caller's organisation
+        cannot download: no such document, another organisation's, or deleted.
+        Used to find processed records whose stored content is gone so they can
+        be re-indexed. An id that is not a 24-character hex id is answered as
+        missing. One lookup per call; at most 500 ids.
+      operationId: internalFindMissingDocuments
+      security:
+        - scopedToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - documentIds
+              properties:
+                documentIds:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items:
+                    type: string
+                    minLength: 1
+                    maxLength: 64
+      responses:
+        '200':
+          description: The requested ids that do not exist for the organisation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - missing
+                properties:
+                  missing:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: The body is not a list of 1 to 500 ids.
+        '401':
+          description: The storage scoped token was missing or invalid.
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -23484,6 +24769,10 @@ paths:
       responses:
         '200':
           description: A download link, or the file itself for local storage.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23514,6 +24803,10 @@ paths:
               schema:
                 type: string
                 format: binary
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23542,6 +24835,10 @@ paths:
       responses:
         '200':
           description: The document's bytes were replaced.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23577,6 +24874,10 @@ paths:
       responses:
         '200':
           description: The new version was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23615,7 +24916,10 @@ paths:
         '200':
           description: The document was rolled back.
         '400':
-          description: The note was missing, or the version was not a whole number.
+          description: |
+            The note was missing, the version was not a whole number, the document
+            id is not a 24-character hex id, or the storage token's organization or
+            user id is malformed.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23636,6 +24940,10 @@ paths:
       responses:
         '200':
           description: A time-limited upload link.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -23656,6 +24964,10 @@ paths:
       responses:
         '200':
           description: Whether the document has changed since it was stored.
+        '400':
+          description: |
+            The document id is not a 24-character hex id, or the storage token's
+            organization or user id is malformed. The message says which one to fix.
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
@@ -24530,7 +25842,7 @@ paths:
         - Knowledge Base
       summary: Delete record
       description: |
-        Permanently delete a record from the knowledge base.
+        Delete a record from the knowledge base.
 
         **Required permission:**
 
@@ -24542,7 +25854,12 @@ paths:
         - Associated storage file
         - Indexed content and embeddings
 
-        **Warning:** This action is irreversible.
+        **Trash:** With "Move Deleted Records to the Trash" on in Labs, the record
+        goes to the trash instead: it disappears from search, chat and lists at once,
+        its embeddings are removed, and the record and its file stay until the scheduled
+        purge. The response then carries `softDeleted: true` and the `batchId`, and the
+        record can be brought back with `POST /knowledgeBase/record/{recordId}/restore`.
+        With the setting off, the delete is immediate and cannot be undone.
       operationId: deleteRecord
       x-pipeshub-sdk: true
       security:
@@ -24588,6 +25905,258 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while deleting record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/record/{recordId}/restore:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Restore a deleted record
+      description: |
+        Bring a record back from the trash, together with everything deleted in the
+        same action: a folder comes back with its contents, a file with its
+        attachments, a multi-select delete with every item it removed.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Required permission:** the role the delete needed. A single file needs
+        OWNER, WRITER or FILEORGANIZER on its collection; a folder or several items
+        need OWNER or WRITER.
+
+        **Names:** an item whose name another item next to it now uses comes back
+        as "name (restored)" (a file keeps its extension: "report (restored).pdf").
+
+        **Search:** restored files are indexed again, so they return to search and
+        chat once indexing finishes. `reindexPending` lists any that could not be
+        queued; reindex those by hand. A file that is back but whose indexing never
+        started is queued again when it is restored again, and the indexing service
+        queues it on its own after about an hour.
+
+        A record that is not in the trash answers 200 with nothing restored.
+      operationId: restoreRecord
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      parameters:
+        - name: recordId
+          in: path
+          required: true
+          description: Record ID of any item in the delete batch
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Record restored, with everything deleted along with it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordResponseSchema'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: restoring is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), the record comes
+            from a connected app (restore it in that app; it returns at the next sync),
+            or the OAuth token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such record in this workspace, or it was removed for good when the trash was emptied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Nothing was restored. The message says what to do: the folder the record was
+            in is still in the trash (restore that folder first), another item has taken
+            this record's place (delete that item first, then restore), or the record
+            changed while it was being restored (refresh and try again).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring the record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/records/restore:
+    post:
+      tags:
+        - Knowledge Base
+      summary: Restore several deleted records
+      description: |
+        Restore up to 100 records from the trash. Each id is restored as
+        `POST /knowledgeBase/record/{recordId}/restore` restores it, with everything
+        deleted along with it; ids from one delete are restored once. Every id gets its
+        own outcome in `results`, so one refusal does not hold the others back, and the
+        answer is 200 whatever the outcomes.
+      operationId: restoreRecords
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RestoreRecordsRequestBody'
+      responses:
+        '200':
+          description: Outcome for each requested record
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RestoreRecordsResponseSchema'
+        '400':
+          description: recordIds is missing, empty, or longer than 100. Send between 1 and 100 record ids.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while restoring records
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Connector service unavailable or connection refused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /knowledgeBase/{kbId}/trash:
+    get:
+      tags:
+        - Knowledge Base
+      summary: List a collection's recently deleted items
+      description: |
+        One page of what was deleted from a collection and can still be restored,
+        newest first. Each item is what one delete removed, as a restore brings it back
+        whole: a folder deleted with its contents is one item, and so is a multi-select
+        delete (`rootCount` items selected, some named in `otherRootNames`). `itemCount`
+        says how many records it holds.
+        Restore an item with `POST /knowledgeBase/record/{recordId}/restore`, using its `id`.
+
+        Needs "Move Deleted Records to the Trash" on in Labs.
+
+        **Who sees what:** the list holds what the caller may restore. OWNER and
+        WRITER see every item; FILEORGANIZER sees single files only; other roles are
+        refused. The workspace and user always come from the sign-in.
+
+        **Removed for good:** the scheduled cleanup may remove an item from
+        `removableAfterTimestamp` on (at least 14 days after it was deleted by
+        default; it runs every 14 days, so an item stays 14 to 28 days). It is
+        absent when the retention settings can't be read.
+
+        An item whose folder is also in the trash (`parentInTrash`) can only be
+        restored after that folder.
+      operationId: listTrash
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:delete]
+      parameters:
+        - name: kbId
+          in: path
+          required: true
+          description: Collection (knowledge base) ID
+          schema:
+            type: string
+        - name: page
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+      responses:
+        '200':
+          description: One page of recently deleted items
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListTrashResponseSchema'
+        '400':
+          description: page or limit is not a whole number in range. Ask for a page from 1 up, with 1 to 100 items per page.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: |
+            Not allowed. The message says why and what to do: the trash is turned off
+            in Labs (ask an admin to turn on "Move Deleted Records to the Trash"), the
+            caller lacks edit access to the collection (ask its owner), or the OAuth
+            token is missing the kb:delete scope.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: No such collection in this workspace, or the caller has no role on it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error while listing deleted items
           content:
             application/json:
               schema:
@@ -24798,7 +26367,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Folder with this name already exists at the knowledge base root or within the parent folder
+          description: |
+            Conflict. Possible reasons:
+
+            - A folder with this name already exists at the knowledge base root or within the parent folder
+            - The parent folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -25024,7 +26597,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:upload]
+        - oauth2: [kb:upload, kb:read]
       parameters:
         - name: kbId
           in: path
@@ -25096,6 +26669,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Knowledge base or folder not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The folder is in Recently deleted; restore it first, or choose another folder
           content:
             application/json:
               schema:
@@ -25581,6 +27160,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The target folder is in Recently deleted; restore it first, or choose another folder
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: Internal server error while moving record
           content:
@@ -25905,7 +27490,7 @@ paths:
 
         **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
 
-        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+        **Request body:** Send `userIds`, `teamIds`, or both. Either array may be omitted; a request that names neither, or sends both empty, returns **400**.
 
         Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
 
@@ -27063,7 +28648,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [conversation:write]
+        - oauth2: [conversation:chat]
       requestBody:
         required: true
         description: The first question, with optional scope, model and mode.
@@ -27083,8 +28668,9 @@ paths:
                 $ref: '#/components/schemas/CreateConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -27105,8 +28691,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -29079,8 +30666,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -29110,8 +30698,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -29188,8 +30777,9 @@ paths:
                 $ref: '#/components/schemas/ConversationMessageStreamSSEEvent'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, or another field
-            fails validation (for example a malformed `currentTime`).
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, or another field fails validation (for example a
+            malformed `currentTime`).
         '401':
           description: Unauthorized — valid bearer token required.
         '403':
@@ -31179,7 +32769,12 @@ paths:
         '400':
           description: |
             Invalid request — `query` is missing, empty, or the request
-            body fails validation.
+            body fails validation, including an unusable
+            `filters.entityFilters` or any `filters.where`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: |
             Missing or invalid bearer token.
@@ -31190,6 +32785,14 @@ paths:
           description: |
             A referenced knowledge base or app filter could not be
             resolved.
+        '422':
+          description: |
+            `filters.entityFilters` matches too many records the caller can
+            read. Narrow it: a tighter range, a name, or fewer kinds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -33112,8 +34715,9 @@ paths:
                 $ref: '#/components/schemas/AddMessageResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -33143,8 +34747,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -33829,8 +35434,9 @@ paths:
                 $ref: '#/components/schemas/CreateAgentConversationResponse'
         '400':
           description: |
-            Invalid request — `query` is missing or empty, contains markup or
-            printf-style format specifiers, or another field fails validation.
+            Invalid request — `query` is missing, empty or over 100,000
+            characters, contains markup or printf-style format specifiers, or
+            another field fails validation.
           content:
             application/json:
               schema:
@@ -33851,8 +35457,9 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '424':
           description: |
-            No usable LLM — none is configured for the organization, or the
-            selected one could not start. The message says what to fix.
+            No usable LLM — none is configured for the organization, the
+            selected one could not start, or its provider rejected the API
+            key or could not find the model. The message says what to fix.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -33995,6 +35602,138 @@ paths:
           description: Unauthorized
         '404':
           description: Connector type not found
+
+  /connectors/registry/{connectorType}/test-connection:
+    post:
+      tags:
+        - Connector Registry
+      summary: Test connector credentials before saving
+      description: |
+        Try the auth settings from a connector's setup form without creating or
+        changing an instance.<br><br>
+        <b>Overview:</b><br>
+        Only connector types whose schema has <code>supportsConnectionCheck: true</code>
+        can be tested. A failed check is not an error: the response is
+        <code>200</code> with <code>success: false</code> and a <code>message</code>
+        to show the user (for example a wrong password, an unknown database, or a
+        timeout because a firewall blocks PipesHub's IP address).<br><br>
+        <b>Editing an instance:</b><br>
+        Pass <code>connectorId</code> to lay the settings over the instance's saved
+        ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
+        caller must be allowed to update that instance.
+      operationId: testConnectorConnection
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:write]
+      parameters:
+        - name: connectorType
+          in: path
+          required: true
+          description: Connector type identifier
+          schema:
+            type: string
+          example: "PostgreSQL"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - auth
+              properties:
+                auth:
+                  type: object
+                  description: Auth values, keyed by the fields of the connector's auth schema
+                  additionalProperties: true
+                  example:
+                    host: db.example.com
+                    port: "5432"
+                    database: analytics
+                    username: reader
+                    password: your-password
+                connectorId:
+                  type: string
+                  pattern: '^[A-Za-z0-9_-]{1,64}$'
+                  description: |
+                    Instance being edited; its saved auth values fill in fields left out.
+                    A value that is sent, even a masked one, replaces the saved one.
+      responses:
+        '200':
+          description: Check ran; see <code>success</code>
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - message
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                    description: What happened, written for the user
+              example:
+                success: false
+                message: 'PostgreSQL rejected the login for user "reader". Check the username and password.'
+        '400':
+          description: Invalid request, or the connector type has no connection check
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not allowed to update the given instance
+        '404':
+          description: Connector type or instance not found
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /connectors/network/egress-ips:
+    get:
+      tags:
+        - Connector Registry
+      summary: Get the IP addresses connectors connect from
+      description: |
+        Public IP addresses PipesHub's connectors use to reach external systems, for
+        users to allow in a database's or API's firewall.<br><br>
+        Set by the deployment through <code>CONNECTOR_EGRESS_IPS</code>; otherwise
+        looked up by the connector service and cached. The list is empty when the
+        address cannot be determined, or when the deployment sets
+        <code>CONNECTOR_EGRESS_IPS=none</code>.
+      operationId: getConnectorEgressIps
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:read]
+      responses:
+        '200':
+          description: Egress IP addresses
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - success
+                  - egressIps
+                properties:
+                  success:
+                    type: boolean
+                  egressIps:
+                    type: array
+                    items:
+                      type: string
+                    example: ["203.0.113.10"]
+        '401':
+          description: Unauthorized
+        '503':
+          description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # -------------------- Connector Instances --------------------
   /connectors:
@@ -34392,15 +36131,19 @@ paths:
         - Connector Instances
       summary: Delete connector instance
       description: |
-        Delete a connector instance and all associated data.<br><br>
+        Delete a connector instance and everything synced from it. The request
+        answers `202` as soon as the deletion has started; the deletion itself
+        runs in the background.<br><br>
         <b>Warning:</b><br>
-        This permanently removes the connector configuration.
-        Synced records in knowledge bases are NOT deleted.<br><br>
+        Deletion is permanent. The connector's records, record groups,
+        permissions and relations are removed from the graph database, its
+        embeddings are removed from the vector store, its stored configuration
+        and credentials are deleted, and its stored files are deleted (content
+        another connector still uses is kept). The records don't go to the
+        trash and can't be restored. Its sync schedule is removed too.<br><br>
         <b>Permissions:</b><br>
-        <ul>
-        <li>Team scope: Requires admin</li>
-        <li>Personal scope: Only creator can delete</li>
-        </ul>
+        The connector's creator or an admin, for either scope. An admin can
+        delete a member's personal connector.
       operationId: deleteConnectorInstance
       security:
         - bearerAuth: []
@@ -34412,8 +36155,8 @@ paths:
           schema:
             type: string
       responses:
-        '200':
-          description: Connector deleted
+        '202':
+          description: Deletion started
           content:
             application/json:
               schema:
@@ -34423,12 +36166,32 @@ paths:
                     type: boolean
                   message:
                     type: string
+                  connectorId:
+                    type: string
+                  status:
+                    type: string
+                    enum: [DELETING]
+              example:
+                success: true
+                message: Connector deletion initiated
+                connectorId: 3f1c9a52-7d0e-4b8a-9c1e-2a6b5d4e7f80
+                status: DELETING
         '401':
           description: Unauthorized
         '403':
-          description: Permission denied
+          description: |
+            An OAuth or personal access token without the `connector:delete`
+            scope, or a beta connector while beta connectors are turned off.
         '404':
-          description: Connector not found
+          description: |
+            The connector doesn't exist, or the caller is neither its creator
+            nor an admin. The two answers are the same, so the route doesn't
+            reveal connectors the caller can't delete.
+        '409':
+          description: |
+            A deletion is already in progress, a sync is running, or an agent
+            uses the connector as a knowledge source (the message names the
+            agents; remove the connector from them first).
 
   /connectors/{connectorId}/stats:
     get:
@@ -34459,9 +36222,13 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Insufficient OAuth scope or no access to connector stats
+          description: |
+            Insufficient OAuth scope, or a collection the caller has a role on
+            other than OWNER, WRITER or READER
         '404':
-          description: Connector not found
+          description: |
+            Connector not found, or one the caller cannot open (another user's
+            personal connector, admins included)
 
   /connectors/record/{recordId}/content:
     get:
@@ -35003,7 +36770,71 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/LocalFsDesktopRefusal'
+        '503':
+          description: |
+            The sync could not be queued, so nothing was synced. Try again in a
+            minute.
 
+  /connectors/{connectorId}/sync/stop:
+    post:
+      tags:
+        - Connector Instances
+      summary: Stop the running sync for a connector
+      description: |
+        Ask the in-flight sync for a connector instance to stop.
+
+        **Overview:**
+
+        Returns as soon as the request is recorded; the sync halts at its next
+        interruptible point, which for a connector inside a long provider call
+        is when that call returns. `stopped` reports whether a sync was actually
+        running, and `false` is a normal answer rather than a failure.
+
+        Deliberately not refused while the connector is busy or locked: this is
+        the endpoint that has to work precisely then, including against a lock a
+        crashed process left behind. When nothing is running it also repairs a
+        stale SYNCING or FULL_SYNCING status, unless the service cannot tell a
+        live sync on another worker from a stale one, in which case it changes
+        nothing and says so.
+      operationId: stopConnectorSync
+      security:
+        - bearerAuth: []
+        - oauth2: [connector:sync]
+      parameters:
+        - name: connectorId
+          in: path
+          required: true
+          description: Connector instance ID
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Stop recorded, or nothing was running
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  stopped:
+                    type: boolean
+                    description: >-
+                      Whether a sync was running and has been asked to stop.
+                      False is a normal answer, not an error.
+                  status:
+                    type: string
+                    description: >-
+                      The status the connector is actually left in.
+                    enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING]
+                  message:
+                    type: string
+        '401':
+          description: Unauthorized
+        '403':
+          description: Insufficient scope (connector:sync is required)
+        '404':
+          description: Connector instance not found or not accessible
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -35058,8 +36889,11 @@ paths:
       description: |
         Get the current configuration for a connector instance.<br><br>
         <b>Security:</b><br>
-        Sensitive data (credentials, OAuth tokens) are redacted from the response.
-        Only admins can see partial credential information.
+        OAuth tokens are never returned. Each stored secret in <code>config.auth</code>
+        is returned as <code>••••••••</code>: a field the connector type's auth schema
+        marks secret (such as an API token or password), a secret field of its OAuth
+        app registration (such as <code>clientSecret</code>), or the <code>private_key</code>
+        of an older Google Workspace service account.
       operationId: getConnectorConfig
       security:
         - bearerAuth: []
@@ -35100,7 +36934,34 @@ paths:
         Disable it first using <code>POST /{id}/toggle</code>.<br><br>
         <b>Partial Updates:</b><br>
         Only provide the sections you want to update. Omitted sections
-        are not modified.
+        are not modified.<br><br>
+        <b>Secrets:</b><br>
+        A secret field in <code>auth</code> sent as <code>••••••••</code> keeps the
+        stored value, so the configuration can be sent back as it was read. The
+        response masks stored secrets the same way.<br><br>
+        <b>Signing out:</b><br>
+        A change to <code>auth</code>, a different top-level <code>oauthConfigId</code>,
+        or a linked OAuth app that now holds a different client signs the connector
+        out and clears its OAuth tokens. Sending <code>auth</code> back as it was read,
+        with secrets as the mask or in full, keeps it signed in.<br><br>
+        <b>OAuth apps (OAUTH connectors):</b><br>
+        An OAUTH connector signs in with the client ID and secret of its linked OAuth
+        app, so client credentials an admin sends in <code>auth</code> go into an app,
+        as on <code>PUT /{connectorId}/config/auth</code>:
+        <ul>
+          <li>On a connector with no app, an app is created from them and linked
+          (<code>auth.oauthConfigId</code> in the response) once every required OAuth
+          field is present; until then the values are kept on the connector.</li>
+          <li>On a linked connector, changed values update the app named in
+          <code>auth.oauthConfigId</code>, and only the fields that changed. Without that
+          field a new app is created and linked; the previously linked app, which other
+          connectors may share, is not changed.</li>
+          <li>The new app is named <code>auth.oauthInstanceName</code>, or else after the
+          connector.</li>
+        </ul>
+        A linked connector stores no copy of its app's secret fields: they are not
+        stored, and not returned, in <code>config.auth</code>. Its client ID and provider
+        URLs are the app's. Only an admin's credentials create or change an app.
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
@@ -35134,10 +36995,23 @@ paths:
           description: |
             Invalid configuration or connector is active.
             Disable connector before updating.
+            For an OAUTH connector also: a new client ID sent without its client
+            secret; a replacement OAuth app that would lack a required field; or a
+            client secret sent while the connector still lacks its own authorize and
+            token URLs (ServiceNow). Nothing is stored.
         '401':
           description: Unauthorized
         '404':
-          description: Connector not found
+          description: Connector, or the OAuth app named in <code>auth.oauthConfigId</code>, not found
+        '409':
+          description: |
+            An OAuth app with the name the new app would take already exists in the
+            organization. Send a different <code>auth.oauthInstanceName</code>, or name the
+            app to update in <code>auth.oauthConfigId</code>.
+        '500':
+          description: |
+            The OAuth app or the connector's settings could not be stored. An app this
+            request created is removed, and an app it updated is put back.
 
   /connectors/{connectorId}/config/auth:
     put:
@@ -35151,7 +37025,10 @@ paths:
         sync or filter settings. Useful for credential rotation.<br><br>
         <b>Prerequisites:</b><br>
         Connector must be disabled. This endpoint clears OAuth state,
-        requiring re-authentication for OAuth connectors.
+        requiring re-authentication for OAuth connectors.<br><br>
+        <b>Secrets:</b><br>
+        A secret field sent as <code>••••••••</code> keeps the stored value; send a
+        new value to replace it. The response masks stored secrets the same way.
       operationId: updateConnectorAuthConfig
       security:
         - bearerAuth: []
@@ -35754,6 +37631,8 @@ paths:
           description: Error exchanging authorization code
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
         '404':
           description: Google Workspace configuration missing (client ID or secret)
         '500':
@@ -36871,6 +38750,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Instance retrieved successfully
@@ -37122,6 +39002,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configs retrieved successfully
@@ -38257,6 +40138,7 @@ paths:
           in: query
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configurations retrieved
@@ -38350,6 +40232,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -38408,6 +40291,9 @@ paths:
                       type: string
                     tenantId:
                       type: string
+                baseUrl:
+                  type: string
+                  description: "PipesHub's public origin. Used only when the stored configuration has no redirectUri yet, to build one; an existing redirectUri is kept whether or not this is sent."
       responses:
         '200':
           description: OAuth configuration updated
@@ -38544,6 +40430,8 @@ paths:
           description: Storage type not found in stored configuration
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
     post:
       tags:
         - Storage Configuration
@@ -38701,6 +40589,8 @@ paths:
                                   description: Error message when passed is false
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- SMTP Configuration --------------------
   /configurationManager/smtpConfig:
@@ -38781,6 +40671,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: SMTP configuration retrieved
@@ -38790,6 +40682,8 @@ paths:
                 $ref: '#/components/schemas/SMTPConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/smtpConfig/status:
     get:
@@ -38856,6 +40750,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Azure AD configuration retrieved
@@ -38865,6 +40761,8 @@ paths:
                 $ref: '#/components/schemas/AzureAdAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/microsoft:
     post:
@@ -38902,6 +40800,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Microsoft auth configuration retrieved
@@ -38911,6 +40811,8 @@ paths:
                 $ref: '#/components/schemas/MicrosoftAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/google:
     post:
@@ -38948,6 +40850,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Google auth configuration retrieved
@@ -38957,6 +40861,8 @@ paths:
                 $ref: '#/components/schemas/GoogleAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/sso:
     post:
@@ -39010,6 +40916,8 @@ paths:
                         example: "https://app.example.com"
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/authConfig/oauth:
     post:
@@ -39047,6 +40955,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -39056,6 +40966,8 @@ paths:
                 $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- AI Models Configuration --------------------
   /configurationManager/ai-models/{modelType}:
@@ -39065,7 +40977,8 @@ paths:
       summary: Get models by type
       description: |
         Get all configured models of a specific type. Each entry's `configuration`
-        includes only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        includes only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getModelsByType
       security:
         - bearerAuth: []
@@ -39077,6 +40990,7 @@ paths:
           schema:
             $ref: '#/components/schemas/ModelType'
           description: Type of AI model
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Models retrieved
@@ -39086,6 +41000,8 @@ paths:
                 $ref: '#/components/schemas/GetModelsByTypeResponse'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/ai-models/available/{modelType}:
     get:
@@ -39105,6 +41021,10 @@ paths:
           `isDefault: true`; all subsequent models from the same entry get `false`.
         - `modelFriendlyName` is included **only** when the provider entry contains
           exactly one model name (not a comma-separated list).
+        - `defaultReasoningEffort` is included on every model of an entry whose
+          `configuration.defaultReasoningEffort` (or, when that is unset, a
+          top-level `defaultReasoningEffort`) holds a valid effort. It is left out
+          when no default is stored.
         - When no providers of the requested type are configured the endpoint still
           returns HTTP **200** with an empty `models` array — this is **not** an error.
 
@@ -39232,6 +41152,20 @@ paths:
                             **and** a friendly name was added during
                             configuration.
                           example: "Reasoning model"
+                        defaultReasoningEffort:
+                          type: string
+                          enum: [none, low, medium, high, max]
+                          description: >-
+                            The model's own reasoning effort. It applies only
+                            when the chat request sets no `reasoningEffort` and
+                            the agent has no `defaultReasoningEffort`; a level
+                            the user picks always wins. Read from
+                            `configuration.defaultReasoningEffort`, falling back
+                            to a top-level `defaultReasoningEffort`. Present on
+                            every model expanded from the entry, and left out
+                            when no default is stored. `none` is a legacy value
+                            that runs as `low`.
+                          example: low
               examples:
                 two_llm_models:
                   summary: Two LLM models from an Azure OpenAI provider
@@ -39254,6 +41188,7 @@ paths:
                         isReasoning: true
                         isDefault: false
                         modelFriendlyName: "Reasoning model"
+                        defaultReasoningEffort: low
                 no_models_configured:
                   summary: modelType key present in config but zero models after expansion
                   value:
@@ -39440,6 +41375,162 @@ paths:
                   code: HTTP_INTERNAL_SERVER_ERROR
                   message: "An unexpected error occurred"
 
+  /configurationManager/ai-models/discover:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Discover models from a provider
+      description: Proxies the query service model list. When modelKey is set, stored credentials are merged server-side and are not returned. provider must match the saved model. A request endpoint is ignored so the saved API key is only sent to the saved connection.
+      operationId: discoverAIModels
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider]
+              properties:
+                provider:
+                  type: string
+                capability:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+                modelKey:
+                  type: string
+                query:
+                  type: string
+      responses:
+        '200':
+          description: Discovery result. errorCode is set when the provider could not be listed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AIModelDiscoveryResult'
+        '400':
+          description: provider does not match the saved model for modelKey
+        '404':
+          description: modelKey is not a saved model
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+
+  /configurationManager/ai-models/providers/batch:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Add several models from one connection
+      description: Server-sent events. Each healthy model is saved on its own compare-and-set write. Failed models are reported and not saved.
+      operationId: batchAddAIModels
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [modelType, provider, configuration, models]
+              properties:
+                modelType:
+                  type: string
+                provider:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+                  description: Shared connection settings. A modelFriendlyName here is ignored; set it per model.
+                connectionId:
+                  type: string
+                  format: uuid
+                  description: Join an existing connection of the same provider, e.g. when retrying models that failed. Unknown ids return 400.
+                defaultModel:
+                  type: string
+                  description: Model to make default. If the type has no models yet, the first saved model becomes default even when this one fails.
+                models:
+                  type: array
+                  minItems: 1
+                  maxItems: 25
+                  description: Each `model` id must be unique within the request.
+                  items:
+                    type: object
+                    required: [model]
+                    properties:
+                      model:
+                        type: string
+                        minLength: 1
+                      modelFriendlyName:
+                        type: string
+                      isMultimodal:
+                        type: boolean
+                      isReasoning:
+                        type: boolean
+                      contextLength:
+                        type: number
+                        nullable: true
+      responses:
+        '200':
+          description: |
+            SSE stream (`text/event-stream`). Frames use `progress` (per model),
+            `done` (batch complete), or `error` (after headers). See
+            `AIModelBatchSSEEvent`.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/AIModelBatchSSEEvent'
+        '400':
+          description: Invalid body, or connectionId does not match a saved connection for this provider
+
+  /configurationManager/ai-models/connections/{connectionId}/credentials:
+    put:
+      tags:
+        - AI Models Providers
+      summary: Rotate credentials for every model in a connection
+      description: Replaces credential fields only. Endpoint, model id, and other settings on each entry are left as stored.
+      operationId: rotateConnectionCredentials
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [configuration]
+              properties:
+                configuration:
+                  type: object
+                  additionalProperties: false
+                  properties:
+                    apiKey:
+                      type: string
+                    awsAccessKeyId:
+                      type: string
+                    awsAccessSecretKey:
+                      type: string
+                    serviceAccountJson:
+                      type: string
+      responses:
+        '200':
+          description: Credentials updated
+        '400':
+          description: Health check rejected the new credentials, or the body included a non-credential field
+        '404':
+          description: Connection not found
+
   /configurationManager/ai-models/providers:
     post:
       tags:
@@ -39466,8 +41557,10 @@ paths:
                 $ref: '#/components/schemas/AIModelProviderResponse'
         '400':
           description: |
-            Invalid request body (Zod validation), controller validation, or
-            health-check failure (invalid credentials or provider config).
+            Invalid request body (Zod validation), controller validation, or a
+            health check the provider refused because of these settings: it
+            rejected the API key, could not find the model, or its endpoint
+            could not be reached. `error.message` names the setting to fix.
           content:
             application/json:
               schema:
@@ -39484,6 +41577,20 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The health check failed for a reason other than the settings, for
+            example PipesHub cannot reach the internet to call a cloud provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
+        '504':
+          description: The health check timed out waiting for the provider.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AddAIModelProviderErrorResponse'
 
   /configurationManager/ai-models/providers/{modelType}/{modelKey}:
     put:
@@ -39531,13 +41638,21 @@ paths:
         '400':
           description: |
             Invalid request body (Zod validation), controller validation (e.g. model type
-            mismatch, missing fields), health-check failure, or admin access required.
+            mismatch, missing fields), or a health check the provider refused because
+            of these settings: it rejected the API key, could not find the model, or its
+            endpoint could not be reached.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/UpdateAIModelProviderErrorResponse'
         '401':
           description: Unauthorized — missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -39551,11 +41666,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AIModelProviderSimpleError'
         '500':
-          description: |
-            Internal server error. The current implementation can return 500 for
-            unknown modelKey updates when the persisted aiModels blob contains
-            non-array top-level keys (for example modelRoles or custom system
-            prompt fields), causing lookup to fail before the not-found path.
+          description: Internal server error.
           content:
             application/json:
               schema:
@@ -39569,6 +41680,12 @@ paths:
         Remove an AI model provider configuration. Fails with 409 when agents still
         reference the model. If the deleted entry was default, the first remaining
         entry for that type is promoted to default.
+
+        Deleting the embedding model that embeds (the default one, else the first)
+        hands embedding to the model that would take over, or to the built-in model
+        when none is left. That model goes through the same check as setting a new
+        default: refused with 400 while the vector store holds vectors from the
+        deleted model, and the empty store is rebuilt for the replacement model.
       operationId: deleteAIModelProvider
       security:
         - bearerAuth: []
@@ -39606,14 +41723,28 @@ paths:
         '400':
           description: |
             Model type mismatch — the `modelKey` exists under a different `modelType`
-            than the path parameter.
+            than the path parameter; or the model is the embedding model in use while
+            the vector store holds its vectors (standard error envelope, message
+            "This model is embedding your indexed content. Delete the embeddings in
+            Labs first, then change or delete the model and re-embed.").
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/AIModelProviderSimpleError'
-              example:
-                status: error
-                message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                oneOf:
+                  - $ref: '#/components/schemas/AIModelProviderSimpleError'
+                  - $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                typeMismatch:
+                  summary: Model type mismatch
+                  value:
+                    status: error
+                    message: "Model key 'f3a4b5b6-5b6c-4e85-9097-3202cfe696fc' belongs to type 'llm', not 'embedding'"
+                embeddingInUse:
+                  summary: The embedding model in use, with vectors stored
+                  value:
+                    error:
+                      code: HTTP_BAD_REQUEST
+                      message: "This model is embedding your indexed content. Delete the embeddings in Labs first, then change or delete the model and re-embed."
         '401':
           description: Unauthorized
         '403':
@@ -39674,12 +41805,21 @@ paths:
       responses:
         '200':
           description: Default model updated
+        '400':
+          description: |
+            The model's health check was refused because of its settings: the
+            provider rejected the API key, could not find the model, or could
+            not be reached at the endpoint. `error.message` names what to fix.
         '401':
           description: Unauthorized
         '403':
           description: Admin access required
         '404':
           description: Model not found
+        '500':
+          description: The health check failed for a reason other than the model's settings.
+        '503':
+          description: The vector store could not be checked for the embedding model change; try again.
 
   /configurationManager/ai-models/prepare-model:
     post:
@@ -39735,9 +41875,7 @@ paths:
           description: |
             Either `model` is missing or fails the
             `^[\w.-]+(\/[\w.-]+)?$` repo-id pattern check performed by
-            Node.js before proxying to the embedding server, or (via the
-            shared `userAdminCheck` middleware) the caller is not an org
-            admin.
+            Node.js before proxying to the embedding server.
           content:
             application/json:
               schema:
@@ -39761,14 +41899,15 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            Either the caller's OAuth token lacks the `config:write` scope,
-            or the embedding server rejected the request under its own
-            policy: `model` is not in `EMBEDDING_SERVER_ALLOWED_MODELS`, or
-            `trustRemoteCode: true` was requested while
-            `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is disabled on the server.
-            The embedding-server rejection is proxied verbatim using
-            FastAPI's `{"detail": ...}` envelope, not the Node.js
-            `ErrorResponse` shape used for the scope failure.
+            The caller is not an admin of this organization, the caller's
+            OAuth token lacks the `config:write` scope, or the embedding
+            server rejected the request under its own policy: `model` is not
+            in `EMBEDDING_SERVER_ALLOWED_MODELS`, or `trustRemoteCode: true`
+            was requested while `EMBEDDING_SERVER_ALLOW_REMOTE_CODE` is
+            disabled on the server. The admin and scope refusals use the
+            Node.js `ErrorResponse` shape. Only the embedding-server
+            rejection is proxied verbatim in FastAPI's `{"detail": ...}`
+            envelope.
           content:
             application/json:
               schema:
@@ -39836,8 +41975,7 @@ paths:
         '400':
           description: |
             `model` query parameter missing or not a valid HuggingFace repo
-            id, or (via the shared `userAdminCheck` middleware) the caller is
-            not an org admin.
+            id.
           content:
             application/json:
               schema:
@@ -39860,7 +41998,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Insufficient OAuth scope — token lacks `config:read`
+          description: Insufficient OAuth scope — token lacks `config:read`, or the caller is not an admin of this organization
           content:
             application/json:
               schema:
@@ -39887,6 +42025,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Web search providers and settings retrieved
@@ -40264,6 +42404,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+        - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -40344,6 +42485,8 @@ paths:
                 updatedAt: "2024-01-15T10:30:00Z"
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   /configurationManager/platform/feature-flags/available:
     get:
@@ -40412,6 +42555,37 @@ paths:
         '401':
           description: Unauthorized
 
+  /configurationManager/secretReveal:
+    get:
+      tags:
+        - Platform Settings
+      summary: Whether stored secrets can be read back
+      description: |
+        Tells the settings UI whether to offer its "show stored values" button. Where it
+        is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
+        models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
+        connector and action OAuth apps, action credentials) to receive the stored values
+        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        The flag is ignored for OAuth-app tokens. Admin only.
+      operationId: getSecretRevealStatus
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Reveal availability
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                    description: Always true in this edition, which holds a single organization.
+        '401':
+          description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
+
   /configurationManager/prompts/system:
     put:
       tags:
@@ -40457,6 +42631,8 @@ paths:
                 $ref: '#/components/schemas/CustomSystemPrompt'
         '401':
           description: Unauthorized
+        '403':
+          description: The caller is not an admin of this organization
 
   # -------------------- Metrics Collection --------------------
   /configurationManager/metricsCollection:
@@ -40894,9 +43070,12 @@ paths:
       summary: Get Slack bot configurations
       description: |
         Retrieve all Slack bot configurations for the organization.
+        Bot tokens and signing secrets are masked in this response.
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Slack bot configs retrieved
@@ -40911,6 +43090,24 @@ paths:
                     type: array
                     items:
                       type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        createdAt:
+                          type: string
+                        updatedAt:
+                          type: string
+                        botToken:
+                          type: string
+                          description: Masked. The stored bot token is not returned.
+                        signingSecret:
+                          type: string
+                          description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -40940,12 +43137,72 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The created configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
           description: Forbidden - Admin access required
+
+  /configurationManager/internal/slack-bot:
+    get:
+      tags:
+        - Configuration Manager
+      summary: Get Slack bot credentials for signature verification
+      description: |
+        Service-to-service only. Requires the slack-bot:verify scope, which only
+        the Slack bot process mints. Returns the fields that process needs to
+        verify a request signature. Bot tokens and signing secrets are not masked.
+      operationId: getInternalSlackBotConfigs
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Slack bot credentials retrieved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  configs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        agentId:
+                          type: string
+                          nullable: true
+                        botToken:
+                          type: string
+                        signingSecret:
+                          type: string
+        '401':
+          description: The scoped token was missing, invalid, or did not include slack-bot:verify
 
   /configurationManager/slack-bot/{configId}:
     put:
@@ -40978,8 +43235,29 @@ paths:
               schema:
                 type: object
                 properties:
-                  message:
+                  status:
                     type: string
+                  config:
+                    type: object
+                    description: The updated configuration. botToken and signingSecret are masked.
+                    properties:
+                      id:
+                        type: string
+                      name:
+                        type: string
+                      agentId:
+                        type: string
+                        nullable: true
+                      createdAt:
+                        type: string
+                      updatedAt:
+                        type: string
+                      botToken:
+                        type: string
+                        description: Masked. The stored bot token is not returned.
+                      signingSecret:
+                        type: string
+                        description: Masked. The stored signing secret is not returned.
         '401':
           description: Unauthorized
         '403':
@@ -41098,8 +43376,8 @@ paths:
       summary: Get AI models configuration
       description: |
         Retrieve the AI models configuration for the organization. Each entry's
-        `configuration` includes only `model`, `modelFriendlyName`, and
-        `dimensions` when stored.
+        `configuration` includes only `model`, `modelFriendlyName`, `dimensions`,
+        and `defaultReasoningEffort` when stored.
       operationId: getAIModelsConfig
       security:
         - bearerAuth: []
@@ -41155,7 +43433,8 @@ paths:
         Retrieve all configured AI model provider entries grouped by model type
         (admin-only). Returns the stored KV shape under `models`, not the flattened
         list from getAvailableModelsByType. Each entry's `configuration` includes
-        only `model`, `modelFriendlyName`, and `dimensions` when stored.
+        only `model`, `modelFriendlyName`, `dimensions`, and
+        `defaultReasoningEffort` when stored.
       operationId: getAIModelsProviders
       security:
         - bearerAuth: []
@@ -41763,7 +44042,9 @@ paths:
         - Crawling Jobs
       summary: Get all crawling job statuses
       description: |
-        Retrieve the status of all scheduled crawling jobs across the organization.
+        Retrieve the status of all scheduled crawling jobs across the organization,
+        including org-wide connectors and other members' personal connectors.
+        Only an organization admin may call this; a member is refused with 400.
       operationId: getAllCrawlingJobStatus
       security:
         - bearerAuth: []
@@ -41782,8 +44063,16 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/JobStatus'
+        '400':
+          description: Admin access required
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized - Valid JWT token required
+        '403':
+          description: Token lacks the required scope
 
     delete:
       tags:
@@ -41792,7 +44081,7 @@ paths:
       description: |
         Remove all scheduled crawling jobs for the organization, including
         org-wide connectors and other members' personal connectors.
-        Only an organization admin may call this; a member is refused with 400.
+        Only an organization admin may call this; a member is refused with 403.
       operationId: removeAllCrawlingJob
       security:
         - bearerAuth: []
@@ -41807,16 +44096,10 @@ paths:
                 properties:
                   message:
                     type: string
-        '400':
-          description: Admin access required
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
         '403':
-          description: Token lacks the required scope
+          description: Token lacks the required scope, or the caller is not an admin of this organization
         '500':
           description: A schedule or queued run could not be removed, so it may still run
           content:
@@ -41905,6 +44188,7 @@ paths:
       summary: Get queue statistics
       description: |
         Retrieve statistics for the crawling job queue including active, waiting, and completed job counts.
+        Counts cover only the caller's organization.
       operationId: getQueueStats
       security:
         - bearerAuth: []
@@ -41920,6 +44204,61 @@ paths:
           description: Unauthorized
 
   # ── Connector Internal Endpoints (Python connector service, port 8088) ──
+  /entity/user/email:
+    patch:
+      tags:
+        - Entity
+      summary: Update a graph user's email after verified profile change
+      description: |
+        Internal service-to-service call from Node after
+        `PUT /userAccount/validateEmailChange` writes the new address to Mongo.
+        The service JWT must include `entity:user:write`; `userId` and `orgId`
+        are taken from that token, not from the body.
+      operationId: updateGraphUserEmail
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: new@example.com
+      responses:
+        '200':
+          description: Graph user email updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: success
+                  email:
+                    type: string
+                    example: new@example.com
+                  mergedStubKeys:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          description: Missing userId/orgId on the token or invalid email
+        '403':
+          description: Service token missing entity:user:write
+        '404':
+          description: Graph user not found for the token userId
+        '409':
+          description: Another real login graph user already has this email
+        '500':
+          description: Failed to write the graph user
   /connectors/internal/all-scheduled:
     get:
       tags:
@@ -42022,6 +44361,246 @@ paths:
           description: No organisations found in the system
         '500':
           description: Internal server error
+
+  /mcp-servers/catalog:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP server catalog
+      operationId: listMcpCatalog
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: search
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Catalog page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [templates, total, page, limit, customStdioAllowed]
+                properties:
+                  templates:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpCatalogTemplate'
+                  total:
+                    type: integer
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  customStdioAllowed:
+                    type: boolean
+                    description: |
+                      Whether this deployment accepts custom servers with the `stdio`
+                      transport (operator setting `MCP_ALLOW_CUSTOM_STDIO`).
+        '401':
+          description: Unauthorized
+        '403':
+          description: MCP is disabled for this organization
+
+  /mcp-servers/instances:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP server instances
+      description: List the organization's MCP server instances (admin only).
+      operationId: listMcpInstances
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Instances
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an administrator, or MCP is disabled for this organization
+    post:
+      tags:
+        - MCP Servers
+      summary: Create MCP server instance
+      description: Create an MCP server instance (admin only).
+      operationId: createMcpInstance
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstanceRequest'
+      responses:
+        '201':
+          description: Instance created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '400':
+          description: |
+            Invalid request: unknown `typeId`, a catalog server's transport,
+            command or args overridden, a missing command/url, or a disallowed
+            env var name.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            Not an administrator, MCP is disabled for this organization, or a
+            custom `stdio` server was requested and the deployment does not allow
+            them (`MCP_ALLOW_CUSTOM_STDIO`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /mcp-servers/instances/{instanceId}:
+    get:
+      tags:
+        - MCP Servers
+      summary: Get MCP server instance
+      operationId: getMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Instance
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an administrator, or MCP is disabled for this organization
+        '404':
+          description: Instance not found
+    put:
+      tags:
+        - MCP Servers
+      summary: Update MCP server instance
+      description: Replace an MCP server instance's configuration (admin only). Same rules as create.
+      operationId: updateMcpInstance
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/McpServerInstanceRequest'
+      responses:
+        '200':
+          description: Instance updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/McpServerInstance'
+        '400':
+          description: Invalid request (see create)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Unauthorized
+        '403':
+          description: |
+            Not an administrator, MCP is disabled for this organization, or a
+            custom `stdio` server was requested and the deployment does not allow them.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Instance not found
+
+  /mcp-servers/my-mcp-servers:
+    get:
+      tags:
+        - MCP Servers
+      summary: List MCP servers for the current user
+      description: Org MCP server instances merged with the caller's auth status and, optionally, live tools.
+      operationId: getMyMcpServers
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: includeTools
+          in: query
+          schema:
+            type: boolean
+            default: true
+      responses:
+        '200':
+          description: Instances with the caller's status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  instances:
+                    type: array
+                    items:
+                      allOf:
+                        - $ref: '#/components/schemas/McpServerInstance'
+                        - type: object
+                          properties:
+                            isAuthenticated:
+                              type: boolean
+                            tools:
+                              type: array
+                              items:
+                                type: object
+                                additionalProperties: true
+                            toolsError:
+                              type: string
+                              nullable: true
+        '401':
+          description: Unauthorized
+        '403':
+          description: MCP is disabled for this organization
 
   # ── MCP (Model Context Protocol) ──────────────────────────────────
   # These endpoints are mounted at /mcp (root-level, NOT under /api/v1).

@@ -258,6 +258,12 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Reference any related issues
    - Add screenshots if applicable
 
+Pull requests from forks run the integration tests without repository secrets:
+CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
+runs the full suite on a reviewed commit using *Run workflow* on
+`integration-tests.yml` with that commit's hash (see
+[integration-tests/README.md](integration-tests/README.md)).
+
 ## Code Style Guidelines
 
 - **Python**: Follow PEP 8 guidelines

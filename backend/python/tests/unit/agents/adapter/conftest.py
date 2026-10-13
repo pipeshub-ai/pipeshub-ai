@@ -55,6 +55,7 @@ def _explicit_sandbox_mode(monkeypatch: pytest.MonkeyPatch) -> None:
     code-execution tools. Pin `local` here so the wiring tests still cover
     `run_code`; a test that needs the unavailable path deletes the var."""
     monkeypatch.setenv("SANDBOX_MODE", "local")
+    monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
 
 
 def make_context(**overrides: Any) -> AgentContext:

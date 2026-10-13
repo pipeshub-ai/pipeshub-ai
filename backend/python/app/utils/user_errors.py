@@ -9,6 +9,8 @@ often a repr. Callers log the exception and store ``to_user_reason(exc)``.
 from __future__ import annotations
 
 import asyncio
+import math
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
@@ -73,6 +75,15 @@ CONNECTOR_OFF = (
     "again (or ask your admin to), and the file will be indexed."
 )
 CONNECTOR_REMOVED = "The connector this file came from was removed, so the file won't be indexed."
+ENRICHMENT_STOPPED_CONNECTOR_OFF = (
+    "This file is searchable, but its connector was turned off before PipesHub finished "
+    "adding extra details such as its topics and categories. Turn the connector on again "
+    "and Reindex the file to add them."
+)
+ENRICHMENT_STOPPED_CONNECTOR_REMOVED = (
+    "This file is searchable, but the connector it came from was removed before PipesHub "
+    "finished adding extra details such as its topics and categories."
+)
 FOLDER_NOTHING_TO_INDEX = "Folders have no content of their own to index."
 ENRICHMENT_FAILED = (
     "This file is searchable, but PipesHub couldn't add extra details such as its "
@@ -108,6 +119,19 @@ EPUB_NO_READABLE_CHAPTERS = (
     "This e-book has no chapters we could read. Check that it opens in an e-book reader, "
     "save a fresh copy from there, and upload it again."
 )
+GENERATED_FILE_SKIPPED = (
+    "This is a generated file (a lock file, minified bundle, source map or test snapshot), "
+    "so PipesHub skips it to keep search results useful. Nothing needs fixing."
+)
+BINARY_FILE_SKIPPED = (
+    "This file holds binary data rather than text, so PipesHub can't read it. If it is "
+    "meant to be text, commit it as plain text (UTF-8) and the next sync will index it."
+)
+PARSE_WORKER_OUT_OF_MEMORY = (
+    "PipesHub ran out of memory while reading this file, so it wasn't indexed. Split it "
+    "into smaller files and sync or upload them again; if it keeps failing, ask your admin "
+    "to give PipesHub more memory."
+)
 
 
 # Written for people by the code that raised them, and more specific than any
@@ -119,6 +143,8 @@ _STORED_AS_WRITTEN = frozenset({
     EPUB_TOO_LARGE,
     EPUB_UNSAFE_PATHS,
     EPUB_NO_READABLE_CHAPTERS,
+    PARSE_WORKER_OUT_OF_MEMORY,
+    PROCESSING_TIMED_OUT,
 })
 
 
@@ -128,9 +154,62 @@ def unsupported_file_type(extension: str | None) -> str:
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
 
 
+def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
+    tenths = size_bytes / (1024 * 1024) * 10
+    return f"{(math.ceil(tenths) if round_up else round(tenths)) / 10:.1f}".removesuffix(".0")
+
+
+def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: bool) -> str:
+    # A record marked "File Type Not Supported" has no Reindex action of its
+    # own, and a sync skips a repository that has not changed. What brings the
+    # file back is the repository row's own action, which reads "Index all":
+    # record groups carry no indexing status, so the UI never offers them
+    # "Re-index all" (frontend reindex-label.ts).
+    after_raising = (
+        "choose Index all on the repository" if repository_file else "upload it again"
+    )
+    # Rounded up, so a file one byte over a 5 MB limit never reads as "5 MB".
+    return (
+        f"This file is {_megabytes(size_bytes, round_up=True)} MB, and PipesHub reads code "
+        f"and plain-text files up to {_megabytes(limit_bytes)} MB. Split it into smaller "
+        "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then "
+        f"{after_raising}."
+    )
+
+
 def duplicate_failed(primary_reason: str | None) -> str:
     base = "An identical file failed to index, so this copy was skipped."
     return f"{base} {primary_reason}" if primary_reason else base
+
+
+def _utc_time(at_ms: int, now_ms: int) -> str:
+    at = datetime.fromtimestamp(at_ms / 1000, tz=timezone.utc)
+    now = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
+    if at.date() == now.date():
+        return at.strftime("%H:%M UTC")
+    return f"{at.strftime('%H:%M UTC')} on {at.day} {at.strftime('%b')}"
+
+
+def rate_limited_will_retry(source: str | None, retry_at_ms: int, now_ms: int) -> str:
+    # The UI shows a QUEUED record's reason only when it reads "is limiting how
+    # often PipesHub can read from it" (frontend/lib/utils/rate-limit-pause.ts).
+    return (
+        f"{source or 'The source'} is limiting how often PipesHub can read from it, so "
+        f"indexing this file is paused. It will retry automatically after "
+        f"{_utc_time(retry_at_ms, now_ms)}."
+    )
+
+
+def rate_limited_gave_up(
+    source: str | None, retry_at_ms: int, now_ms: int, max_wait_hours: float
+) -> str:
+    when = _utc_time(retry_at_ms, now_ms)
+    return (
+        f"{source or 'The source'} kept limiting how often PipesHub can read from it and "
+        f"would not allow it again until {when}, more than {max_wait_hours:g} hours after "
+        f"indexing this file was first paused, so PipesHub stopped trying. Reindex it "
+        f"after {when}."
+    )
 
 
 def _ai_messages(model: str) -> dict[str, str]:
@@ -147,6 +226,11 @@ def _ai_messages(model: str) -> dict[str, str]:
         "auth_error": (
             f"The {model} rejected PipesHub's API key, so this file wasn't indexed. An "
             "admin can update the key in Workspace → AI Models, then Reindex the file."
+        ),
+        "model_not_found": (
+            f"The {model}'s provider couldn't find the model it names at its endpoint, so "
+            "this file wasn't indexed. An admin can check the model name and endpoint in "
+            "Workspace → AI Models, then Reindex the file."
         ),
         "server_error": unreachable,
         "timeout": unreachable,
@@ -235,6 +319,10 @@ def _status_code(exc: BaseException) -> int | None:
         value = getattr(exc, attr, None)
         if isinstance(value, int):
             return value
+    # google-genai keeps the HTTP status on `code`; its `status` is a name like "UNAUTHENTICATED".
+    code = getattr(exc, "code", None)
+    if _from(exc, ("google.genai",)) and isinstance(code, int):
+        return code
     response = getattr(exc, "response", None)
     value = getattr(response, "status_code", None)
     return value if isinstance(value, int) else None
@@ -258,6 +346,8 @@ def _provider_code(chain: list[BaseException]) -> str:
             return "rate_limit"
         if status in (401, 403):
             return "auth_error"
+        if status == 404:
+            return "model_not_found"
         if status == 413:
             return "request_too_large"
         if status == 400:
@@ -285,6 +375,11 @@ def _provider_code(chain: list[BaseException]) -> str:
         if code != "unknown":
             return code
     return "unknown"
+
+
+def provider_error_code(exc: BaseException) -> str:
+    """`classify_error`'s code for an exception raised by an AI provider's SDK."""
+    return _provider_code(list(_chain(exc)))
 
 
 def _llm_not_configured(exc: BaseException) -> bool:

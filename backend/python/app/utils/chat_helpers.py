@@ -1,14 +1,11 @@
 import asyncio
 import base64
-import hashlib
 import logging
 import re
-import time
 from collections import defaultdict
 from collections.abc import Iterable
 from itertools import groupby
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
@@ -30,6 +27,7 @@ from app.models.entities import (
     MessageRecord,
     OriginTypes,
     ProjectRecord,
+    PullRequestRecord,
     Record,
     RecordType,
     TicketRecord,
@@ -43,12 +41,19 @@ from app.modules.qna.prompt_templates import (
 )
 from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
+from app.utils.text_fragments import (  # noqa: F401  (re-exported for existing importers)
+    FRAGMENT_DIRECTIVE_DELIMITER,
+    TEXT_FRAGMENT_DIRECTIVE_PREFIX,
+    SourceFormat,
+    build_text_fragment_url,
+)
 
 valid_group_labels = [
         GroupType.LIST.value,
@@ -759,7 +764,28 @@ def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShorte
 # Create a logger for this module
 logger = create_logger("chat_helpers")
 
-TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
+def generate_text_fragment_url(
+    base_url: str, text_snippet: str, source_format: SourceFormat | None = None
+) -> str:
+    """Citation link to `base_url` that highlights `text_snippet` in a browser."""
+    return build_text_fragment_url(base_url, text_snippet, source_format)
+
+
+# Neither has page text to highlight: a summary describes the record, and an
+# image block's text is only a placeholder.
+_NO_TEXT_FRAGMENT_BLOCK_TYPES = frozenset({BlockType.RECORD_SUMMARY.value, BlockType.IMAGE.value})
+
+
+def _fragment_source_format(block: dict[str, Any] | None, block_type: str | None) -> SourceFormat | None:
+    """How a block's text is written, which decides how it is split into rendered blocks.
+
+    Code and table-row text is never markdown, so it must not be parsed as such;
+    other blocks follow the format the parser recorded, if any.
+    """
+    if block_type in (BlockType.CODE.value, BlockType.TABLE_ROW.value):
+        return SourceFormat.PLAIN
+    return SourceFormat.from_data_format(block.get("format")) if block else None
+
 
 GRAPH_CONTEXT_ENRICHMENT_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.JIRA,
@@ -811,6 +837,9 @@ collection_map = {
                     # is built from a plain Record, which has no such field. Without
                     # this entry every code file renders with no path at all.
                     RecordType.CODE_FILE.value: "codeFiles",
+                    # Merge state, author and reviewers live only on the prs
+                    # node. Without this entry chat shows a PR with no status.
+                    RecordType.PULL_REQUEST.value: CollectionNames.PULLREQUESTS.value,
                 }
 
 def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dict[str, Any] | None = None) -> Record | None:
@@ -851,6 +880,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 source_created_at=record_dict.get("source_created_at") or None,
                 source_updated_at=record_dict.get("source_updated_at") or None,
                 semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+                parent_external_record_id=record_dict.get("parent_external_record_id"),
             )
         except Exception as e:
             # One malformed record must not fail the whole search; it just loses its header.
@@ -876,12 +906,14 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             "weburl": record_dict.get("weburl", ""),
             "hide_weburl": bool(record_dict.get("hide_weburl")),
             "semantic_metadata": SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
+            "parent_external_record_id": record_dict.get("parent_external_record_id"),
         }
 
         if record_type == RecordType.TICKET.value and graph_doc:
             specific_args = {
                 "record_type": RecordType.TICKET,
                 "status": graph_doc.get("status"),
+                "source_status": graph_doc.get("sourceStatus"),
                 "priority": graph_doc.get("priority"),
                 "type": graph_doc.get("type"),
                 "delivery_status": graph_doc.get("deliveryStatus"),
@@ -986,6 +1018,23 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "record_group_type": graph_doc.get("recordGroupType"),
             }
             return MessageRecord(**base_args, **specific_args)
+
+        elif record_type == RecordType.PULL_REQUEST.value and graph_doc:
+            specific_args = {
+                "record_type": RecordType.PULL_REQUEST,
+                "status": graph_doc.get("status"),
+                "creator_name": graph_doc.get("creatorName"),
+                "creator_email": graph_doc.get("creatorEmail"),
+                "merged_by": graph_doc.get("mergedBy"),
+                "mergeable": graph_doc.get("mergeable"),
+                "assignee": graph_doc.get("assignee"),
+                "assignee_email": graph_doc.get("assigneeEmail"),
+                "review_name": graph_doc.get("reviewName"),
+                "review_email": graph_doc.get("reviewEmail"),
+                "labels": graph_doc.get("labels"),
+                "last_commit_sha": graph_doc.get("lastCommitSha"),
+            }
+            return PullRequestRecord(**base_args, **specific_args)
         else:
             return None
     except Exception as e:
@@ -1082,18 +1131,60 @@ def _merge_graph_into_blob_record(
     merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
     return merged
 
+def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
+    """``record`` in the blob's snake_case shape. A graph record not yet read from
+    the blob (a grep hit in the citation map) is converted on a copy; the map
+    entry stays as it is, because fetch_record reads ``record_name`` on it to tell
+    a loaded record from one it still has to fetch."""
+    if "record_name" in record:
+        return record
+    converted = _build_record_dict_from_graph_base(record)
+    converted["virtual_record_id"] = record.get("virtualRecordId", "")
+    converted["org_id"] = record.get("orgId", "")
+    # What the record already holds in the blob's shape wins over the conversion.
+    return {**converted, **{key: value for key, value in record.items() if value is not None}}
+
+def merge_into_records_map(live: dict[str, Any], records: dict[str, Any]) -> None:
+    """Add a search's ``records`` to the request's records map, in place.
+
+    A graph record (a grep hit, not read from the blob) never replaces a record
+    already loaded from the blob for the same content: citations and
+    fetch_record read that one's blocks, and the graph record has none.
+    """
+    for vrid, record in records.items():
+        current = live.get(vrid)
+        if (
+            isinstance(current, dict) and "record_name" in current
+            and isinstance(record, dict) and "record_name" not in record
+        ):
+            continue
+        live[vrid] = record
+
 def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, Any]:
     """Convert a graph base doc (camelCase) to a blob-like record_dict (snake_case)."""
     record_dict: dict[str, Any] = {
         "id": base_doc.get("id") or base_doc.get("_key", ""),
         "version": base_doc.get("version", 1),
-        "semantic_metadata": {},
     }
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
     record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
+    record_dict["location"] = base_doc.get("location") or ""
+    record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
+    sem: dict[str, Any] = {}
+    if base_doc.get("summary"):
+        sem["summary"] = base_doc["summary"]
+    if base_doc.get("topics"):
+        sem["topics"] = base_doc["topics"]
+    if base_doc.get("categories"):
+        sem["categories"] = base_doc["categories"]
+    for level in (1, 2, 3):
+        val = base_doc.get(f"subCategoryLevel{level}") or base_doc.get(f"sub_category_level_{level}")
+        if val:
+            sem[f"sub_category_level_{level}"] = val
+    record_dict["semantic_metadata"] = sem
     return record_dict
 
 async def _fetch_type_specific_doc(
@@ -1844,6 +1935,30 @@ def build_record_relations_info(record: dict[str, Any]) -> str:
 
 # FK table enrichment (runs before doc_index in chatbot; extends virtual_record_id_to_result)
 
+async def live_record_ids(
+    graph_provider: IGraphDBProvider, record_ids: Iterable[str | None], org_id: str | None
+) -> set[str]:
+    """The ids among ``record_ids`` that are live records of ``org_id``.
+
+    The FK edge reads return tables in the trash too, so without this a dropped
+    table's DDL and rows reach the answer through a table that references it.
+    A failed lookup, or no org to scope it to, counts as nothing live.
+    """
+    ids = list(dict.fromkeys(rid for rid in record_ids if rid))
+    if not ids or not org_id:
+        return set()
+    try:
+        docs = await graph_provider.get_records_by_record_ids(
+            ids, org_id, visibility=RecordVisibility.LIVE
+        )
+    except Exception as e:
+        logger.warning("FK enrichment: live-record check failed, leaving related tables out: %s", e)
+        return set()
+    return {
+        key for doc in docs or [] if isinstance(doc, dict) and (key := doc.get("_key") or doc.get("id"))
+    }
+
+
 async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: Dict[str, Dict[str, Any]],
     blob_store: BlobStorage,
@@ -1934,6 +2049,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
             "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
         }
+
+    checked_ids = set(related_record_ids)
+    live_ids = await live_record_ids(graph_provider, checked_ids, org_id)
+    related_record_ids &= live_ids
+
+    async def live_relations_only(relations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        unchecked = {rel.get("record_id") for rel in relations if rel.get("record_id")} - checked_ids
+        if unchecked:
+            live_ids.update(await live_record_ids(graph_provider, unchecked, org_id))
+            checked_ids.update(unchecked)
+        return [rel for rel in relations if rel.get("record_id") in live_ids]
+
+    for fk_relations in record_id_to_fk_relations.values():
+        fk_relations["children"] = await live_relations_only(fk_relations["children"])
+        fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
     
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
     
@@ -2067,6 +2197,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         fk_parent_relations = list(fk_parent_relations) if not isinstance(fk_parent_relations, list) else fk_parent_relations
                     except Exception as e:
                         logger.debug("Could not fetch parent record IDs for %s: %s", record_id, str(e))
+                    fk_child_relations = await live_relations_only(fk_child_relations)
+                    fk_parent_relations = await live_relations_only(fk_parent_relations)
                     record_id_to_fk_relations[record_id] = {
                         "children": fk_child_relations,
                         "parents": fk_parent_relations,
@@ -2115,10 +2247,82 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_count,
         )
 
+def _point_position(meta: dict[str, Any]) -> int | None:
+    """Where a vector point's block sits, when the point says so itself.
+
+    A group point's index is in ``blockGroupIndex``; ``blockIndex`` always
+    means a position in ``blocks``. Points indexed before group points
+    carried either field return ``None`` and are located by block id.
+    """
+    index = meta.get("blockIndex")
+    if index is None and meta.get("isBlockGroup"):
+        index = meta.get("blockGroupIndex")
+    return index
+
+
+def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
+    containers = record.get("block_containers") or {}
+    items = containers.get("block_groups" if group else "blocks") or []
+    if 0 <= index < len(items) and isinstance(items[index], dict):
+        return items[index].get("id")
+    return None
+
+
+def _slot_check(
+    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,
+) -> tuple[bool, bool] | None:
+    """Check that ``index`` holds ``block_id``: ``(is_group, confirmed)``, or ``None`` if it holds another id.
+
+    A reconciled update keeps an unchanged block's vector, payload included,
+    so a position written at index time goes stale once earlier blocks are
+    added or removed. Older points also flagged a table stored as a block as
+    a group. A slot with no id, or past the stored blocks (the SQL blob keeps
+    only its first rows), is unconfirmed and keeps the point's own flag.
+    """
+    flagged = bool(is_block_group)
+    if not block_id or not isinstance(record, dict):
+        return flagged, False
+    flagged_id = _id_at(record, index, flagged)
+    if flagged_id == block_id:
+        return flagged, True
+    if _id_at(record, index, not flagged) == block_id:
+        logger.debug("Point for %s named the wrong container kind; reading it as %s",
+                     block_id, "a group" if not flagged else "a block")
+        return not flagged, True
+    if flagged_id is None:
+        return flagged, False
+    return None
+
+
+def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tuple[int, bool, bool] | None:
+    """The point's own position as ``(index, is_group, confirmed)``; ``None`` when absent or stale."""
+    index = _point_position(meta)
+    if index is None:
+        return None
+    check = _slot_check(record, meta.get("blockId"), index, meta.get("isBlockGroup"))
+    if check is None:
+        return None
+    return index, *check
+
+
+def _raise_group_score(unit: dict[str, Any], score: float) -> None:
+    """Give a list unit, and the children /search unpacks from it, its best hit's score."""
+    if score <= float(unit.get("score") or 0.0):
+        return
+    unit["score"] = score
+    content = unit.get("content")
+    if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
+        for child in content[1]:
+            if isinstance(child, dict):
+                child["score"] = score
+
+
 async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
     flattened_results = []
     image_index = 0
     seen_chunks = set()
+    # Hits arrive in query order, not score order, on the multi-query /search path.
+    emitted_groups: dict[str, dict[str, Any]] = {}
     adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
@@ -2190,14 +2394,30 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 graph_provider, list(by_record_id), by_record_id
             )
 
-    await asyncio.gather(*[get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs) for virtual_record_id in records_to_fetch])
+    async def _fetch_record(virtual_record_id: str) -> None:
+        # One unreadable blob (e.g. its storage document was deleted) must not
+        # fail the whole search; treat it like a record that fetched empty.
+        try:
+            await get_record(virtual_record_id,virtual_record_id_to_result,blob_store,org_id,virtual_to_record_map,graph_provider,frontend_url,batched_lookups.get(virtual_record_id),type_docs)
+        except Exception as e:
+            logger.warning("Skipping record %s: fetch failed: %s", virtual_record_id, e)
+            virtual_record_id_to_result[virtual_record_id] = None
+
+    await asyncio.gather(*[_fetch_record(virtual_record_id) for virtual_record_id in records_to_fetch])
     # Prefetch reconciliation metadata in parallel (records were fully fetched above).
     vrids_needing_recon: set = set[Any]()
 
     for result in sorted_new_type_results:
         vrid = result["metadata"].get("virtualRecordId")
         meta = result.get("metadata")
-        if meta.get("blockIndex") is None and meta.get("blockId") and vrid and vrid not in virtual_record_id_to_recon_metadata:
+        located = _payload_location(meta, virtual_record_id_to_result.get(vrid))
+        if (
+            (located is None or not located[2])
+            and not meta.get("isRecordSummary")
+            and meta.get("blockId")
+            and vrid
+            and vrid not in virtual_record_id_to_recon_metadata
+        ):
             vrids_needing_recon.add(vrid)
 
     async def _prefetch_recon(vrid: str):
@@ -2244,20 +2464,28 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         if virtual_record_id not in adjacent_chunks:
             adjacent_chunks[virtual_record_id] = []
 
-        index = meta.get("blockIndex")
+        index = None
         is_block_group = meta.get("isBlockGroup")
-
-        if index is None:
-            block_id = meta.get("blockId")
-            if block_id:
-                recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
-                if recon_metadata:
-                    block_id_to_index = recon_metadata.get("block_id_to_index", {})
-                    rm = ReconciliationMetadata.from_dict(recon_metadata)
-                    index_val = rm.block_id_to_index.get(block_id)
-                    if index_val is not None:
-                        index = index_val
-                        meta["blockIndex"] = index
+        block_id = meta.get("blockId")
+        record_for_check = virtual_record_id_to_result.get(virtual_record_id)
+        located = _payload_location(meta, record_for_check)
+        if located is not None and (located[2] or not block_id):
+            index, is_block_group = located[0], located[1]
+        elif block_id:
+            recon_metadata = virtual_record_id_to_recon_metadata.get(virtual_record_id)
+            index_val = (
+                ReconciliationMetadata.from_dict(recon_metadata).block_id_to_index.get(block_id)
+                if recon_metadata else None
+            )
+            if index_val is not None:
+                check = _slot_check(record_for_check, block_id, index_val, is_block_group)
+                if check is not None:
+                    index = index_val
+                    meta["blockIndex"] = index
+                    is_block_group = check[0]
+            elif located is not None:
+                # No id map to check against: the point's own position is the best left.
+                index, is_block_group = located[0], located[1]
 
         # Skip if index is still None - cannot access blocks without a valid index
         if index is None:
@@ -2336,6 +2564,8 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 target_index = container_parent_index
                 group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
                 if group_chunk_id in seen_chunks:
+                    if group_chunk_id in emitted_groups:
+                        _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
                     continue
                 fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
                 group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2357,6 +2587,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+                emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
             continue
 
@@ -2544,6 +2775,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             parent_index = block.get("parent_index")
 
             target_index = parent_index
+            # Every item of a list expands to the whole list, so hits on two of
+            # its items would otherwise take two ranked slots with one unit.
+            group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
+            if group_chunk_id in seen_chunks:
+                if group_chunk_id in emitted_groups:
+                    _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
+                continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
             group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2558,6 +2796,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
             if not group_text_result or not group_blocks:
                 continue
+            seen_chunks.add(group_chunk_id)
 
             label, first_child_block_index = group_text_result
             result["content"] = ("", group_blocks)
@@ -2566,6 +2805,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
+            emitted_groups[group_chunk_id] = result
             flattened_results.append(result)
             continue
         else:
@@ -2776,6 +3016,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
 def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:dict[str, Any]) -> dict[str, Any]:
         try:
+            record = as_blob_record(record)
             virtual_record_id = record.get("virtual_record_id", "")
             block_type = block.get("type") if block else BlockType.RECORD_SUMMARY.value
             citation_metadata = block.get("citation_metadata") if block else None
@@ -2860,9 +3101,11 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                 web_url
                 and origin != "UPLOAD"
                 and record_type != RecordType.MAIL.value
-                and block_type != BlockType.RECORD_SUMMARY.value
+                and block_type not in _NO_TEXT_FRAGMENT_BLOCK_TYPES
             ):
-                web_url = generate_text_fragment_url(web_url, block_text)
+                web_url = generate_text_fragment_url(
+                    web_url, block_text, _fragment_source_format(block, block_type)
+                )
             if not web_url and recordId:
                 web_url = f"/record/{recordId}"
 
@@ -3836,6 +4079,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 elif admitted:
                     label = render_budget.take(
                         f"[{ref}] {description}" if description else f"[{ref}]"
@@ -3848,6 +4092,7 @@ def record_to_message_content(
                     content.append({"type": "image_url", "image_url": {"url": wire_uri}})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 elif has_image or description:
                     marker = render_budget.take(
                         image_marker_text(f"[{ref}]", description, reason=reason)
@@ -3859,6 +4104,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
+                    render_budget.note_shown((block_index,))
                 continue
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 emitted = render_budget.take(f"[{ref}] {data}\n\n")
@@ -3869,6 +4115,7 @@ def record_to_message_content(
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
+                render_budget.note_shown((block_index,))
             elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
                 # Top-level code -- module functions, imports, module-level
                 # statements. These belong to no group, so without this branch
@@ -3884,6 +4131,7 @@ def record_to_message_content(
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
+                render_budget.note_shown((block_index,))
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
@@ -3911,6 +4159,7 @@ def record_to_message_content(
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
 
                         child_results = []
+                        rows_rendered: list[int] = []
                         has_row_images = False
                         rows_total = len(rows_to_be_included_list)
                         rows_shown = 0
@@ -3935,6 +4184,7 @@ def record_to_message_content(
                                         break
                                     render_budget.charge(row_text)
                                     rows_shown += 1
+                                    rows_rendered.append(row_index)
                                     child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                     child_results.append({
                                         "content": row_text,
@@ -3948,6 +4198,7 @@ def record_to_message_content(
                                     # emit each fragment in reading order under the container's block_index.
                                     container_idx = block.get("index")
                                     if container_idx is not None and container_idx in fragment_map:
+                                        rows_rendered.append(row_index)
                                         child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
                                         child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
                                         for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
@@ -4025,6 +4276,7 @@ def record_to_message_content(
                                 ))
                             _renderable_rendered += 1
                             render_budget.count_block()
+                            render_budget.note_shown(rows_rendered)
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
@@ -4083,6 +4335,9 @@ def record_to_message_content(
                 # found nothing, so it appended "no blocks at offset N" under
                 # the group it had just rendered.
                 render_budget.count_block()
+                render_budget.note_shown(
+                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
+                )
             else:
                 continue
 
@@ -4635,9 +4890,10 @@ def build_message_content_array(
                         f"[{block_index}|{ref}] {result.get('content')}\n\n"
                     ),
                 })
-            elif block_type == BlockType.CODE.value:
-                # A code hit is addressed by (file path, symbol id) so the model
-                # can pass it straight to the codegraph tools.
+            elif block_type == BlockType.CODE.value and group_child_results(result) is None:
+                # A code group shares the "code" label; it is rendered by the group
+                # branch below. A code hit is addressed by (file path, symbol id) so
+                # the model can pass it straight to the codegraph tools.
                 current_record_has_blocks = True
                 locator = format_code_locator(
                     current_file_path, result.get("qualified_name", "") or ""
@@ -4846,151 +5102,3 @@ def count_tokens(messages: list[Any], message_contents: list[list[dict[str, Any]
             new_tokens += count_tokens_text(text_content,enc)
 
     return current_message_tokens, new_tokens
-
-
-
-FRAGMENT_WORD_COUNT = 4
-
-_FRAGMENT_WORD_PATTERN = re.compile(r"(?:(?<= )|^)[A-Za-z]+(?: [A-Za-z]+)+(?![A-Za-z'-])")
-
-def extract_start_end_text(snippet: str | None) -> tuple[str, str]:
-    if not snippet:
-        return "", ""
-
-    PATTERN = _FRAGMENT_WORD_PATTERN
-
-    # --- Find start_text: first match with at least FRAGMENT_WORD_COUNT words, else longest ---
-    all_matches = list(PATTERN.finditer(snippet))
-    if not all_matches:
-        return "", ""
-
-    best_match = next(
-        (m for m in all_matches if len(m.group().strip().split()) >= FRAGMENT_WORD_COUNT),
-        max(all_matches, key=lambda m: len(m.group().strip().split())),
-    )
-    first_text = best_match.group().strip()
-    if not first_text:
-        return "", ""
-
-    words = first_text.split()
-    start_text = " ".join(words[:FRAGMENT_WORD_COUNT])
-    start_text_end = best_match.start() + len(first_text.split()[0])
-
-    # Compute exact end position of start_text in snippet
-    leading_spaces = len(best_match.group()) - len(best_match.group().lstrip())
-    start_text_begin = best_match.start() + leading_spaces
-    start_text_end = start_text_begin + len(start_text)
-
-    # --- Find end_text: last matching segment after start_text_end ---
-    remaining = snippet[start_text_end:]
-
-    last_text = None
-    for m in PATTERN.finditer(remaining):
-        stripped = m.group().strip()
-        if stripped:
-            last_text = stripped
-
-    if last_text:
-        words = last_text.split()
-        end_text = " ".join(words[-FRAGMENT_WORD_COUNT:])
-    elif len(first_text.split()) > FRAGMENT_WORD_COUNT:
-        word_count = len(first_text.split())
-        diff = word_count - FRAGMENT_WORD_COUNT
-        diff = min(FRAGMENT_WORD_COUNT, diff)
-        # Fall back to last 4 words of the first segment
-        end_text = " ".join(first_text.split()[-diff:])
-    else:
-        end_text = ""
-
-    return start_text, end_text.strip()
-
-# Values are fragment URLs that embed a few URL-encoded snippet words in
-# #:~:text=… — not whole record blocks. Keys are digests of the snippet.
-# TTL + maxsize keep retention bounded across orgs in a long-lived process.
-_FRAGMENT_URL_CACHE: dict[tuple[str, bytes], tuple[str, float]] = {}
-_FRAGMENT_URL_CACHE_MAXSIZE = 8192
-_FRAGMENT_URL_CACHE_TTL_SECONDS = 300.0
-
-
-def generate_text_fragment_url(base_url: str, text_snippet: str) -> str:
-    """Memoized wrapper over `_build_text_fragment_url`.
-
-    The live citation overlay re-derives every citation's URL on each refresh,
-    so the same (base_url, snippet) pair is re-scanned many times per turn.
-    Snippets are keyed by digest so the cache does not retain full record text
-    as keys; cached values still hold the short start/end words used in the
-    text-fragment directive. Entries expire after
-    `_FRAGMENT_URL_CACHE_TTL_SECONDS` and the map is cleared wholesale when
-    full — eviction bookkeeping would cost more than the recompute it saves.
-    """
-    if not isinstance(base_url, str) or not isinstance(text_snippet, str):
-        return _build_text_fragment_url(base_url, text_snippet)
-
-    key = (base_url, hashlib.sha1(text_snippet.encode("utf-8", "surrogatepass")).digest())
-    now = time.monotonic()
-    cached = _FRAGMENT_URL_CACHE.get(key)
-    if cached is not None:
-        result, expires_at = cached
-        if expires_at > now:
-            return result
-        _FRAGMENT_URL_CACHE.pop(key, None)
-
-    result = _build_text_fragment_url(base_url, text_snippet)
-    if len(_FRAGMENT_URL_CACHE) >= _FRAGMENT_URL_CACHE_MAXSIZE:
-        _FRAGMENT_URL_CACHE.clear()
-    _FRAGMENT_URL_CACHE[key] = (result, now + _FRAGMENT_URL_CACHE_TTL_SECONDS)
-    return result
-
-
-def _build_text_fragment_url(base_url: str, text_snippet: str) -> str:
-    """
-    Generate a URL with text fragment for direct navigation to specific text.
-
-    Format: url#:~:text=start_text,end_text
-
-    Args:
-        base_url: The base URL of the page
-        text_snippet: The text to highlight/navigate to
-
-    Returns:
-        URL with text fragment, or base_url if encoding fails
-    """
-    if not base_url or not text_snippet:
-        return base_url
-
-    # Preserve URLs that already have a text fragment
-    if TEXT_FRAGMENT_DIRECTIVE_PREFIX in base_url:
-        return base_url
-
-    try:
-        snippet = text_snippet.strip()
-        if not snippet:
-            return base_url
-
-        while snippet and not snippet[-1].isalnum():
-            snippet = snippet[:-1]
-        if not snippet:
-            return base_url
-
-        start_text, end_text = extract_start_end_text(snippet)
-
-        if not start_text:
-            return base_url
-
-        encoded_start = quote(start_text, safe="';:[]")
-        encoded_end = ""
-
-        if end_text:
-            encoded_end = quote(end_text, safe="';:[]")
-
-        if '#' in base_url:
-            base_url = base_url.split('#')[0]
-
-        return f"{base_url}#:~:text={encoded_start}{(',' + encoded_end) if encoded_end else ''}"
-
-    except Exception:
-        return base_url
-
-
-
-

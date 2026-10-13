@@ -1,5 +1,6 @@
 import { inject, injectable } from 'inversify';
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
@@ -25,7 +26,7 @@ export const SMTP_CIRCUIT_COOLDOWN_MS = 60_000;
 
 interface PooledTransport {
   key: string;
-  transporter: nodemailer.Transporter;
+  transporter: Transporter;
   inFlight: number;
 }
 
@@ -93,6 +94,9 @@ export class MailSenderService {
       connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
       greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
       socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+      // Attachments come from the request body; never let one read a local file or fetch a URL.
+      disableFileAccess: true,
+      disableUrlAccess: true,
       ...(!smtpConfig.username
         ? {}
         : smtpConfig.password
@@ -111,7 +115,7 @@ export class MailSenderService {
     }
   }
 
-  private closeQuietly(transporter: nodemailer.Transporter): void {
+  private closeQuietly(transporter: Transporter): void {
     try {
       transporter.close();
     } catch {
@@ -155,7 +159,7 @@ export class MailSenderService {
 
   private async sendWithDeadline(
     pool: PooledTransport,
-    message: Parameters<nodemailer.Transporter['sendMail']>[0],
+    message: Parameters<Transporter['sendMail']>[0],
     deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;

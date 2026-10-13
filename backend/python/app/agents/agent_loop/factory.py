@@ -26,8 +26,8 @@ every adapter-layer piece built in Phases 2-6:
     residual instead of the raw flat tool list.
   - `compose_domain_agents` (react/planExecute; off for quick): for every
     OTHER loop kind, the top-level `spec.tool_names` is narrowed to a
-    handful of `AgentTool` delegates (coding/web/internal-search/
-    calculator/calendar) plus whatever tools no domain claimed —
+    handful of `AgentTool` delegates (coding/web/internal-search) plus
+    whatever tools no domain claimed —
     `plan_domain_agents()` runs BEFORE `select_loop_and_goal()` so the
     `planExecute` mode's planner is steered with the same composed names
     the executing agent ends up with, and `register_domain_agents()` runs
@@ -101,6 +101,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
     resolve_opik_gate,
     traced_transport_factory,
 )
+from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
@@ -122,6 +123,7 @@ from app.agents.agent_loop.hooks import (
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
+    retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
     shape_image_injection,
@@ -158,7 +160,12 @@ from app.agents.agent_loop.loops.plan_execute import (
     register_planning_tools,
 )
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
+from app.agents.agent_loop.output_cap_transport import (
+    max_turn_output_chars,
+    with_output_cap,
+)
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
+from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.router import select_loop_and_goal
@@ -179,6 +186,7 @@ from app.agents.agent_loop.skills_wiring import (
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
@@ -330,21 +338,35 @@ class PipesHubAgentFactory:
             provider=context.llm_provider, is_multimodal=context.is_multimodal_llm,
         ).max_images_per_request
 
+        output_cap = max_turn_output_chars()
+        configured_window = context.configured_context_window
+        cache_settings = PromptCacheSettings.from_env()
+        cache_key = routing_key(context.org_id, context.conversation_id, cache_settings.routing_shards)
+
+        def _langchain_transport() -> LangChainTransport:
+            return LangChainTransport(
+                llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
+                max_images_per_request=image_cap,
+                # Stop Generation (Phase 3b): per-chunk cancellation
+                # check inside `stream()`. `None` for requests that
+                # never registered a `runId` — the check is then a no-op.
+                cancellation_token=context.cancellation_token,
+                cache_strategy=cache_strategy_for(
+                    llm, model_name=model_name, settings=cache_settings, routing_key=cache_key,
+                ),
+            )
+
+        # Opt-in: every agent of this request resolves its model from this
+        # registry, so its transports are where each call's usage is counted.
+        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
-            traced_transport_factory(
-                lambda: LangChainTransport(
-                    llm, model_name=model_name, opik_project_name=opik_project_name, model_key=model_key,
-                    max_images_per_request=image_cap,
-                    # Stop Generation (Phase 3b): per-chunk cancellation
-                    # check inside `stream()`. `None` for requests that
-                    # never registered a `runId` — the check is then a no-op.
-                    cancellation_token=context.cancellation_token,
-                ),
+            with_usage_reporting(traced_transport_factory(
+                lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
         # Same model as "langchain" above, reached through the provider's own
         # SDK instead. LangChain builds an AIMessageChunk per streamed token and
@@ -366,6 +388,7 @@ class PipesHubAgentFactory:
         def _direct_or_langchain() -> "LLMTransport":
             direct = build_direct_transport(
                 llm, model_name=model_name, model_key=model_key,
+                cache_settings=cache_settings, cache_routing_key=cache_key,
             )
             if direct is not None:
                 # The direct SDK transports have no image cap and no
@@ -378,22 +401,18 @@ class PipesHubAgentFactory:
                 # `context.cancellation_token` is `None` (no `runId`
                 # registered for this request).
                 return with_cancellation(
-                    with_image_cap(direct, image_cap), context.cancellation_token,
+                    with_output_cap(with_image_cap(direct, image_cap), output_cap, context_window=configured_window),
+                    context.cancellation_token,
                 )
-            return LangChainTransport(
-                llm, model_name=model_name,
-                opik_project_name=opik_project_name, model_key=model_key,
-                max_images_per_request=image_cap,
-                cancellation_token=context.cancellation_token,
-            )
+            return with_output_cap(_langchain_transport(), output_cap, context_window=configured_window)
 
         transport_registry.register(
             DIRECT_TRANSPORT,
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 _direct_or_langchain,
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -697,7 +716,10 @@ class PipesHubAgentFactory:
             # construction is equivalent to having registered it earlier;
             # it just needs `runtime` itself for `run_child()`, which
             # doesn't exist until this line.
-            register_skill_learning(hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name)
+            register_skill_learning(
+                hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name,
+                context_window=configured_window,
+            )
 
         # Domain-agent composition, registration half: now that the
         # AgentRuntime exists, actually build each claimed domain's child
@@ -743,7 +765,7 @@ class PipesHubAgentFactory:
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
-                provider=_transport_provider(), model_name=model_name,
+                provider=_transport_provider(), model_name=model_name, context_window=configured_window,
                 lazy_tools=domain_lazy_tools,
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
@@ -761,7 +783,7 @@ class PipesHubAgentFactory:
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
                     default_tool_names=_initial_entity_tool_grant(composed_names, context),
-                    context=context,
+                    context=context, context_window=configured_window,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -784,7 +806,7 @@ class PipesHubAgentFactory:
                     [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
                     context,
                 ),
-                context=context,
+                context=context, context_window=configured_window,
             )
 
         # `run_code`'s own description (see `CodingSandboxTool.description`)
@@ -880,7 +902,7 @@ class PipesHubAgentFactory:
             tool_names=tool_names,
             tool_disclosure=tool_disclosure,
             pinned_toolsets=pinned_toolsets,
-            model=ModelSpec(provider=_transport_provider(), model=model_name),
+            model=ModelSpec(provider=_transport_provider(), model=model_name, context_window=configured_window),
             loop=loop,
             max_turns=_MAX_TURNS,
         )
@@ -1055,6 +1077,11 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+        if context.include_retrieval_context:
+            # Opt-in: diffs the retrieval accumulators after every tool call
+            # and streams only what is new. Off by default, so a normal
+            # request pays nothing for it.
+            hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 

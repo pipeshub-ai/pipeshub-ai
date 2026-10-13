@@ -308,6 +308,23 @@ async def test_a_moved_file_whose_new_address_is_gone_is_removed_from_its_old_ad
     assert old not in db.pages() or not db.pages()[old].storage_document_id
 
 
+async def test_a_gone_file_moved_to_the_trash_keeps_its_stored_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    """The trash entry owns the stored copy until the purge removes both."""
+    old = "http://site.test/old.pdf"
+    connector = await _two_stored_files(site, make_connector)
+    stale = db.pages()[old]
+    db.soft_delete = True
+
+    for _ in range(2):
+        _moved_file_whose_304_does_not_match(site, Page(status=404, body=b"gone"))
+        await connector.run_sync()
+
+    assert stale.id in db.deleted
+    assert site.storage_docs[stale.storage_document_id] == b"%PDF-1.4 v2"
+
+
 async def test_a_moved_file_whose_new_address_never_answers_keeps_its_old_copy(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:

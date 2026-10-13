@@ -284,6 +284,33 @@ describe('AuthMiddleware', () => {
       expect(error.message).to.equal('Session expired, please login again')
     })
 
+    it('refuses an access token issued in the same second the account was deleted', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: tokenIat })
+      // A re-invite restores the account and leaves the deletion recorded.
+      const deletion = { activityType: 'ACCOUNT DELETED', createdAt: new Date(tokenIat * 1000 + 500) }
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(deletion))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+    })
+
+    it('keeps the one-second allowance for a password change in the token\'s own second', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: tokenIat })
+      const change = { activityType: 'PASSWORD CHANGED', createdAt: new Date(tokenIat * 1000 + 500) }
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(change))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
+    })
+
     it('should allow token if activity timestamp is before token iat + delay', async () => {
       const tokenIat = Math.floor(Date.now() / 1000)
       const decoded = {
@@ -496,6 +523,32 @@ describe('AuthMiddleware', () => {
         oauthClientId: 'client123',
       })
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
+    })
+
+    it('should reject an OAuth token that carries no scopes', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: '',
+      })
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Token carries no scopes')
     })
 
     it('should reject OAuth tokens without a userId', async () => {
@@ -954,7 +1007,7 @@ describe('AuthMiddleware', () => {
       sinon.stub(UserActivities, 'findOne').returns(mockQuery)
 
       const middleware = authMiddleware.scopedTokenValidator(TokenScopes.PASSWORD_RESET)
-      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token' } })
+      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token extra' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -962,6 +1015,8 @@ describe('AuthMiddleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+      // Handlers identify the link by the token verified here, not the raw header.
+      expect(req.verifiedToken).to.equal('scoped-token')
     })
 
     it('should not check password activity for non-password-reset scopes', async () => {

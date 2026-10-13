@@ -62,6 +62,7 @@ from openapi_schema_validator import (  # noqa: E402
 
 logger = logging.getLogger("ai-model-providers-integration-test")
 
+_ADMIN_ACCESS_REQUIRED = "You need admin access to do this. Ask an admin in your organisation."
 _MODEL_TYPE_LLM = "llm"
 _AI_MODEL_BUCKET_KEYS = (
     "ocr",
@@ -635,11 +636,11 @@ class TestAddAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -762,25 +763,21 @@ class TestUpdateAIModelProviderValidation(AIModelsTestBase):
             f"got {resp.status_code}: {resp.text}"
         )
 
-    def test_unknown_model_key_put_returns_500(self) -> None:
-        # Health-check runs before KV lookup; use live OpenAI creds so the
-        # request reaches the current backend failure path. Stored aiModels may
-        # include non-array top-level keys (for example modelRoles), which can
-        # cause updateAIModelProvider to 500 before it reaches the not-found
-        # response for an unknown modelKey.
-        live_spec = _spec_for_a_live_provider()
-        _, _, configuration = _skip_if_no_live_credentials(live_spec)
-        unknown_key = str(uuid.uuid4())
-        payload = _minimal_update_body(live_spec.provider_id, configuration)
-        resp = self.ai.update_provider(_MODEL_TYPE_LLM, unknown_key, **payload)
-        assert resp.status_code == 500, (
-            f"Expected 500 for unknown modelKey on PUT, got {resp.status_code}: {resp.text}"
+    def test_unknown_model_key_put_returns_404(self) -> None:
+        # The key lookup runs before the provider health check, so this needs
+        # no live credentials.
+        payload = _minimal_update_body(
+            _PROVIDER_OPENAI,
+            {"model": "gpt-4o-mini", "apiKey": "sk-test"},
+        )
+        resp = self.ai.update_provider(_MODEL_TYPE_LLM, str(uuid.uuid4()), **payload)
+        assert resp.status_code == 404, (
+            f"Expected 404 for unknown modelKey on PUT, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        error = body.get("error") or {}
-        assert error.get("code") == "HTTP_INTERNAL_SERVER_ERROR", body
+        assert body.get("status") == "error", body
         assert_response_matches_openapi_operation(
-            body, "updateAIModelProvider", status_code="500"
+            body, "updateAIModelProvider", status_code="404"
         )
 
     def test_missing_authorization(self) -> None:
@@ -825,11 +822,11 @@ class TestUpdateAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1015,11 +1012,11 @@ class TestDeleteAIModelProviderNonAdmin(AIModelsTestBase):
             headers=second_user.headers,
             auth=False,
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1148,11 +1145,11 @@ class TestGetAIModelsProvidersNonAdmin(AIModelsTestBase):
 
     def test_non_admin_list_rejected(self, second_user: SecondUser) -> None:
         resp = self.ai.get("/", headers=second_user.headers, auth=False)
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 
@@ -1250,11 +1247,11 @@ class TestGetModelsByTypeNonAdmin(AIModelsTestBase):
         resp = self.ai.get(
             f"/{_MODEL_TYPE_LLM}", headers=second_user.headers, auth=False
         )
-        assert resp.status_code == 400, (
-            f"Expected 400 Admin access required, got {resp.status_code}: {resp.text}"
+        assert resp.status_code == 403, (
+            f"Expected 403 for a non-admin, got {resp.status_code}: {resp.text}"
         )
         body = resp.json()
-        assert body.get("error", {}).get("message") == "Admin access required", body
+        assert body.get("error", {}).get("message") == _ADMIN_ACCESS_REQUIRED, body
         _assert_error_envelope_matches_spec(body)
 
 

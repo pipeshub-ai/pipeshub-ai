@@ -27,7 +27,7 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     SortField,
     SortOrder,
 )
-from app.models.entities import RecordType
+from app.models.entities import RecordType, substitute_user_email
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.user_messages import action_failed, not_found
@@ -264,6 +264,11 @@ class KnowledgeHubService:
                 if include and 'availableFilters' in include:
                     available_filters = await self._get_available_filters(user_key, org_id, excluded)
 
+            user_email = user.get('email')
+            for item in items:
+                if item.webUrl:
+                    item.webUrl = substitute_user_email(item.webUrl, user_email, item.connector)
+
             # Permissions are now included directly from queries (userRole field)
             # No need for separate batch permission fetch
 
@@ -345,7 +350,7 @@ class KnowledgeHubService:
                     response.filters.available = available_filters
 
                 if 'breadcrumbs' in include and parent_id:
-                    response.breadcrumbs = await self._get_breadcrumbs(parent_id)
+                    response.breadcrumbs = await self._get_breadcrumbs(parent_id, user_key, org_id)
 
                 if 'counts' in include:
                     # TODO(Counts): Per-type breakdown only reflects current page items, not all
@@ -790,13 +795,17 @@ class KnowledgeHubService:
             )
         return None
 
-    async def _get_breadcrumbs(self, node_id: str) -> list[BreadcrumbItem]:
+    async def _get_breadcrumbs(
+        self, node_id: str, user_key: str, org_id: str
+    ) -> list[BreadcrumbItem]:
         """
-        Get breadcrumb trail for a node using the optimized provider method.
+        Get breadcrumb trail for a node, filtered to what this user can see.
         """
         try:
             # Use the provider's optimized AQL query
-            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(node_id=node_id)
+            breadcrumbs_data = await self.graph_provider.get_knowledge_hub_breadcrumbs(
+                node_id=node_id, user_key=user_key, org_id=org_id
+            )
 
             # Convert to BreadcrumbItem objects
             return [
@@ -844,12 +853,38 @@ class KnowledgeHubService:
                 canEdit=perm_data.get('canEdit', False),
                 canDelete=perm_data.get('canDelete', False),
                 canManagePermissions=perm_data.get('canManagePermissions', False),
+                collectionRole=await self._collection_role(user_key, org_id, parent_id, parent_type),
             )
 
         except Exception as e:
             self.logger.error(f"❌ Failed to get permissions: {str(e)}")
             self.logger.error(traceback.format_exc())
             # Return None on error (no permission granted)
+            return None
+
+    async def _collection_role(
+        self, user_key: str, org_id: str, parent_id: str | None, parent_type: str | None,
+    ) -> str | None:
+        """The user's role on the collection a node is in, from the same check restore uses.
+
+        The context role ranks record permissions inside a folder, which has no
+        FILEORGANIZER, so it can't say who may open the collection's trash.
+        """
+        if not parent_id or parent_type not in ("app", "folder", "record"):
+            return None
+        try:
+            kb_id = parent_id
+            if parent_type != "app":
+                doc = await self.graph_provider.get_document(parent_id, CollectionNames.RECORDS.value)
+                if not isinstance(doc, dict) or doc.get("orgId") != org_id:
+                    return None
+                kb_id = doc.get("connectorId")
+            if not kb_id:
+                return None
+            role = await self.graph_provider.get_user_kb_permission(kb_id, user_key)
+            return role if isinstance(role, str) else None
+        except Exception as e:
+            self.logger.warning("Could not read the collection role for %s: %s", parent_id, e)
             return None
 
     def _doc_to_node_item(self, doc: dict[str, Any]) -> NodeItem:

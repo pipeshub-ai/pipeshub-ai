@@ -58,11 +58,42 @@ from app.agents.agent_loop.error_classification import classify_error
         ),
         ("context length exceeded: 128000 max, got 150000", "request_too_large"),
         ("maximum context length is 4096 tokens", "request_too_large"),
+        (
+            "LangChain transport error (complete): Error code: 404 - {'error': "
+            "{'code': 'DeploymentNotFound', 'message': 'The API deployment for this "
+            "resource does not exist.'}}",
+            "model_not_found",
+        ),
+        (
+            "Error code: 404 - {'error': {'message': 'The model `gpt-9` does not exist', "
+            "'code': 'model_not_found'}}",
+            "model_not_found",
+        ),
     ],
 )
 def test_classify_error_returns_expected_code(raw: str, expected_code: str) -> None:
     error_code, _ = classify_error(raw)
     assert error_code == expected_code
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_code"),
+    [
+        (
+            "LLM call failed: LangChain transport error (complete): ValueError: Azure has not "
+            "provided the response due to a content filter being triggered",
+            "content_filter",
+        ),
+        (
+            "LLM call failed: LangChain transport error (stream): ContentFilterFinishReasonError: "
+            "Could not parse response content as the request was rejected by the content filter",
+            "content_filter",
+        ),
+        ("Tool 'search' failed: no setting named content filter in this workspace", "unknown"),
+    ],
+)
+def test_content_filter_wording_is_matched_only_in_sdk_phrases(raw: str, expected_code: str) -> None:
+    assert classify_error(raw)[0] == expected_code
 
 
 def test_content_filter_wins_over_status_code_hints() -> None:
@@ -218,6 +249,7 @@ def test_rate_limit_with_a_billing_link_is_still_a_rate_limit() -> None:
         "Request timed out after 30s",
         "something totally unexpected happened",
         "Error code: 429 - {'error': {'type': 'insufficient_quota'}}",
+        "Error code: 404 - {'error': {'code': 'model_not_found'}}",
     ],
 )
 def test_user_messages_speak_plainly_and_say_what_to_do(raw: str) -> None:

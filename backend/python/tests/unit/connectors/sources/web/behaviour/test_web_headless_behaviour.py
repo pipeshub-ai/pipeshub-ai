@@ -9,16 +9,19 @@ import pytest
 from web_behaviour_fakes import (
     HEAD_HANGS_UP,
     START_URL,
+    FakeCheckpointStore,
     FakeRecordsDb,
     FakeWeb,
     MakeConnector,
     Page,
+    RecordingNotifications,
     VirtualClock,
     html_page,
 )
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.sources.web import crawl4ai_fetcher
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
 
 SHELL = b"<html><head><title>App</title></head><body><div id='root'></div></body></html>"
 LONG_TEXT = "This paragraph is only there once the page's scripts have run. " * 5
@@ -499,3 +502,47 @@ async def test_robust_mode_reports_no_answer_as_unreachable(
     assert db.pages()["http://site.test/page"].reason == (
         "We couldn't reach this page. Check the URL is correct and publicly reachable, then sync again."
     )
+
+
+def _home_linking_to(browser: FakeWeb, count: int) -> None:
+    links = [f"/p{i}" for i in range(count)]
+    browser.html(START_URL, "Home", *links)
+    for link in links:
+        browser.html(f"http://site.test{link}", link)
+
+
+async def test_robust_mode_restarts_a_browser_that_dies_mid_crawl_and_loses_no_page(
+    browser: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
+) -> None:
+    _home_linking_to(browser, 12)
+    browser.browser_dies_after = 4
+
+    await (await make_connector(use_headless_browser=True)).run_sync()
+
+    assert len(db.pages()) == 13
+    assert all(r.indexing_status != ProgressStatus.FAILED.value for r in db.pages().values())
+    assert browser.browser_starts == 2
+    assert clock.sleeps == []
+
+
+async def test_robust_mode_fails_the_sync_when_the_browser_cannot_be_restarted(
+    browser: FakeWeb,
+    db: FakeRecordsDb,
+    clock: VirtualClock,
+    checkpoints: FakeCheckpointStore,
+    notifications: RecordingNotifications,
+    make_connector: MakeConnector,
+) -> None:
+    _home_linking_to(browser, 12)
+    browser.browser_dies_after = 4
+    browser.browser_stays_dead = True
+    connector = await make_connector(use_headless_browser=True)
+
+    with pytest.raises(BrowserUnavailableError):
+        await connector.run_sync()
+
+    assert clock.sleeps == []
+    assert all(r.indexing_status != ProgressStatus.FAILED.value for r in db.pages().values())
+    assert checkpoints.sync_points == {}
+    assert (await notifications.delivered())[-1]["title"] == "Web crawl stopped"
+

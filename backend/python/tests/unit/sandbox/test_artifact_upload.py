@@ -42,6 +42,23 @@ class TestReadFileBytes:
         f.write_bytes(b"sensitive data")
         assert _read_file_bytes(str(f)) is None
 
+    def test_rejects_symlinked_artifact(self, tmp_path) -> None:
+        """An artifact that is a symlink to a host file must be refused (SB-5),
+        even when the link itself sits under the sandbox root."""
+        sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")
+        os.makedirs(sandbox_root, exist_ok=True)
+        secret = tmp_path / "host_secret.txt"
+        secret.write_bytes(b"TOP-SECRET-HOST")
+        link = os.path.join(sandbox_root, "artifact_link.txt")
+        try:
+            if os.path.lexists(link):
+                os.unlink(link)
+            os.symlink(str(secret), link)
+            assert _read_file_bytes(link) is None
+        finally:
+            if os.path.lexists(link):
+                os.unlink(link)
+
     def test_rejects_file_exceeding_size_cap(self):
         """A file larger than max_bytes must be refused without being loaded into memory."""
         sandbox_root = os.path.join(tempfile.gettempdir(), "pipeshub_sandbox")

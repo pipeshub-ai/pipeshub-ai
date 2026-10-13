@@ -16,6 +16,7 @@ import GoogleSignInButton from './form-components/google-sign-in-button';
 import MicrosoftSignInButton from './form-components/microsoft-sign-in-button';
 import OAuthSignInButton from './form-components/oauth-sign-in-button';
 import { useAuthActions } from '../hooks/use-auth-actions';
+import { getSafeReturnTo } from '@/lib/utils/safe-return-to';
 import type { AuthMethod } from '../api';
 import { useSearchParams } from 'next/navigation';
 import OtpSignInFlow from './otp-sign-in-flow';
@@ -62,7 +63,7 @@ export default function SingleProvider({
   const [passwordRequiredError, setPasswordRequiredError] = useState('');
   const [providerError, setProviderError] = useState('');
   const searchParams = useSearchParams();
-  const returnTo = searchParams.get('returnTo');
+  const returnTo = getSafeReturnTo(searchParams.get('returnTo'));
   const auth = useAuthActions({ email, authProviders, redirectTo: returnTo ?? undefined });
   const emailRef = useRef<HTMLInputElement>(null);
   const passwordRef = useRef<HTMLInputElement>(null);

@@ -29,6 +29,7 @@ from app.agent_loop_lib.core.messages import (
 )
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.tool_schema import ToolSchema
+from app.agent_loop_lib.transport.content_filter import CONTENT_FILTER_STOP_REASONS
 
 # Stream event `type` literals we act on. Everything else in the union -- and
 # there are 52 -- is ignored rather than matched, so an event Azure adds later
@@ -312,6 +313,10 @@ def stop_reason_from_responses(response: Any, has_tool_calls: bool) -> StopReaso
         return StopReason.MAX_TOKENS
     if has_tool_calls:
         return StopReason.TOOL_USE
+    # Output a filter let through is final: continuing it as a cutoff injects
+    # a recovery note the same filter then rejects.
+    if reason in CONTENT_FILTER_STOP_REASONS:
+        return StopReason.END_TURN
     if reason or getattr(response, "status", None) == "incomplete":
         return StopReason.MAX_TOKENS
     return StopReason.END_TURN

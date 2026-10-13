@@ -312,6 +312,9 @@ describe('es_controller listing and paging', () => {
 
     beforeEach(() => {
       sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Org, 'find').returns({
+        limit: () => ({ lean: () => ({ exec: async () => [{ _id: ORG }] }) }),
+      } as never)
       sinon.stub(Org, 'findOne').resolves({ _id: ORG } as never)
     })
 

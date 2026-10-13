@@ -11,6 +11,7 @@ import {
 } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { groupSaveRefusalMessage } from '../save-error';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
 
 // ========================================
@@ -95,13 +96,14 @@ export function CreateGroupSidebar({
       // Close panel and refresh parent list
       closeCreatePanel();
       onCreateSuccess?.();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t(
           'workspace.groups.create.errorGeneric',
           'Failed to create group'
         ),
+        description: groupSaveRefusalMessage(error),
         duration: 5000,
       });
     } finally {

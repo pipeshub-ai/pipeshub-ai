@@ -10,12 +10,13 @@ from fastapi import HTTPException, Request
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.config.redaction import REDACTED_PLACEHOLDER, hide_secrets_by_default
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
 
-REDACTED_PLACEHOLDER: str | None = None
+_TOOLSET_SECRET_FIELDS = frozenset({"clientSecret", "client_secret", "clientsecret"})
 
 
 def _oauth_config_path(toolset_type: str) -> str:
@@ -196,16 +197,17 @@ def mask_oauth_secrets(
     cfg_data: dict[str, Any],
     *,
     is_inherited: bool = False,
+    reveal: bool = False,
 ) -> dict[str, Any]:
-    """Return config unchanged."""
+    """Redact secret fields under HIDE_SECRET_CONFIG unless revealed; OSS has no org inheritance."""
     del is_inherited
-    return dict(cfg_data)
+    if reveal or not hide_secrets_by_default():
+        return dict(cfg_data)
+    return {k: (REDACTED_PLACEHOLDER if k in _TOOLSET_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 
 
 def is_redacted_placeholder(value: Any) -> bool:
-    """Never redacts."""
-    del value
-    return False
+    return value == REDACTED_PLACEHOLDER
 
 
 async def load_instances_for_mutation(

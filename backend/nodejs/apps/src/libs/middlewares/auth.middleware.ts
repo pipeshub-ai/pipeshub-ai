@@ -8,11 +8,13 @@ import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
 import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
 import {
+  activityEndsSession,
   SESSION_INVALIDATING_ACTIVITIES,
   userActivitiesType,
 } from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
+import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
@@ -23,7 +25,6 @@ export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
 const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
-const PASSWORD_CHANGE_TOKEN_DELAY_MS = 1000;
 
 function hasValidJwtRole(role: unknown): role is 'admin' | 'member' {
   return role === 'admin' || role === 'member';
@@ -120,7 +121,7 @@ export class AuthMiddleware {
     }
 
     if (userId && orgId) {
-      let userActivity: Pick<IUserActivity, 'createdAt'> | null = null;
+      let userActivity: Pick<IUserActivity, 'createdAt' | 'activityType'> | null = null;
       try {
         userActivity = await UserActivities.findOne({
           userId: userId,
@@ -136,12 +137,8 @@ export class AuthMiddleware {
         this.logger.error('Failed to fetch user activity', activityError);
       }
 
-      if (userActivity) {
-        const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
-        const activityTimestamp = userActivity.createdAt?.getTime() || 0;
-        if (activityTimestamp > tokenIssuedAt + PASSWORD_CHANGE_TOKEN_DELAY_MS) {
-          throw new UnauthorizedError('Session expired, please login again');
-        }
+      if (userActivity && activityEndsSession(userActivity, decoded.iat)) {
+        throw new UnauthorizedError('Session expired, please login again');
       }
     }
 
@@ -161,7 +158,10 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    const tokenScopes = payload.scope.split(' ');
+    const tokenScopes = parseScopeString(payload.scope);
+    if (tokenScopes.length === 0) {
+      throw new UnauthorizedError('Token carries no scopes');
+    }
 
     let userId = payload.userId;
     const orgId = payload.orgId;
@@ -326,6 +326,7 @@ export class AuthMiddleware {
 
         const decoded = await this.tokenService.verifyScopedToken(token, scope);
         req.tokenPayload = decoded;
+        req.verifiedToken = token;
 
         const userId = decoded?.userId;
         const orgId = decoded?.orgId;

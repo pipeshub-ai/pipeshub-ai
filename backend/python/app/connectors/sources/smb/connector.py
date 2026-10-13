@@ -4,7 +4,7 @@ Dialects are negotiated by smbprotocol. SMB1 is rejected by the library.
 Permissions are APP_LEVEL; inherit_permissions is set on records so a later
 RECORD_LEVEL ACL pass can attach without a graph rewrite.
 
-Limits: one server per instance; directory symlinks are not walked; file id 0
+Limits: one share per instance; directory symlinks are not walked; file id 0
 disables rename detection; no change notify; the connectors host must reach
 TCP 445.
 """
@@ -30,13 +30,8 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.registry.filters import (
-    FilterCategory,
     FilterCollection,
-    FilterField,
     FilterOptionsResponse,
-    FilterType,
-    MultiselectOperator,
-    OptionSourceType,
     load_connector_filters,
 )
 from app.connectors.sources.network_share.entities_processor import (
@@ -50,8 +45,6 @@ from app.connectors.sources.network_share.errors import (
 from app.connectors.sources.network_share.operations import (
     create_share_groups,
     reindex_records,
-    resolve_shares,
-    share_filter_options,
     stream_file,
     walk_shares,
 )
@@ -130,7 +123,7 @@ if TYPE_CHECKING:
                 name="share",
                 display_name="Share",
                 placeholder="departments",
-                description="Share name to crawl when the shares filter is empty",
+                description="Share to sync. One connector instance syncs one share.",
                 field_type="TEXT",
                 max_length=200,
             ),
@@ -147,16 +140,6 @@ if TYPE_CHECKING:
             "PipesHub Documentation",
             "https://docs.pipeshub.com/connectors/smb/smb",
             "pipeshub",
-        ))
-        .add_filter_field(FilterField(
-            name="shares",
-            display_name="Share Names",
-            filter_type=FilterType.MULTISELECT,
-            category=FilterCategory.SYNC,
-            description="Select specific SMB shares to sync",
-            option_source_type=OptionSourceType.DYNAMIC,
-            default_value=[],
-            default_operator=MultiselectOperator.IN.value,
         ))
         .add_filter_field(CommonFields.folder_paths_filter("share"))
         .add_filter_field(CommonFields.file_extension_filter())
@@ -294,10 +277,10 @@ class SmbConnector(BaseConnector):
             self.config_service, self.filter_key, self.connector_id, self.logger
         )
         await self._ensure_scope_edges()
-        shares = await resolve_shares(self.sync_filters, self.configured_share)
-        if not shares:
-            self.logger.warning("No SMB shares to sync")
+        if not self.configured_share:
+            self.logger.warning("No SMB share is configured")
             return
+        shares = [self.configured_share]
         await create_share_groups(
             share_names=shares,
             processor=self.data_entities_processor,
@@ -308,7 +291,7 @@ class SmbConnector(BaseConnector):
             creator_email=self.creator_email,
             description_prefix="SMB share",
         )
-        await walk_shares(
+        unreadable = await walk_shares(
             data_source=self.data_source,
             processor=self.data_entities_processor,
             mapper=self.mapper,
@@ -325,6 +308,17 @@ class SmbConnector(BaseConnector):
             record_sync_point=self.record_sync_point,
             prune=prune,
         )
+        if unreadable:
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Sync could not read the share",
+                message=(
+                    f"Nothing could be listed in {', '.join(unreadable)}. "
+                    "Check that the server is reachable and the account still has access."
+                ),
+                payload={"connectorId": self.connector_id, "connectorName": Connectors.SMB.value},
+            )
 
     def handle_webhook_notification(self, notification: dict) -> None:
         raise NotImplementedError("SMB change notify is not a webhook strategy")
@@ -360,15 +354,7 @@ class SmbConnector(BaseConnector):
         search: str | None = None,
         cursor: str | None = None,
     ) -> FilterOptionsResponse:
-        if filter_key != "shares":
-            raise ValueError(f"Unsupported filter key: {filter_key}")
-        return await share_filter_options(
-            data_source=self.data_source,
-            configured_share=self.configured_share,
-            page=page,
-            limit=limit,
-            search=search,
-        )
+        raise ValueError(f"Unsupported filter key: {filter_key}")
 
     async def _ensure_scope_edges(self) -> None:
         if self.scope == ConnectorScope.TEAM.value:

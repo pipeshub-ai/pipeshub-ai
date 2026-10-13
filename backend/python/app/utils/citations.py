@@ -4,6 +4,7 @@ from typing import Any
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import (
+    as_blob_record,
     generate_text_fragment_url,
     get_enhanced_metadata,
     group_child_results,
@@ -11,6 +12,7 @@ from app.utils.chat_helpers import (
     valid_group_labels,
 )
 from app.utils.logger import create_logger
+from app.utils.text_fragments import SourceFormat, split_fragment_directive
 
 # Initialize logger
 logger = create_logger(__name__)
@@ -60,26 +62,59 @@ _MULTI_REF_IN_LINK_RE = re.compile(
     r')\)'
 )
 
+# Any markdown link, whatever its target. Matched first by the bare-ref passes
+# so a ref inside an existing link's text or URL is never rewritten into a
+# nested link.
+_ANY_MD_LINK = r'\[[^\]]*?\]\([^)\n]*\)'
+
 # Matches [refN] — a bracketed bare ref without a link target — which LLMs
 # commonly emit instead of proper [source](refN).  Must run BEFORE
 # _BARE_CITATION_NORMALIZE_RE to prevent double-bracket malformation
 # (e.g. [ref3] → [[source](ref3)] when _wrap_bare_refs acts on the inner token).
 _BRACKET_REF_RE = re.compile(
-    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: valid md link — skip
+    rf'({_ANY_MD_LINK})'                            # Grp 1: existing md link — skip
     r'|\[(ref\d+)\](?!\()'                          # Grp 2: [refN] not followed by (
 )
 
+# Link target that looks like a citation ref: ``ref`` followed by hex digits and
+# dashes, at least one of them a digit.  Covers the minted form ``ref12`` (see
+# ``CitationRefMapper.get_or_create_ref`` in chat_helpers.py) and the
+# unresolvable forms models invent from record ids, e.g.
+# ``ref444d5fad-0bf9-4daa-8c29-cc133ca4a3a6``.  Ordinary words such as
+# ``refund-policy`` or ``refs`` do not match.
+_ANY_REF_TARGET = r'ref(?=[0-9A-Fa-f-]*\d)[0-9A-Fa-f-]+'
+
 # Single-pass pattern used to wrap bare refN tokens and bare https://refN.xyz
 # URLs that the LLM emitted outside proper markdown link syntax.
-# Alternative 1 (Grp 1) matches an already-valid markdown link so the cursor
-# skips over it — preventing double-processing of refs inside `[text](refN)`.
+# Alternative 1 (Grp 1) matches any existing markdown link so the cursor skips
+# over it — preventing double-processing of refs inside `[text](refN)`.
 # Alternative 2 (Grp 2) matches a bare tiny web-ref URL.
 # Alternative 3 (Grp 3) matches a bare refN word token.
 _BARE_CITATION_NORMALIZE_RE = re.compile(
-    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: existing valid md link — skip
+    rf'({_ANY_MD_LINK})'                            # Grp 1: existing md link — skip
     r'|(https?://ref\d+\.xyz/?)'                    # Grp 2: bare tiny URL
     r'|\b(ref\d+)\b'                               # Grp 3: bare refN token
 )
+
+# Includes dead ids like ref444d5fad-… so a wrapped one is unwrapped and then
+# removed by _strip_unresolved_ref_citations instead of left half-stripped.
+_REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
+
+# A citation link written with extra wrapping: brackets/quotes around the
+# ref, a link (or list of links) as the target, or brackets around the link,
+# e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
+# [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
+# wrapping nests to any depth and a sentence paren after it must be kept.
+_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+_CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
+_TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
+_TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
+# LLMs mismatch ( and [, so either closes the other; quotes and <> only close
+# their own opener, so [notes](ref2's-page) is not taken for a citation.
+_LINK_TARGET_CLOSERS = ')]'
+_WRAPPER_CLOSERS = {'[': '])', '(': ')]', '<': '>', '`': '`', '"': '"', "'": "'"}
+_MAX_CITED_LINK_DEPTH = 8
+_REF_TOKEN_RE = re.compile(_REF_TOKEN)
 
 
 def extract_tiny_ref(target: str) -> str | None:
@@ -109,6 +144,86 @@ def _expand_multi_ref_links(text: str) -> str:
         return ' '.join(f'[{link_text}]({t})' for t in targets)
 
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
+
+
+def _parse_target_close(text: str, i: int, closers: str) -> int | None:
+    j = _TARGET_GAP_RE.match(text, i).end()
+    if j < len(text) and text[j] in closers:
+        return j + 1
+    # A truncated answer can end before the wrapper is closed.
+    if j == len(text) or text[j] == '\n':
+        return i
+    return None
+
+
+def _parse_ref_list(text: str, i: int, closers: str, depth: int) -> tuple[list[str], int] | None:
+    """Parse ``item (sep item)* closer``; return the refs and the end past the closer."""
+    refs: list[str] = []
+    while True:
+        item = _parse_ref_item(text, i, depth)
+        if item is None:
+            return None
+        refs.extend(item[0])
+        i = item[1]
+        end = _parse_target_close(text, i, closers)
+        if end is not None:
+            return refs, end
+        sep_end = _TARGET_SEP_RE.match(text, i).end()
+        if sep_end == i and not text.startswith('[', i):
+            return None
+        i = sep_end
+
+
+def _parse_ref_item(text: str, i: int, depth: int) -> tuple[list[str], int] | None:
+    while i < len(text) and text[i] in ' \t':
+        i += 1
+    token = _REF_TOKEN_RE.match(text, i)
+    if token:
+        return [token.group(0)], token.end()
+    if depth >= _MAX_CITED_LINK_DEPTH or i >= len(text) or text[i] not in _WRAPPER_CLOSERS:
+        return None
+    if text[i] == '[':
+        link = _parse_cited_link(text, i, depth + 1)
+        if link is not None:
+            return link[1], link[2]
+    return _parse_ref_list(text, i + 1, _WRAPPER_CLOSERS[text[i]], depth + 1)
+
+
+def _parse_cited_link(text: str, i: int, depth: int) -> tuple[str, list[str], int] | None:
+    """Parse ``[label](target)`` whose target holds only (wrapped) refs."""
+    head = _CITED_LINK_HEAD_RE.match(text, i)
+    if head is None:
+        return None
+    parsed = _parse_ref_list(text, head.end(), _LINK_TARGET_CLOSERS, depth)
+    if parsed is None:
+        return None
+    return head.group(1), parsed[0], parsed[1]
+
+
+def _unwrap_ref_link_targets(text: str) -> str:
+    """Rewrite citation links with wrapped targets into plain ``[label](refN)`` links.
+
+    Without this the bare-ref passes would turn the ref inside the target into
+    its own link, leaving ``[source]([2](url))`` in the final answer.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _CITED_LINK_START_RE.finditer(text):
+        if m.start() < pos:
+            continue
+        parsed = _parse_cited_link(text, m.end(1), 0)
+        if parsed is None:
+            continue
+        label, refs, end = parsed
+        outer = len(m.group(1))
+        while outer and end < len(text) and text[end] == ']':
+            outer -= 1
+            end += 1
+        links = ' '.join(f'[{label}]({ref})' for ref in refs)
+        out.append(text[pos:m.start()] + '[' * outer + links)
+        pos = end
+    out.append(text[pos:])
+    return ''.join(out)
 
 
 def _normalize_bracket_refs(text: str) -> str:
@@ -156,11 +271,13 @@ def normalize_malformed_citations(text: str) -> str:
 
     Handled patterns (non-exhaustive):
 
+    * Wrapped ref in a link      ``[source]([ref3])``       →  ``[source](ref3)``
     * Bracketed bare ref         ``[ref3]``                 →  ``[source](ref3)``
     * Multiple refs in one link  ``[source](ref1, ref2)``  →  ``[source](ref1) [source](ref2)``
     * Bare refN token            ``ref5``                   →  ``[source](ref5)``
     * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
+    text = _unwrap_ref_link_targets(text)
     text = _expand_multi_ref_links(text)
     text = _normalize_bracket_refs(text)
     text = _wrap_bare_refs(text)
@@ -294,7 +411,10 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(ref\d+\)')
+# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
+# (``_MD_LINK_PATTERN``), and those that did were already rewritten to
+# ``[N](url)`` by the time this runs, so whatever still matches is dead.
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
 
 
 def _renumber_citation_links(
@@ -325,11 +445,13 @@ def _renumber_citation_links(
 
 
 def _strip_unresolved_ref_citations(text: str) -> str:
-    """Remove ``[text](refN)`` links that survived renumbering.
+    """Remove ``[text](ref…)`` links that survived renumbering.
 
     These are dead references — typically carried over from a prior
-    conversation turn whose ``CitationRefMapper`` no longer exists.
-    Leaving them renders as broken ``[source](ref209)`` in the UI.
+    conversation turn whose ``CitationRefMapper`` no longer exists, or
+    invented by the model from a record id (``[source](ref444d5fad-…)``),
+    which no mapper ever mints.  Leaving them renders as broken
+    ``[source](ref209)`` links in the UI.
     """
     return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
@@ -376,7 +498,15 @@ def _append_record_page_citation(
     citation_num: int,
 ) -> int:
     """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
-    snippet = (record.get("semantic_metadata") or {}).get("summary") or record.get("record_name") or "Record"
+    record = as_blob_record(record)
+    # A grep hit has no summary until its blob is read; the text it matched
+    # says more than its name, which the citation already shows as its title.
+    snippet = (
+        (record.get("semantic_metadata") or {}).get("summary")
+        or record.get("_match_snippet")
+        or record.get("record_name")
+        or "Record"
+    )
     if not isinstance(snippet, str):
         snippet = _safe_stringify_content(value=snippet)
     snippet = snippet.strip() or (record.get("record_name") or "Record")
@@ -396,13 +526,10 @@ def _append_record_page_citation(
     return citation_num + 1
 
 
-_TEXT_FRAGMENT_DIRECTIVE_PREFIX = "#:~:text="
-
-
 def _page_of(url: str) -> str:
-    """Strip a `#:~:text=` fragment so a bare page URL can be compared
+    """Strip the fragment directive so a bare page URL can be compared
     against fragment-keyed web records (see `generate_text_fragment_url`)."""
-    return url.split(_TEXT_FRAGMENT_DIRECTIVE_PREFIX, 1)[0]
+    return split_fragment_directive(url)[0]
 
 
 def _build_web_record_page_index(
@@ -514,19 +641,13 @@ def _resolve_fragment_content(
         (display_content, fragment_text) — display may include "Image" placeholders;
         fragment_text is text-only for #:~:text= URL highlighting on the source page.
     """
-    children = [b for b in blocks if b.get("parent_block_index") == container_index]
-    if not children:
-        return "", ""
-    children.sort(key=lambda b: b.get("index", 0))
     display_parts: list[str] = []
     text_parts: list[str] = []
-    for child in children:
-        child_type = child.get("type")
-        child_data = child.get("data")
-        if child_type == BlockType.IMAGE.value:
+    for child in _fragment_children(blocks, container_index):
+        if child.get("type") == BlockType.IMAGE.value:
             display_parts.append("Image")
-        elif isinstance(child_data, str) and child_data.strip():
-            text = child_data.strip()
+        elif _contributes_fragment_text(child):
+            text = child["data"].strip()
             display_parts.append(text)
             text_parts.append(text)
     if not display_parts:
@@ -536,11 +657,33 @@ def _resolve_fragment_content(
     return " ".join(display_parts), " ".join(text_parts)
 
 
+def _fragment_children_format(
+    blocks: list[dict[str, Any]], container_index: int
+) -> SourceFormat | None:
+    """Format of the first child whose text `_resolve_fragment_content` joined."""
+    for child in _fragment_children(blocks, container_index):
+        if _contributes_fragment_text(child):
+            return SourceFormat.from_data_format(child.get("format"))
+    return None
+
+
+def _fragment_children(blocks: list[dict[str, Any]], container_index: int) -> list[dict[str, Any]]:
+    children = [b for b in blocks if b.get("parent_block_index") == container_index]
+    children.sort(key=lambda b: b.get("index", 0))
+    return children
+
+
+def _contributes_fragment_text(child: dict[str, Any]) -> bool:
+    data = child.get("data")
+    return child.get("type") != BlockType.IMAGE.value and isinstance(data, str) and bool(data.strip())
+
+
 def _enrich_metadata_from_fragment(
     metadata: dict[str, Any],
     record: dict[str, Any],
     display_content: str,
     fragment_text: str,
+    source_format: SourceFormat | None = None,
 ) -> None:
     """Fill blockText/webUrl when primary block data was empty (image-split container).
 
@@ -558,7 +701,7 @@ def _enrich_metadata_from_fragment(
     base_url = record.get("weburl") or ""
     if not base_url:
         return
-    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text)
+    metadata["webUrl"] = generate_text_fragment_url(base_url, fragment_text, source_format)
 
 
 def detect_hallucinated_citation_urls(
@@ -638,7 +781,7 @@ def normalize_citations_and_chunks(
             web_records=web_records,
         )
 
-    return answer_text, []
+    return _strip_unresolved_ref_citations(answer_text), []
 
 
 def _normalize_markdown_link_citations(
@@ -737,7 +880,7 @@ def _normalize_markdown_link_citations(
                 )
                 return False
             _enrich_metadata_from_fragment(
-                enhanced_metadata, record, display, fragment_text
+                enhanced_metadata, record, display, fragment_text, _fragment_children_format(blocks, block_index)
             )
             data = display
         citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
@@ -867,7 +1010,7 @@ def normalize_citations_and_chunks_for_agent(
             ref_to_url=ref_to_url, web_records=web_records,
         )
 
-    return answer_text, []
+    return _strip_unresolved_ref_citations(answer_text), []
 
 def _normalize_markdown_link_citations_for_agent(
     answer_text: str,
@@ -1018,7 +1161,7 @@ def _normalize_markdown_link_citations_for_agent(
                                 if not display:
                                     continue
                                 _enrich_metadata_from_fragment(
-                                    enhanced_metadata, r, display, fragment_text
+                                    enhanced_metadata, r, display, fragment_text, _fragment_children_format(blocks, block_index)
                                 )
                                 data = display
                             citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)
@@ -1067,7 +1210,7 @@ def _normalize_markdown_link_citations_for_agent(
                                     if not display:
                                         continue
                                     _enrich_metadata_from_fragment(
-                                        enhanced_metadata, rec, display, fragment_text
+                                        enhanced_metadata, rec, display, fragment_text, _fragment_children_format(blocks, block_index)
                                     )
                                     data = display
                                 citation_content = "Image" if is_base64_image(data) else _safe_stringify_content(value=data)

@@ -40,5 +40,6 @@ export { KbGridView } from '@/app/(main)/knowledge-base/components/kb-grid-view'
 export { FolderTreeItem } from '@/app/(main)/knowledge-base/sidebar/section-element/folder-tree-item';
 export type { FolderTreeItemProps } from '@/app/(main)/knowledge-base/sidebar/section-element/folder-tree-item';
 export { SelectionActionBar } from '@/app/(main)/knowledge-base/components/selection-action-bar';
+export { useShouldPollServiceHealth } from '@/lib/hooks/use-should-poll-service-health';
 
 

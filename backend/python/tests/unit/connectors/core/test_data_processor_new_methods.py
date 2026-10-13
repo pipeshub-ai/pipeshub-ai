@@ -29,6 +29,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 
 # ---------------------------------------------------------------------------
@@ -218,7 +219,14 @@ class TestDelegateMethods:
         tx.get_app_users.return_value = sentinel
         result = await proc.get_all_app_users("conn-1")
         assert result is sentinel
-        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1")
+        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1", raise_on_error=False)
+
+    @pytest.mark.asyncio
+    async def test_get_all_app_users_passes_raise_on_error(self):
+        proc, tx = _make_processor()
+        tx.get_app_users.return_value = []
+        await proc.get_all_app_users("conn-1", raise_on_error=True)
+        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_record_by_external_id(self):
@@ -239,7 +247,14 @@ class TestDelegateMethods:
             connector_id="conn-1",
             parent_external_record_id="parent-ext-1",
             record_type="FILE",
+            visibility=RecordVisibility.LIVE,
         )
+
+    @pytest.mark.asyncio
+    async def test_get_records_by_parent_passes_a_visibility_on(self):
+        proc, tx = _make_processor()
+        await proc.get_records_by_parent("conn-1", "parent-ext-1", visibility=RecordVisibility.ALL)
+        assert tx.get_records_by_parent.await_args.kwargs["visibility"] is RecordVisibility.ALL
 
     @pytest.mark.asyncio
     async def test_get_records_in_record_group_pages_by_the_group_key(self):
@@ -261,6 +276,7 @@ class TestDelegateMethods:
             record_group_id="rg-key",
             limit=100,
             after_key="after",
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio
@@ -320,6 +336,7 @@ class TestDelegateMethods:
             is_placeholder=True,
             after_key=None,
             exclude_statuses=None,
+            visibility=RecordVisibility.LIVE,
         )
 
     @pytest.mark.asyncio
@@ -368,26 +385,27 @@ class TestOnUserGroupMemberRemoved:
         group = _make_user_group()
         tx.get_user_by_email.return_value = user
         tx.get_user_group_by_external_id.return_value = group
-        tx.delete_edge.return_value = True
+        tx.batch_delete_edges.return_value = 1
         result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
         assert result is True
-        tx.delete_edge.assert_awaited_once()
+        tx.batch_delete_edges.assert_awaited_once()
+        tx.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_no_edge_to_delete(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = _make_user()
         tx.get_user_group_by_external_id.return_value = _make_user_group()
-        tx.delete_edge.return_value = False
+        tx.batch_delete_edges.return_value = 0
         result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_user_by_email.side_effect = Exception("db down")
-        result = await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db down"):
+            await proc.on_user_group_member_removed("ext-g1", "alice@x.com", "conn-1")
 
 
 # ===========================================================================
@@ -465,11 +483,11 @@ class TestOnUserGroupDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_user_group_by_external_id.side_effect = Exception("db down")
-        result = await proc.on_user_group_deleted("ext-g1", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db down"):
+            await proc.on_user_group_deleted("ext-g1", "conn-1")
 
 
 # ===========================================================================
@@ -539,13 +557,14 @@ class TestMigrateGroupPermissionsToUser:
         ]
         # User already has READER permission (lower), should be upgraded to WRITER
         tx.get_edge.return_value = {"role": "READER"}
-        tx.delete_edge.return_value = True
 
         result = await proc.migrate_group_permissions_to_user("group-1", "alice@x.com", "conn-1", tx)
         assert result is None
-        # Should have deleted old edge and batch-created new one
-        tx.delete_edge.assert_awaited()
+        # The batch upsert overwrites the edge; a delete first lost it when the batch failed.
+        tx.delete_edge.assert_not_awaited()
         tx.batch_create_edges.assert_awaited_once()
+        (edge,) = tx.batch_create_edges.await_args.args[0]
+        assert (edge["to_id"], edge["role"]) == ("rec-1", "WRITER")
 
     @pytest.mark.asyncio
     async def test_skips_when_existing_permission_is_higher(self):
@@ -670,11 +689,11 @@ class TestOnAppRoleDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
+    async def test_a_failed_lookup_is_raised(self) -> None:
         proc, tx = _make_processor()
         tx.get_app_role_by_external_id.side_effect = Exception("db error")
-        result = await proc.on_app_role_deleted("ext-r1", "conn-1")
-        assert result is False
+        with pytest.raises(Exception, match="db error"):
+            await proc.on_app_role_deleted("ext-r1", "conn-1")
 
 
 # ===========================================================================
@@ -722,22 +741,23 @@ class TestRecordPermissionHelpers:
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = None
         await proc.delete_permission_from_record("rec-1", "missing@x.com")
-        tx.delete_edge.assert_not_awaited()
+        tx.batch_delete_edges.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_permission_success(self):
         proc, tx = _make_processor()
         user = _make_user()
         tx.get_user_by_email.return_value = user
-        tx.delete_edge.return_value = True
+        tx.batch_delete_edges.return_value = 1
         await proc.delete_permission_from_record("rec-1", "alice@x.com")
-        tx.delete_edge.assert_awaited_once()
+        tx.batch_delete_edges.assert_awaited_once()
+        tx.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_permission_edge_not_found(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.return_value = _make_user()
-        tx.delete_edge.return_value = False
+        tx.batch_delete_edges.return_value = 0
         await proc.delete_permission_from_record("rec-1", "alice@x.com")
         # Should log warning but not raise
 

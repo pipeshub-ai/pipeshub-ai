@@ -589,13 +589,13 @@ class TestAgentConversationMessageStream(_AgentStreamTestBase):
         agent_key = self.agent_session["primary_agent"]
         conversation_id = self._create_agent_conversation_id(
             agent_key,
-            query="stream-create conversation for benign query param test",
+            query=seed_query(f"benign-param-{uuid.uuid4().hex}"),
         )
 
         outcome = self._stream_add_message(
             agent_key,
             conversation_id,
-            query="follow-up with debug query param",
+            query=seed_query(f"benign-param-follow-up-{uuid.uuid4().hex}"),
             params={"debug": "1"},
         )
 

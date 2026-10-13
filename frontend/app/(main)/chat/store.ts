@@ -272,6 +272,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     projectId: null,
     isTemp: isNew,
     isInitialized: isNew,      // new chats have nothing to load
+    refreshGeneration: 0,
     hasLoaded: false,
     messages: [],
     isStreaming: false,
@@ -507,6 +508,11 @@ interface ChatState {
    * slots) keeps running — use this for New Chat / parallel conversations.
    */
   clearActiveSlot: () => void;
+  /**
+   * Make every cached slot of this conversation load its history again the next time it
+   * is shown, now if it is open. A slot that is still streaming keeps its live state.
+   */
+  invalidateConversation: (convId: string) => void;
 
   // ── Sidebar actions ──
   setConversations: (conversations: Conversation[]) => void;
@@ -938,6 +944,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  invalidateConversation: (convId) => {
+    set((state) => {
+      let changed = false;
+      const slots = { ...state.slots };
+      for (const [slotId, slot] of Object.entries(state.slots)) {
+        if (slot.convId !== convId) continue;
+        if (slot.isTemp || slot.isStreaming || slot.stopping) continue;
+        // A load already in flight (isInitialized false) must not swallow this: the bump makes it
+        // discard its now-older response and fetch again.
+        slots[slotId] = { ...slot, isInitialized: false, refreshGeneration: slot.refreshGeneration + 1 };
+        changed = true;
+      }
+      return changed ? { slots } : state;
     });
   },
 
@@ -1617,10 +1639,10 @@ export function getEffectiveModel(
 
 /**
  * Whether `model` is flagged `isReasoning` in the model catalog fetched for
- * `ctxKey`. Used to gate the client-side `DEFAULT_REASONING_EFFORT` fallback —
- * sending an effort value for a non-reasoning model is harmless server-side
- * (the LLM factory ignores it), but omitting it keeps outgoing payloads clean
- * for models that don't support the concept at all.
+ * `ctxKey`. Used to gate sending an agent's default effort and the picker's
+ * displayed default — sending an effort value for a non-reasoning model is
+ * harmless server-side (the LLM factory ignores it), but omitting it keeps
+ * outgoing payloads clean for models that don't support the concept at all.
  */
 export function isModelReasoningCapable(
   ctxKey: string,
@@ -1632,6 +1654,20 @@ export function isModelReasoningCapable(
     models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName)
       ?.isReasoning,
   );
+}
+
+/**
+ * The model's own default reasoning effort for `model` in `ctxKey`'s list, or
+ * `null` when none is stored.
+ */
+export function getModelDefaultReasoningEffort(
+  ctxKey: string,
+  model: import('./types').ModelOverride | null,
+): import('./types').ReasoningEffort | null {
+  if (!model) return null;
+  const models = useChatStore.getState().settings.availableModels[ctxKey]?.models ?? [];
+  const match = models.find((m) => m.modelKey === model.modelKey && m.modelName === model.modelName);
+  return normalizeReasoningEffort(match?.defaultReasoningEffort ?? null);
 }
 
 /**

@@ -30,6 +30,7 @@ from app.connectors.sources.atlassian.jira_data_center.connector import (
 )
 from app.models.entities import AppUser, FileRecord, RecordType, TicketRecord
 from app.models.permission import EntityType, PermissionType
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.jira.jira import JiraRESTClientViaToken
 from app.sources.external.jira.jira import JiraDataSource
@@ -91,6 +92,7 @@ class JiraStore(FakeCheckpointStore):
         return [
             r for r in self.db.records.values()
             if r.parent_external_record_id == parent_external_record_id and r.record_type.value == record_type
+            and is_live_record(r)
         ]
 
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:

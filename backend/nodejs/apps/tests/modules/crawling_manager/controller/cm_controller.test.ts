@@ -433,6 +433,15 @@ describe('Crawling Manager Controller', () => {
       expect(response.data).to.deep.equal(stats)
     })
 
+    it("asks for the caller's own org only", async () => {
+      const mockService = createMockCrawlingService()
+      const handler = getQueueStats(mockService)
+
+      await handler(createMockRequest({ user: { userId: 'user-1', orgId: 'org-7' } }), createMockResponse(), createMockNext())
+
+      expect(mockService.getQueueStats.calledOnceWithExactly('org-7')).to.be.true
+    })
+
     it('should call next on error', async () => {
       const mockService = createMockCrawlingService()
       mockService.getQueueStats.rejects(new Error('Redis connection failed'))

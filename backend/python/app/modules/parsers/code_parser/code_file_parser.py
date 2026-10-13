@@ -4,6 +4,7 @@ Satisfies the ``IParser`` protocol.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import re
 from typing import TYPE_CHECKING, Any
@@ -20,9 +21,11 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
 )
+from app.modules.parsers import parse_pool
 from app.modules.parsers.code_parser.engine import parse_code
 from app.modules.parsers.code_parser.lang_config import (
     SUPPORTED_CODE_EXTENSIONS,
+    config_for_extension,
     config_for_language,
     detect_language,
 )
@@ -31,7 +34,7 @@ from app.services.parsing.interface import ParseResult, ParserProvider
 if TYPE_CHECKING:
     from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
 
-__all__ = ["CodeFileParser", "qualified_name_for"]
+__all__ = ["CodeFileParser", "parse_code_to_blocks", "qualified_name_for"]
 
 _MAX_SIGNATURE_CHARS = 300
 _MAX_DOCSTRING_CHARS = 500
@@ -129,6 +132,16 @@ def _extract_docstring(text: str, language: str) -> str | None:
     return None
 
 
+def parse_code_to_blocks(
+    content: bytes,
+    record_name: str,
+    file_path: str | None = None,
+    language: str | None = None,
+) -> BlocksContainer | None:
+    """``CodeFileParser.parse_to_blocks`` as a function a parse worker can be sent."""
+    return CodeFileParser().parse_to_blocks(content, record_name, file_path, language)
+
+
 class CodeFileParser:
     """Parses source files into structured code blocks."""
 
@@ -144,11 +157,37 @@ class CodeFileParser:
         cfg = config or {}
         file_path = cfg.get("file_path") or record_name
         language = cfg.get("language") or detect_language(record_name) or detect_language(file_path)
-        container = self.parse_to_blocks(content, record_name, file_path, language)
+        if not language:
+            # The parsing service picked this parser by extension, and a name
+            # like "build-script" carries none to detect a language from.
+            extension_config = config_for_extension(cfg.get("extension") or "")
+            language = extension_config.name if extension_config else None
+        container = await self.parse_to_blocks_off_loop(content, record_name, file_path, language)
         return ParseResult(
             block_container=container or BlocksContainer(),
             provider_used=ParserProvider.DEFAULT,
             metadata={"language": language, "file_path": file_path, "skipped": container is None},
+        )
+
+    async def parse_to_blocks_off_loop(
+        self,
+        content: bytes,
+        record_name: str,
+        file_path: str | None = None,
+        language: str | None = None,
+    ) -> BlocksContainer | None:
+        """``parse_to_blocks`` without holding the event loop.
+
+        The tree-sitter walk is Python and holds the GIL, so a large file goes
+        to a parse worker process and a small one to a thread.
+        """
+        if parse_pool.should_offload(len(content)):
+            return await parse_pool.submit(
+                parse_code_to_blocks, content, record_name, file_path, language,
+                label=file_path or record_name, size=len(content),
+            )
+        return await asyncio.to_thread(
+            self.parse_to_blocks, content, record_name, file_path, language
         )
 
     def parse_to_blocks(

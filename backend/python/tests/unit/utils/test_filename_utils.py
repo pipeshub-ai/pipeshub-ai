@@ -1,9 +1,12 @@
 """Unit tests for app.utils.filename_utils.sanitize_filename_for_content_disposition()."""
 
+import os
+
 import pytest
 
 from app.utils.filename_utils import (
     sanitize_filename_for_content_disposition,
+    temp_path_for,
     upload_extension,
 )
 
@@ -152,3 +155,34 @@ class TestUploadExtension:
     @pytest.mark.parametrize("filename", ["deck.exe", "deck.pdf", "deck.pptx.sh", "deck.PPTX.html"])
     def test_rejects_extension_outside_allowlist(self, filename) -> None:
         assert upload_extension(filename, _OFFICE) is None
+
+
+class TestTempPathFor:
+    """temp_path_for() keeps a write inside the directory whatever the name carries."""
+
+    @pytest.mark.parametrize(
+        ("name", "expected"),
+        [
+            ("report.docx", "report.docx"),
+            ("my report (1).docx", "my report (1).docx"),
+            ("../../report.docx", "report.docx"),
+            ("/etc/cron.d/report.docx", "report.docx"),
+            ("nested/dir/report.docx", "report.docx"),
+            ("report.docx/", "report.docx"),
+            ("..", "file"),
+            (".", "file"),
+            ("/", "file"),
+            ("", "file"),
+            (None, "file"),
+        ],
+    )
+    def test_only_the_last_component_is_used(self, name, expected):
+        assert temp_path_for("/tmp/work", name) == os.path.join("/tmp/work", expected)
+
+    @pytest.mark.parametrize("name", ["../x", "/abs/x", "a/../../x", "..", "x"])
+    def test_result_is_directly_inside_the_directory(self, tmp_path, name):
+        path = temp_path_for(str(tmp_path), name)
+        assert os.path.dirname(os.path.realpath(path)) == os.path.realpath(str(tmp_path))
+
+    def test_custom_fallback(self):
+        assert temp_path_for("/tmp/work", None, fallback="upload") == os.path.join("/tmp/work", "upload")

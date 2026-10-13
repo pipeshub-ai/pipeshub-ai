@@ -1,5 +1,8 @@
+import { createSecretKey, KeyObject } from 'node:crypto';
 import { Request, Response, RequestHandler } from 'express';
 import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
+import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
@@ -19,8 +22,52 @@ function getClientIpKey(req: Request): string {
   return ipKeyGenerator(getClientIp(req));
 }
 
+export const CALLER_ROLE_LOOKUP_PATH = '/api/v1/users/me/role';
+export const SERVICE_AUTHORIZATION_HEADER = 'x-service-authorization';
+
+/**
+ * A Python service asking about one of its callers, proven by a service token
+ * signed with the scoped secret and scoped to exactly this lookup. Every
+ * user's lookup leaves from the same few service addresses, so counting them
+ * per address would throttle every user at once. The route still checks the
+ * user's own token; only the counting is skipped.
+ */
+function isVerifiedCallerRoleLookup(
+  req: Request,
+  key: KeyObject | null,
+): boolean {
+  if (!key || req.method !== 'GET' || req.path !== CALLER_ROLE_LOOKUP_PATH) {
+    return false;
+  }
+  const header = req.headers[SERVICE_AUTHORIZATION_HEADER];
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+    return false;
+  }
+  try {
+    const claims = jwt.verify(header.slice('Bearer '.length), key, {
+      algorithms: ['HS256'],
+    });
+    const scopes: unknown =
+      typeof claims === 'object'
+        ? (claims as { scopes?: unknown }).scopes
+        : undefined;
+    return Array.isArray(scopes) && scopes.includes(TokenScopes.CALLER_ROLE);
+  } catch {
+    return false;
+  }
+}
+
 // Single global rate limiter
-export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: number): RequestHandler {
+export function createGlobalRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute: number,
+  scopedJwtSecret?: string,
+): RequestHandler {
+  // Built once: given a raw string, jsonwebtoken re-parses the key on every call.
+  const serviceKey =
+    scopedJwtSecret !== undefined && scopedJwtSecret !== ''
+      ? createSecretKey(Buffer.from(scopedJwtSecret))
+      : null;
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
@@ -41,6 +88,9 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
     },
 
     skip: (req: Request): boolean => {
+      if (isVerifiedCallerRoleLookup(req, serviceKey)) {
+        return true;
+      }
       // Internal routes (/…/internal/…) are service-to-service calls protected
       // by scopedTokenValidator. That middleware runs AFTER the global rate
       // limiter (route middleware executes later than app.use middleware), so
@@ -73,7 +123,9 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
         retryAfter,
       });
 
-      const error = new TooManyRequestsError('Too many requests. Please try again later.');
+      const error = new TooManyRequestsError(
+        'Too many requests. Please try again later.',
+      );
       res.status(429).json({
         error: {
           code: error.code,

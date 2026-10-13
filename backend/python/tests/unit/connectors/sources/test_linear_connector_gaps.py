@@ -405,18 +405,16 @@ class TestIssueBatchCommentFiles:
         assert batches
 
     @pytest.mark.asyncio
-    async def test_fetch_issues_batch_api_failure_yields_nothing(self):
+    async def test_fetch_issues_batch_api_failure_raises(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
         mock_ds.issues = AsyncMock(return_value=MagicMock(success=False, message="rate limited"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            batches = []
-            async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
-
-        assert batches == []
+            with pytest.raises(RuntimeError, match="rate limited"):
+                async for _ in conn._fetch_issues_for_team_batch("team-1", "ENG"):
+                    pass
 
 
 class TestParseProjectUpdates:

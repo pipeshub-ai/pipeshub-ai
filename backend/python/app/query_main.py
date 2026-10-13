@@ -9,11 +9,12 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -26,6 +27,7 @@ from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
@@ -38,7 +40,9 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -154,6 +158,7 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
 
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
@@ -255,6 +260,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        app.state.entity_store_warmup_task = asyncio.create_task(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
         # Collections created before keyword scoring was fixed (Qdrant IDF,
         # OpenSearch stemming) are updated in place. A deployment that only
         # serves search never reaches the indexing write path that would
@@ -354,7 +363,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "entity_store_warmup_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -452,15 +461,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         )
 
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
 telemetry = setup_telemetry(app, service_name="query_service")
@@ -492,7 +492,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s", request.method, request.url, errors
+        "Request validation failed for %s %s: %s",
+        request.method,
+        redact_sensitive_query_params(str(request.url)),
+        errors,
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
@@ -505,8 +508,13 @@ app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
-app.include_router(health_router, prefix="/api/v1")
+# These routes call whatever provider URL the body names, so only admins may reach them.
+app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
+# OpenAI clients call ``{base}/models``. Base may be ``{origin}/v1`` or the
+# query service's ``{origin}/api/v1``.
+app.include_router(openai_models_router, prefix="/v1")
+app.include_router(openai_models_router, prefix="/api/v1")
 if agent_sharing_router is not None:
     app.include_router(agent_sharing_router, prefix="/api/v1/agent")
 
@@ -564,6 +572,8 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         )
         workers = 1
         os.environ["QUERY_UVICORN_WORKERS"] = "1"
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     if workers > 1 and not os.getenv(_EXEC_SENTINEL):
         # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
         # Reached via `python -m app.query_main`, __main__ IS this module, so every child
@@ -578,6 +588,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
             "--log-level", "info", "--workers", str(workers),
+            "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
             os.execvp(sys.executable, argv)
@@ -597,6 +608,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 if __name__ == "__main__":

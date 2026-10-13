@@ -69,7 +69,10 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import (
+    classify_error,
+    redact_error_for_log,
+)
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
@@ -185,9 +188,15 @@ class AnswerFinalizer:
             )
 
         if not agent_success:
-            return await self._emit_error_response(
-                agent_error or "An error occurred", event_sink=event_sink
+            error_msg = agent_error or "An error occurred"
+            log.error(
+                "AnswerFinalizer: agent run failed, answering with an error message "
+                "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
+                classify_error(error_msg)[0], self._context.org_id,
+                self._context.conversation_id, self._context.run_id,
+                redact_error_for_log(error_msg),
             )
+            return await self._emit_error_response(error_msg, event_sink=event_sink)
 
         with maybe_start_named_span(
             enabled=is_opik_configured(),

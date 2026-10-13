@@ -25,6 +25,42 @@ FETCH_RECORD_TOOL_NAME = "knowledgegraph__fetch_record"
 DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 
 
+async def _named_entity_note(context: "AgentContext", records: list[dict[str, Any]]) -> str:
+    """Entities on records this fetch already showed. Omitted when the flag is off."""
+    tool_state = getattr(context, "tool_state", None) or {}
+    graph = tool_state.get("graph_provider")
+    if graph is None or not records:
+        return ""
+    try:
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+        if not await is_named_entity_extraction_enabled(tool_state.get("config_service")):
+            return ""
+    except Exception:
+        return ""
+    lines: list[str] = []
+    for record in records:
+        record_id = record.get("id")
+        if not record_id:
+            continue
+        try:
+            entities = await graph.get_named_entities_for_record(str(record_id))
+        except Exception:
+            logger.warning("named entities unavailable for record %s", record_id, exc_info=True)
+            continue
+        shown = []
+        for entity in (entities or [])[:20]:
+            kind = entity.get("kind") or ""
+            name = entity.get("name") or ""
+            if kind and name:
+                shown.append(f"{kind}:{name}")
+        if shown:
+            lines.append(f"Named entities on {record_id}: " + ", ".join(shown))
+    if not lines:
+        return ""
+    return "\n" + "\n".join(lines) + "\n"
+
+
 def resolve_block_cap(requested_max: int | None) -> int:
     """Resolve the effective block cap for a fetch.
 
@@ -102,7 +138,9 @@ async def execute_fetch_record(
     rendered -- that identity is how the caller tells an update from a no-op.
     """
     from app.agent_loop_lib.tools.base import ToolOutput
+    from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
     from app.agents.agent_loop.tool_adapter import _to_tool_output
+    from app.modules.agents.qna.chat_state import remember_record_ids
     from app.utils.chat_helpers import (
         ImageBudget,
         _renderable_block_indices,
@@ -110,7 +148,7 @@ async def execute_fetch_record(
         record_image_uris,
         record_to_message_content,
     )
-    from app.utils.fetch_full_record import create_fetch_full_record_tool
+    from app.utils.fetch_full_record import UNAVAILABLE, create_fetch_full_record_tool
     from app.utils.image_admission import ImageOrigin, admission_from_state
     from app.utils.record_block_selection import (
         build_selection_query,
@@ -156,6 +194,19 @@ async def execute_fetch_record(
         result = await structured_tool.coroutine(record_ids=record_ids, reason=reason)
     except Exception as exc:
         return ToolOutput(success=False, error=str(exc)), citation_ref_mapper
+
+    def _recovery_hint() -> str:
+        reasons = result.get("unavailable_reasons", {})
+        unresolved = [
+            rid for rid in result.get("not_available_ids", [])
+            if reasons.get(rid, UNAVAILABLE) == UNAVAILABLE
+        ]
+        return unresolved_id_hint(
+            unresolved,
+            requested=record_ids,
+            known_record_names=context.tool_state.get("known_record_names"),
+            shortener=record_id_shortener,
+        )
 
     if isinstance(result, dict) and result.get("ok") and result.get("records"):
         parts: list[str] = []
@@ -228,6 +279,7 @@ async def execute_fetch_record(
             parts.append(rendered)
 
         text = "\n".join(parts)
+        text += await _named_entity_note(context, result.get("records") or [])
         # TEMPORARY token-savings experiment: shorten every "Record ID:"
         # this fetch prints back down to the same "R<n>" label the model
         # already saw — see `RecordIdShortener`. No-op (full ids as-is)
@@ -243,7 +295,13 @@ async def execute_fetch_record(
             result.get("unavailable_reasons", {}),
             record_id_shortener,
         )
+        text += _recovery_hint()
 
+        read_now = {
+            str(record["id"]): record.get("record_name") or ""
+            for record in result["records"] if record.get("id")
+        }
+        remember_record_ids(context.tool_state, read_now, names=read_now)
         for record in result["records"]:
             rid = record.get("id")
             if not rid:
@@ -257,6 +315,27 @@ async def execute_fetch_record(
             if outcome.complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
+            if getattr(context, "include_retrieval_context", False):
+                # The record lands in `virtual_record_id_to_result` whole, but
+                # only the budgeted blocks reach the model; the ledger reports
+                # that difference, which nothing else records.
+                context.tool_state.setdefault("fetch_render_outcomes", {}).setdefault(
+                    str(rid), [],
+                ).append({
+                    "virtualRecordId": record.get("virtual_record_id"),
+                    "startBlock": start_block,
+                    "blocksRendered": outcome.blocks_rendered,
+                    "complete": outcome.complete,
+                    "shownBlocks": sorted(outcome.shown_blocks),
+                    "tableTruncation": (
+                        {
+                            "blockGroupIndex": outcome.table_truncation.group_index,
+                            "rowsShown": outcome.table_truncation.rows_shown,
+                            "rowsTotal": outcome.table_truncation.rows_total,
+                        }
+                        if outcome.table_truncation is not None else None
+                    ),
+                })
 
         if collected_images and context.is_multimodal_llm:
             # Mirrors `retrieval.py`'s matching branch: multipart `data`
@@ -284,6 +363,7 @@ async def execute_fetch_record(
         message += _unavailable_note(
             result["not_available_ids"], result.get("unavailable_reasons", {}), record_id_shortener,
         )
+        message += _recovery_hint()
         return ToolOutput(success=False, error=message), citation_ref_mapper
 
     return _to_tool_output(result), citation_ref_mapper

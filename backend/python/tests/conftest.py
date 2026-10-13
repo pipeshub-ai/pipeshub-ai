@@ -2,6 +2,7 @@
 
 import importlib.abc
 import importlib.machinery
+import ipaddress
 import logging
 import os
 import sys
@@ -11,6 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
+from app.utils.process_hardening import disable_vendor_telemetry
+
+# Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
+disable_vendor_telemetry()
 
 
 def pytest_unconfigure(config):
@@ -249,6 +254,16 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
     yield
     set_default_backpressure_coordinator(None)
+
+
+@pytest.fixture(autouse=True)
+def _no_dns_for_model_endpoints(monkeypatch):
+    """A model health check looks its endpoint's name up before calling it; unit tests must
+    not reach a resolver, so every name resolves to a public address. Tests of the lookup
+    set their own answers."""
+    aimodels = sys.modules.get("app.utils.aimodels")
+    if aimodels is not None:
+        monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [ipaddress.ip_address("93.184.216.34")])
 
 
 @pytest.fixture

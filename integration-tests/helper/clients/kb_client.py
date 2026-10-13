@@ -216,3 +216,16 @@ class KBClient(APIClient):
         resp = self.delete(f"/record/{record_id}")
         resp.raise_for_status()
         return resp.json()
+
+    def restore_record(self, record_id: str) -> dict[str, Any]:
+        """Bring a record back from the trash, with everything deleted along with it.
+
+        Args:
+            record_id: Record ID (any record of the delete action)
+
+        Returns:
+            Response body from the API
+        """
+        resp = self.post(f"/record/{record_id}/restore")
+        resp.raise_for_status()
+        return resp.json()

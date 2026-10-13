@@ -13,7 +13,7 @@ from collections.abc import Iterable, Iterator
 
 import pytest
 
-from helper.indexing_progress import UNFINISHED, statuses, wait_until_finished
+from helper.indexing_progress import UNFINISHED, statuses, wait_until_enriched, wait_until_finished
 
 pytestmark = pytest.mark.unit
 
@@ -83,3 +83,51 @@ def test_statuses_reads_a_missing_or_null_status_as_unknown() -> None:
             return {"record": {"indexingStatus": None}} if record_id == "null" else {"record": {}}
 
     assert statuses(_Client(), ["null", "missing"]) == {"null": "UNKNOWN", "missing": "UNKNOWN"}  # type: ignore[arg-type]
+
+
+class _Records:
+    """A KB client whose get_record returns each scripted record in turn."""
+
+    def __init__(self, records: Iterable[dict[str, str] | Exception]) -> None:
+        self._records = iter(records)
+        self.calls = 0
+
+    def get_record(self, _record_id: str) -> dict[str, object]:
+        self.calls += 1
+        record = next(self._records)
+        if isinstance(record, Exception):
+            raise record
+        return {"record": record}
+
+
+def _enriched(records: _Records, timeout: float = 5) -> str:
+    return asyncio.run(wait_until_enriched(records, "r1", timeout=timeout, poll=0))  # type: ignore[arg-type]
+
+
+def test_a_searchable_record_still_being_enriched_is_not_settled() -> None:
+    # Content chunks are searchable once indexingStatus is COMPLETED; the summary
+    # vector arrives later, with extraction. This is the nightly's 1-then-2 count.
+    records = _Records([
+        {"indexingStatus": "COMPLETED", "extractionStatus": "NOT_STARTED"},
+        {"indexingStatus": "COMPLETED", "extractionStatus": "IN_PROGRESS"},
+        {"indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED"},
+    ])
+    assert _enriched(records) == "COMPLETED"
+    assert records.calls == 3
+
+
+def test_failed_enrichment_is_settled() -> None:
+    records = _Records([{"indexingStatus": "COMPLETED", "extractionStatus": "FAILED"}])
+    assert _enriched(records) == "FAILED"
+
+
+def test_enrichment_that_never_finishes_fails_rather_than_returning() -> None:
+    records = _Records(itertools.repeat({"extractionStatus": "IN_PROGRESS"}))
+    with pytest.raises(AssertionError, match="still being enriched"):
+        _enriched(records, timeout=0.05)
+
+
+def test_a_failed_status_read_is_raised_not_taken_as_unsettled() -> None:
+    records = _Records([RuntimeError("get_record failed after 3 retries")])
+    with pytest.raises(RuntimeError, match="get_record failed"):
+        _enriched(records)

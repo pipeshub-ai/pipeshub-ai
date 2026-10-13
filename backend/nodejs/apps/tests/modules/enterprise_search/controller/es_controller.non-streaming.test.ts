@@ -8,6 +8,7 @@ import { HttpError } from '../../../../src/libs/errors/http.errors'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import {
   FakeAIBackend,
@@ -500,6 +501,12 @@ describe('es_controller non-streaming chat routes', () => {
   })
 
   describe('internal (scoped-token) callers', () => {
+    beforeEach(() => {
+      sinon.stub(Org, 'find').returns({
+        limit: () => ({ lean: () => ({ exec: async () => [{ _id: ORG }] }) }),
+      } as never)
+    })
+
     it('are resolved to their user and re-signed before the AI call', async () => {
       const userId = oid()
       sinon.stub(Users, 'findOne').resolves({

@@ -13,7 +13,7 @@ from app.models.permission import EntityType, PermissionType
 
 
 def _make_connector():
-    from app.models.entities import AppMetadata, User
+    from app.models.entities import AppMetadata
     
     logger = MagicMock()
     dep = MagicMock()

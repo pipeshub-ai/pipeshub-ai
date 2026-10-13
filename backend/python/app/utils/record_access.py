@@ -13,6 +13,34 @@ from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
 
+# The permission type on the org -> record edge that makes a service account's
+# chat upload readable. Distinct from "ORG" (an org-wide share from a
+# connector) so that a service account reading attachments is granted uploads
+# and nothing a connector shared with the whole org.
+SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE = "ORGANIZATION"
+
+
+def service_account_upload_permission_edges(
+    org_id: str, record_keys: list[str], timestamp: int,
+) -> list[dict[str, Any]]:
+    """The org -> record READER edges written for a service account's upload.
+
+    A service account has no user node, so its uploads are granted to the org.
+    """
+    return [
+        {
+            "from_id": org_id,
+            "from_collection": CollectionNames.ORGS.value,
+            "to_id": record_key,
+            "to_collection": CollectionNames.RECORDS.value,
+            "type": SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE,
+            "role": "READER",
+            "createdAtTimestamp": timestamp,
+            "updatedAtTimestamp": timestamp,
+        }
+        for record_key in record_keys
+    ]
+
 
 async def caller_can_read_virtual_record(
     graph_provider: Any,
@@ -95,4 +123,8 @@ async def _org_permission_grants(
             exc_info=True,
         )
         return False
-    return bool(edge) and edge.get("type") == "ORGANIZATION" and bool(edge.get("role"))
+    return (
+        bool(edge)
+        and edge.get("type") == SERVICE_ACCOUNT_UPLOAD_PERMISSION_TYPE
+        and bool(edge.get("role"))
+    )

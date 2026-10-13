@@ -10,6 +10,73 @@
       "reindexFailedError": "실패한 레코드의 다시 인덱싱에 실패했습니다",
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
       "manualIndexError": "수동 인덱싱 시작에 실패했습니다"
+    },
+    "trash": {
+      "menuLabel": "최근 삭제한 항목",
+      "title": "최근 삭제한 항목",
+      "back": "컬렉션으로 돌아가기",
+      "retentionNote": "삭제한 항목은 최소 {{days}}일 동안 여기에 보관됩니다. 그 후 예약된 정리 작업이 항목을 영구적으로 삭제하며, 이후에는 복원할 수 없습니다.",
+      "columns": {
+        "name": "이름",
+        "type": "유형",
+        "location": "위치",
+        "deletedAt": "삭제한 날짜",
+        "deletedBy": "삭제한 사람",
+        "removedAfter": "영구 삭제"
+      },
+      "typeFolder": "폴더",
+      "typeFile": "파일",
+      "folderWithItems_one": "항목 {{count}}개가 있는 폴더",
+      "folderWithItems_other": "항목 {{count}}개가 있는 폴더",
+      "fileWithAttachments_one": "첨부 파일 {{count}}개가 있는 파일",
+      "fileWithAttachments_other": "첨부 파일 {{count}}개가 있는 파일",
+      "topLevel": "최상위",
+      "unknownUser": "알 수 없음",
+      "untitled": "제목 없음",
+      "removedAfterDate": "{{date}} 이후",
+      "removedAfterDays": "{{days}}일 후",
+      "parentInTrash": "폴더 '{{folder}}'도 삭제되었습니다. 먼저 해당 폴더를 복원하세요.",
+      "restore": "복원",
+      "restoreSelected_one": "항목 {{count}}개 복원",
+      "restoreSelected_other": "항목 {{count}}개 복원",
+      "selected_one": "{{count}}개 선택됨",
+      "selected_other": "{{count}}개 선택됨",
+      "clearSelection": "선택 해제",
+      "selectAll": "이 페이지의 모든 항목 선택",
+      "selectItem": "{{name}} 선택",
+      "restoring": "복원 중…",
+      "emptyTitle": "최근에 삭제한 항목이 없습니다",
+      "empty": "이 컬렉션에서 삭제한 파일과 폴더가 여기에 표시되므로 복원할 수 있습니다.",
+      "loadFailed": "최근 삭제한 항목을 불러오지 못했습니다. 연결을 확인한 후 다시 시도하세요.",
+      "noPermission": "이 항목을 복원할 권한이 없습니다. 컬렉션 소유자에게 편집 권한을 요청하세요.",
+      "gone": "이 항목은 더 이상 휴지통에 없습니다. 이미 복원되었거나 영구 삭제되었을 수 있습니다. 목록을 새로고침하세요.",
+      "changed": "복원하는 동안 이 항목이 변경되었습니다. 목록을 새로고침한 후 다시 시도하세요.",
+      "restoreFailed": "이 항목을 복원하지 못했습니다. 잠시 후 다시 시도하세요.",
+      "failureLine": "'{{name}}': {{reason}}",
+      "moreFailures_one": "…외 {{count}}개",
+      "moreFailures_other": "…외 {{count}}개",
+      "restoreFailedTitle": "'{{name}}'을(를) 복원하지 못했습니다",
+      "noneRestored_one": "항목 {{count}}개를 복원하지 못했습니다",
+      "noneRestored_other": "항목 {{count}}개를 복원하지 못했습니다",
+      "reindexPending": "복원되었지만 일부 파일은 인덱싱 대기열에 추가하지 못해 아직 검색되지 않습니다. PipesHub가 약 1시간 안에 자동으로 다시 대기열에 추가합니다. 더 빨리 하려면 각 파일의 메뉴를 열고 {{action}}을(를) 선택하세요.",
+      "searchableAfterIndexing": "복원된 항목은 원래 위치로 돌아갔으며, 인덱싱이 끝나면 다시 검색에 표시됩니다.",
+      "renamed": "같은 위치에 이미 같은 이름의 항목이 있어 '{{from}}'이(가) '{{to}}'(으)로 복원되었습니다.",
+      "partiallyRestored": "항목 {{total}}개 중 {{restored}}개를 복원했습니다",
+      "restoredOne": "'{{name}}'을(를) 복원했습니다",
+      "restoredMany_one": "항목 {{count}}개를 복원했습니다",
+      "restoredMany_other": "항목 {{count}}개를 복원했습니다",
+      "showing": "{{total}}개 중 {{from}}–{{to}}",
+      "previous": "이전",
+      "next": "다음",
+      "nameAndMore_one": "{{name}} 외 {{count}}개",
+      "nameAndMore_other": "{{name}} 외 {{count}}개",
+      "deletedTogether_one": "함께 삭제된 항목 {{count}}개",
+      "deletedTogether_other": "함께 삭제된 항목 {{count}}개",
+      "withOthers": "{{names}}와(과) 함께",
+      "withOthersAndMore_one": "{{names}} 외 {{count}}개와 함께",
+      "withOthersAndMore_other": "{{names}} 외 {{count}}개와 함께",
+      "restoredOneAndMore_one": "'{{name}}' 외 {{count}}개를 복원했습니다",
+      "restoredOneAndMore_other": "'{{name}}' 외 {{count}}개를 복원했습니다"
     }
   },
   "resetPassword": {
@@ -66,7 +133,10 @@
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
     "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
-    "copiedCode": "복사됨"
+    "copiedCode": "복사됨",
+    "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
+    "remoteImageFrom": "{{host}}에서",
+    "remoteImageLoad": "이미지 불러오기"
   },
   "uploadProgress": {
     "uploadFailedDefault": "업로드 실패",
@@ -354,10 +424,12 @@
     "statuses": "상태",
     "sources": "소스",
     "sizes": "크기",
-    "clearFilter": "필터 초기화"
+    "clearFilter": "필터 초기화",
+    "applyFilters": "필터 적용"
   },
   "form": {
     "leaveBlankToKeep": "기존 값을 유지하려면 비워 두세요.",
+    "showStoredValues": "저장된 값 표시",
     "title": "제목",
     "description": "설명",
     "search": "검색",
@@ -1117,6 +1189,8 @@
       "label": "추론 강도",
       "overrideHint": "기본값을 사용하려면 다시 클릭하세요.",
       "defaultHintWithLevel": "설정하지 않으면 기본값은 {{level}}입니다.",
+      "modelDefaultHint": "설정하지 않으면 이 모델의 기본값({{level}})이 사용됩니다.",
+      "modelDefaultLabel": "기본값 ({{level}})",
       "low": "낮음",
       "medium": "보통",
       "high": "높음",
@@ -1789,7 +1863,53 @@
           "label": "비디오",
           "badge": "멀티모달"
         }
-      }
+      },
+      "fetchingModels": "모델을 불러오는 중…",
+      "savedLeaveBlank": "저장됨 — 비워 두면 기존 값을 유지합니다",
+      "modelPickerEmpty": "검색과 일치하는 모델이 없습니다.",
+      "modelPickerDefault": "기본값",
+      "modelPickerFriendlyName": "{{model}}의 표시 이름",
+      "badgeContext": "{{value}} 토큰",
+      "badgeVision": "비전",
+      "badgeReasoning": "추론",
+      "badgeDeprecated": "사용 중단",
+      "batchRetry": "다시 시도",
+      "batchRemove": "제거",
+      "rotateCredentials": "자격 증명 교체",
+      "rotateCredentialsTitle": "자격 증명 교체",
+      "rotateCredentialsHint": "이 연결로 추가된 모든 모델의 키를 업데이트합니다.",
+      "rotateCredentialsPlaceholder": "새 API 키",
+      "rotateCredentialsSave": "키 업데이트",
+      "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "batchStatus": {
+        "pending": "대기",
+        "checking": "확인 중",
+        "healthy": "저장됨",
+        "failed": "실패"
+      },
+      "modelPickerSelected": "선택한 모델 ({{count}})",
+      "modelPickerSelectedHint": "각 모델은 따로 확인되고 저장됩니다. 여기서 이름, 컨텍스트 길이, 기능을 설정하세요.",
+      "modelPickerFieldFor": "{{model}}의 {{field}}",
+      "modelPickerDefaultFor": "{{model}}을(를) 기본값으로 설정",
+      "modelPickerRemoveFor": "{{model}} 제거",
+      "modelComboboxAddMore": "다른 모델 추가…",
+      "modelComboboxTypeHint": "모델 이름을 입력하고 Enter 키를 누르세요.",
+      "modelComboboxOtherGroup": "기타 모델",
+      "modelComboboxUseTyped": "\"{{model}}\" 사용",
+      "modelHintManual": "모델 이름을 입력하고 Enter 키를 누르세요. 여러 개를 추가하면 함께 저장됩니다.",
+      "modelHintNeedsFields": "모델 목록을 불러오려면 위의 연결 정보를 입력하거나 모델 이름을 직접 입력하세요.",
+      "modelHintFailed": "모델을 불러오지 못했습니다: {{message}} 모델 이름은 직접 입력할 수 있습니다.",
+      "modelHintNoneFound": "공급자가 이 유형의 모델을 제공하지 않았습니다. 모델 이름을 입력하세요.",
+      "modelHintLoaded_one": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelHintLoaded_other": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelComboboxPlaceholder": "모델 이름을 선택하거나 입력하세요",
+      "checkingOne": "{{provider}}에서 {{model}} 확인 중…",
+      "checkingMany": "{{provider}}에서 모델 {{total}}개 확인 중…",
+      "checkingProgress": "모델 {{total}}개 중 {{done}}개 확인 완료…",
+      "checkingHint": "각 모델에 짧은 테스트 호출을 보냅니다. 보통 1분 이내에 끝납니다.",
+      "checkFailedOne": "{{model}}이(가) 확인을 통과하지 못했습니다",
+      "checkFailedMany": "모델 {{total}}개 중 {{failed}}개가 확인을 통과하지 못했습니다",
+      "checkFailedHint": "패널을 열어 원인을 확인하고 다시 시도하세요."
     },
     "common": {
       "loadingUsers": "사용자 로드 중...",
@@ -2243,6 +2363,30 @@
         "confirm": "확인",
         "cancel": "취소"
       },
+      "stopSync": {
+        "label": "동기화 중지",
+        "labelFull": "전체 동기화 중지",
+        "stopping": "중지하는 중…"
+      },
+      "stopSyncConfirm": {
+        "title": "진행 중인 동기화를 중지할까요?",
+        "titleFull": "진행 중인 전체 동기화를 중지할까요?",
+        "message": "이미 동기화된 레코드는 유지되지만 이번 실행의 나머지는 중단됩니다. 동기화가 완전히 멈추기까지 잠시 걸릴 수 있습니다. 나중에 다시 시작할 수 있습니다.",
+        "confirm": "동기화 중지",
+        "confirmFull": "전체 동기화 중지"
+      },
+      "disableSyncConfirm": {
+        "title": "{{name}}의 동기화를 비활성화할까요?",
+        "confirm": "동기화 비활성화",
+        "confirming": "비활성화 중..."
+      },
+      "disabledSearchNotice": "이 커넥터의 레코드는 비활성화한 시점의 접근 권한 그대로 계속 검색됩니다. {{source}}에서 변경한 공유 설정은 다시 활성화할 때까지 PipesHub에 반영되지 않습니다. 레코드를 제거하려면 커넥터를 삭제하세요.",
+      "fullSync": {
+        "disabledTooltip": "전체 동기화를 시작하기 전에 진행 중인 동기화를 중지하세요"
+      },
+      "sync": {
+        "disabledTooltip": "먼저 진행 중인 전체 동기화를 중지하세요"
+      },
       "fullSyncConfirm": {
         "title": "전체 동기화를 시작할까요?",
         "message": "모든 데이터를 처음부터 덮어쓰고 다시 동기화하며, 일반 동기화보다 느립니다. 콘텐츠가 누락되었거나 중복되었거나 원본과 일치하지 않을 때 전체 동기화를 사용하세요. 일상적인 업데이트에는 일반 동기화를 사용하세요.",
@@ -2290,6 +2434,17 @@
         "addRecords": "레코드 추가"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "연결 테스트 중…",
+          "egressTitle": "방화벽에서 PipesHub 허용",
+          "egressDescription": "{{name}}이(가) 방화벽 뒤에 있거나 알려진 IP 주소만 허용하는 경우 다음 주소의 연결을 허용하세요:",
+          "copyIp": "IP 주소 복사",
+          "ipCopied": "IP 주소를 복사했습니다",
+          "copyFailed": "복사할 수 없습니다",
+          "copyFailedDescription": "주소를 직접 복사하거나 이 사이트의 클립보드 접근을 허용하세요.",
+          "failedTitle": "{{name}}에 연결하지 못했습니다",
+          "requestFailed": "연결을 테스트하지 못했습니다. 다시 시도하세요."
+        },
         "methodLabel": "인증 방법",
         "methodPlaceholder": "인증 유형 선택...",
         "credentialsHeading": "{{name}} 자격 증명",
@@ -2425,6 +2580,8 @@
           "syncingTooltip": "이 커넥터가 신규 및 변경된 콘텐츠를 동기화하고 있습니다.",
           "fullSyncing": "전체 동기화 진행 중",
           "fullSyncingTooltip": "이 커넥터가 원본에서 전체 재동기화를 실행하고 있습니다.",
+          "queued": "대기 중",
+          "queuedTooltip": "빈 동기화 슬롯을 기다리는 중입니다. 슬롯이 비면 자동으로 시작됩니다.",
           "removing": "제거 중",
           "removingTooltip": "이 인스턴스는 삭제되는 중입니다."
         }
@@ -2584,7 +2741,8 @@
       "status": {
         "ready": "준비됨",
         "notConnected": "연결 안 됨",
-        "needsAuth": "인증 필요"
+        "needsAuth": "인증 필요",
+        "disabled": "비활성화됨"
       },
       "team": {
         "title": "MCP 서버",
@@ -2706,7 +2864,13 @@
         "noState": "state 매개변수가 반환되지 않았습니다.",
         "backendRejected": "서버가 인증 요청을 거부했습니다."
       },
-      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다"
+      "deleteDisabledTooltip": "이 서버는 삭제할 수 없습니다",
+      "stdioPolicy": {
+        "disabledTitle": "이 배포에서 비활성화됨",
+        "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
+        "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
+        "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
+      }
     },
     "bots": {
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",
@@ -4000,6 +4164,9 @@
     "errorTitle": "승인 오류",
     "signedInAs": "{{display}}(으)로 로그인됨",
     "requestHeading": "이 애플리케이션이 다음에 대한 액세스를 요청합니다:",
+    "notGrantedHeading": "이 애플리케이션은 다음 권한도 요청했습니다. 애플리케이션 설정에서 허용하지 않으므로 이 권한은 부여되지 않습니다:",
+    "notGrantedOwnerHint": "이 애플리케이션을 만든 사람이 워크스페이스 설정 → 개발자 설정 → OAuth 2.0 앱에서 이 권한을 추가할 수 있습니다.",
+    "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",

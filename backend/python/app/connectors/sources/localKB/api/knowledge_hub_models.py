@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
+from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH
+
 
 class NodeType(str, Enum):
     """Valid node types in the knowledge hub hierarchy"""
@@ -175,6 +177,13 @@ class PermissionsInfo(BaseModel):
     canEdit: bool = Field(..., description="Whether user can edit")
     canDelete: bool = Field(..., description="Whether user can delete")
     canManagePermissions: bool = Field(..., description="Whether user can manage permissions")
+    collectionRole: str | None = Field(
+        None,
+        description=(
+            "The user's own role on the collection this node is in, as restore and the trash list "
+            "check it; null outside a collection. Unlike role, it is the same at every level inside."
+        ),
+    )
 
 class KnowledgeHubNodesResponse(BaseModel):
     """Response model for the Knowledge Hub nodes API"""
@@ -190,6 +199,7 @@ class KnowledgeHubNodesResponse(BaseModel):
     breadcrumbs: Optional[List[BreadcrumbItem]] = Field(None, description="Breadcrumb trail")
     counts: Optional[CountsInfo] = Field(None, description="Counts summary")
     permissions: Optional[PermissionsInfo] = Field(None, description="User permissions")
+    maxFolderDepth: int = Field(KB_MAX_FOLDER_DEPTH, description="Deepest a collection folder may be nested (a folder directly in the collection is depth 1)")
     typed_records: Optional[Dict[str, Any]] = Field(None, description="Typed Record instances keyed by record ID (only when include_typed_records is requested)")
 
     class Config:

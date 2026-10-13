@@ -469,6 +469,7 @@ class TestSandboxUnavailableFailsClosed:
 
     async def test_explicit_local_registers_sandbox_tools(self, monkeypatch) -> None:
         monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
         context = make_context(llm=FakeChatModel())
 
         _agent, runtime, _goal, _clarifying = await PipesHubAgentFactory().create(
@@ -478,10 +479,12 @@ class TestSandboxUnavailableFailsClosed:
         assert all(runtime.tool_registry.has(n) for n in self._SANDBOX_TOOLS)
         assert context.sandbox_manager is not None
 
-    @pytest.mark.parametrize("mode", [None, "", "docekr"])
+    @pytest.mark.parametrize("mode", [None, "", "docekr", "local"])
     async def test_unset_or_invalid_mode_skips_sandbox_tools_without_failing_chat(
         self, monkeypatch, caplog, mode,
     ) -> None:
+        # `local` is in the list because without the dev flag it is refused too.
+        monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
         if mode is None:
             monkeypatch.delenv("SANDBOX_MODE", raising=False)
         else:

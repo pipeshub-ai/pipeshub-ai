@@ -13,6 +13,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
+    QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS,
 )
 
 # from langchain_cohere import CohereEmbeddings
@@ -25,6 +26,12 @@ from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.blocks import GroupType
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.models.entities import substitute_user_email
+from app.modules.retrieval.entity_filters import (
+    TOO_BROAD_MESSAGE,
+    EntityFilterResolver,
+    EntityFilterUnavailableError,
+)
 from app.modules.retrieval.result_merging import (
     CollectionResults,
     ResultMerger,
@@ -59,12 +66,15 @@ from app.utils.aimodels import (
     get_default_embedding_model,
     get_embedding_model,
     get_generator_model,
+    is_local_cpu_embedding_provider,
 )
 from app.utils.embedding_retry import await_with_retry
 from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
     get_record,
+    group_child_results,
+    valid_group_labels,
 )
 from app.utils.image_utils import get_extension_from_mimetype
 
@@ -152,18 +162,26 @@ PERMISSION_CHECK_UNAVAILABLE_MESSAGE = (
     "are shown. Please try again in a minute."
 )
 
+# Every empty outcome of an entity-filtered search reads the same, whether nothing
+# matched or the matches are in records this user cannot read.
+ENTITY_FILTER_NO_MATCH_MESSAGE = "No documents match this search and its entity filter."
+ENTITY_FILTER_UNAVAILABLE_MESSAGE = (
+    "We couldn't apply the entity filter just now. Please try again in a minute."
+)
 
-valid_group_labels = [
-        GroupType.LIST.value,
-        GroupType.ORDERED_LIST.value,
-        GroupType.FORM_AREA.value,
-        GroupType.INLINE.value,
-        GroupType.KEY_VALUE_AREA.value,
-        GroupType.TEXT_SECTION.value,
-        GroupType.CODE.value,
-    ]
+
+def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[str]:
+    if not current:
+        return allowed
+    keep = set(allowed)
+    return [vid for vid in dict.fromkeys(current) if vid in keep]
+
 
 class RetrievalService:
+    # Local models may load or download on first use, so their queries get no deadline.
+    # A class default, so an instance built without __init__ (as some tests do) has it too.
+    _cached_embedding_is_local = True
+
     def __init__(
         self,
         logger,
@@ -313,6 +331,7 @@ class RetrievalService:
                 if not embedding_configs:
                     self.logger.info("No embedding config found; using default embedding model")
                     dense_embeddings = await asyncio.to_thread(get_default_embedding_model)
+                    is_local = True
                 else:
                     selected_config = next(
                         (c for c in embedding_configs if c.get("isDefault", False)),
@@ -323,9 +342,13 @@ class RetrievalService:
                     dense_embeddings = await asyncio.to_thread(
                         get_embedding_model, provider, selected_config
                     )
+                    is_local = is_local_cpu_embedding_provider(
+                        provider, (selected_config.get("configuration") or {}).get("endpoint")
+                    )
 
                 self._cached_dense_embeddings = dense_embeddings
                 self._cached_embedding_config_hash = config_hash
+                self._cached_embedding_is_local = is_local
                 return dense_embeddings
         except Exception as e:
             self.logger.error(f"Error getting embedding model: {str(e)}")
@@ -339,11 +362,17 @@ class RetrievalService:
                 config_node_constants.AI_MODELS.value,
                 use_cache=use_cache
             )
-            if ai_models and "embedding" in ai_models and ai_models["embedding"]:
-                for config in ai_models["embedding"]:
-                    # Only one embedding model is supported
-                    if "configuration" in config and "model" in config["configuration"]:
-                        return config["configuration"]["model"]
+            embedding_configs = (ai_models or {}).get("embedding") or []
+            if embedding_configs:
+                # The model that embeds: the default one, else the first, as
+                # get_embedding_model_instance picks it.
+                config = next(
+                    (c for c in embedding_configs if c.get("isDefault", False)),
+                    embedding_configs[0],
+                )
+                model = (config.get("configuration") or {}).get("model")
+                if model:
+                    return model
 
             # Return default model if no embedding config found
             return DEFAULT_EMBEDDING_MODEL
@@ -451,6 +480,8 @@ class RetrievalService:
                 limit = DEFAULT_SEARCH_LIMIT
 
             filter_groups = filter_groups or {}
+            # Read, not popped: callers reuse their filter_groups across searches.
+            entity_filters = filter_groups.get("entityFilters")
 
             # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
@@ -459,6 +490,9 @@ class RetrievalService:
             filters = {}
             if filter_groups:  # Only process if filter_groups is not empty
                 for key, values in filter_groups.items():
+                    # Lowercased it would become a metadata term the graph does not understand.
+                    if key == "entityFilters":
+                        continue
                     # strictScope is a control flag, not a metadata filter
                     # key — lowercasing it to "strictscope" would silently
                     # break the empty-project-scope short-circuit in
@@ -498,6 +532,27 @@ class RetrievalService:
                 self.logger.warning(f"No accessible documents found for user {user_id} and org {org_id}")
                 return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
+            # The entity filter runs inside the permission scope: what it matches in
+            # records this user cannot read must change neither the answer nor "too broad".
+            entity_filtered = False
+            if entity_filters is not None:
+                entity_vids, early = await self._entity_filter_virtual_ids(
+                    org_id, user_id, entity_filters, filters, time_range,
+                    None if use_containers else accessible_virtual_id_to_record_id,
+                )
+                if early is not None:
+                    return early
+                if entity_vids is not None:
+                    entity_filtered = True
+                    virtual_record_ids_from_tool = _narrow_virtual_ids(virtual_record_ids_from_tool, entity_vids)
+                    if not virtual_record_ids_from_tool:
+                        return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+
+            def empty(message: str, status: Status) -> dict[str, Any]:
+                if entity_filtered and status in (Status.EMPTY_RESPONSE, Status.ACCESSIBLE_RECORDS_NOT_FOUND):
+                    return self._create_empty_response(ENTITY_FILTER_NO_MATCH_MESSAGE, Status.EMPTY_RESPONSE)
+                return self._create_empty_response(message, status)
+
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
@@ -506,7 +561,7 @@ class RetrievalService:
                     org_id, containers, virtual_record_ids_from_tool
                 )
                 if clauses is None:
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
                 must, should = clauses
                 filter = await self.vector_db_service.filter_collection(
                     must=must, should=should
@@ -520,7 +575,7 @@ class RetrievalService:
                     if vid in accessible_virtual_id_to_record_id
                 ]
                 if not scoped_virtual_ids:
-                    return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
                 filter = await self.vector_db_service.filter_collection(
                         must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
                     )
@@ -553,7 +608,7 @@ class RetrievalService:
 
             if not search_results:
                 self.logger.debug("No search results found")
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
 
             self.logger.debug(f"Search results count: {len(search_results) if search_results else 0}")
 
@@ -570,7 +625,7 @@ class RetrievalService:
             self.logger.debug(f"Vector DB returned {len(returned_virtual_record_ids)} unique virtualRecordIds")
 
             if not returned_virtual_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
 
             # Resolve only the permission-verified recordIds for the returned virtual IDs.
             # This prevents cross-connector leakage: if multiple connectors share the same
@@ -588,7 +643,17 @@ class RetrievalService:
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+
+            # Resolve the viewer's email here, before the maps below start sharing
+            # these dicts: `virtual_to_record_map` reaches the citation builders via
+            # `get_record`, which copies `webUrl` verbatim onto the blob record.
+            user_email = user.get("email") if user else None
+            for r in fetched_records:
+                if r and r.get("webUrl"):
+                    r["webUrl"] = substitute_user_email(
+                        r["webUrl"], user_email, r.get("connectorName")
+                    )
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -608,8 +673,8 @@ class RetrievalService:
             unique_record_ids = {r.get("_key") for r in virtual_to_record_map.values() if r}
 
             if not unique_record_ids:
-                return self._create_empty_response(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-            self.logger.debug(f"Unique record IDs count: {len(unique_record_ids)}")
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+            self.logger.info(f"Unique record IDs count: {len(unique_record_ids)}")
 
             file_record_ids_to_fetch = []
             mail_record_ids_to_fetch = []
@@ -635,10 +700,6 @@ class RetrievalService:
                         result["metadata"]["connectorId"] = record.get("connectorId", None)
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
-                        if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                            user_email = user.get("email") if user else None
-                            if user_email:
-                                weburl = weburl.replace("{user.email}", user_email)
                         result["metadata"]["webUrl"] = weburl
                         result["metadata"]["recordName"] = record.get("recordName")
                         result["metadata"]["previewRenderable"] = record.get("previewRenderable", True)
@@ -659,14 +720,18 @@ class RetrievalService:
                             if ext:
                                 result["metadata"]["extension"] = ext
 
+                        # Only files and mails can find a link elsewhere; any other record
+                        # without one (a SQL table when FRONTEND_PUBLIC_URL is unset) is
+                        # still a hit, and dropping it here hid it from search and chat.
                         if not weburl:
                             if record.get("recordType", "") == RecordTypes.FILE.value:
                                 file_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "file")
-                            elif record.get("recordType", "") == RecordTypes.MAIL.value:
+                                continue
+                            if record.get("recordType", "") == RecordTypes.MAIL.value:
                                 mail_record_ids_to_fetch.append(record_id)
                                 result_to_record_map[idx] = (record_id, "mail")
-                            continue
+                                continue
 
                         if knowledge_search:
                             meta = result.get("metadata")
@@ -810,14 +875,17 @@ class RetrievalService:
                 elif record_type == "mail" and record_id in mails_map:
                     mail = mails_map[record_id]
                     weburl = mail.get("webUrl")
-                    if weburl and weburl.startswith("https://mail.google.com/mail?authuser="):
-                        user_email = user.get("email") if user else None
-                        if user_email:
-                            weburl = weburl.replace("{user.email}", user_email)
                     fallback_mimetype = "text/html"
 
                 if weburl:
-                    result["metadata"]["webUrl"] = weburl
+                    resolved_weburl = substitute_user_email(
+                        weburl, user_email, record.get("connectorName")
+                    )
+                    result["metadata"]["webUrl"] = resolved_weburl
+                    # `record` is the same object virtual_to_record_map holds (see
+                    # record_id_to_record_map / _create_virtual_to_record_mapping),
+                    # so citation building via chat_helpers.get_record() needs this too.
+                    record["webUrl"] = resolved_weburl
 
                 if fallback_mimetype:
                     result["metadata"]["mimeType"] = fallback_mimetype
@@ -849,8 +917,10 @@ class RetrievalService:
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-                        _, child_results = result.get("content")
+                    child_results = group_child_results(result)
+                    if (
+                        block_type == GroupType.TABLE.value or block_type in valid_group_labels
+                    ) and child_results is not None:
                         for child in child_results:
                             final_search_results.append(child)
                     else:
@@ -895,7 +965,7 @@ class RetrievalService:
 
                 return response_data
             else:
-                return self._create_empty_response("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
+                return empty("No relevant documents found for your search query. Try using different keywords or broader search terms.", Status.EMPTY_RESPONSE)
         except VectorDBEmptyError:
             self.logger.error("VectorDBEmptyError")
             return self._create_empty_response(
@@ -903,11 +973,53 @@ class RetrievalService:
                     Status.VECTOR_DB_EMPTY,
                 )
         except ValueError as e:
-            self.logger.error(f"ValueError: {e}")
-            return self._create_empty_response(f"Bad request: {str(e)}", Status.ERROR)
+            self.logger.error("Filtered search failed with a ValueError: %s", e, exc_info=True)
+            return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
         except Exception as e:
             self.logger.error(f"Filtered search failed: {e}\n{traceback.format_exc()}")
             return self._create_empty_response("Unexpected server error during search.", Status.ERROR)
+
+    async def _entity_filter_virtual_ids(
+        self,
+        org_id: str,
+        user_id: str,
+        raw: object,
+        filters: dict[str, list[str]],
+        time_range: dict[str, int] | None,
+        accessible: dict[str, str] | None,
+    ) -> tuple[list[str] | None, dict[str, Any] | None]:
+        """Virtual record ids the entity filter matches among records this user may
+        read (None when it constrains nothing), or a response to return instead.
+
+        ``accessible`` is the user's vrid -> recordId map when the search already
+        built one; under container scoping it is None and the search adjudicates
+        the hits afterwards. A match too broad across the org is counted again over
+        the records the user may read, so "too broad" never reflects what they cannot.
+        """
+        resolver = EntityFilterResolver(self.graph_provider)
+        try:
+            match = await resolver.match(org_id, raw)
+            if match.error == TOO_BROAD_MESSAGE:
+                if accessible is None:
+                    accessible = await self._get_accessible_virtual_ids_task(
+                        user_id, org_id, filters, self.graph_provider, time_range=time_range,
+                        exclude_app_ids=await self._excluded_demo_apps(user_id, org_id),
+                    )
+                match = await resolver.match(org_id, raw, within=list(dict.fromkeys(accessible.values())))
+        except EntityFilterUnavailableError:
+            self.logger.warning("Named-entity filter lookup failed for org %s", org_id, exc_info=True)
+            return None, self._create_empty_response(ENTITY_FILTER_UNAVAILABLE_MESSAGE, Status.ERROR)
+        except PermissionVerificationUnavailableError as exc:
+            self.logger.warning("Could not read what user %s may access in org %s: %s", user_id, org_id, exc)
+            return None, self._create_empty_response(PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE)
+        if match.error:
+            return None, self._create_empty_response(match.error, Status.INVALID_FILTER)
+        if not match.constrained:
+            return None, None
+        vids = match.virtual_record_ids
+        if accessible is not None:
+            vids = [vid for vid in vids if vid in accessible]
+        return vids, None
 
     async def _container_filter_enabled(self) -> bool:
         """Whether searches scope by container instead of by record id.
@@ -1416,12 +1528,14 @@ class RetrievalService:
         dense_embeddings = await self.get_embedding_model_instance()
         if not dense_embeddings:
             raise ValueError("No dense embeddings found")
+        # Read before the next await, while it still describes the instance just returned.
+        attempt_timeout = None if self._cached_embedding_is_local else QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS
 
         sparse_embedder = await self._ensure_sparse_embedder()
 
         dense_tasks = [
             await_with_retry(
-                lambda q=query: dense_embeddings.aembed_query(q),
+                lambda q=query: asyncio.wait_for(dense_embeddings.aembed_query(q), timeout=attempt_timeout),
                 max_retries=_RETRIEVAL_EMBED_MAX_RETRIES,
                 operation="aembed_query",
                 service_name="retrieval",
@@ -1588,6 +1702,7 @@ class RetrievalService:
             Status.VECTOR_DB_NOT_READY: 503,  # Service Unavailable - vector DB not ready
             Status.EMPTY_RESPONSE: 200,  # OK but no results found
             Status.PERMISSION_CHECK_UNAVAILABLE: 503,  # graph could not adjudicate
+            Status.INVALID_FILTER: 422,  # the gateway passes the message through on a 422
         }
 
         status_code = status_code_mapping.get(status, 500)  # Default to 500 for unknown status

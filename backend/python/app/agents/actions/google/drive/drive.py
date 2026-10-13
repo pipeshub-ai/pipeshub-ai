@@ -29,6 +29,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.models.entities import FileRecord, RecordType
 from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.google.google import GoogleClient
@@ -213,11 +214,7 @@ class GetFileContentInput(BaseModel):
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/drive",
-                    "https://www.googleapis.com/auth/drive.file",
-                    "https://www.googleapis.com/auth/drive.metadata.readonly"
-                ]
+                agent=list(GOOGLE_TOOLSET_SCOPES["drive"]),
             ),
             token_access_type="offline",
             additional_params={

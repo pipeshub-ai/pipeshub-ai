@@ -137,7 +137,7 @@ async def _index_and_upsert_images(vs, vector_db_service, collection: str, chunk
 
 
 class TestQdrantMultimodalIndexing:
-    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, qdrant_service):
+    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, qdrant_service):  # noqa: F811  (fixture imported above)
         pytest.importorskip("qdrant_client", reason="qdrant_client not installed")
         from app.services.vector_db.models import CollectionConfig, DistanceMetric, HybridSearchRequest
 
@@ -174,7 +174,7 @@ class TestQdrantMultimodalIndexing:
         finally:
             await qdrant_service.delete_collection(col)
 
-    async def test_dimension_mismatch_dropped_before_upsert(self, qdrant_service):
+    async def test_dimension_mismatch_dropped_before_upsert(self, qdrant_service):  # noqa: F811  (fixture imported above)
         """An image embedding whose dimension doesn't match the collection
         must never reach upsert_points — it would corrupt cosine similarity
         for the whole collection or be rejected outright by the DB."""
@@ -209,7 +209,7 @@ class TestQdrantMultimodalIndexing:
 
 
 class TestRedisMultimodalIndexing:
-    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, redis_service):
+    async def test_image_points_stored_with_blocktype_metadata_and_retrievable(self, redis_service):  # noqa: F811  (fixture imported above)
         import asyncio
 
         from app.services.vector_db.models import CollectionConfig, DistanceMetric, HybridSearchRequest

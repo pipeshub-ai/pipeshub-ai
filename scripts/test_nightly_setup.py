@@ -50,7 +50,7 @@ class TestRotation(unittest.TestCase):
 
 class TestResolve(unittest.TestCase):
     def test_pull_requests_always_use_the_default(self) -> None:
-        self.assertEqual(ns.resolve("pull_request_target", date(2026, 9, 16), {"message_broker": "kafka"}), ns.DEFAULT)
+        self.assertEqual(ns.resolve("pull_request", date(2026, 9, 16), {"message_broker": "kafka"}), ns.DEFAULT)
 
     def test_a_manual_run_gets_what_it_asked_for(self) -> None:
         self.assertEqual(ns.resolve("workflow_dispatch", date(2026, 9, 17), {"message_broker": "kafka"}), {"message_broker": "kafka"})

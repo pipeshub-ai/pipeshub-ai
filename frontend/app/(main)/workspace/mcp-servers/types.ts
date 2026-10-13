@@ -8,6 +8,11 @@ export type McpTransport = 'stdio' | 'sse' | 'streamable_http';
 
 export type McpAuthMode = 'none' | 'api_token' | 'oauth' | 'headers';
 
+/** `custom_stdio_disabled`: a custom STDIO server and the operator has not set MCP_ALLOW_CUSTOM_STDIO=true. */
+export type McpInstanceDisabledReason = 'custom_stdio_disabled';
+
+export const MCP_CUSTOM_STDIO_FLAG = 'MCP_ALLOW_CUSTOM_STDIO';
+
 export interface McpAuthHint {
   label: string;
   placeholder?: string | null;
@@ -100,6 +105,8 @@ export interface McpServerInstance {
 
   /** Set on list/get responses only. */
   hasOAuthClientConfig?: boolean;
+  /** Set on list/get responses only: why this instance won't run on this deployment. */
+  disabledReason?: McpInstanceDisabledReason | null;
 }
 
 /** A single tool discovered from a connected MCP server. */
@@ -122,6 +129,8 @@ export interface McpCatalogResponse {
   total: number;
   page: number;
   limit: number;
+  /** Operator setting: whether custom servers may use the STDIO transport on this deployment. */
+  customStdioAllowed: boolean;
 }
 
 export interface McpInstancesResponse {

@@ -348,3 +348,78 @@ _RAW_REASON = re.compile(r"""(reason\s*=|["']reason["']\s*:|\[["']reason["']\]\s
 def test_indexing_code_never_stores_exception_text_as_a_reason(path: str) -> None:
     source = (Path(__file__).resolve().parents[3] / path).read_text(encoding="utf-8")
     assert not _RAW_REASON.findall(source)
+
+
+
+class TestProviderErrorCode:
+    def test_a_google_genai_key_rejection_is_an_auth_error(self) -> None:
+        from google.genai import errors as genai_errors
+
+        body = {"error": {"code": 401, "message": "API key not valid", "status": "UNAUTHENTICATED"}}
+        assert ue.provider_error_code(genai_errors.ClientError(401, body)) == "auth_error"
+
+    def test_a_missing_model_is_model_not_found(self) -> None:
+        request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        error = openai.NotFoundError("not found", response=httpx.Response(404, request=request), body=None)
+        assert ue.provider_error_code(error) == "model_not_found"
+
+
+class TestRepositoryFileReasons:
+    @pytest.mark.parametrize(
+        ("size_bytes", "limit_bytes", "size_text", "limit_text"),
+        [
+            (5 * 1024 * 1024 + 1, 5 * 1024 * 1024, "5.1 MB", "up to 5 MB"),
+            (52_428_800, 5 * 1024 * 1024, "50 MB", "up to 5 MB"),
+            (13_107_200, 20 * 1024 * 1024, "12.5 MB", "up to 20 MB"),
+        ],
+    )
+    def test_too_large_names_both_sizes_and_the_setting(
+        self, size_bytes: int, limit_bytes: int, size_text: str, limit_text: str
+    ) -> None:
+        reason = ue.text_file_too_large(size_bytes, limit_bytes, repository_file=True)
+
+        assert f"This file is {size_text}" in reason
+        assert limit_text in reason
+        assert "CODE_FILE_MAX_SIZE_MB" in reason
+
+    def test_too_large_ends_with_a_step_the_reader_can_take(self) -> None:
+        """A record marked File Type Not Supported has no Reindex action, so
+        "reindex it" would send people looking for a button that is not there."""
+        five_mb = 5 * 1024 * 1024
+
+        from_repository = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=True)
+        uploaded = ue.text_file_too_large(five_mb + 1, five_mb, repository_file=False)
+
+        assert from_repository.endswith("and then choose Index all on the repository.")
+        assert uploaded.endswith("and then upload it again.")
+        assert "Reindex it" not in from_repository + uploaded
+
+    @pytest.mark.parametrize("message", [ue.PARSE_WORKER_OUT_OF_MEMORY, ue.PROCESSING_TIMED_OUT])
+    def test_a_parse_worker_failure_keeps_the_reason_it_was_raised_with(self, message: str) -> None:
+        try:
+            raise DocumentProcessingError("Failed to process document") from RuntimeError(message)
+        except DocumentProcessingError as wrapped:
+            assert ue.to_user_reason(wrapped) == message
+
+
+class TestRateLimitedSource:
+    # 2026-01-15 10:00:00 UTC
+    NOW = 1_768_471_200_000
+
+    def test_a_wait_names_the_source_and_the_time_it_ends(self) -> None:
+        reason = ue.rate_limited_will_retry("Engineering GitHub", self.NOW + 35 * 60_000, self.NOW)
+        assert reason == (
+            "Engineering GitHub is limiting how often PipesHub can read from it, so indexing "
+            "this file is paused. It will retry automatically after 10:35 UTC."
+        )
+
+    def test_a_wait_into_another_day_says_which(self) -> None:
+        reason = ue.rate_limited_will_retry(None, self.NOW + 15 * 3600 * 1000, self.NOW)
+        assert reason.startswith("The source is limiting")
+        assert reason.endswith("after 01:00 UTC on 16 Jan.")
+
+    def test_giving_up_says_why_and_when_to_try_again(self) -> None:
+        reason = ue.rate_limited_gave_up("Engineering GitHub", self.NOW + 30 * 60_000, self.NOW, 24)
+        assert "kept limiting" in reason
+        assert "more than 24 hours" in reason
+        assert reason.endswith("Reindex it after 10:30 UTC.")

@@ -23,6 +23,8 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
 
+from app.agent_loop_lib.sandbox.coding.egress_firewall import ensure_egress_network_sync
+
 __all__ = [
     "DockerClientProvider",
     "get_default_provider",
@@ -50,7 +52,7 @@ class DockerClientProvider:
             max_workers=max_workers, thread_name_prefix="docker-sandbox",
         )
         self._image_cache: set[str] = set()
-        self._network_cache: set[str] = set()
+        self._network_cidrs: dict[str, list[str]] = {}
         self._closed = False
 
     @property
@@ -96,53 +98,30 @@ class DockerClientProvider:
         logger.info("DockerClientProvider: pulled image %s", image)
 
     async def ensure_egress_network(self, network_name: str) -> str:
-        """Ensure the install-phase egress network exists; return its name.
+        """Ensure the egress bridge exists; return its name.
 
         A user-defined bridge, never the caller's default Docker network,
-        so sibling services on a compose deployment (mongo, arango, redis)
-        stay unreachable by name from an install container.
-
-        Cached per process after the first success — this used to run a
-        `networks.list` on every single install.
+        with inter-container traffic off. It filters nothing by address:
+        that happens inside each container (see ``egress_firewall``).
+        Cached per process after the first success.
         """
-        if network_name in self._network_cache:
-            return network_name
-        try:
-            if await self._network_exists(network_name):
-                self._network_cache.add(network_name)
-                return network_name
-            await self.run_blocking(
-                self.client.networks.create,
-                name=network_name,
-                driver="bridge",
-                internal=False,
-                labels={"agent_loop.sandbox": "egress"},
-                check_duplicate=True,
-            )
-            logger.info("DockerClientProvider: created egress network %s", network_name)
-        except Exception as exc:
-            # Another process may have created it between our list and our
-            # create; a second look distinguishes that from a real failure.
-            logger.debug("egress network creation raised %s; re-checking", exc)
-            if not await self._network_exists(network_name):
-                raise
-        self._network_cache.add(network_name)
+        await self.egress_network_cidrs(network_name)
         return network_name
 
-    async def _network_exists(self, network_name: str) -> bool:
-        """Exact-name check.
-
-        Docker's `names` filter matches on SUBSTRING, so asking for
-        `sandbox_egress` happily returns `pipeshub_sandbox_egress`. Trusting
-        it means concluding the network already exists, skipping creation,
-        and then failing every container start with an opaque
-        `network sandbox_egress not found` — which is what happens on any
-        host that also runs the PipesHub compose stack.
-        """
-        networks = await self.run_blocking(
-            self.client.networks.list, names=[network_name],
+    async def egress_network_cidrs(self, network_name: str) -> list[str]:
+        """IPv4 subnets of the egress bridge, creating it if needed. Empty
+        when they can't be read; callers must then not join the bridge,
+        since the gateway may sit outside the statically blocked ranges."""
+        cached = self._network_cidrs.get(network_name)
+        if cached is not None:
+            return cached
+        cidrs = await self.run_blocking(
+            ensure_egress_network_sync, self.client, network_name,
+            {"agent_loop.sandbox": "egress"},
         )
-        return any(getattr(n, "name", None) == network_name for n in networks)
+        if cidrs:
+            self._network_cidrs[network_name] = cidrs
+        return cidrs
 
     async def ping(self) -> bool:
         """Check Docker daemon reachability."""

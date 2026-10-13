@@ -19,13 +19,19 @@ from app.modules.parsers.code_parser.lang_config import (
     LanguageConfig,
 )
 from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
+from app.modules.parsers.text_decoding import decode_text
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from tree_sitter import Node, Parser
 
 __all__ = ["MAX_FILE_SIZE_BYTES", "decode_source", "parse_code"]
 
-MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024
+DEFAULT_MAX_FILE_SIZE_MB = 5
+
+# One limit for everything read as code or as plain text out of a repository:
+# the tree-sitter parse here and the text fallback for files with no grammar.
+MAX_FILE_SIZE_BYTES = max(1, env_int("CODE_FILE_MAX_SIZE_MB", DEFAULT_MAX_FILE_SIZE_MB)) * 1024 * 1024
 
 _PARSER_CACHE: dict[str, Any] = {}
 _PARSER_LOCK = threading.Lock()
@@ -75,7 +81,7 @@ def decode_source(raw: bytes) -> bytes:
         raw.decode("utf-8")
         return raw
     except UnicodeDecodeError:
-        return raw.decode("latin-1", errors="replace").encode("utf-8")
+        return decode_text(raw).encode("utf-8")
 
 
 def _text(node: Node, src: bytes) -> str:

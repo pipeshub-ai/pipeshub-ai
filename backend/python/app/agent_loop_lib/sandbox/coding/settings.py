@@ -6,7 +6,7 @@ Phase 1 (``EnvSandboxSettingsLoader``): reads from process environment,
 same vars the legacy stack used (``SANDBOX_MODE``, ``SANDBOX_DOCKER_IMAGE``,
 ``SANDBOX_EGRESS_NETWORK``, ``SANDBOX_PIP_INDEX_URL``, ``SANDBOX_NPM_REGISTRY``,
 ``SANDBOX_ALLOW_NETWORK``, ``E2B_API_KEY``, plus new ``SANDBOX_MAX_TOTAL``,
-``SANDBOX_MAX_PER_ORG``).
+``SANDBOX_MAX_PER_ORG``, ``SANDBOX_EGRESS_ALLOW_CIDRS``).
 
 Phase 4 (``ConfigServiceSandboxSettingsLoader``): per-org settings through
 ``ConfigurationService`` — interface defined here, body raises
@@ -22,6 +22,7 @@ from typing import Any, Protocol, runtime_checkable
 from pydantic import BaseModel, Field
 
 from app.agent_loop_lib.sandbox.coding.base import SandboxContext
+from app.agent_loop_lib.sandbox.coding.egress_firewall import parse_cidrs
 
 __all__ = [
     "SandboxSettings",
@@ -43,6 +44,8 @@ _FALSY_ENV_VALUES = {"0", "false", "no", "off"}
 _warned_about_host_isolation = False
 
 _ENV_SANDBOX_MODE = "SANDBOX_MODE"
+_ENV_ALLOW_LOCAL = "SANDBOX_ALLOW_LOCAL"
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 # `SANDBOX_MODE` value -> backend name. The only accepted spellings; anything
 # else is a misconfiguration rather than a hint to guess from.
@@ -68,9 +71,11 @@ def resolve_sandbox_mode() -> str:
     operator forgot the variable, which is the least isolated option chosen
     by omission. An unknown value is rejected for the same reason, since
     `SANDBOX_MODE=docekr` would otherwise silently downgrade to host
-    execution while the operator believes it is containerised. `local` is
-    accepted only when typed out, and logs once per process that it runs
-    code in-process.
+    execution while the operator believes it is containerised. `local`
+    additionally needs `SANDBOX_ALLOW_LOCAL=true`: it runs code with this
+    service's UID, network and filesystem, and on Linux the bwrap wrapper
+    is absent from every image, so one copied `.env` line must not be
+    enough to turn it on in a shared deployment.
 
     Blank reads as unset rather than invalid, matching how shell and
     Compose `${VAR:-default}` treat an empty value.
@@ -100,8 +105,21 @@ def resolve_sandbox_mode() -> str:
         )
 
     if backend == "local":
+        if not _local_mode_allowed():
+            raise SandboxUnavailableError(
+                f"{_ENV_SANDBOX_MODE}=local runs generated code as a subprocess "
+                f"of this service with no container isolation, so it is refused "
+                f"unless {_ENV_ALLOW_LOCAL}=true is also set. Set that only on a "
+                f"single-user development machine; otherwise use docker or e2b."
+            )
         _warn_about_host_isolation()
     return backend
+
+
+def _local_mode_allowed() -> bool:
+    # Opt-in, so only an explicit truthy value counts; a typo stays refused.
+    raw = os.environ.get(_ENV_ALLOW_LOCAL, "")
+    return raw.strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def _warn_about_host_isolation() -> None:
@@ -109,11 +127,15 @@ def _warn_about_host_isolation() -> None:
     if _warned_about_host_isolation:
         return
     _warned_about_host_isolation = True
+    from app.agent_loop_lib.sandbox.confinement import confinement_available
+
     logger.warning(
-        "%s=local: model-generated code runs as a subprocess of this service "
-        "(isolation=host: no network namespace, no filesystem boundary beyond "
-        "rlimits). Use %s=docker or e2b for container isolation.",
-        _ENV_SANDBOX_MODE, _ENV_SANDBOX_MODE,
+        "%s=local with %s=true: model-generated code runs as a subprocess of "
+        "this service (isolation=host, kernel confinement %s). Development "
+        "only; use %s=docker or e2b for container isolation.",
+        _ENV_SANDBOX_MODE, _ENV_ALLOW_LOCAL,
+        "available" if confinement_available() else "UNAVAILABLE (no bwrap/sandbox-exec)",
+        _ENV_SANDBOX_MODE,
     )
 
 
@@ -175,7 +197,9 @@ class SandboxSettings(BaseModel):
 
     backend: str = "local"
     backend_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
-    allow_network: bool = True
+    # Off unless an operator opts in: with it on, generated code (which a
+    # prompt-injected document can steer) gets an outbound connection.
+    allow_network: bool = False
     max_concurrent_per_request: int = 5
     max_lifetime_s: float = 1800.0
     provision_timeout_s: float = 60.0
@@ -219,6 +243,7 @@ class EnvSandboxSettingsLoader:
     _ENV_PIP_INDEX_URL = "SANDBOX_PIP_INDEX_URL"
     _ENV_NPM_REGISTRY = "SANDBOX_NPM_REGISTRY"
     _ENV_ALLOW_NETWORK = "SANDBOX_ALLOW_NETWORK"
+    _ENV_EGRESS_ALLOW_CIDRS = "SANDBOX_EGRESS_ALLOW_CIDRS"
     _ENV_E2B_API_KEY = "E2B_API_KEY"
     _ENV_MAX_TOTAL = "SANDBOX_MAX_TOTAL"
     _ENV_MAX_PER_ORG = "SANDBOX_MAX_PER_ORG"
@@ -242,6 +267,7 @@ class EnvSandboxSettingsLoader:
                 "egress_network": os.environ.get(self._ENV_EGRESS_NETWORK, self._DEFAULT_EGRESS_NETWORK),
                 "pip_index_url": os.environ.get(self._ENV_PIP_INDEX_URL, self._DEFAULT_PIP_INDEX_URL),
                 "npm_registry": os.environ.get(self._ENV_NPM_REGISTRY, self._DEFAULT_NPM_REGISTRY),
+                "egress_allow_cidrs": list(parse_cidrs(os.environ.get(self._ENV_EGRESS_ALLOW_CIDRS))),
             }
         # No E2B branch: the API key deliberately never enters
         # `SandboxSettings`. This model is logged and dumped freely, and
@@ -251,7 +277,7 @@ class EnvSandboxSettingsLoader:
         return SandboxSettings(
             backend=backend,
             backend_options=backend_options,
-            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=True),
+            allow_network=_env_bool(self._ENV_ALLOW_NETWORK, default=False),
             max_concurrent_per_request=_env_int(self._ENV_MAX_CONCURRENT, 5),
             max_lifetime_s=_env_float(self._ENV_MAX_LIFETIME_S, 1800.0),
             provision_timeout_s=_env_float(self._ENV_PROVISION_TIMEOUT_S, 60.0),

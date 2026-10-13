@@ -18,7 +18,7 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
-#   sandbox       — coding-sandbox image pull (SANDBOX_MODE=docker)
+#   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
 # COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
@@ -36,6 +36,9 @@ services:
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     restart: always
+    # Node drains in-flight requests for up to 8s before closing Mongo, Redis
+    # and the brokers; Docker's 10s default would leave too little for that.
+    stop_grace_period: 30s
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
     build:
@@ -83,6 +86,8 @@ services:
     # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
     # is absent (slim uses its built-in default; new Python sizes from CPU).
     # A numeric value in .env is kept as an operator cap.
+    # Then hand over to the image entrypoint, which drops to the unprivileged
+    # user; images from earlier releases have none and start as before.
     entrypoint:
       - /bin/sh
       - -c
@@ -93,7 +98,9 @@ services:
         v=$$(printenv "$$k" || true);
         [ -z "$$v" ] && unset "$$k";
         done;
-        exec /app/process_monitor.sh
+        if [ -x /usr/local/bin/docker-entrypoint.sh ];
+        then exec /usr/local/bin/docker-entrypoint.sh /app/process_monitor.sh;
+        else exec /app/process_monitor.sh; fi
     logging:
       driver: local
       options:
@@ -107,6 +114,8 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
+      - CONNECTOR_EGRESS_IPS=${CONNECTOR_EGRESS_IPS:-}
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
@@ -140,6 +149,9 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
+      # (one auto-commit per query while that is off)
+      - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -152,6 +164,11 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      # Indexing lanes on Redis Streams: how many (every service must agree), and
+      # how a connector is given one: "assigned" (the least busy lane, recorded
+      # once) or "hash", which switches assigned lanes off.
+      - FAIR_SCHEDULING_LANE_COUNT=${FAIR_SCHEDULING_LANE_COUNT:-8}
+      - FAIR_SCHEDULING_LANE_ASSIGNMENT=${FAIR_SCHEDULING_LANE_ASSIGNMENT:-assigned}
 
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -219,12 +236,13 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
       # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
@@ -272,7 +290,24 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Most characters one agent turn may stream before it is stopped as a
+      # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
+      - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
+      # true: features that trade some compute or tokens per question for
+      # better answers (keyword hits merged by rank fusion, keyword-dense
+      # search queries). Off by default. A feature's own switch below, when
+      # set to true or false, overrides it for that feature; blank follows it.
+      # It also turns on named-entity extraction while indexing, and the
+      # entity tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
+      - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
+      - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
+      - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
+
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       # Raising this above 1 gives /stream/record requests more headroom
@@ -282,9 +317,21 @@ services:
       - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
+      - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
+      # How long a delete waits for a running sync to stop.
+      - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      # Largest file from a code repository that is read as code or as plain
+      # text, in MB (default 5). Larger ones are marked "not supported" with
+      # the reason; CSV, JSON and YAML files keep their own parsers' limits.
+      - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Worker processes that parse large text, code and CSV files off the
+      # indexing event loop. Empty derives it from the CPU limit (1 on a
+      # 4-CPU host, at most 4); 0 parses in threads instead.
+      - PARSE_POOL_WORKERS=${PARSE_POOL_WORKERS:-}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
@@ -301,9 +348,28 @@ services:
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
+      # Custom (non-catalog) STDIO MCP servers run an admin-entered command on this
+      # host as the app user, with its network access. Off unless "true"; catalog
+      # and remote (HTTP) MCP servers are unaffected.
+      - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
+
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
+      # the storage driver supports it; logs a warning once otherwise.
+      - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       # Eval deploy type skips the Slack bot process inside the app container.
       - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
@@ -342,15 +408,23 @@ services:
       sandbox-image:
         condition: service_completed_successfully
         required: false
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
+
+    security_opt:
+      - no-new-privileges:true
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock
 
     networks:
       - pipeshub
+      - sandbox-control
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -370,6 +444,44 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    profiles: ["sandbox"]
+    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Always-on stateful services
@@ -599,7 +711,10 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      # The cp-kafka image does not read this; the app creates its topics at
+      # startup (record-events with 32 partitions, KAFKA_TOPIC_PARTITIONS to
+      # change it). Kept in step with that for anyone reading it here.
+      - KAFKA_CREATE_TOPICS=record-events:32:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
@@ -648,3 +763,8 @@ volumes:
 networks:
   pipeshub:
     driver: bridge
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true

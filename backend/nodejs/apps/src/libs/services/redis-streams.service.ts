@@ -83,7 +83,7 @@ function isRedisXReadGroupResult(
  * means lag dashboards and consumer subscriptions see every lane from
  * startup instead of only after the first message happens to land on it.
  *
- * With laning off (the default) this returns the input unchanged.
+ * With laning off (`FAIR_SCHEDULING_LANE_COUNT=1`) this returns the input unchanged.
  */
 function expandLaneStreams(topics: TopicDefinition[]): TopicDefinition[] {
   const lanes = laneCount();

@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import express from 'express';
 import { AddressInfo } from 'net';
 import sinon from 'sinon';
+import passport from 'passport';
 import { Container } from 'inversify';
 import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
 import { IamService } from '../../../../src/modules/auth/services/iam.service';
@@ -18,6 +19,21 @@ import { JitProvisioningService } from '../../../../src/modules/auth/services/ji
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import { AuthSessionRequest } from '../../../../src/modules/auth/middlewares/types';
+import type { Profile, SAML } from '@node-saml/passport-saml';
+
+// Passport keeps registered strategies behind an untyped accessor.
+const registeredSamlStrategy = () =>
+  (passport as unknown as { _strategy(name: string): passport.Strategy | undefined })._strategy('saml');
+
+const humanAccountQuery = () =>
+  ({
+    select: sinon.stub().returns({
+      lean: sinon.stub().returns({
+        exec: sinon.stub().resolves({ kind: 'human', isDisabled: false }),
+      }),
+    }),
+  }) as unknown as ReturnType<typeof Users.findOne>;
 
 describe('createSamlRouter', () => {
   let container: Container;
@@ -127,36 +143,170 @@ describe('createSamlRouter', () => {
     expect(router).to.have.property('stack');
   });
 
-  describe('session cookie', () => {
-    const sessionCookieFor = async (forwardedProto: string): Promise<string | undefined> => {
-      const app = express();
-      app.set('trust proxy', true);
-      app.use(createSamlRouter(container));
-      app.get('/probe', (_req, res) => {
-        res.send('ok');
+  describe('without a server-side session', () => {
+    const profile = { email: 'test@example.com', orgId: '507f1f77bcf86cd799439011' };
+    let previousStrategy: passport.Strategy | undefined;
+
+    beforeEach(() => {
+      previousStrategy = registeredSamlStrategy();
+      // Stands in for the SAML strategy after it has validated the IdP's response.
+      const validatedStrategy: passport.Strategy = {
+        name: 'saml',
+        authenticate(this: passport.StrategyCreated<passport.Strategy>) {
+          this.success(profile);
+        },
+      };
+      passport.use('saml', validatedStrategy);
+      (container.get<IamService>('IamService').getUserByEmail as sinon.SinonStub).resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: profile.email, orgId: profile.orgId, hasLoggedIn: true },
       });
+      sinon.stub(Users, 'findOne').returns(humanAccountQuery());
+    });
+
+    afterEach(() => {
+      if (previousStrategy) passport.use('saml', previousStrategy);
+      else passport.unuse('saml');
+    });
+
+    const send = async (method: 'GET' | 'POST', path: string) => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(createSamlRouter(container));
       const server = app.listen(0);
       try {
         const { port } = server.address() as AddressInfo;
-        const response = await fetch(`http://127.0.0.1:${port}/probe`, {
-          headers: { 'x-forwarded-proto': forwardedProto },
+        const relayState = Buffer.from(JSON.stringify({ orgId: profile.orgId })).toString('base64');
+        return await fetch(`http://127.0.0.1:${port}${path}`, {
+          method,
+          redirect: 'manual',
+          headers: { 'content-type': 'application/x-www-form-urlencoded', 'x-forwarded-proto': 'https' },
+          body: method === 'POST' ? new URLSearchParams({ SAMLResponse: 'x', RelayState: relayState }).toString() : undefined,
         });
-        return response.headers
-          .getSetCookie()
-          .find((cookie) => cookie.startsWith('connect.sid='));
       } finally {
         server.close();
       }
     };
 
-    it('is marked Secure over HTTPS', async () => {
-      const cookie = await sessionCookieFor('https');
-      expect(cookie).to.be.a('string');
-      expect(cookie).to.match(/;\s*Secure/i);
+    it('completes sign-in from the callback and sets no express-session cookie', async () => {
+      const response = await send('POST', '/signIn/callback');
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.equal(`${mockConfig.frontendUrl}/auth/sign-in/samlSso/success`);
+      const cookies = response.headers.getSetCookie();
+      expect(cookies.some((c) => c.startsWith('accessToken='))).to.equal(true);
+      expect(cookies.some((c) => c.startsWith('refreshToken='))).to.equal(true);
+      expect(cookies.some((c) => c.startsWith('connect.sid='))).to.equal(false);
+      const sessionService = container.get<SessionService>('SessionService');
+      expect((sessionService.completeAuthentication as sinon.SinonStub).calledOnce).to.equal(true);
     });
 
-    it('is never sent over plain HTTP', async () => {
-      expect(await sessionCookieFor('http')).to.equal(undefined);
+    it('sets no express-session cookie on other SAML routes', async () => {
+      const response = await send('GET', '/probe');
+
+      expect(response.headers.getSetCookie().some((c) => c.startsWith('connect.sid='))).to.equal(false);
+    });
+  });
+
+  describe('SAML logout requests', () => {
+    const logoutProfile = { ID: '_logout-1', issuer: 'https://idp.example.com', nameID: 'test@example.com', nameIDFormat: 'email' };
+    let previousStrategy: passport.Strategy | undefined;
+    let validatePostRequest: sinon.SinonStub;
+    let getLogoutResponseUrl: sinon.SinonSpy;
+    let processErrors: sinon.SinonSpy;
+
+    beforeEach(() => {
+      previousStrategy = registeredSamlStrategy();
+      new SamlController(
+        { authBackend: 'http://auth:3000', samlIssuer: 'pipeshub' } as unknown as AppConfig,
+        mockLogger,
+      ).updateSAMLStrategy('dummy-idp-cert', 'https://idp.example.com/sso');
+      const saml = (registeredSamlStrategy() as unknown as { _saml: SAML })._saml;
+      // The IdP's signature checks pass; what arrives is a logout request.
+      const logoutRequest = { profile: logoutProfile as Profile, loggedOut: true };
+      validatePostRequest = sinon.stub(saml, 'validatePostRequestAsync').resolves(logoutRequest);
+      sinon.stub(saml, 'validatePostResponseAsync').resolves(logoutRequest);
+      sinon.stub(saml, 'validateRedirectAsync').resolves(logoutRequest);
+      getLogoutResponseUrl = sinon.spy(saml, 'getLogoutResponseUrl');
+      // index.ts shuts the process down from its uncaughtException handler.
+      processErrors = sinon.spy();
+      process.on('uncaughtException', processErrors);
+      process.on('unhandledRejection', processErrors);
+    });
+
+    afterEach(() => {
+      process.removeListener('uncaughtException', processErrors);
+      process.removeListener('unhandledRejection', processErrors);
+      if (previousStrategy) passport.use('saml', previousStrategy);
+      else passport.unuse('saml');
+    });
+
+    const post = async (path: string, form: Record<string, string>) => {
+      const app = express();
+      app.use(express.urlencoded({ extended: true }));
+      app.use(createSamlRouter(container));
+      app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+        res.status(500).send(err.message);
+      });
+      const server = app.listen(0);
+      try {
+        const { port } = server.address() as AddressInfo;
+        const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+          method: 'POST',
+          redirect: 'manual',
+          headers: { 'content-type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams(form).toString(),
+        });
+        await response.text();
+        // Let any late callback (node-saml answers via process.nextTick) run.
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return response;
+      } finally {
+        server.close();
+      }
+    };
+
+    it('answers a logout request posted to the callback with one redirect to the login page', async () => {
+      const response = await post('/signIn/callback', { SAMLRequest: 'x' });
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.match(/^http:\/\/frontend:3000\/login\?saml_error=/);
+      expect(validatePostRequest.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
+    });
+
+    it('fails a logout that reaches the strategy once, without building a logout response', async () => {
+      const response = await post('/signIn/callback', { SAMLResponse: 'x' });
+
+      expect(response.status).to.equal(302);
+      expect(response.headers.get('location')).to.match(/^http:\/\/frontend:3000\/login\?saml_error=/);
+      expect(getLogoutResponseUrl.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
+    });
+
+    it('fails a logout request sent to the sign-in route once, without building a logout response', async () => {
+      const controller = new SamlController({ frontendUrl: 'http://frontend:3000' } as unknown as AppConfig, mockLogger);
+      (OrgAuthConfig.findOne as sinon.SinonStub).returns({
+        lean: () => ({ exec: () => Promise.resolve({ orgId: '507f1f77bcf86cd799439011' }) }),
+      });
+      const next = sinon.spy();
+      const redirect = sinon.spy();
+      const res = { redirect, setHeader: sinon.spy(), end: sinon.spy() } as unknown as express.Response;
+      const req = {
+        query: { SAMLRequest: 'x' },
+        url: '/signIn?SAMLRequest=x',
+        headers: {},
+        body: {},
+      } as unknown as AuthSessionRequest;
+
+      await controller.signInViaSAML(req, res, next);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(next.calledOnce).to.equal(true);
+      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
+      expect(redirect.called).to.equal(false);
+      expect(getLogoutResponseUrl.called).to.equal(false);
+      expect(processErrors.called).to.equal(false);
     });
   });
 
@@ -212,8 +362,8 @@ describe('createSamlRouter', () => {
     const middlewareLayers = router.stack.filter(
       (layer: any) => !layer.route,
     );
-    // Should have at least: attachContainer, session, passport.initialize, passport.session
-    expect(middlewareLayers.length).to.be.greaterThanOrEqual(3);
+    // attachContainer + passport.initialize
+    expect(middlewareLayers.length).to.equal(2);
   });
 
   describe('route count', () => {
@@ -263,13 +413,13 @@ describe('createSamlRouter', () => {
       expect(updateConfigRoute.route.stack.length).to.be.greaterThanOrEqual(2);
     });
 
-    it('should use session, passport.initialize, and passport.session as router-level middleware', () => {
+    it('should use only attachContainer and passport.initialize as router-level middleware', () => {
       const router = createSamlRouter(container);
       const middlewareLayers = router.stack.filter(
         (layer: any) => !layer.route,
       );
-      // attachContainer + session + passport.initialize + passport.session = at least 4
-      expect(middlewareLayers.length).to.be.greaterThanOrEqual(4);
+      expect(middlewareLayers.map((layer: { name: string }) => layer.name)).to.not.include('session');
+      expect(middlewareLayers.length).to.equal(2);
     });
   });
 
@@ -357,13 +507,12 @@ describe('createSamlRouter', () => {
   });
 
   describe('middleware layer types', () => {
-    it('should include session middleware as non-route layer', () => {
+    it('should include no session middleware', () => {
       const router = createSamlRouter(container);
       const middlewareLayers = (router as any).stack.filter(
         (layer: any) => !layer.route,
       );
-      // Should have at least attachContainer + session + passport.init + passport.session
-      expect(middlewareLayers.length).to.be.greaterThanOrEqual(4);
+      expect(middlewareLayers.map((layer: { name: string }) => layer.name)).to.not.include('session');
     });
 
     it('no route should have zero handlers', () => {
@@ -873,6 +1022,30 @@ describe('SAML Routes - handler coverage', () => {
   })
 
   describe('POST /signIn/callback - existing user success flow', () => {
+    it('should not sign into an account that belongs to another org', async () => {
+      const handler = findHandler('/signIn/callback', 'post')
+      mockSamlController.parseRelayState.returns({ orgId: '507f1f77bcf86cd799439011' })
+      mockIamService.getUserByEmail.resolves({
+        statusCode: 200,
+        data: { _id: '507f1f77bcf86cd799439012', email: 'test@test.com', orgId: '507f1f77bcf86cd799439099', hasLoggedIn: true },
+      })
+
+      const req = {
+        user: { email: 'test@test.com', orgId: '507f1f77bcf86cd799439011' },
+        body: {},
+        query: {},
+        headers: {},
+        ip: '127.0.0.1',
+      }
+      const res = mockRes()
+
+      await handler(req, res, sinon.stub())
+
+      expect(res.cookie.called).to.be.false
+      expect(res.redirect.firstCall.args[0]).to.include('saml_error=unknown')
+      expect(mockSessionService.completeAuthentication.called).to.be.false
+    })
+
     it('should redirect on success for existing user', async () => {
       const handler = findHandler('/signIn/callback', 'post')
       const relayState = Buffer.from(JSON.stringify({ orgId: '507f1f77bcf86cd799439011', sessionToken: 'token123' })).toString('base64')

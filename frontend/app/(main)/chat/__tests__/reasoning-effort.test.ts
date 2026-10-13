@@ -2,8 +2,10 @@
  * Unit tests for reasoning-effort support:
  *  - `useChatStore`'s per-context localStorage-backed `reasoningEffort` slice
  *    (`setReasoningEffortForCtx` / `hydrateReasoningEffortForCtx`).
- *  - `buildStreamChatRequestForSlot()` forwarding the resolved reasoning
- *    effort (or omitting the field) onto the outgoing `StreamChatRequest`.
+ *  - `buildStreamChatRequestForSlot()` and `streamRegenerateForSlot()`
+ *    forwarding the resolved reasoning effort, or omitting the field so the
+ *    backend applies the model's default.
+ *  - The label the chat shows when no effort is picked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -80,8 +82,14 @@ Object.defineProperty(window, 'localStorage', {
 
 const { useChatStore, ctxKeyFromAgent, ASSISTANT_CTX } = await import('../store');
 const { buildStreamChatRequestForSlot } = await import('../runtime');
+const { streamRegenerateForSlot } = await import('../streaming');
+const { ChatApi } = await import('../api');
 const { normalizeReasoningEffort } = await import('../types');
 const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
+const { getModelDefaultReasoningEffort } = await import('../store');
+const { getAppliedReasoningEffortLabel } = await import(
+  '../components/chat-panel/expansion-panels/model-selector/model-selector-panel'
+);
 
 const initialSettings = useChatStore.getState().settings;
 
@@ -95,6 +103,7 @@ function resetStore() {
       selectedModels: {},
       defaultModels: {},
       reasoningEffort: {},
+      agentDefaultReasoningEffort: {},
       availableModels: {},
     },
   });
@@ -267,6 +276,15 @@ function registerModel(
   return model;
 }
 
+function setAgentDefault(ctxKey: string, effort: import('../types').ReasoningEffort | null) {
+  useChatStore.setState((state) => ({
+    settings: {
+      ...state.settings,
+      agentDefaultReasoningEffort: { ...state.settings.agentDefaultReasoningEffort, [ctxKey]: effort },
+    },
+  }));
+}
+
 describe('buildStreamChatRequestForSlot — reasoningEffort forwarding', () => {
   it('omits reasoningEffort entirely when no model is configured for the context', () => {
     const slotId = useChatStore.getState().createSlot(null);
@@ -275,11 +293,41 @@ describe('buildStreamChatRequestForSlot — reasoningEffort forwarding', () => {
     expect(request).not.toHaveProperty('reasoningEffort');
   });
 
-  it('defaults to DEFAULT_REASONING_EFFORT when the active model is reasoning-capable and no override is set', () => {
+  // Sending "high" here would override the model's own default on the backend.
+  it('omits reasoningEffort for a reasoning-capable model when neither the user nor the agent chose one', () => {
     registerModel(ASSISTANT_CTX, { isReasoning: true });
     const slotId = useChatStore.getState().createSlot(null);
     const request = buildStreamChatRequestForSlot(slotId, 'hello');
-    expect(request?.reasoningEffort).toBe('high');
+    expect(request).not.toBeNull();
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('omits reasoningEffort in an agent chat when the agent has no default and the user chose none', () => {
+    registerModel('agent-99', { isReasoning: true });
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request).not.toBeNull();
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends the agent's default effort when the user chose none", () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.reasoningEffort).toBe('medium');
+  });
+
+  it("the user's choice wins over the agent's default", () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    const slotId = useChatStore.getState().createSlot(null);
+    useChatStore.getState().updateSlot(slotId, { threadAgentId: 'agent-99' });
+    useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request?.reasoningEffort).toBe('max');
   });
 
   it('omits reasoningEffort when the active model does not support reasoning', () => {
@@ -325,5 +373,112 @@ describe('buildStreamChatRequestForSlot — reasoningEffort forwarding', () => {
   it('returns null for an unknown slot id', () => {
     const request = buildStreamChatRequestForSlot('does-not-exist', 'hello');
     expect(request).toBeNull();
+  });
+});
+
+describe('streamRegenerateForSlot — reasoningEffort forwarding', () => {
+  const model = { modelKey: 'openai', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' };
+
+  function regenSlot(agentId: string | null): string {
+    const slotId = useChatStore.getState().createSlot('conv-1');
+    if (agentId) useChatStore.getState().updateSlot(slotId, { threadAgentId: agentId });
+    return slotId;
+  }
+
+  async function regenerate(agentId: string | null): Promise<Record<string, unknown>> {
+    const assistant = vi.spyOn(ChatApi, 'streamRegenerate').mockResolvedValue(undefined);
+    const agent = vi.spyOn(ChatApi, 'streamAgentRegenerate').mockResolvedValue(undefined);
+    try {
+      await streamRegenerateForSlot(regenSlot(agentId), 'a1', model);
+      if (agentId) {
+        expect(assistant).not.toHaveBeenCalled();
+        return agent.mock.calls[0][4] as Record<string, unknown>;
+      }
+      expect(agent).not.toHaveBeenCalled();
+      return assistant.mock.calls[0][3] as Record<string, unknown>;
+    } finally {
+      assistant.mockRestore();
+      agent.mockRestore();
+    }
+  }
+
+  it('omits reasoningEffort for a reasoning-capable model when the user chose none', async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    expect(await regenerate(null)).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends the user's choice", async () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'low');
+    expect((await regenerate(null)).reasoningEffort).toBe('low');
+  });
+
+  it('omits reasoningEffort in an agent chat when neither the user nor the agent chose one', async () => {
+    registerModel('agent-99', { isReasoning: true });
+    expect(await regenerate('agent-99')).not.toHaveProperty('reasoningEffort');
+  });
+
+  it("sends the agent's default effort when the user chose none", async () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    expect((await regenerate('agent-99')).reasoningEffort).toBe('medium');
+  });
+
+  it("the user's choice wins over the agent's default", async () => {
+    registerModel('agent-99', { isReasoning: true });
+    setAgentDefault('agent-99', 'medium');
+    useChatStore.getState().setReasoningEffortForCtx('agent-99', 'max');
+    expect((await regenerate('agent-99')).reasoningEffort).toBe('max');
+  });
+});
+
+describe('label for the effort a chat runs with', () => {
+  const t = ((_key: string, opts: string | { defaultValue: string; level: string }) =>
+    typeof opts === 'string' ? opts : opts.defaultValue.replace('{{level}}', opts.level)) as never;
+  const qwen = { modelKey: 'k-qwen', modelName: 'qwen', modelFriendlyName: 'Qwen' };
+
+  function setOrgModels(defaultReasoningEffort?: 'none' | 'low' | 'medium') {
+    useChatStore.getState().setAvailableModelsForCtx(ASSISTANT_CTX, [
+      {
+        modelType: 'llm',
+        provider: 'openAICompatible',
+        modelName: 'qwen',
+        modelKey: 'k-qwen',
+        isMultimodal: false,
+        isReasoning: true,
+        isDefault: true,
+        modelFriendlyName: 'Qwen',
+        ...(defaultReasoningEffort && { defaultReasoningEffort }),
+      },
+    ]);
+  }
+
+  it("shows the model's own default when nothing is picked", () => {
+    setOrgModels('low');
+    const modelDefault = getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen);
+
+    expect(modelDefault).toBe('low');
+    expect(getAppliedReasoningEffortLabel(t, { picked: null, modelDefault })).toBe('Default (Low)');
+  });
+
+  it('keeps showing High when the model stores no default', () => {
+    setOrgModels();
+    const modelDefault = getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen);
+
+    expect(modelDefault).toBeNull();
+    expect(getAppliedReasoningEffortLabel(t, { picked: null, modelDefault })).toBe('High');
+  });
+
+  it("shows a pick or the agent's default over the model's default", () => {
+    expect(getAppliedReasoningEffortLabel(t, { picked: 'max', modelDefault: 'low' })).toBe('Max');
+    expect(
+      getAppliedReasoningEffortLabel(t, { picked: null, agentDefault: 'medium', modelDefault: 'low' }),
+    ).toBe('Medium');
+  });
+
+  it("shows a legacy 'none' default as the low effort it runs with", () => {
+    setOrgModels('none');
+
+    expect(getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen)).toBe('low');
   });
 });

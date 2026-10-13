@@ -3,6 +3,7 @@ import asyncio
 import base64
 import re
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
@@ -23,6 +24,7 @@ from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AppGroups,
     Connectors,
+    DeleteSource,
     ProgressStatus,
     RecordRelations,
 )
@@ -103,10 +105,12 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.featureflag.platform_settings import is_soft_delete_enabled
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
 )
+from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -119,6 +123,25 @@ PLACEHOLDER_SWEEP_BATCH: int = 50
 PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
 PLACEHOLDER_SWEEP_CONCURRENCY: int = 10
 PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
+# One page failing a sync loop drops the rest of that loop until the next sync, so a
+# timeout, rate limit or 5xx gets a few more tries: waits of 2, 4 and 8 seconds.
+LINEAR_TRANSIENT_RETRIES: int = 3
+LINEAR_RETRY_BASE_DELAY_SEC: float = 2.0
+
+
+def _is_transient_linear_failure(response: GraphQLResponse) -> bool:
+    """A failed Linear response worth asking again: rate limited, a 5xx, or nothing came back."""
+    errors = getattr(response, "errors", None)
+    if isinstance(errors, list) and any(
+        (getattr(error, "extensions", None) or {}).get("code") == "RATELIMITED" for error in errors
+    ):
+        return True
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+    # The data source turns a transport failure, a read timeout among them, into a
+    # response with neither a status nor errors.
+    return status is None and errors is None
 
 
 @ConnectorBuilder("Linear")\
@@ -369,6 +392,26 @@ class LinearConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
             raise ConnectorInitError(str(e)) from e
+
+    async def _with_transient_retry(
+        self,
+        description: str,
+        request: Callable[..., Awaitable[GraphQLResponse]],
+        **arguments: object,
+    ) -> GraphQLResponse:
+        """Run one Linear request, asking again while it fails transiently."""
+        response = await request(**arguments)
+        for attempt in range(LINEAR_TRANSIENT_RETRIES):
+            if response.success or not _is_transient_linear_failure(response):
+                break
+            delay = LINEAR_RETRY_BASE_DELAY_SEC * (2 ** attempt)
+            self.logger.warning(
+                "Linear %s failed (attempt %d/%d), retrying in %.0fs: %s",
+                description, attempt + 1, LINEAR_TRANSIENT_RETRIES + 1, delay, response.message,
+            )
+            await asyncio.sleep(delay)
+            response = await request(**arguments)
+        return response
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -699,7 +742,10 @@ class LinearConnector(BaseConnector):
 
         # Fetch all users with cursor-based pagination
         while True:
-            response = await datasource.users(first=page_size, after=cursor)
+            response = await self._with_transient_retry(
+                "users page",
+                datasource.users, first=page_size, after=cursor,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch users: {response.message}")
@@ -818,7 +864,10 @@ class LinearConnector(BaseConnector):
         # Fetch all teams with cursor-based pagination
         # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         while True:
-            response = await datasource.teams(first=page_size, after=cursor, filter=filter_dict)
+            response = await self._with_transient_retry(
+                "teams page",
+                datasource.teams, first=page_size, after=cursor, filter=filter_dict,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch teams: {response.message}")
@@ -948,8 +997,8 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time
         - Query: Fetch issues with updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max issue updated_at (fault tolerance)
-        - After all batches: Update last_sync_time to current time
+        - After the whole scan was read: Update last_sync_time to max issue updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -1015,9 +1064,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    if max_issue_updated_at:
-                        await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
+                if max_issue_updated_at:
+                    await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
@@ -1342,21 +1390,17 @@ class LinearConnector(BaseConnector):
         # Apply date filters to team_filter
         self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
 
-        # This ensures each batch's max updatedAt >= previous batches, so checkpoint
-        order_by = {"updatedAt": "ASC"}
-
         while True:
-            # Fetch issues batch ordered by updatedAt ASC
-            response = await datasource.issues(
+            response = await self._with_transient_retry(
+                f"issues page for team {team_key}",
+                datasource.issues,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=order_by
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch issues for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch issues for team {team_key}: {response.message}")
 
             issues_data = response.data.get("issues", {}) if response.data else {}
             issues_list = issues_data.get("nodes", [])
@@ -1498,15 +1542,16 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(attachment_filter, last_sync_time)
 
             while True:
-                response = await datasource.attachments(
+                response = await self._with_transient_retry(
+                    "attachments page",
+                    datasource.attachments,
                     first=50,
                     after=after_cursor,
-                    filter=attachment_filter if attachment_filter else None
+                    filter=attachment_filter if attachment_filter else None,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch attachments: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch attachments: {response.message}")
 
                 attachments_data = response.data.get("attachments", {}) if response.data else {}
                 attachments_list = attachments_data.get("nodes", [])
@@ -1592,15 +1637,15 @@ class LinearConnector(BaseConnector):
                 if batch_records:
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                # Update sync point after each batch
-                if max_attachment_updated_at:
-                    await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_attachment_updated_at:
+                await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
 
             if total_attachments > 0:
                 self.logger.info(f"✅ Synced {total_attachments} attachments")
@@ -1655,15 +1700,16 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(document_filter, last_sync_time)
 
             while True:
-                response = await datasource.documents(
+                response = await self._with_transient_retry(
+                    "documents page",
+                    datasource.documents,
                     first=50,
                     after=after_cursor,
-                    filter=document_filter if document_filter else None
+                    filter=document_filter if document_filter else None,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch documents: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch documents: {response.message}")
 
                 documents_data = response.data.get("documents", {}) if response.data else {}
                 documents_list = documents_data.get("nodes", [])
@@ -1763,15 +1809,15 @@ class LinearConnector(BaseConnector):
                         self.logger.debug("✅ Batch processed successfully")
                         batch_records = []  # Clear batch after processing
 
-                # Update sync point after each batch
-                if max_document_updated_at:
-                    await self._update_documents_sync_checkpoint(max_document_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_document_updated_at:
+                await self._update_documents_sync_checkpoint(max_document_updated_at)
 
             if total_documents > 0:
                 self.logger.info(f"✅ Synced {total_documents} documents")
@@ -1801,7 +1847,8 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time for each team
         - Query: Fetch projects with teams filter and updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max project updated_at (fault tolerance)
+        - After the whole scan was read: Update last_sync_time to max project updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -1857,10 +1904,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    # Uses max from PROJECTS ONLY (we query by project.updatedAt)
-                    if max_project_updated_at:
-                        await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
+                if max_project_updated_at:
+                    await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
@@ -1925,16 +1970,17 @@ class LinearConnector(BaseConnector):
 
         while True:
             # Fetch projects batch
-            response = await datasource.projects(
+            response = await self._with_transient_retry(
+                f"projects page for team {team_key}",
+                datasource.projects,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=None
+                orderBy=None,
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch projects for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch projects for team {team_key}: {response.message}")
 
             projects_data = response.data.get("projects", {}) if response.data else {}
             projects_list = projects_data.get("nodes", [])
@@ -3541,16 +3587,19 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular issues query with includeArchived=true, then filter for trashed in code
-                response = await datasource.issues(
+                response = await self._with_transient_retry(
+                    "issues page for deletion sync",
+                    datasource.issues,
                     first=50,
                     after=after_cursor,
                     filter=issue_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch issues for deletion sync: {response.message}")
-                    break
+                    # The scan is unordered: a trashed issue on the unread pages may carry an
+                    # earlier archivedAt than the max seen, so the checkpoint must stay put.
+                    raise RuntimeError(f"Failed to fetch issues for deletion sync: {response.message}")
 
                 issues_data = response.data.get("issues", {}) if response.data else {}
                 issues_list = issues_data.get("nodes", [])
@@ -3663,16 +3712,18 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular projects query with includeArchived=true, then filter for trashed in code
-                response = await datasource.projects(
+                response = await self._with_transient_retry(
+                    "projects page for deletion sync",
+                    datasource.projects,
                     first=50,
                     after=after_cursor,
                     filter=project_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch projects for deletion sync: {response.message}")
-                    break
+                    # Same as the issues scan: unordered, so a failed page leaves the checkpoint alone.
+                    raise RuntimeError(f"Failed to fetch projects for deletion sync: {response.message}")
 
                 projects_data = response.data.get("projects", {}) if response.data else {}
                 projects_list = projects_data.get("nodes", [])
@@ -3764,6 +3815,7 @@ class LinearConnector(BaseConnector):
         when the parent record is deleted.
         """
         try:
+            soft_delete = await is_soft_delete_enabled(self.config_service)
             # Use transaction to delete parent and all children
             async with self.data_store_provider.transaction() as tx_store:
                 # Get the parent record within transaction
@@ -3782,29 +3834,50 @@ class LinearConnector(BaseConnector):
                     parent_external_record_id=external_record_id
                 )
 
-                for child_record in child_records:
-                    # Recursively delete grandchildren (e.g., files attached to comments)
-                    grandchild_records = await tx_store.get_records_by_parent(
-                        connector_id=self.connector_id,
-                        parent_external_record_id=child_record.external_record_id
-                    )
-                    for grandchild in grandchild_records:
-                        # Delete grandchild record and all its relations
+                if soft_delete:
+                    # The same two levels the hard delete walks, nothing deeper.
+                    trash_ids = [parent_record.id]
+                    for child_record in child_records:
+                        trash_ids.append(child_record.id)
+                        trash_ids.extend(
+                            grandchild.id
+                            for grandchild in await tx_store.get_records_by_parent(
+                                connector_id=self.connector_id,
+                                parent_external_record_id=child_record.external_record_id,
+                            )
+                        )
+                else:
+                    for child_record in child_records:
+                        # Recursively delete grandchildren (e.g., files attached to comments)
+                        grandchild_records = await tx_store.get_records_by_parent(
+                            connector_id=self.connector_id,
+                            parent_external_record_id=child_record.external_record_id
+                        )
+                        for grandchild in grandchild_records:
+                            # Delete grandchild record and all its relations
+                            await tx_store.delete_records_and_relations(
+                                record_key=grandchild.id,
+                                hard_delete=True
+                            )
+
+                        # Delete child record and all its relations
                         await tx_store.delete_records_and_relations(
-                            record_key=grandchild.id,
+                            record_key=child_record.id,
                             hard_delete=True
                         )
 
-                    # Delete child record and all its relations
+                    # Finally, delete the parent record and all its relations
                     await tx_store.delete_records_and_relations(
-                        record_key=child_record.id,
+                        record_key=parent_record.id,
                         hard_delete=True
                     )
 
-                # Finally, delete the parent record and all its relations
-                await tx_store.delete_records_and_relations(
-                    record_key=parent_record.id,
-                    hard_delete=True
+            if soft_delete:
+                await self.data_entities_processor.on_records_soft_deleted(
+                    list(dict.fromkeys(trash_ids)),
+                    self.connector_id,
+                    delete_source=DeleteSource.CONNECTOR,
+                    follow=(),
                 )
 
             self.logger.debug(

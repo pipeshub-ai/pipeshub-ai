@@ -1,6 +1,7 @@
 """Tests for Azure Blob Storage connector."""
 
 import logging
+from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -23,11 +24,11 @@ from app.connectors.sources.azure_blob.connector import (
 )
 import base64
 from contextlib import asynccontextmanager
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.models.entities import RecordType, User
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.config.constants.arangodb import Connectors, OriginTypes
+from app.models.entities import FileRecord, RecordGroupType
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +48,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -75,19 +78,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "azureBlobConnectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc123;EndpointSuffix=core.windows.net"
-        },
-        "scope": "TEAM",
-        "created_by": "user-1",
-    })
-    return svc
 
 
 @pytest.fixture()
@@ -342,6 +332,8 @@ def mock_data_entities_processor_cov():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -807,11 +799,19 @@ class TestProcessAzureBlob:
         existing = MagicMock()
         existing.id = "moved-id"
         existing.external_record_id = "container/old/file.txt"
+        existing.external_record_group_id = "container"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         azure_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+
+        async def no_blobs() -> AsyncIterator[dict]:
+            for blob in ():
+                yield blob
+
+        # The old blob is gone from the container, so equal content at the new name is a move.
+        azure_connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data=no_blobs())))
         azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock(return_value=0)
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
@@ -1333,6 +1333,8 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.get_record_by_external_id = AsyncMock(return_value=None)
@@ -2679,7 +2681,8 @@ class TestFolderFilter:
 
         assert prefixes == ["reports/"]
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["reports/a.pdf"]
-        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Read before listing, read to find deletions, and the scope cleanup.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 3
 
     @pytest.mark.asyncio
     async def test_an_already_cleaned_scope_is_not_scanned_again(self, azure_blob_connector):
@@ -2690,7 +2693,8 @@ class TestFolderFilter:
         await c._sync_container("c1")
         await c._sync_container("c1")
 
-        c.data_entities_processor.get_records_in_record_group.assert_awaited_once()
+        # Two reads per sync; the unchanged scope is cleaned up once.
+        assert c.data_entities_processor.get_records_in_record_group.await_count == 5
 
     @pytest.mark.asyncio
     async def test_a_failed_cleanup_is_retried_next_sync(self, azure_blob_connector):
@@ -2698,7 +2702,7 @@ class TestFolderFilter:
         c.sync_filters = _folder_filter(["reports"])
         self._prepare(c, {"reports/": []})
         processor = c.data_entities_processor
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [_out_of_scope_record()])
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [_out_of_scope_record()])
         processor.on_record_deleted = AsyncMock(side_effect=[Exception("graph down"), None])
 
         await c._sync_container("c1")
@@ -2739,6 +2743,13 @@ class TestFolderFilter:
         assert prefixes == [None]
         assert [call.args[0]["name"] for call in c._process_azure_blob.await_args_list] == ["a.pdf"]
 
+
+
+class _AllRecorded:
+    """Every listed object already has a record, so the date cutoff alone decides what is skipped."""
+
+    def __contains__(self, _: object) -> bool:
+        return True
 
 _JAN = [datetime(2026, 1, day, tzinfo=timezone.utc) for day in (1, 2, 3)]
 
@@ -2789,7 +2800,7 @@ class TestFailedBlobCheckpoint:
     async def _sync(connector):
         from app.connectors.core.registry.folder_scope import FolderScope
 
-        await connector._sync_container_prefix("c1", "", FolderScope())
+        await connector._sync_container_prefix("c1", "", FolderScope(), _AllRecorded(), [])
 
     @pytest.mark.asyncio
     async def test_a_failed_blob_holds_the_checkpoint_before_it(self, azure_blob_connector):

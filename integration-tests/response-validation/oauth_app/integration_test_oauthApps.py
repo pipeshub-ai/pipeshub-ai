@@ -66,6 +66,7 @@ from helper.http.session_client import (  # noqa: E402
     SessionClient,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from helper.second_user import SecondUser, log_in, second_user  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
@@ -804,20 +805,25 @@ class TestOAuthAppRateLimiting(OAuthAppsTestBase):
         TOTAL = 1010
 
         rate_limited: list[requests.Response] = []
-        for _ in range(TOTAL):
-            resp = self.oauth.list_apps(limit=1)
-            if resp.status_code == 429:
-                rate_limited.append(resp)
-            if len(rate_limited) >= 5:
-                break
+        try:
+            for _ in range(TOTAL):
+                resp = self.oauth.list_apps(limit=1)
+                if resp.status_code == 429:
+                    rate_limited.append(resp)
+                if len(rate_limited) >= 5:
+                    break
 
-        if not rate_limited:
-            pytest.skip(
-                f"No 429 responses from {TOTAL} sequential requests — "
-                f"rate limiter window may be fresh in this environment"
-            )
+            if not rate_limited:
+                pytest.skip(
+                    f"No 429 responses from {TOTAL} sequential requests — "
+                    f"rate limiter window may be fresh in this environment"
+                )
 
-        for resp in rate_limited:
-            assert_response_matches_openapi_operation(
-                resp.json(), "listOAuthApps", status_code="429"
-            )
+            for resp in rate_limited:
+                assert_response_matches_openapi_operation(
+                    resp.json(), "listOAuthApps", status_code="429"
+                )
+        finally:
+            # Counted per test user, who goes on to register OAuth apps for the
+            # MCP suites on this same worker.
+            wait_out_rate_limit(rate_limited[-1] if rate_limited else None)

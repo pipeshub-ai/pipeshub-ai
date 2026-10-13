@@ -33,7 +33,7 @@ dependencies = [
   "cachetools==6.2.4",
   "cloudscraper==1.2.71",
   "cryptography==50.0.0",
-  "curl-cffi==0.14.0",
+  "curl-cffi==0.15.0",
   "dependency-injector==4.44.0",
   "discord.py==2.6.3",
   "docling==2.94.0",
@@ -41,7 +41,9 @@ dependencies = [
   "docx2python==3.5.0",
   "etcd3==0.12.0",
   "evernote3>=1.25.14",
-  "fastapi==0.115.6",
+  "fastapi==0.136.3",
+  # Starlette comes in through FastAPI, whose range admits releases with known advisories.
+  "starlette==1.7.0",
   "fastmcp==3.2.0",
   "fastembed==0.5.1",
   "feedparser>=6.0.0",
@@ -119,7 +121,7 @@ dependencies = [
   "tenacity==8.5.0",
   "thrift>=0.16.0",
   "uuid==1.30",
-  "uvicorn==0.35",
+  "uvicorn==0.37.0",
   "zstandard==0.25.0",
 ]
 

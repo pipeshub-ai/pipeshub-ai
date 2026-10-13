@@ -3294,7 +3294,10 @@ class SharePointConnector(BaseConnector):
             )
             sync_point = await self.user_group_sync_point.read_sync_point(sync_point_key)
 
-            delta_link = sync_point.get('deltaLink') if sync_point else None
+            # A run stopped mid-delta leaves only nextLink. Resuming there reads the page
+            # it stopped on again; a full sync would start a new delta link past it, and
+            # past the group deletions on the remaining pages.
+            delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
             if delta_link is None:
                 self.logger.info("No sync point found, performing initial full sync...")
@@ -3452,9 +3455,9 @@ class SharePointConnector(BaseConnector):
                 success = await self._handle_group_create(group)
                 if not success:
                     self.logger.error(f"❌ Error handling group create for {group.id}")
-                    continue
 
-                # Handle MEMBER changes
+                # Applied even when the save above failed: a removal listed here needs no
+                # member read, and is lost for good once the delta link moves past this page.
                 member_changes = (group.additional_data or {}).get('members@delta', [])
 
                 if member_changes:
@@ -3493,6 +3496,8 @@ class SharePointConnector(BaseConnector):
 
         if '@removed' in member_change:
             self.logger.info(f"    -> [DELTA] 👤⛔ REMOVING member: {email} ({user_id}) from group {group_id}")
+            # Not caught: a removal that fails must stop this page, so the delta link
+            # is not saved past it and the next run reads the removal again.
             success = await self.data_entities_processor.on_user_group_member_removed(
                 external_group_id=group_id,
                 user_email=email,

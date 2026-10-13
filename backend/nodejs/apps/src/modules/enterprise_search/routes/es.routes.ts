@@ -125,6 +125,7 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { fillDefaultChatModel } from '../utils/default-chat-model';
 
 /** Max bytes per file for chat attachment uploads (PDF/JPEG/PNG). Aligned with frontend, Slack, and Python. */
 const CHAT_ATTACHMENT_UPLOAD_MAX_BYTES = 5 * 1024 * 1024;
@@ -134,6 +135,11 @@ export function createConversationalRouter(container: Container): Router {
   guardPathParams(router, 'recordId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   let appConfig = container.get<AppConfig>('AppConfig');
+  const defaultChatModel = fillDefaultChatModel(
+    container.isBound('KeyValueStoreService')
+      ? container.get<KeyValueStoreService>('KeyValueStoreService')
+      : undefined,
+  );
   const chatPdfUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: CHAT_ATTACHMENT_UPLOAD_MAX_BYTES, files: 10 },
@@ -154,8 +160,10 @@ export function createConversationalRouter(container: Container): Router {
   router.post(
     '/create',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    // Same scope as /stream and as the query service's /chat, which answers the first message.
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    defaultChatModel,
     createConversation(appConfig),
   );
 
@@ -173,6 +181,7 @@ export function createConversationalRouter(container: Container): Router {
     '/internal/create',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    defaultChatModel,
     createConversation(appConfig),
   );
 
@@ -222,6 +231,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(enterpriseSearchStreamCreateSchema),
+    defaultChatModel,
     streamChat(appConfig),
   );
 
@@ -229,6 +239,7 @@ export function createConversationalRouter(container: Container): Router {
     '/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     ValidationMiddleware.validate(enterpriseSearchCreateSchema),
+    defaultChatModel,
     streamChatInternal(appConfig),
   );
 
@@ -246,6 +257,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(addMessageParamsSchema),
+    defaultChatModel,
     addMessage(appConfig),
   );
 
@@ -263,6 +275,7 @@ export function createConversationalRouter(container: Container): Router {
     '/internal/:conversationId/messages',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     ValidationMiddleware.validate(addMessageParamsSchema),
+    defaultChatModel,
     addMessage(appConfig),
   );
 
@@ -280,6 +293,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(addMessageStreamParamsSchema),
+    defaultChatModel,
     addMessageStream(appConfig),
   );
 
@@ -287,6 +301,7 @@ export function createConversationalRouter(container: Container): Router {
     '/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
     ValidationMiddleware.validate(addMessageParamsSchema),
+    defaultChatModel,
     addMessageStreamInternal(appConfig),
   );
 
@@ -399,6 +414,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
+    defaultChatModel,
     regenerateAnswers(appConfig),
   );
 
@@ -515,7 +531,7 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
+    requireScopes(OAuthScopeNames.SEMANTIC_READ, OAuthScopeNames.SEMANTIC_WRITE),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
   );

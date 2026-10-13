@@ -291,6 +291,19 @@ class TestGetRecordDownloadUrl:
 
         assert success is True
 
+    async def test_trashed_record_gets_no_signed_url_despite_its_edge(self) -> None:
+        # A trashed record keeps its permission edges so it can be restored.
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(is_deleted=True), has_edge=True, acl_access=True)
+        manager, _ = _make_manager(graph_provider=graph, blob_store=blob)
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        assert "was deleted" in json.loads(payload)["error"]
+        blob.get_download_url.assert_not_awaited()
+
     async def test_local_storage_links_to_permission_checked_stream(self) -> None:
         blob = MagicMock()
         blob.get_download_url = AsyncMock(return_value=None)

@@ -6,8 +6,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { KbNodeNameIcon } from '../../utils/kb-node-name-icon';
 import {
   ELEMENT_HEIGHT,
-  TREE_INDENT_PER_LEVEL,
-  TREE_BASE_PADDING,
+  treeIndentOffset,
   HOVER_BACKGROUND,
 } from '@/app/components/sidebar';
 import { useTranslation } from 'react-i18next';
@@ -94,7 +93,6 @@ export function FolderTreeItem({
   const hasChildren = enhancedNode.hasChildren || node.children.length > 0;
   const hasDescendants = getTreeNodeDescendantsFlag(enhancedNode);
   const isLoading = loadingNodeIds?.has(node.id);
-  const indent = node.depth * TREE_INDENT_PER_LEVEL;
 
   const showMeatballMenu = (isHovered || isMenuOpen) && !isEditing;
 
@@ -239,7 +237,7 @@ export function FolderTreeItem({
             width: '100%',
             minWidth: 0,
             minHeight: `${ELEMENT_HEIGHT}px`,
-            paddingLeft: `${TREE_BASE_PADDING + indent}px`,
+            paddingLeft: treeIndentOffset(node.depth),
             paddingRight: 'var(--space-2)',
             boxSizing: 'border-box',
             borderRadius: 'var(--radius-1)',
@@ -415,7 +413,7 @@ export function FolderTreeItem({
           disabled={loadingNestedChildrenMore}
           loading={loadingNestedChildrenMore}
           flexStyle={{
-            paddingLeft: `${TREE_BASE_PADDING + (node.depth + 1) * TREE_INDENT_PER_LEVEL}px`,
+            paddingLeft: treeIndentOffset(node.depth + 1),
             paddingTop: 'var(--space-1)',
           }}
         />

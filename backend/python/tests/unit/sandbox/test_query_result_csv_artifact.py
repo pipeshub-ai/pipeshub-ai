@@ -29,6 +29,7 @@ from app.services.artifact_registry.access import (
     ArtifactNotFoundError,
 )
 from app.services.artifact_registry.versioning import compute_content_hash
+from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.record_content import RecordAccessDeniedError, TieredRecordAuthorizer
 
 from ..services.artifact_registry.fakes import FakeBlobStore, FakeGraphProvider
@@ -51,6 +52,9 @@ class _Graph(FakeGraphProvider):
     async def check_record_access_with_details(self, user_id: str, org_id: str, record_id: str) -> dict | None:
         user = await self.get_user_by_user_id(user_id)
         if not user:
+            return None
+        record = await self.get_document(record_id, CollectionNames.RECORDS.value)
+        if record is not None and not is_live_record(record):
             return None
         edge = await self.get_edge(
             from_id=user["_key"], from_collection=CollectionNames.USERS.value,

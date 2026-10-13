@@ -1,11 +1,12 @@
 """Process-wide entry points for dropping stale accessible-record cache entries.
 
 The writes that make records appear or disappear are spread across the
-connectors and indexing services — sync completion, KB uploads and deletes, the
-indexing status flip. Threading an invalidator through every one of those call
-chains would mean touching dozens of constructors (``DataSourceEntitiesProcessor``
-alone is built in ~50 places), so services register one invalidator at startup
-and the hook sites call these module functions.
+connectors and indexing services — sync completion, permission changes, KB
+uploads and deletes, the indexing status flip. Threading an invalidator through
+every one of those call chains would mean touching dozens of constructors
+(``DataSourceEntitiesProcessor`` alone is built in ~50 places), so services
+register one invalidator at startup and the hook sites call these module
+functions.
 
 Every function is a no-op when nothing is registered — which is the case for any
 service that never enabled the cache, and during tests — and none of them can
@@ -30,6 +31,7 @@ __all__ = [
     "get_accessible_records_invalidator",
     "reset_accessible_records_invalidator",
     "notify_connector_sync_completed",
+    "notify_connector_permissions_changed",
     "notify_kb_records_changed",
     "notify_record_indexed",
 ]
@@ -66,6 +68,22 @@ async def notify_connector_sync_completed(connector_id: str, org_id: str | None 
         return
     try:
         await invalidator.on_connector_sync_completed(connector_id, org_id)
+    except Exception as e:  # pragma: no cover - the invalidator already swallows
+        _logger.warning("accessible-records invalidation failed: %s", str(e))
+
+
+async def notify_connector_permissions_changed(
+    connector_id: str, org_id: str | None = None
+) -> None:
+    """Someone may have lost (or gained) access to this connector's records.
+
+    Call only after the write has committed: a search between the drop and the
+    commit would cache the old permissions again."""
+    invalidator = _state["invalidator"]
+    if invalidator is None:
+        return
+    try:
+        await invalidator.on_connector_permissions_changed(connector_id, org_id)
     except Exception as e:  # pragma: no cover - the invalidator already swallows
         _logger.warning("accessible-records invalidation failed: %s", str(e))
 

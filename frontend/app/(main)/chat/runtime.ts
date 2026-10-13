@@ -32,7 +32,6 @@ import {
   type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
-  DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
   buildCitationMapsFromApi,
@@ -238,15 +237,13 @@ export function buildStreamChatRequestForSlot(
     showNoModelToast();
   }
   const effectiveModel = rawModel ?? { modelKey: '', modelName: '', modelFriendlyName: '' };
-  // No explicit user choice → prefer the agent's configured default, then
-  // fall back to DEFAULT_REASONING_EFFORT for reasoning-capable models.
+  // Neither the user nor the agent chose an effort → leave it off the request
+  // so the backend applies the model's own default, then "high".
   const reasoningEffortOverride = currentState.settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = getAgentDefaultReasoningEffort(modelCtxKey);
   const reasoningEffort =
     reasoningEffortOverride ??
-    (isModelReasoningCapable(modelCtxKey, effectiveModel)
-      ? (agentDefault ?? DEFAULT_REASONING_EFFORT)
-      : null);
+    (isModelReasoningCapable(modelCtxKey, effectiveModel) ? agentDefault : null);
 
   const isAgent = Boolean(effectiveAgentId);
   const knowledgeScope = currentState.agentKnowledgeScope;

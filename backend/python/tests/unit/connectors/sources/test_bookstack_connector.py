@@ -12,7 +12,7 @@ from app.config.constants.arangodb import Connectors
 from app.connectors.sources.bookstack.connector import BookStackConnector, RecordUpdate
 from contextlib import asynccontextmanager
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.models.entities import (
     AppRole,
@@ -67,19 +67,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "base_url": "https://bookstack.example.com",
-            "token_id": "tok-id-1",
-            "token_secret": "tok-secret-1",
-        },
-    })
-    return svc
 
 
 @pytest.fixture()

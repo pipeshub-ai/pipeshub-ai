@@ -75,6 +75,7 @@ const DocumentSchema = new Schema(
     documentPath: {
       type: String,
       trim: true,
+      index: true,
     },
     isVersionedFile: {
       type: Boolean,
@@ -172,6 +173,8 @@ const DocumentSchema = new Schema(
 );
 
 DocumentSchema.index({ orgId: 1, _id: 1 });
+// Finds a virtual record's record_/metadata_ documents wherever they are filed.
+DocumentSchema.index({ orgId: 1, documentName: 1 });
 // Lets a retried create find what its first attempt made, and settles two
 // attempts racing each other. Keys are per principal (initiatorUserId, null for
 // service tokens). Partial, so documents without a key are exempt.

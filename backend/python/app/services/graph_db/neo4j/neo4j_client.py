@@ -11,7 +11,7 @@ import time
 from logging import Logger
 from typing import TYPE_CHECKING, Any
 
-from neo4j import AsyncGraphDatabase
+from neo4j import AsyncGraphDatabase, Query
 from neo4j.exceptions import ClientError, ServiceUnavailable, SessionExpired
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
@@ -68,6 +68,7 @@ class Neo4jClient:
         stale_session_max_age: float = DEFAULT_STALE_SESSION_MAX_AGE,
         rebuild_cooldown: float = DEFAULT_REBUILD_COOLDOWN,
         explicit_transactions: bool = False,
+        honour_explicit_requests: bool = True,
         transaction_timeout: float = DEFAULT_TRANSACTION_TIMEOUT,
     ) -> None:
         """
@@ -97,6 +98,10 @@ class Neo4jClient:
                 auto-commit, as it has always been, and an abort only closes
                 the session. Explicit transactions hold node locks until
                 commit, which changes contention on shared nodes.
+            honour_explicit_requests: let a caller ask for a real transaction
+                with ``begin_transaction(explicit=True)`` while
+                ``explicit_transactions`` is off. False is the kill switch:
+                such a request then follows ``explicit_transactions`` too.
             transaction_timeout: server-side timeout for an explicit transaction
         """
         # Assign logger first before using it
@@ -112,6 +117,7 @@ class Neo4jClient:
         self._stale_session_max_age = float(stale_session_max_age)
         self._rebuild_cooldown = float(rebuild_cooldown)
         self._explicit_transactions = bool(explicit_transactions)
+        self._honour_explicit_requests = bool(honour_explicit_requests)
         self._transaction_timeout = float(transaction_timeout)
         # Populated on the first successful connect. Rebuilding a driver must
         # not re-run SHOW/CREATE DATABASE against the system database: the
@@ -377,13 +383,16 @@ class Neo4jClient:
         except (ClientError, ServiceUnavailable) as e:
             self.logger.error(f"❌ Error disconnecting from Neo4j: {str(e)}")
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a Neo4j transaction session.
 
         Args:
             read: Collections to read from (for compatibility, not used in Neo4j)
             write: Collections to write to (for compatibility, not used in Neo4j)
+            explicit: see ``opens_explicit_transaction``
 
         Returns:
             str: Transaction ID (session identifier)
@@ -404,7 +413,7 @@ class Neo4jClient:
         # Create a new session for this transaction
         session = self.driver.session(database=self.database)
         txn_id = str(uuid.uuid4())
-        if self._explicit_transactions:
+        if self.opens_explicit_transaction(explicit):
             try:
                 tx = await session.begin_transaction(timeout=self._transaction_timeout)
             except BaseException:
@@ -422,6 +431,17 @@ class Neo4jClient:
     @property
     def explicit_transactions(self) -> bool:
         return self._explicit_transactions
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        """Whether ``begin_transaction(explicit=...)`` opens a real transaction.
+
+        None follows ``explicit_transactions``. True opens one regardless,
+        unless ``honour_explicit_requests`` is off. False never does: each
+        query then commits on its own.
+        """
+        if explicit is None or (explicit and not self._honour_explicit_requests):
+            return self._explicit_transactions
+        return explicit
 
     def _forget_session(self, txn_id: str) -> None:
         self._active_sessions.pop(txn_id, None)
@@ -529,7 +549,8 @@ class Neo4jClient:
         self,
         query: str,
         parameters: dict[str, Any] | None = None,
-        txn_id: str | None = None
+        txn_id: str | None = None,
+        timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         """
         Execute a Cypher query with automatic reconnection on transient failures.
@@ -538,6 +559,10 @@ class Neo4jClient:
             query: Cypher query string
             parameters: Query parameters
             txn_id: Optional transaction ID (if None, creates auto-commit transaction)
+            timeout: Server-side limit in seconds for an auto-commit query,
+                including one run on a transaction's session when explicit
+                transactions are off. Ignored inside an explicit transaction,
+                which has its own limit.
 
         Returns:
             List[Dict]: Query results as list of dictionaries
@@ -557,18 +582,21 @@ class Neo4jClient:
             session = self._active_sessions[txn_id]
             lock = self._session_locks.get(txn_id)
             # With explicit transactions on, queries run inside the open
-            # transaction; otherwise on the session, where each is its own
-            # auto-commit.
-            runner = self._active_txs.get(txn_id, session)
+            # transaction, which carries its own limit from when it began;
+            # otherwise on the session, where each is its own auto-commit and
+            # takes the requested limit like any other.
+            tx = self._active_txs.get(txn_id)
+            runner = tx if tx is not None else session
+            statement = Query(query, timeout=timeout) if tx is None and timeout is not None else query
 
             try:
                 if lock:
                     # Serialize access to the session to prevent concurrent operations
                     async with lock:
-                        result = await runner.run(query, parameters)
+                        result = await runner.run(statement, parameters)
                         return await result.data()
                 # Fallback if lock doesn't exist (shouldn't happen)
-                result = await runner.run(query, parameters)
+                result = await runner.run(statement, parameters)
                 return await result.data()
             except (ClientError, ServiceUnavailable, SessionExpired) as e:
                 _report_neo4j_failure(e)
@@ -578,7 +606,7 @@ class Neo4jClient:
             # catches most stale connections, but a race (connection dies
             # between check and use) can still occur.
             try:
-                return await self._run_autocommit(query, parameters)
+                return await self._run_autocommit(query, parameters, timeout)
             except (ServiceUnavailable, SessionExpired) as first:
                 # One dead connection is not a dead driver: the pool opens a
                 # fresh connection for the retry, so try that before doing
@@ -587,17 +615,18 @@ class Neo4jClient:
                     "Neo4j connection lost during query — retrying on the pool: %s", first
                 )
                 try:
-                    return await self._run_autocommit(query, parameters)
+                    return await self._run_autocommit(query, parameters, timeout)
                 except (ServiceUnavailable, SessionExpired) as second:
                     await self._rebuild_driver_if_unreachable(second)
-                    return await self._run_autocommit(query, parameters)
+                    return await self._run_autocommit(query, parameters, timeout)
 
     async def _run_autocommit(
-        self, query: str, parameters: dict[str, Any]
+        self, query: str, parameters: dict[str, Any], timeout: float | None = None,
     ) -> list[dict[str, Any]]:
         try:
             async with self.driver.session(database=self.database) as session:
-                result = await session.run(query, parameters)
+                statement = Query(query, timeout=timeout) if timeout is not None else query
+                result = await session.run(statement, parameters)
                 return await result.data()
         except (ClientError, ServiceUnavailable, SessionExpired) as e:
             _report_neo4j_failure(e)

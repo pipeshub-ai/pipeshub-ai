@@ -508,3 +508,53 @@ class TestWholeDocumentRequests:
 
         for text in (whole, targeted):
             assert len(text) > 60_000, "the window was left unused"
+
+
+class TestFetchTraceForTheOptInFrame:
+    """With the opt-in trace on, a fetch records which blocks the model read."""
+
+    @staticmethod
+    def _text_record() -> dict[str, Any]:
+        return {
+            "id": "rec-1",
+            "virtual_record_id": "vr-1",
+            "record_name": "notes.txt",
+            "block_containers": {
+                "blocks": [
+                    {"index": i, "type": "text", "parent_index": None, "data": f"line {i}"}
+                    for i in range(3)
+                ],
+                "block_groups": [],
+            },
+        }
+
+    async def _fetch(self, **overrides: Any) -> SimpleNamespace:  # noqa: ANN401
+        from app.utils.chat_helpers import CitationRefMapper
+
+        ctx = _make_context(**overrides)
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=_fake_tool_returning([self._text_record()]),
+        ):
+            await execute_fetch_record(
+                context=ctx,
+                virtual_records={"vr-1": self._text_record()},
+                citation_ref_mapper=CitationRefMapper(),
+                record_ids=["rec-1"],
+            )
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_the_outcome_names_the_blocks_read(self) -> None:
+        ctx = await self._fetch(include_retrieval_context=True)
+
+        [outcome] = ctx.tool_state["fetch_render_outcomes"]["rec-1"]
+        assert outcome["shownBlocks"] == [0, 1, 2]
+        assert outcome["complete"] is True
+        assert outcome["tableTruncation"] is None
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_recorded_unless_the_trace_was_asked_for(self) -> None:
+        ctx = await self._fetch()
+
+        assert "fetch_render_outcomes" not in ctx.tool_state

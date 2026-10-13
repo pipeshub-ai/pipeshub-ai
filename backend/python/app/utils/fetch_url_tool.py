@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.citations import extract_tiny_ref
 from app.utils.html_to_blocks import html_to_blocks
+from app.utils.text_fragments import strip_fragment_directive
 from app.utils.url_fetcher import FetchError, fetch_url
 
 logger = logging.getLogger(__name__)
@@ -98,10 +99,8 @@ def _resolve_tiny_ref_url(url: str, ref_mapper: CitationRefMapper | None) -> str
         resolved = ref_mapper.ref_to_url.get(inner_ref)
         if resolved:
             url = resolved
-    # Drop text fragment: HTTP servers do not use it, and keeping it breaks fetches for some hosts.
-    if "#:~:text=" in url:
-        url = url.split("#:~:text=", 1)[0]
-    return url
+    # Drop the text directive: HTTP servers do not use it, and keeping it breaks fetches for some hosts.
+    return strip_fragment_directive(url)
 
 
 def create_fetch_url_tool(

@@ -26,6 +26,7 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 
 from app.models.entities import MessageRecord, Record, RecordGroup
+from app.services.graph_db.common.record_visibility import is_live_record
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
@@ -97,6 +98,11 @@ class SlackWorkspace:
     # Rotating tokens past their 12 hours, which Slack refuses with token_expired.
     expired_tokens: set[str] = field(default_factory=set)
     auth_user_id: Optional[str] = None
+    # When set, conversations.list refuses types whose read scope is not granted,
+    # as Slack does, and every reply carries them in X-OAuth-Scopes (unless
+    # scopes_header is off).
+    granted_scopes: set[str] | None = None
+    scopes_header: bool = True
     calls: list[SlackCall] = field(default_factory=list)
     downloads_seen: list[httpx.Request] = field(default_factory=list)
     hooks: list[tuple[str, Callable[[dict[str, str]], None]]] = field(default_factory=list)
@@ -214,7 +220,10 @@ class SlackWorkspace:
         handler = getattr(self, "_api_" + method.replace(".", "_"), None)
         if handler is None:
             return _json(200, {"ok": False, "error": "unknown_method"})
-        return _json(200, handler(params))
+        headers = {}
+        if self.granted_scopes is not None and self.scopes_header:
+            headers["x-oauth-scopes"] = ",".join(sorted(self.granted_scopes))
+        return _json(200, handler(params), headers)
 
     @staticmethod
     def _render_failure(url: str, reply: object) -> "_FakeHTTPResponse":
@@ -294,8 +303,18 @@ class SlackWorkspace:
             return "mpim"
         return "private_channel" if channel["is_private"] else "public_channel"
 
+    _TYPE_READ_SCOPE = {
+        "public_channel": "channels:read", "private_channel": "groups:read",
+        "im": "im:read", "mpim": "mpim:read",
+    }
+
     def _api_conversations_list(self, params: dict[str, str]) -> dict[str, Any]:
         types = set((params.get("types") or "public_channel").split(","))
+        if self.granted_scopes is not None:
+            needed = sorted(self._TYPE_READ_SCOPE[t] for t in types if self._TYPE_READ_SCOPE[t] not in self.granted_scopes)
+            if needed:
+                return {"ok": False, "error": "missing_scope", "needed": needed[0],
+                        "provided": ",".join(sorted(self.granted_scopes))}
         skip_archived = params.get("exclude_archived") in ("1", "true")
         listed = [
             c for c in self.channels.values()
@@ -369,8 +388,8 @@ def _headers(extra: dict[str, str]) -> HTTPMessage:
     return msg
 
 
-def _json(status: int, payload: dict[str, Any]) -> _FakeHTTPResponse:
-    return _FakeHTTPResponse(status, json.dumps(payload).encode(), _headers({}))
+def _json(status: int, payload: dict[str, Any], headers: dict[str, str] | None = None) -> _FakeHTTPResponse:
+    return _FakeHTTPResponse(status, json.dumps(payload).encode(), _headers(headers or {}))
 
 
 def _http_error(url: str, status: int, payload: dict[str, Any], headers: dict[str, str]) -> urllib.error.HTTPError:
@@ -454,6 +473,7 @@ class FakeSlackStore:
             r for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
             and (record_type is None or r.record_type.value == record_type)
+            and is_live_record(r)
         ]
 
     async def on_record_content_update(self, record: Record) -> None:

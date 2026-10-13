@@ -24,17 +24,6 @@ from datetime import datetime, timezone
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.sources.nextcloud.connector import (
     NEXTCLOUD_PERM_MASK_ALL,
-    NextcloudConnector,
-    extract_response_body,
-    get_file_extension,
-    get_mimetype_enum_for_nextcloud,
-    get_parent_path_from_path,
-    get_path_depth,
-    get_response_error,
-    is_response_successful,
-    nextcloud_permissions_to_permission_type,
-    parse_share_response,
-    parse_webdav_propfind_response,
 )
 
 
@@ -66,35 +55,6 @@ def mock_data_store_provider():
     mock_tx.__aexit__ = AsyncMock(return_value=None)
     provider.transaction.return_value = mock_tx
     return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "baseUrl": "https://nextcloud.example.com",
-            "username": "admin",
-            "password": "app-password-123",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
-def nextcloud_connector(mock_logger, mock_data_entities_processor,
-                        mock_data_store_provider, mock_config_service):
-    with patch("app.connectors.sources.nextcloud.connector.NextcloudApp"):
-        connector = NextcloudConnector(
-            logger=mock_logger,
-            data_entities_processor=mock_data_entities_processor,
-            data_store_provider=mock_data_store_provider,
-            config_service=mock_config_service,
-            connector_id="nc-conn-1",
-            scope="team",
-            created_by="test-user",
-        )
-    return connector
 
 
 # ===========================================================================

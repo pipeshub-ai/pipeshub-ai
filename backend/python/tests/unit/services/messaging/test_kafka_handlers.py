@@ -481,8 +481,10 @@ class TestEntityEventService:
         })
         svc.graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
 
-        with patch("app.services.messaging.kafka.handlers.entity.sync_task_manager") as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.services.messaging.kafka.handlers.entity.get_coordinator") as get_coordinator:
+            coordinator = get_coordinator.return_value
+            coordinator.request_stop = AsyncMock(return_value=True)
+            coordinator.is_running = AsyncMock(return_value=False)
 
             payload = {
                 "orgId": "org1",
@@ -492,6 +494,7 @@ class TestEntityEventService:
             result = await svc.process_event("appDisabled", payload)
 
         assert result is True
+        coordinator.request_stop.assert_awaited_once_with("c1")
 
     @pytest.mark.asyncio
     async def test_app_disabled_missing_org_or_apps(self):

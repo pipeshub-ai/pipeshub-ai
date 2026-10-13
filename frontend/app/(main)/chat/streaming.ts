@@ -42,7 +42,6 @@ import {
   type SSEAskUserQuestionEvent,
   type PendingAskUserQuestion,
   type MessagePart,
-  DEFAULT_REASONING_EFFORT,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
@@ -1533,9 +1532,7 @@ export async function streamRegenerateForSlot(
       const agentRegenDefault = getAgentDefaultReasoningEffort(regenCtxKey);
       const agentRegenReasoningEffort =
         agentRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel)
-          ? (agentRegenDefault ?? DEFAULT_REASONING_EFFORT)
-          : undefined);
+        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? agentRegenDefault : null);
       await ChatApi.streamAgentRegenerate(
         threadAgentId,
         slot.convId,
@@ -1566,11 +1563,9 @@ export async function streamRegenerateForSlot(
             (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
           )]
         : undefined;
-      const assistantRegenReasoningEffortOverride =
-        useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
+      // Left unset when the user chose nothing, so the backend applies the model's default.
       const assistantRegenReasoningEffort =
-        assistantRegenReasoningEffortOverride ??
-        (isModelReasoningCapable(regenCtxKey, resolvedModel) ? DEFAULT_REASONING_EFFORT : undefined);
+        useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
       await ChatApi.streamRegenerate(slot.convId, messageId, regenerateCallbacks, {
         modelKey: resolvedModel.modelKey,
         modelName: resolvedModel.modelName,

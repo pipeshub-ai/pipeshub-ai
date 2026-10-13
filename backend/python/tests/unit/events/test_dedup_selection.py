@@ -178,3 +178,25 @@ class TestDedupDecisionDefaults:
         match = DuplicateMatch(record={}, same_collection=True, is_processed=True)
         with pytest.raises(dataclasses.FrozenInstanceError):
             match.same_collection = False
+
+
+class TestATwinStillEnriching:
+    """indexingStatus turns COMPLETED before enrichment runs; that twin is not done yet."""
+
+    @staticmethod
+    def _enriching(indexed_at: int) -> dict:
+        return {**_rec("twin", COMPLETED, DRIVE), "extractionStatus": IN_PROGRESS, "processingStartedAt": indexed_at}
+
+    def test_is_waited_on_not_reused(self) -> None:
+        match = select_duplicate([self._enriching(5_000)], DRIVE, _resolver, enrichment_live_after_ms=1_000)
+        assert match == DuplicateMatch(record=match.record, same_collection=True, is_processed=False)
+
+    def test_an_abandoned_one_is_ignored(self) -> None:
+        assert select_duplicate([self._enriching(500)], DRIVE, _resolver, enrichment_live_after_ms=1_000) is None
+
+    def test_a_finished_twin_is_preferred(self) -> None:
+        done = {**_rec("done", COMPLETED, DRIVE), "extractionStatus": FAILED}
+        match = select_duplicate(
+            [self._enriching(5_000), done], DRIVE, _resolver, enrichment_live_after_ms=1_000
+        )
+        assert match.record["_key"] == "done" and match.is_processed

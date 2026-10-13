@@ -500,6 +500,7 @@ class ArtifactManager:
         from app.config.constants.arangodb import OriginTypes
         from app.services.record_content import (
             RecordAccessDeniedError,
+            RecordNotFoundError,
             TieredRecordAuthorizer,
         )
 
@@ -507,6 +508,8 @@ class ArtifactManager:
         # check between the caller and the bytes.
         try:
             await TieredRecordAuthorizer(graph_provider).authorize(self._actor(), record)
+        except RecordNotFoundError:
+            return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to access this record"})
         except Exception:

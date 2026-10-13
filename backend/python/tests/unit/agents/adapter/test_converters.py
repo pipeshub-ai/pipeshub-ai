@@ -498,6 +498,40 @@ class TestTokenUsage:
         assert usage.cache_write_tokens == 1
 
 
+
+    @staticmethod
+    def _usage(input_tokens: int, details: dict) -> AIMessage:
+        return AIMessage(content="hi", usage_metadata={
+            "input_tokens": input_tokens, "output_tokens": 7, "total_tokens": input_tokens + 7,
+            "input_token_details": details,
+        })
+
+    def test_anthropic_writes_reported_by_ttl_are_counted(self) -> None:
+        """Non-streaming langchain-anthropic moves writes into the TTL counters
+        and zeroes cache_creation."""
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"cache_read": 0, "cache_creation": 0, "ephemeral_5m_input_tokens": 900, "ephemeral_1h_input_tokens": 50},
+        ))
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (1_000, 0, 950)
+
+    def test_ttl_counters_win_over_cache_creation_so_nothing_is_counted_twice(self) -> None:
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"cache_creation": 900, "ephemeral_5m_input_tokens": 900},
+        ))
+        assert usage.cache_write_tokens == 900
+
+    def test_service_tier_prefixed_counters_are_read(self) -> None:
+        usage = token_usage_from_ai_message(self._usage(
+            1_000, {"priority_cache_read": 600, "flex_cache_read": 100, "cache_creation": 20},
+        ))
+        assert (usage.cache_read_tokens, usage.cache_write_tokens) == (700, 20)
+
+    def test_input_that_excludes_cached_tokens_is_made_to_include_them(self) -> None:
+        usage = token_usage_from_ai_message(
+            self._usage(100, {"cache_read": 800, "cache_creation": 50}), input_excludes_cached=True,
+        )
+        assert (usage.input_tokens, usage.cache_read_tokens, usage.cache_write_tokens) == (950, 800, 50)
+
 class TestConvertToolSchemaToLangchainDict:
     """`convert_tool_schema_to_langchain_dict` replaced a round-trip through
     a dynamically-built Pydantic model (`StructuredTool.args_schema`) with a

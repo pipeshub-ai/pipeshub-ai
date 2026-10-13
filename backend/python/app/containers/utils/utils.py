@@ -6,7 +6,9 @@ from app.config.constants.arangodb import ExtensionTypes
 from app.events.events import EventProcessor
 from app.events.processor import Processor
 from app.modules.entity_resolution import EntityResolver
+from app.modules.indexing.connector_off_events import GraphConnectorOffFilter
 from app.modules.indexing.run import IndexingPipeline
+from app.modules.indexing.stored_content_cleanup import StoredContentCleanup
 from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -33,6 +35,7 @@ from app.services.featureflag.featureflag import FeatureFlagService
 from app.services.featureflag.provider.etcd import EtcdProvider
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.config import messaging_env
 from app.services.vector_db.collection_manifest import CollectionManifestStore
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
@@ -150,6 +153,7 @@ class ContainerUtils:
         graph_provider: IGraphDBProvider,
         vector_db_service: IVectorDBService,
         collection_registry: CollectionRegistry,
+        blob_storage: BlobStorage | None = None,
     ) -> IndexingPipeline:
         """Async factory for the legacy IndexingPipeline (collection mgmt, bulk deletes)."""
         pipeline = IndexingPipeline(
@@ -158,6 +162,10 @@ class ContainerUtils:
             graph_provider=graph_provider,
             collection_registry=collection_registry,
             vector_db_service=vector_db_service,
+            stored_content=(
+                StoredContentCleanup(logger, graph_provider, blob_storage)
+                if blob_storage is not None else None
+            ),
         )
         return pipeline
 
@@ -169,10 +177,14 @@ class ContainerUtils:
         return vector_store
 
     async def create_entity_vector_store(
-        self, logger, config_service, vector_db_service, collection_name: str
+        self, logger, config_service, vector_db_service, collection_name: str,
+        recreate_on_dimension_mismatch: bool = False,
     ) -> EntityVectorStore:
         """Async factory for EntityVectorStore"""
-        return EntityVectorStore(logger, config_service, vector_db_service, collection_name)
+        return EntityVectorStore(
+            logger, config_service, vector_db_service, collection_name,
+            recreate_on_dimension_mismatch=recreate_on_dimension_mismatch,
+        )
 
     async def create_entity_resolver(
         self,
@@ -191,6 +203,15 @@ class ContainerUtils:
             graph_provider=graph_provider,
             entity_vector_store=entity_vector_store,
         )
+
+    async def create_connector_off_filter(
+        self, logger: Logger, graph_provider: IGraphDBProvider
+    ) -> GraphConnectorOffFilter | None:
+        """Async factory for the indexing consumer's connector-off filter."""
+        refresh_seconds = messaging_env.connector_state_refresh_seconds
+        if refresh_seconds <= 0:
+            return None
+        return GraphConnectorOffFilter(graph_provider, logger, refresh_seconds)
 
     async def create_graphdb(self, graph_provider, logger) -> GraphDBTransformer:
         """Async factory for GraphDB transformer (uses graph_provider for transactions)"""
@@ -332,10 +353,12 @@ class ContainerUtils:
         from app.services.parsing.client import ParsingClient  # noqa: PLC0415
         return ParsingClient(config_service=config_service)
 
-    async def create_extraction_client(self) -> "ExtractionClient":  # type: ignore[name-defined]
+    async def create_extraction_client(
+        self, config_service: ConfigurationService
+    ) -> "ExtractionClient":  # type: ignore[name-defined]
         """Async factory for ExtractionClient."""
         from app.services.extraction.client import ExtractionClient  # noqa: PLC0415
-        return ExtractionClient()
+        return ExtractionClient(config_service=config_service)
 
     async def create_retrieval_service(
         self,

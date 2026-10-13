@@ -19,6 +19,11 @@ from urllib.parse import parse_qs, urlparse
 
 import httpx
 
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
+
 if TYPE_CHECKING:
     from app.connectors.core.base.connector.connector_service import BaseConnector
     from app.models.entities import Record
@@ -147,6 +152,7 @@ class FakeRecordsDb:
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
         self.fail_lookup_for: set[str] = set()
+        self.fail_delete_for: set[str] = set()
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
@@ -160,12 +166,14 @@ class FakeRecordsDb:
         return None if stored is None else as_base_record(stored)
 
     async def get_records_by_parent(
-        self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None
+        self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Record]:
-        """Copies, as a real read would return: changing them does not change what is stored."""
+        """Base-record copies, as the stores return: changing them does not change what is stored."""
         return [
-            r.model_copy() for r in self.records.values()
+            as_base_record(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id and record_type in (None, r.record_type)
+            and matches_visibility(r, visibility)
         ]
 
     async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
@@ -186,7 +194,13 @@ class FakeRecordsDb:
         self.user_groups.extend(groups)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
+        if record_id in self.fail_delete_for:
+            self.fail_delete_for.discard(record_id)
+            raise RuntimeError(f"delete of {record_id} failed")
         self.deleted.append(record_id)
+        for external_id, record in list(self.records.items()):
+            if record.id == record_id:
+                del self.records[external_id]
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
@@ -213,7 +227,8 @@ class FakeCheckpointStore:
             items = value if isinstance(value, list) else [value]
             if any(isinstance(item, (dict, list, tuple, set)) for item in items):
                 raise TypeError(f"sync point field {field!r} is not a primitive: {value!r}")
-        self.sync_points[key] = dict(data)
+        # Both graph stores merge fields into an existing sync point (Neo4j SET +=, Arango UPDATE).
+        self.sync_points[key] = {**self.sync_points.get(key, {}), **data}
 
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)

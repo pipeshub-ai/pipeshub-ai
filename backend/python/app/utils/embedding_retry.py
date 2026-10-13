@@ -50,6 +50,8 @@ def is_retriable_embedding_error(exc: BaseException) -> bool:
             openai.APIConnectionError,
             openai.APITimeoutError,
             openai.RateLimitError,
+            # A caller's own per-attempt deadline running out.
+            TimeoutError,
         ),
     ):
         return True
@@ -129,7 +131,7 @@ def call_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                exc,
+                str(exc) or type(exc).__name__,
                 delay,
             )
             time.sleep(delay)
@@ -165,7 +167,7 @@ async def await_with_retry(
                 operation,
                 attempt,
                 total_attempts,
-                exc,
+                str(exc) or type(exc).__name__,
                 delay,
             )
             await asyncio.sleep(delay)

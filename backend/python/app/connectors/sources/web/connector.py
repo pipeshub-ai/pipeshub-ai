@@ -5,10 +5,10 @@ import hashlib
 import random
 import re
 import uuid
-from http import HTTPStatus
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
+from http import HTTPStatus
 from io import BytesIO
 from logging import Logger
 from typing import AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -23,9 +23,9 @@ from PIL import Image
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FILE_MIME_TYPES,
     AppGroups,
     Connectors,
-    FILE_MIME_TYPES,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -33,7 +33,6 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -44,6 +43,12 @@ from app.connectors.core.base.error.stream_errors import (
     internal_service_status,
     map_source_status,
 )
+from app.connectors.core.base.sync_point.sync_point import (
+    SyncDataPointType,
+    SyncPoint,
+    generate_record_sync_point_key,
+)
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.interfaces.connector.apps import App
 from app.connectors.core.registry.connector_builder import (
     CommonFields,
@@ -63,6 +68,32 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.sources.web.address_guard import (
+    create_guarded_session,
+    is_unsafe_url,
+)
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
+from app.connectors.sources.web.crawl4ai_fetcher import (
+    Crawl4AIFetcher,
+    FetchResult,
+    get_shared_fetcher,
+    release_shared_fetcher,
+    resolve_fetch_status_code,
+)
+from app.connectors.sources.web.csr_detection import (
+    CSR_PROBE_JS,
+    PRE_HYDRATION_INIT_SCRIPT,
+    analyze_rendering,
+)
+from app.connectors.sources.web.fetch_strategy import (
+    MAX_RATE_LIMIT_BACKOFF,
+    FetchResponse,
+    build_stealth_headers,
+    fetch_url_with_fallback,
+    too_many_redirects_response,
+    unsafe_address_response,
+)
+from app.connectors.sources.web.robots import RobotsRules
 from app.models.entities import (
     AppUser,
     FileRecord,
@@ -72,26 +103,14 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.connectors.sources.web.address_guard import create_guarded_session, is_unsafe_url
-from app.connectors.sources.web.fetch_strategy import (
-    MAX_RATE_LIMIT_BACKOFF,
-    FetchResponse,
-    build_stealth_headers,
-    fetch_url_with_fallback,
-    too_many_redirects_response,
-    unsafe_address_response,
-)
-from app.connectors.sources.web.crawl4ai_fetcher import Crawl4AIFetcher, FetchResult, get_shared_fetcher, release_shared_fetcher, resolve_fetch_status_code
-from app.connectors.sources.web.robots import RobotsRules
-from app.connectors.sources.web.csr_detection import CSR_PROBE_JS, PRE_HYDRATION_INIT_SCRIPT, analyze_rendering
-from app.connectors.core.base.sync_point.sync_point import SyncDataPointType, SyncPoint, generate_record_sync_point_key
-from app.services.notification.types import NotificationSeverity, NotificationType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.modules.parsers.image_parser.image_parser import ImageParser
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
     """Wrap raw bytes as an async generator for StreamingResponse."""
@@ -897,6 +916,19 @@ class WebConnector(BaseConnector):
                 message=message + self._robots_summary(),
             )
 
+        except BrowserUnavailableError as e:
+            # Raised before process_retry_urls, so no page is recorded as unreachable for a fault of ours.
+            self.logger.error("❌ Web sync stopped, headless browser unavailable: %s", e)
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title="Web crawl stopped",
+                message=(
+                    "The browser that renders this site's pages stopped and could not be restarted. "
+                    f"{self.processed_urls} pages were saved before it stopped. Sync again to continue."
+                ),
+            )
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error during web sync: {e}", exc_info=True)
             raise
@@ -929,6 +961,8 @@ class WebConnector(BaseConnector):
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1
 
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error crawling single page {url}: {e}", exc_info=True)
 
@@ -1126,13 +1160,15 @@ class WebConnector(BaseConnector):
                     except (asyncio.CancelledError, Exception):
                         pass
 
-            if producer_error is not None:
-                raise producer_error
-
             if batch_records:
                 await self.data_entities_processor.on_new_records(batch_records)
                 self.processed_urls += len(batch_records)
 
+            if producer_error is not None:
+                raise producer_error
+
+        except BrowserUnavailableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error in recursive crawl: {e}", exc_info=True)
             raise
@@ -1321,7 +1357,7 @@ class WebConnector(BaseConnector):
                                 current_url,
                                 raw_result.status_code if raw_result else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(current_url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(current_url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw_result = crawl4ai_resp
 
@@ -1390,7 +1426,8 @@ class WebConnector(BaseConnector):
             except Exception:
                 pass
 
-        if self._excluded_by_extension_filter(result):
+        if await self._excluded_by_extension_filter(result):
+            await self._remove_filtered_out(result, requested_url)
             return False
         if redirected:
             self._landed_urls.add(landed)
@@ -1740,6 +1777,19 @@ class WebConnector(BaseConnector):
             self._crawl4ai_result_to_response(result, url), url, no_answer=self._browser_got_no_answer(result),
         )
 
+    async def _headless_fallback_fetch(self, url: str) -> FetchResponse | None:
+        """The browser as a second try after plain HTTP: without one, the plain-HTTP answer stands."""
+        try:
+            return await self._headless_fetch(url)
+        except BrowserUnavailableError as e:
+            self.logger.warning("⚠️ Headless fallback skipped for %s: %s", url, e)
+            return None
+        except Exception as e:
+            # Raising here would skip the plain-HTTP answer's validation, which is
+            # what queues a rate-limited or failed page for retry.
+            self.logger.warning("⚠️ Headless fallback failed for %s: %s", url, type(e).__name__)
+            return None
+
     async def _headless_fetch_many(self, urls: list[str]) -> list[FetchResponse | None]:
         """Fetch a batch of URLs via crawl4ai concurrently; documents go over plain HTTP."""
         assert self.crawl4ai_fetcher is not None
@@ -2084,9 +2134,14 @@ class WebConnector(BaseConnector):
             "Raise the Maximum Size in MB setting to include it, then sync again."
         )
 
-    def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
+    async def _excluded_by_extension_filter(self, result: FetchResponse) -> bool:
         """Checked after links are extracted: an "only PDFs" filter must still crawl the pages linking to them."""
-        content_type = result.headers.get("Content-Type", "").lower()
+        content_type = (self._header(result.headers, "Content-Type") or "").lower()
+        if not content_type and result.status_code == HTTPStatus.NOT_MODIFIED:
+            # A 304 has no body and often no Content-Type; without one, an extensionless
+            # URL would read as html. The stored copy it vouches for says what the page is.
+            stored = await self._stored_record(result.final_url)
+            content_type = (stored.mime_type or "").lower() if stored else ""
         _, extension = self._determine_mime_type(result.final_url, content_type)
         return not self._pass_extension_filter(extension)
 
@@ -2129,15 +2184,17 @@ class WebConnector(BaseConnector):
                                 url,
                                 raw.status_code if raw else "connection error",
                             )
-                            crawl4ai_resp = await self._headless_fetch(url)
+                            crawl4ai_resp = await self._headless_fallback_fetch(url)
                             if crawl4ai_resp is not None and crawl4ai_resp.success and crawl4ai_resp.status_code < HttpStatusCode.BAD_REQUEST.value:
                                 raw = crawl4ai_resp
                 result = await self._validate_fetch_result(url, depth, referer, raw)
-                if (
-                    result is None
-                    or self._excluded_by_extension_filter(result)
-                    or not await self._robots_allows_landing(url, result)
-                ):
+                if result is None:
+                    return None
+                # Robots first: a landing it refuses was never loaded, so its answer can't remove anything.
+                if not await self._robots_allows_landing(url, result):
+                    return None
+                if await self._excluded_by_extension_filter(result):
+                    await self._remove_filtered_out(result, url)
                     return None
 
             if result.status_code == HTTPStatus.NOT_MODIFIED:
@@ -2159,11 +2216,10 @@ class WebConnector(BaseConnector):
                     timeout=15, max_size_mb=self.max_size_mb, allow_hop=self._hop_allowed,
                 )
                 result = await self._validate_fetch_result(url, depth, referer, refetched)
-                if (
-                    result is None
-                    or result.status_code == HTTPStatus.NOT_MODIFIED
-                    or self._excluded_by_extension_filter(result)
-                ):
+                if result is None or result.status_code == HTTPStatus.NOT_MODIFIED:
+                    return None
+                if await self._excluded_by_extension_filter(result):
+                    await self._remove_filtered_out(result, url)
                     return None
 
             final_url = result.final_url
@@ -2366,6 +2422,8 @@ class WebConnector(BaseConnector):
 
             return record_update
 
+        except BrowserUnavailableError:
+            raise
         except asyncio.TimeoutError:
             self.logger.warning(f"⚠️ Timeout fetching {url}")
             return None
@@ -2633,7 +2691,38 @@ class WebConnector(BaseConnector):
             self._gone_this_sync.add(external_id)
             return
         self.logger.info("Removing %s: gone, or moved to another stored page, on two syncs in a row", url)
-        await self.data_entities_processor.on_record_deleted(record.id)
+        await self._remove_record(record, url)
+
+    async def _remove_filtered_out(self, result: FetchResponse, requested_url: str) -> None:
+        """Remove what we stored for a page whose answer the file-type filter now leaves out.
+
+        Only a page the site actually answered gets here, so a narrowed filter removes
+        what it excludes, and a fetch that failed removes nothing. The page is the one
+        the answer came from. A requested URL that now redirects to it keeps its own
+        record unless the filter leaves out that record's type too: a landing the
+        filter drops is never kept, so the usual redirect cleanup does not run for it.
+        Folder placeholders stay: they hold the tree
+        together, not content.
+        """
+        record = await self._stored_record(result.final_url)
+        if record is not None and not record.is_internal:
+            self.logger.info("Removing %s: the file-type filter now leaves it out", result.final_url)
+            await self._remove_record(record, result.final_url)
+        if self._normalize_url(requested_url) == self._normalize_url(result.final_url):
+            return
+        old = await self._stored_record(requested_url)
+        if old is None or old.is_internal or (record is not None and old.id == record.id):
+            return
+        _, old_extension = self._determine_mime_type(requested_url, (old.mime_type or "").lower())
+        if not self._pass_extension_filter(old_extension):
+            self.logger.info("Removing %s: the file-type filter now leaves it out", requested_url)
+            await self._remove_record(old, requested_url)
+
+    async def _remove_record(self, record: Record, url: str) -> None:
+        in_trash = await self.data_entities_processor.on_record_deleted(record.id)
+        # A page in the trash keeps its stored copy; the purge removes both.
+        if in_trash:
+            return
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
 
@@ -3925,7 +4014,12 @@ class WebConnector(BaseConnector):
                 raise connector_not_ready(self.display_name)
 
             if self.use_headless_browser and self.crawl4ai_fetcher:
-                result = await self._headless_fetch(record.weburl, walk_first=False)
+                try:
+                    result = await self._headless_fetch(record.weburl, walk_first=False)
+                except BrowserUnavailableError as e:
+                    # Our browser failed, not the site: the page may be fine, so no site status is reported.
+                    self.logger.warning("Headless browser unavailable for record %s: %s", record.id, e)
+                    raise internal_service_status(HttpStatusCode.SERVICE_UNAVAILABLE.value) from e
             else:
                 result = await fetch_url_with_fallback(
                     url=record.weburl,

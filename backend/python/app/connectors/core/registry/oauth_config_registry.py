@@ -2,6 +2,10 @@ from typing import Any, Dict, List, Optional
 
 from app.connectors.core.registry.auth_builder import OAuthConfig, OAuthScopeType
 
+CONNECTOR_SOURCE = "connector"
+TOOLSET_SOURCE = "toolset"
+_SOURCES = (CONNECTOR_SOURCE, TOOLSET_SOURCE)
+
 
 class OAuthConfigRegistry:
     """
@@ -12,11 +16,12 @@ class OAuthConfigRegistry:
     itself has no dependencies on those registries.
 
     This registry:
-    - Stores and retrieves OAuth configurations by connector_name (unique key)
+    - Stores and retrieves OAuth configurations by connector_name
     - Provides discovery methods to find connectors/toolsets with OAuth support
     - Filters connectors by OAuth scope types
-    - If same connector_name is registered from both connector and toolset registries,
-      the last registration wins (OAuth config is generic and shared)
+    - Keeps a connector's and a toolset's registration of the same name apart.
+      Both "Drive" registrations exist, with different redirect URIs and scopes,
+      so a connector OAuth app must not be built from the toolset's.
     """
 
     def __init__(self) -> None:
@@ -27,29 +32,43 @@ class OAuthConfigRegistry:
         connector or toolset registries.
         """
         self._configs: Dict[str, OAuthConfig] = {}
+        self._toolset_configs: dict[str, OAuthConfig] = {}
 
-    def register(self, config: OAuthConfig, *, source: str = "connector") -> None:
+    def _store(self, source: str) -> dict[str, OAuthConfig]:
+        if source not in _SOURCES:
+            raise ValueError(f"Unknown OAuth config source {source!r}; expected one of {_SOURCES}")
+        return self._toolset_configs if source == TOOLSET_SOURCE else self._configs
+
+    def register(self, config: OAuthConfig, *, source: str = CONNECTOR_SOURCE) -> None:
         """
-        Register an OAuth configuration for a connector/toolset.
+        Register an OAuth configuration for a connector or a toolset.
 
-        If a config with the same connector_name already exists, it will be
-        overwritten. This allows the same OAuth config to be shared between
-        connector and toolset registries (e.g., "Jira" can exist in both,
-        but OAuth config is generic and shared).
+        A second registration from the same source replaces the first; a
+        registration from the other source is kept alongside it.
 
         Args:
             config: OAuthConfig instance to register
-            source: Unused here; accepted so namespaced registry
-                subclass (which dispatches by source) can share the same
-                call sites without a TypeError.
+            source: "connector" or "toolset"
         """
-        self._configs[config.connector_name] = config
+        self._store(source)[config.connector_name] = config
 
-    def get_config(self, connector_name: str) -> Optional[OAuthConfig]:
-        """Get OAuth configuration for a connector"""
-        return self._configs.get(connector_name)
+    def get_config(
+        self, connector_name: str, *, source: str = CONNECTOR_SOURCE
+    ) -> Optional[OAuthConfig]:
+        """Get the OAuth configuration registered for a name by ``source``.
 
-    def get_metadata(self, connector_name: str) -> Dict[str, Any]:
+        A name only the other side registers (a toolset-only "Meet") still
+        resolves, to that side's configuration.
+        """
+        own = self._store(source).get(connector_name)
+        if own is not None:
+            return own
+        other = TOOLSET_SOURCE if source == CONNECTOR_SOURCE else CONNECTOR_SOURCE
+        return self._store(other).get(connector_name)
+
+    def get_metadata(
+        self, connector_name: str, *, source: str = CONNECTOR_SOURCE
+    ) -> Dict[str, Any]:
         """
         Get display metadata for a connector/toolset type from OAuth config registry.
 
@@ -58,11 +77,12 @@ class OAuthConfigRegistry:
 
         Args:
             connector_name: Name of the connector/toolset type
+            source: "connector" or "toolset", for a name both register
 
         Returns:
             Dictionary with metadata fields (iconPath, appGroup, appDescription, appCategories)
         """
-        oauth_config = self.get_config(connector_name)
+        oauth_config = self.get_config(connector_name, source=source)
         if oauth_config:
             return {
                 "iconPath": oauth_config.icon_path,
@@ -93,23 +113,26 @@ class OAuthConfigRegistry:
         return config.scopes.get_all_scopes()
 
     def has_config(self, connector_name: str) -> bool:
-        """Check if a connector has OAuth configuration"""
-        return connector_name in self._configs
+        """Check if a connector or toolset has OAuth configuration"""
+        return connector_name in self._configs or connector_name in self._toolset_configs
 
     def list_connectors(self) -> List[str]:
-        """List all connectors with OAuth configurations"""
-        return list(self._configs.keys())
+        """List all connector and toolset names with OAuth configurations, each once"""
+        return list(dict.fromkeys([*self._configs, *self._toolset_configs]))
 
-    def remove_config(self, connector_name: str) -> bool:
-        """Remove OAuth configuration for a connector"""
-        if connector_name in self._configs:
-            del self._configs[connector_name]
-            return True
-        return False
+    def remove_config(self, connector_name: str, *, source: str | None = None) -> bool:
+        """Remove the OAuth configuration ``source`` registered for a name, or both when no source is given"""
+        stores = [self._store(source)] if source is not None else [self._configs, self._toolset_configs]
+        removed = False
+        for store in stores:
+            if connector_name in store:
+                del store[connector_name]
+                removed = True
+        return removed
 
     def get_all_configs(self) -> Dict[str, OAuthConfig]:
-        """Get all registered OAuth configurations"""
-        return self._configs.copy()
+        """Get all registered OAuth configurations, the connector's where both register a name"""
+        return {**self._toolset_configs, **self._configs}
 
     def get_oauth_connectors(self) -> List[str]:
         """

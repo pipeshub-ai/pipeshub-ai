@@ -1,5 +1,6 @@
 """Unit tests for app.modules.retrieval.retrieval_service.RetrievalService."""
 
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -97,6 +98,10 @@ class TestFormatResults:
 # ============================================================================
 
 class TestCreateEmptyResponse:
+    def test_does_not_expose_accessible_record_map(self, retrieval_service):
+        resp = retrieval_service._create_empty_response("no access", Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+        assert "accessible_virtual_id_to_record_id" not in resp
+
     def test_success_status(self, retrieval_service):
         resp = retrieval_service._create_empty_response("ok", Status.SUCCESS)
         assert resp["status"] == "success"
@@ -422,6 +427,80 @@ class TestGetEmbeddingModelInstance:
             assert result is not None
 
 
+class TestQueryEmbeddingAttemptBound:
+    """A stalled request to a hosted embedding API is retried well inside a search's budget."""
+
+    @pytest.mark.asyncio
+    async def test_a_hosted_model_is_bounded_and_a_local_one_is_not(
+        self, retrieval_service, mock_config_service
+    ) -> None:
+        mock_config_service.get_config.return_value = {
+            "embedding": [{"provider": "azureOpenAI", "isDefault": True,
+                           "configuration": {"model": "text-embedding-3-small"}}]
+        }
+        with patch("app.modules.retrieval.retrieval_service.get_embedding_model", return_value=MagicMock()):
+            await retrieval_service.get_embedding_model_instance()
+        assert retrieval_service._cached_embedding_is_local is False
+
+        mock_config_service.get_config.return_value = {"embedding": []}
+        with patch("app.modules.retrieval.retrieval_service.get_default_embedding_model",
+                   return_value=MagicMock()):
+            await retrieval_service.get_embedding_model_instance()
+        assert retrieval_service._cached_embedding_is_local is True
+
+    @staticmethod
+    def _stalls_once() -> AsyncMock:
+        calls = {"n": 0}
+
+        async def embed(_query: str) -> list[float]:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await asyncio.Event().wait()
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=embed)
+        return dense
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_attempt_with_a_hosted_model_is_retried(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        dense = self._stalls_once()
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        retrieval_service._cached_embedding_is_local = False
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        with patch("app.modules.retrieval.retrieval_service.QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS", 0.05), \
+                patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0):
+            await asyncio.wait_for(
+                retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1"),
+                timeout=5,
+            )
+
+        assert dense.aembed_query.await_count == 2
+        mock_vector_db_service.query_nearest_points.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_local_model_is_given_the_time_it_needs(
+        self, retrieval_service, mock_vector_db_service
+    ) -> None:
+        """A local model may still be loading; cutting it off would only start the load again."""
+        async def slow(_query: str) -> list[float]:
+            await asyncio.sleep(0.2)
+            return [0.1]
+
+        dense = AsyncMock()
+        dense.aembed_query = AsyncMock(side_effect=slow)
+        retrieval_service.get_embedding_model_instance = AsyncMock(return_value=dense)
+        mock_vector_db_service.query_nearest_points.return_value = [[]]
+
+        with patch("app.modules.retrieval.retrieval_service.QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS", 0.05):
+            await retrieval_service._execute_parallel_searches(["q"], models.Filter(must=[]), 10, "org-1")
+
+        assert dense.aembed_query.await_count == 1
+
+
 # ============================================================================
 # get_current_embedding_model_name
 # ============================================================================
@@ -436,6 +515,19 @@ class TestGetCurrentEmbeddingModelName:
         }
         result = await retrieval_service.get_current_embedding_model_name()
         assert result == "text-embedding-3-small"
+
+    @pytest.mark.asyncio
+    async def test_returns_the_default_model_not_the_first(self, retrieval_service, mock_config_service) -> None:
+        """The embedding guard compares against this name, so it has to be the
+        model that embeds: the default one."""
+        mock_config_service.get_config.return_value = {
+            "embedding": [
+                {"configuration": {"model": "text-embedding-3-small"}},
+                {"configuration": {"model": "BAAI/bge-small-en-v1.5"}, "isDefault": True},
+            ]
+        }
+        result = await retrieval_service.get_current_embedding_model_name()
+        assert result == "BAAI/bge-small-en-v1.5"
 
     @pytest.mark.asyncio
     async def test_returns_default_when_no_config(self, retrieval_service, mock_config_service):
@@ -1030,6 +1122,29 @@ class TestSearchWithFilters:
         assert result["status"] == Status.EMPTY_RESPONSE.value
 
     @pytest.mark.asyncio
+    async def test_success_response_does_not_expose_accessible_record_map(
+        self, retrieval_service, mock_graph_provider
+    ):
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "user@test.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {"_key": "rec1", "virtualRecordId": "vr1", "origin": "drive", "recordName": "Doc"}
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "c",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+
+        result = await retrieval_service.search_with_filters(queries=["t"], user_id="u1", org_id="o1")
+
+        assert result["status"] == Status.SUCCESS.value
+        assert "accessible_virtual_id_to_record_id" not in result
+
+    @pytest.mark.asyncio
     async def test_successful_search_returns_enriched_results(
         self, retrieval_service, mock_graph_provider, mock_vector_db_service
     ):
@@ -1080,6 +1195,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}",
                 "mimeType": "text/html",
@@ -1155,6 +1271,26 @@ class TestSearchWithFilters:
             queries=["test"], user_id="u1", org_id="o1"
         )
         assert result["status"] == Status.ERROR.value
+
+    @pytest.mark.asyncio
+    async def test_search_with_filters_value_error_is_generic(self, retrieval_service, mock_graph_provider):
+        """A ValueError's text is logged, not returned: it can name internals."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        error = ValueError("SENTINEL collection records_internal has no dense vectors")
+        retrieval_service._execute_parallel_searches = AsyncMock(side_effect=error)
+        retrieval_service.logger = MagicMock()
+
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.ERROR.value
+        assert result["status_code"] == 500
+        assert "SENTINEL" not in result["message"]
+        assert result["message"] == "Unexpected server error during search."
+        log_call = retrieval_service.logger.error.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
 
     @pytest.mark.asyncio
     async def test_generic_exception_with_tool_ids_returns_error(
@@ -1312,6 +1448,7 @@ class TestSearchWithFilters:
                 "_key": "rec1",
                 "virtualRecordId": "vr1",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email Subject",
                 "webUrl": "https://example.com/mail",
                 "recordType": "MAIL",
@@ -1383,6 +1520,165 @@ class TestSearchWithFilters:
         sr = result["searchResults"][0]
         assert sr["metadata"]["webUrl"] == "https://sharepoint.com/doc"
 
+    @staticmethod
+    def _sql_table_without_link(mock_graph_provider) -> None:
+        """A PostgreSQL table indexed while FRONTEND_PUBLIC_URL was unset: its webUrl is ""."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "CONNECTOR",
+                "recordName": "mx_keep",
+                "recordType": "SQL_TABLE",
+                "mimeType": "application/vnd.sql.table",
+                "connectorName": "POSTGRESQL",
+                "webUrl": "",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_link_that_is_not_a_file_or_mail_is_still_a_hit(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        self._sql_table_without_link(mock_graph_provider)
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "Scenario matrix keep note",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "blockType": "table_row"},
+            }
+        ])
+
+        result = await retrieval_service.search_with_filters(
+            queries=["keep note"], user_id="u1", org_id="o1"
+        )
+
+        assert result["status"] == Status.SUCCESS.value
+        [hit] = result["searchResults"]
+        assert hit["metadata"]["recordId"] == "rec1"
+        assert hit["metadata"]["webUrl"] == ""
+        mock_graph_provider.get_nodes_by_field_in.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_sql_table_with_no_link_reaches_the_knowledge_search_flattening(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """The search API runs with knowledge_search=True; a table's row hits must be flattened, not dropped."""
+        self._sql_table_without_link(mock_graph_provider)
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "Scenario matrix keep note",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1", "orgId": "o1", "blockId": "row-1",
+                    "isBlock": True, "isBlockGroup": False, "blockType": "table_row",
+                },
+            }
+        ])
+        row = {
+            "score": 0.9,
+            "content": "Scenario matrix keep note",
+            "citationType": "vectordb|document",
+            "virtual_record_id": "vr1",
+            "metadata": {
+                "virtualRecordId": "vr1", "orgId": "o1", "origin": "CONNECTOR",
+                "recordName": "mx_keep", "recordId": "rec1",
+                "mimeType": "application/vnd.sql.table",
+            },
+        }
+        from app.models.blocks import GroupType
+
+        async def fake_get_record(vid, vid_to_record, *_args) -> None:
+            vid_to_record[vid] = {"record_type": "SQL_TABLE"}
+
+        flatten = AsyncMock(return_value=[
+            {"block_type": GroupType.TABLE.value, "content": ("DDL", [row])},
+        ])
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)), \
+             patch("app.modules.retrieval.retrieval_service.get_flattened_results", new=flatten):
+            result = await retrieval_service.search_with_filters(
+                queries=["keep note"], user_id="u1", org_id="o1", knowledge_search=True,
+            )
+
+        assert flatten.await_count == 1
+        [flattened_input] = flatten.await_args.args[0]
+        assert flattened_input["metadata"]["recordId"] == "rec1"
+        assert [hit["virtual_record_id"] for hit in result["searchResults"]] == ["vr1"]
+
+    @pytest.mark.asyncio
+    async def test_virtual_to_record_map_carries_substituted_weburl(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """The chat citation path reads webUrl off this map, not off the metadata."""
+        template = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
+                "recordName": "resume.pdf", "recordType": "FILE",
+                "mimeType": "application/pdf", "webUrl": template,
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9, "content": "resume content",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        expected = "https://mail.google.com/mail?authuser=alice@corp.com#all/m1"
+        assert result["virtual_to_record_map"]["vr1"]["webUrl"] == expected
+        assert result["searchResults"][0]["metadata"]["webUrl"] == expected
+
+    @pytest.mark.asyncio
+    async def test_gmail_attachment_file_record_gets_user_email(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A Gmail attachment is a FILE record carrying the mail placeholder."""
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "alice@corp.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "gmail",
+                "connectorName": "GMAIL",
+                "recordName": "resume.pdf",
+                "recordType": "FILE",
+                # webUrl and mimeType intentionally absent -- forces the files fetch
+            }
+        ]
+        mock_graph_provider.get_nodes_by_field_in.return_value = [{
+            "id": "rec1",
+            "webUrl": "https://mail.google.com/mail?authuser={user.email}#all/m1",
+            "mimeType": "application/pdf",
+        }]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.85,
+                "content": "resume content",
+                "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1"},
+            }
+        ])
+        result = await retrieval_service.search_with_filters(
+            queries=["test"], user_id="u1", org_id="o1"
+        )
+        sr = result["searchResults"][0]
+        assert sr["metadata"]["webUrl"] == (
+            "https://mail.google.com/mail?authuser=alice@corp.com#all/m1"
+        )
+
     @pytest.mark.asyncio
     async def test_missing_weburl_mail_record_fetches_mail(
         self, retrieval_service, mock_graph_provider
@@ -1443,6 +1739,7 @@ class TestSearchWithFilters:
                 "_key": "rec2",
                 "virtualRecordId": "vr2",
                 "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Mail Subject",
                 "webUrl": "https://mail.google.com/x",
                 "recordType": "MAIL",
@@ -1923,6 +2220,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL",
                 "recordName": "Email", "mimeType": "text/html",
                 "webUrl": "https://mail.google.com/mail?authuser={user.email}#inbox/1",
             }
@@ -2033,6 +2331,7 @@ class TestSearchWithFiltersBranches:
         mock_graph_provider.get_records_by_record_ids.return_value = [
             {
                 "_key": "rec1", "virtualRecordId": "vr1", "origin": "gmail",
+                "connectorName": "GMAIL WORKSPACE",
                 "recordName": "Mail Subject", "recordType": "MAIL",
                 "webUrl": "https://example.com",
                 # no mimeType to trigger fetch
@@ -2357,3 +2656,143 @@ class TestSearchWithFiltersStrictScope:
             mock_graph_provider.get_accessible_virtual_record_ids.call_args.kwargs["filters"]
         )
         assert "strictScope" not in filters_passed
+
+
+# ============================================================================
+# search_with_filters — flattening group-shaped hits
+#
+# These run the real get_flattened_results so the hit reaches the retrieval
+# service in exactly the shape the search route sees. Only the record fetch is
+# stubbed.
+# ============================================================================
+
+
+def _block_record(vid: str, blocks: list[dict], block_groups: list[dict]) -> dict:
+    return {
+        "id": "rec1",
+        "virtual_record_id": vid,
+        "org_id": "o1",
+        "record_name": "Doc",
+        "origin": "CONNECTOR",
+        "mime_type": "text/plain",
+        "block_containers": {"blocks": blocks, "block_groups": block_groups},
+    }
+
+
+class TestSearchWithFiltersGroupFlattening:
+    async def _search(
+        self, retrieval_service, mock_graph_provider, record: dict, block_index: int
+    ) -> dict:
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1",
+                "virtualRecordId": "vr1",
+                "origin": "CONNECTOR",
+                "recordName": "Doc",
+                "webUrl": "https://example.com/doc",
+                "mimeType": "text/plain",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9,
+                "content": "hit",
+                "citationType": "vectordb|document",
+                "metadata": {
+                    "virtualRecordId": "vr1",
+                    "orgId": "o1",
+                    "isBlockGroup": False,
+                    "blockIndex": block_index,
+                    "origin": "CONNECTOR",
+                    "recordName": "Doc",
+                    "recordId": "rec1",
+                    "mimeType": "text/plain",
+                },
+            }
+        ])
+
+        async def fake_get_record(vid, vid_to_record, blob_store, org_id, vtr_map) -> None:
+            vid_to_record[vid] = record
+
+        with patch(
+            "app.modules.retrieval.retrieval_service.get_record",
+            new=AsyncMock(side_effect=fake_get_record),
+        ):
+            return await retrieval_service.search_with_filters(
+                queries=["test"], user_id="u1", org_id="o1", knowledge_search=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_top_level_code_block_is_returned_as_a_leaf(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A top-level code block is labelled "code" like a code group, but its
+        content is the source string. Unpacking it as (summary, children) raised
+        "too many values to unpack" and failed the whole search."""
+        source = "def handler(event):\n    return process(event)\n"
+        record = _block_record(
+            "vr1",
+            blocks=[{"index": 0, "type": "code", "data": {"text": source}, "parent_index": None}],
+            block_groups=[],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        assert [r["content"] for r in result["searchResults"]] == [source]
+
+    @pytest.mark.asyncio
+    async def test_slack_conversation_group_is_flattened_to_its_messages(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """A Slack thread is a "conversation" group. Left unflattened, its
+        (summary, children) tuple reached the Node citation store, which failed
+        the search with "Cast to string failed"."""
+        record = _block_record(
+            "vr1",
+            blocks=[
+                {"index": 0, "type": "text", "data": "Is the deploy blocked?", "parent_index": 0},
+                {"index": 1, "type": "text", "data": "Yes, on the migration.", "parent_index": 0},
+            ],
+            block_groups=[
+                {
+                    "index": 0,
+                    "type": "conversation",
+                    "children": [{"block_index": 0}, {"block_index": 1}],
+                }
+            ],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        contents = [r["content"] for r in result["searchResults"]]
+        assert all(isinstance(c, str) for c in contents), contents
+        assert sorted(contents) == ["Is the deploy blocked?", "Yes, on the migration."]
+
+    @pytest.mark.asyncio
+    async def test_code_group_is_still_flattened_to_its_members(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        record = _block_record(
+            "vr1",
+            blocks=[
+                {"index": 0, "type": "code", "data": {"text": "def a(): pass"}, "parent_index": 0},
+                {"index": 1, "type": "code", "data": {"text": "def b(): pass"}, "parent_index": 0},
+            ],
+            block_groups=[
+                {
+                    "index": 0,
+                    "type": "code",
+                    "children": [{"block_index": 0}, {"block_index": 1}],
+                }
+            ],
+        )
+
+        result = await self._search(retrieval_service, mock_graph_provider, record, 0)
+
+        assert result["status"] == "success", result.get("message")
+        contents = [r["content"] for r in result["searchResults"]]
+        assert sorted(contents) == ["def a(): pass", "def b(): pass"]

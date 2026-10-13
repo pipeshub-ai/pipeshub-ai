@@ -978,6 +978,18 @@ class RedisVectorService(IVectorDBService):
         next_offset: Optional[str] = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)
 
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        # next_offset is an FT.SEARCH LIMIT position; deleting points already
+        # read moves every later match that many places earlier.
+        if next_offset is None or deleted <= 0:
+            return next_offset
+        try:
+            return str(max(0, int(next_offset) - deleted))
+        except (TypeError, ValueError):
+            return next_offset
+
     async def retrieve_points(
         self,
         collection_name: str,

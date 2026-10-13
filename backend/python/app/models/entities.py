@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Optional,Dict, List, Literal, TypeVar
+from urllib.parse import quote
 from uuid import uuid4
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -13,6 +14,7 @@ from app.models.blocks import BlockType, GroupType
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
+    DeleteSource,
     MimeTypes,
     OriginTypes,
     PermissionModel,
@@ -25,7 +27,7 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.utils.jinja_templates import compiled_template
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import format_epoch_ms_for_llm, get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
@@ -46,6 +48,27 @@ def resolve_weburl(weburl: str | None, frontend_url: str | None) -> str | None:
     if not frontend_url:
         return None
     return f"{frontend_url.rstrip('/')}/{weburl.lstrip('/')}"
+
+
+# Shared Gmail mailboxes are synced once but opened by many users, so those
+# connectors store this placeholder and each read path fills in the viewer's email.
+USER_EMAIL_PLACEHOLDER = "{user.email}"
+_GMAIL_CONNECTORS = frozenset({
+    Connectors.GOOGLE_MAIL.value,
+    Connectors.GOOGLE_MAIL_WORKSPACE.value,
+})
+
+
+def substitute_user_email(
+    weburl: str | None,
+    user_email: str | None,
+    connector_name: str | None,
+) -> str | None:
+    if connector_name not in _GMAIL_CONNECTORS:
+        return weburl
+    if not weburl or not user_email or USER_EMAIL_PLACEHOLDER not in weburl:
+        return weburl
+    return weburl.replace(USER_EMAIL_PLACEHOLDER, quote(user_email, safe="@"))
 
 
 class LlmTextContent(BaseModel):
@@ -259,6 +282,16 @@ class Record(BaseModel):
     # Processing flags
     is_vlm_ocr_processed: bool | None = Field(default=False, description="Flag indicating if VLM OCR processing has been used to process the record")
 
+    # Soft delete
+    is_deleted: bool = Field(default=False, description="True while the record is in the trash")
+    deleted_at: int | None = Field(default=None, description="Epoch ms the record entered the trash; the purge ages on it")
+    deleted_by_user_id: str | None = Field(default=None, description="User who deleted the record; None for connector or system deletes")
+    delete_source: DeleteSource | None = Field(default=None, description="Who deleted the record")
+    delete_batch_id: str | None = Field(default=None, description="Shared by every record one delete action trashed, so a restore brings back the same set")
+    purge_attempts: int | None = Field(default=None, description="Failed purge attempts")
+    purge_last_error: str | None = Field(default=None, description="Last purge error, shortened")
+    trashed_external_record_id: str | None = Field(default=None, description="External id this trashed record held before a live record moved onto it; restore puts it back")
+
     # Content blocks
     block_containers: BlocksContainer = Field(default_factory=BlocksContainer, description="List of block containers in this record")
     semantic_metadata: SemanticMetadata | None = None
@@ -287,7 +320,9 @@ class Record(BaseModel):
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
-        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # UTC as before, then the user's local time with its weekday, which
+        # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
+        return format_epoch_ms_for_llm(epoch_ms)
 
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
@@ -356,9 +391,9 @@ class Record(BaseModel):
             "indexingStatus": self.indexing_status,
             "extractionStatus": self.extraction_status,
             "reason": self.reason,
-            "isDeleted": False,
+            "isDeleted": self.is_deleted,
             "isArchived": False,
-            "deletedByUserId": None,
+            "deletedByUserId": self.deleted_by_user_id,
             "previewRenderable": self.preview_renderable,
             "isShared": self.is_shared,
             "isVLMOcrProcessed": self.is_vlm_ocr_processed,
@@ -375,7 +410,37 @@ class Record(BaseModel):
         # key deletes the stored value, and most writers never set this field.
         if self.queued_at is not None:
             base["queuedAtTimestamp"] = self.queued_at
+        # Only written once set: a pod still on the old strict Arango schema
+        # rejects these keys, even as null, during a rolling upgrade.
+        delete_state = {
+            "deletedAtTimestamp": self.deleted_at,
+            "deleteSource": self.delete_source.value if self.delete_source else None,
+            "deleteBatchId": self.delete_batch_id,
+            "purgeAttempts": self.purge_attempts,
+            "purgeLastError": self.purge_last_error,
+            "trashedExternalRecordId": self.trashed_external_record_id,
+        }
+        base.update({k: v for k, v in delete_state.items() if v is not None})
         return base
+
+    @staticmethod
+    def delete_state_from_arango(record_doc: dict) -> dict[str, Any]:
+        """Constructor kwargs for the soft-delete fields of a stored record."""
+        delete_source = record_doc.get("deleteSource")
+        try:
+            delete_source = DeleteSource(delete_source) if delete_source else None
+        except ValueError:
+            delete_source = None
+        return {
+            "is_deleted": record_doc.get("isDeleted") is True,
+            "deleted_at": record_doc.get("deletedAtTimestamp"),
+            "deleted_by_user_id": record_doc.get("deletedByUserId"),
+            "delete_source": delete_source,
+            "delete_batch_id": record_doc.get("deleteBatchId"),
+            "purge_attempts": record_doc.get("purgeAttempts"),
+            "purge_last_error": record_doc.get("purgeLastError"),
+            "trashed_external_record_id": record_doc.get("trashedExternalRecordId"),
+        }
 
     @staticmethod
     def from_arango_base_record(arango_base_record: dict) -> "Record":
@@ -429,6 +494,7 @@ class Record(BaseModel):
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -668,6 +734,7 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
     def to_kafka_record(self) -> dict:
@@ -822,6 +889,7 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict[str, Any]:
@@ -949,6 +1017,7 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class WebpageRecord(Record):
@@ -1010,6 +1079,7 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LinkRecord(Record):
@@ -1116,6 +1186,7 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class CommentRecord(Record):
@@ -1206,10 +1277,25 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            **Record.delete_state_from_arango(record_doc),
         )
+
+# How a ticket's source is named beside its own status name ("Status: NEW
+# (Jira: Backlog)"). Only the Jira connectors store `source_status` today.
+_SOURCE_STATUS_LABELS: dict[Connectors, str] = {
+    Connectors.JIRA: "Jira",
+    Connectors.JIRA_PERSONAL: "Jira",
+    Connectors.JIRA_CLOUD_PERSONAL: "Jira",
+    Connectors.JIRA_DATA_CENTER: "Jira",
+    Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+}
+
 
 class TicketRecord(Record):
     status: Status | str | None = None
+    # The status name as the source tool shows it (Jira's "Backlog"), kept
+    # beside `status`, which the value mapper normalises ("Backlog" -> NEW).
+    source_status: str | None = None
     priority: Priority | str | None = None
     type: ItemType | str | None = None
     delivery_status: DeliveryStatus | str | None = None
@@ -1236,7 +1322,7 @@ class TicketRecord(Record):
         specific_lines = []
         if self.status:
             status_val = self.status.value if isinstance(self.status, Enum) else self.status
-            specific_lines.append(f"* Status: {status_val}")
+            specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
@@ -1267,6 +1353,26 @@ class TicketRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def _source_status_suffix(self, status_val: str) -> str:
+        """`` (Jira: Backlog)`` when the source's own status name says more.
+
+        The normalised status alone misleads: Jira's "Backlog" and "To Do" are
+        both stored as NEW, and "In Review" and "Testing" both as QA, so a
+        reader asked for an issue's status would answer "NEW" where Jira says
+        "Backlog". Left out when the two differ only in case or spacing
+        ("In Progress" / IN_PROGRESS).
+        """
+        if not self.source_status:
+            return ""
+
+        def _norm(value: str) -> str:
+            return " ".join(value.replace("_", " ").replace("-", " ").lower().split())
+
+        if _norm(self.source_status) == _norm(status_val):
+            return ""
+        source = _SOURCE_STATUS_LABELS.get(self.connector_name, "source")
+        return f" ({source}: {self.source_status})"
 
     async def to_llm_context_with_live_fields(
         self,
@@ -1301,6 +1407,7 @@ class TicketRecord(Record):
             "_key": self.id,
             "orgId": self.org_id,
             "status": _get_value(self.status),
+            "sourceStatus": self.source_status,
             "priority": _get_value(self.priority),
             "type": _get_value(self.type),
             "deliveryStatus": _get_value(self.delivery_status),
@@ -1371,6 +1478,7 @@ class TicketRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
+            source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
             delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),
@@ -1384,6 +1492,7 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1484,6 +1593,7 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1565,6 +1675,7 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -1888,6 +1999,7 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -2081,6 +2193,7 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2180,6 +2293,7 @@ class SQLTableRecord(Record):
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> Dict:
@@ -2204,6 +2318,26 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+# What the GitHub connector stores as a pull request's status, spelled out.
+# `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
+# DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
+# the rest. "DONE" alone does not tell a reader the PR was merged. Any other
+# value (GitLab stores its own state words, such as "merged") is shown as stored.
+_PULL_REQUEST_STATUS_LABELS: dict[str, str] = {
+    Status.DONE.value: "Merged",
+    Status.CANCELLED.value: "Closed without merging",
+    Status.OPEN.value: "Open",
+}
+
+# GitHub's `requested_reviewers` drops a person once they submit a review, so
+# the list the GitHub connector stores is only who is still being asked.
+# GitLab's `reviewers` keeps them after they review, so plain "Reviewers" fits.
+_REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
+    Connectors.GITHUB,
+    Connectors.GITHUB_TEAMS,
+})
+
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -2217,6 +2351,49 @@ class PullRequestRecord(Record):
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
     last_commit_sha: str | None = Field(default=None)
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Returns formatted pull-request-specific metadata for LLM context.
+
+        Without this the model sees only the base header (name, type, dates,
+        URL) and has to guess whether a PR was merged.
+        """
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
+        lines = [base]
+
+        specific_lines = []
+        if self.status:
+            specific_lines.append(f"* Status: {_PULL_REQUEST_STATUS_LABELS.get(self.status, self.status)}")
+
+        if self.creator_name or self.creator_email:
+            specific_lines.append(f"* Author: {self._format_person(self.creator_name, self.creator_email)}")
+
+        if self.merged_by:
+            specific_lines.append(f"* Merged By: {self.merged_by}")
+
+        # Names and emails are separate lists, and the email list only holds
+        # the people whose address is known, so the two cannot be paired up.
+        assignees = self.assignee or self.assignee_email
+        if assignees:
+            specific_lines.append(f"* Assignees: {', '.join(assignees)}")
+
+        reviewers = self.review_name or self.review_email
+        if reviewers:
+            label = (
+                "Requested Reviewers"
+                if self.connector_name in _REQUESTED_REVIEWER_CONNECTORS
+                else "Reviewers"
+            )
+            specific_lines.append(f"* {label}: {', '.join(reviewers)}")
+
+        if self.labels:
+            specific_lines.append(f"* Labels: {', '.join(self.labels)}")
+
+        if specific_lines:
+            lines.append("Pull Request Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_kafka_record(self) -> dict:
         return {
@@ -2297,6 +2474,7 @@ class PullRequestRecord(Record):
             merged_by=pr_doc.get("mergedBy"),
             labels=pr_doc.get("labels"),
             last_commit_sha=pr_doc.get("lastCommitSha"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
 class LifecycleStatus(str, Enum):
@@ -2493,6 +2671,7 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            **Record.delete_state_from_arango(record_doc),
         )
 
         
@@ -2518,6 +2697,10 @@ class RecordGroup(BaseModel):
     hide_children: bool | None = Field(
         default=False,
         description="When true, child records are hidden in the knowledge-base tree UI",
+    )
+    is_deleted_at_source: bool = Field(
+        default=False,
+        description="Gone at the source and kept only while records in the trash belong to it",
     )
     permission_model: PermissionModel | None = Field(
         default=None,
@@ -2549,6 +2732,9 @@ class RecordGroup(BaseModel):
             "updatedAtTimestamp": self.updated_at,
             "sourceCreatedAtTimestamp": self.source_created_at,
             "sourceLastModifiedTimestamp": self.source_updated_at,
+            # A source that lists the group again takes back a group kept only for the trash.
+            "isDeletedAtSource": False,
+            "deletedAtSourceTimestamp": None,
         }
 
     @staticmethod
@@ -2572,6 +2758,7 @@ class RecordGroup(BaseModel):
             source_created_at=arango_base_record_group.get("sourceCreatedAtTimestamp"),
             source_updated_at=arango_base_record_group.get("sourceLastModifiedTimestamp"),
             permission_model=arango_base_record_group.get("permissionModel"),
+            is_deleted_at_source=arango_base_record_group.get("isDeletedAtSource") is True,
         )
 
 class ArtifactsRecordGroup(RecordGroup):
@@ -2684,6 +2871,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            **Record.delete_state_from_arango(arango_base_record),
         )
 
 
@@ -2867,8 +3055,10 @@ class Person(BaseModel):
     """Lightweight entity for external email addresses (not organization members)."""
     id: str = Field(description="Unique identifier", default_factory=lambda: str(uuid4()))
     email: str = Field(description="Email address")
+    org_id: str | None = Field(default=None, description="Owning org for this Person")
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Creation timestamp")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Update timestamp")
+    full_name: str | None = Field(default=None, description="Display name")
     # Salesforce contact fields
     first_name: str | None = Field(default=None, description="First name")
     last_name: str | None = Field(default=None, description="Last name")
@@ -2877,9 +3067,15 @@ class Person(BaseModel):
     def to_arango_person(self) -> dict[str, Any]:
         return {
             "_key": self.id,
-            "email": self.email,
+            # (orgId, email) is this node's business key and carries a composite unique
+            # index. Atomic upserts match on exact equality, so the stored form must be
+            # normalised or Foo@x.com and foo@x.com become two nodes every reader sees
+            # as one.
+            "email": self.email.lower(),
+            "orgId": self.org_id,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            "fullName": self.full_name,
             "firstName": self.first_name,
             "lastName": self.last_name,
             "phone": self.phone,
@@ -2890,8 +3086,10 @@ class Person(BaseModel):
         return Person(
             id=data.get("_key"),
             email=data.get("email"),
+            org_id=data.get("orgId"),
             created_at=data.get("createdAtTimestamp", get_epoch_timestamp_in_ms()),
             updated_at=data.get("updatedAtTimestamp", get_epoch_timestamp_in_ms()),
+            full_name=data.get("fullName"),
             first_name=data.get("firstName"),
             last_name=data.get("lastName"),
             phone=data.get("phone"),
@@ -3203,6 +3401,7 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            **Record.delete_state_from_arango(record_doc),
         )
 
     def to_kafka_record(self) -> dict:
@@ -3253,6 +3452,7 @@ class EntityType(str, Enum):
     LANGUAGE = "language"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
+    NAMED_ENTITY = "named_entity"
 
 
 class EntityTypeCategory(str, Enum):
@@ -3295,6 +3495,7 @@ class EntityRecord(BaseModel):
     connector_ids: list[str] = Field(default_factory=list, description="Connector instances that reference this entity; used for targeted disconnect cleanup")
     record_group_ids: list[str] = Field(default_factory=list, description="Record groups (e.g. folders, Jira projects) of records that reference this entity")
     level: str | None = Field(default=None, description="Subcategory level (\"1\", \"2\" or \"3\"); None for every other entity type. Subcategories only resolve against their own level.")
+    kind: str | None = Field(default=None, description="Named-entity kind. Set only for entity_type named_entity.")
 
     @property
     def embedding_text(self) -> str:
@@ -3307,6 +3508,39 @@ class EntityRecord(BaseModel):
         """
         return self.name.strip()
 
+    @classmethod
+    def for_record(
+        cls, record_id: str, name: str, org_id: str, connector_id: str | None,
+        record_group_id: str | None,
+    ) -> "EntityRecord":
+        """A record's title point. Its membership is exactly its own connector
+        and group, so it is written with ``merge_membership=False``."""
+        return cls(
+            entity_id=record_id,
+            entity_type=EntityType.RECORD,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[record_group_id] if record_group_id else [],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
+    @classmethod
+    def for_record_group(
+        cls, group_id: str, name: str, org_id: str, connector_id: str | None,
+    ) -> "EntityRecord":
+        """A record group's point. It lists itself as a record group so users
+        with group-level (not connector-level) access can reach it."""
+        return cls(
+            entity_id=group_id,
+            entity_type=EntityType.RECORD_GROUP,
+            name=name,
+            org_id=org_id,
+            connector_ids=[connector_id] if connector_id else [],
+            record_group_ids=[group_id],
+            type_category=EntityTypeCategory.PREDEFINED,
+        )
+
     def to_vector_payload(self) -> dict:
         """Serialise to the flat metadata dict stored on each vector point.
 
@@ -3318,7 +3552,7 @@ class EntityRecord(BaseModel):
         it), matching the records collection's ``VectorChunkPayload`` — see
         ``EntityVectorStore.upsert_entities_batch``.
         """
-        return {
+        payload = {
             "entityId": self.entity_id,
             "entityType": self.entity_type.value,
             "orgId": self.org_id,
@@ -3329,6 +3563,9 @@ class EntityRecord(BaseModel):
             "aliases": self.aliases,
             "level": self.level,
         }
+        if self.kind:
+            payload["kind"] = self.kind
+        return payload
 
 
 # Rebuild models to resolve forward references after all imports are complete

@@ -920,6 +920,9 @@ function tagItemsFromIds(ids: string[]): TagItem[] {
   return ids.map((id) => ({ id, value: id }));
 }
 
+// Folder paths may contain spaces and commas, so they can't be split on them.
+const FREE_TEXT_FILTER_NAMES = new Set(['folder_paths']);
+
 function ConnectorFilterTagInput({
   field,
   value,
@@ -961,6 +964,7 @@ function ConnectorFilterTagInput({
       tags={tags}
       onTagsChange={handleTagsChange}
       placeholder={t('workspace.connectors.filters.addFieldValue', { field: field.displayName })}
+      freeText={FREE_TEXT_FILTER_NAMES.has(field.name)}
     />
   );
 }

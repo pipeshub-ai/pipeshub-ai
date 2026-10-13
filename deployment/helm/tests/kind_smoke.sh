@@ -234,7 +234,7 @@ if params.get("replication_factor") != 2:
     || die "redis replica is not connected"
   kubectl exec -n "$NAMESPACE" "$REDIS_POD" -- redis-cli CONFIG GET maxmemory-policy | grep -q noeviction \
     || die "redis maxmemory-policy is not noeviction"
-  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- python - <<'PY' || die "sandbox run_code via DinD failed"
+  kubectl exec -i -n "$NAMESPACE" "deploy/${RELEASE}" -- python - <<'PY' || die "sandbox run_code via DinD and docker-proxy failed"
 import os
 os.environ.setdefault("DOCKER_HOST", "tcp://127.0.0.1:2375")
 import docker
@@ -246,6 +246,16 @@ text = out.decode() if isinstance(out, bytes) else str(out)
 if "2" not in text:
     raise SystemExit(text)
 print(text)
+# The app reaches the daemon only through docker-proxy, which refuses this.
+try:
+    client.containers.create(image, ["true"], privileged=True, network_mode="none")
+except docker.errors.APIError as exc:
+    if exc.status_code != 403:
+        raise
+else:
+    raise SystemExit("docker-proxy admitted a privileged container")
+if os.path.exists("/var/run/dind/docker.sock"):
+    raise SystemExit("the app container can see the DinD daemon socket")
 PY
 fi
 

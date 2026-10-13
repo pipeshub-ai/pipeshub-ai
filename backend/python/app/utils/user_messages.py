@@ -45,6 +45,18 @@ def not_found(thing: str) -> str:
     return f"{thing} was removed, or you no longer have access. Refresh the page and try again."
 
 
+def folder_in_trash(folder_name: str | None, action: str) -> str:
+    """The folder someone picked to put something in is in the trash.
+
+    ``action`` completes "you can't …", e.g. ``"move items into it"``.
+    """
+    folder = f"'{folder_name}'" if folder_name else "That folder"
+    return (
+        f"{folder} is in Recently deleted, so you can't {action}. "
+        "Restore it first, or choose another folder."
+    )
+
+
 _CLIENT_ERROR_MIN = 400
 _SERVER_ERROR_MIN = 500
 

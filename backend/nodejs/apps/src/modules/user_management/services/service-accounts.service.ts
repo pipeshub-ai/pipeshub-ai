@@ -2,6 +2,7 @@ import { injectable, inject } from 'inversify';
 import mongoose from 'mongoose';
 import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
+import { isDuplicateKeyError } from '../../../libs/utils/mongo.utils';
 import {
   BadRequestError,
   ConflictError,
@@ -71,15 +72,6 @@ export interface UpdateServiceAccountInput {
  * lint rule guarding against `[object Object]` creeping into output. Going
  * through ObjectId keeps that guarantee visible in one place.
  */
-/** Mongo's unique-index violation, whatever driver wrapper it arrives in. */
-function isDuplicateKeyError(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    (error as { code?: unknown }).code === 11000
-  );
-}
-
 function idOf(doc: { _id?: unknown }): string {
   return (doc._id as mongoose.Types.ObjectId).toString();
 }

@@ -981,6 +981,61 @@ class TestGroups:
         assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
         assert db.user_groups == {"g-eng": ["ana@acme.com"]}
 
+    async def test_a_member_removal_the_database_refuses_is_tried_again_while_the_rest_of_the_page_is_applied(self, cloud, tenant, db, checkpoints) -> None:
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.add_group("g-old", "Old", [member("u-cal", "cal@acme.com")])
+        tenant.groups_delta.by_token["G1"] = page([
+            {"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]},
+            {"id": "g-old", "@removed": {"reason": "deleted"}},
+        ], delta_link=groups_link("G2"))
+        cloud.on("GET", "/v1.0/users/u-ben", {"id": "u-ben", "mail": "ben@acme.com"})
+        connector = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied", "hidden membership"))
+        db.fail_member_removal.add(("g-eng", "ben@acme.com"))
+
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com", "ben@acme.com"]}, "Ben is still a member, and the group after his was deleted"
+        assert db.deleted_groups == ["g-old"]
+        held = groups_checkpoint(checkpoints)
+        assert (held["deltaLink"], held["heldPage"], held["heldPageAttempts"]) == (groups_link("G1"), groups_link("G1"), 1)
+
+        db.fail_member_removal.clear()
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com"]}
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
+
+    async def test_a_member_removal_the_database_keeps_refusing_leaves_a_full_group_sync_owed(self, cloud, tenant, db, checkpoints) -> None:
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.groups_delta.by_token["G1"] = page(
+            [{"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]}],
+            delta_link=groups_link("G2"),
+        )
+        tenant.groups_delta.by_token["G2"] = page([], delta_link=groups_link("G3"))
+        cloud.on("GET", "/v1.0/users/u-ben", {"id": "u-ben", "mail": "ben@acme.com"})
+        connector = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied", "hidden membership"))
+        db.fail_member_removal.add(("g-eng", "ben@acme.com"))
+
+        for _ in range(4):
+            await connector._sync_user_groups()
+            assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G1")
+        await connector._sync_user_groups()
+
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
+        assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is True
+        assert db.user_groups == {"g-eng": ["ana@acme.com", "ben@acme.com"]}
+
+        # The full sync that is owed reads the members again, which takes Ben out.
+        cloud.on("GET", "/v1.0/groups/g-eng/members", page([member("u-ana", "ana@acme.com")]))
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com"]}
+        assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is False
+
     async def test_a_failed_member_read_during_delta_keeps_the_groups_stored_members(self, cloud, tenant, db, checkpoints) -> None:
         tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com")])
         tenant.groups_delta.by_token["G1"] = page([{"id": "g-eng", "displayName": "Eng renamed"}], delta_link=groups_link("G2"))

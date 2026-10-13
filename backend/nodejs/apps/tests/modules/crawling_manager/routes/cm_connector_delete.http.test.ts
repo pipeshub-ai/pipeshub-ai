@@ -9,6 +9,7 @@ import { ICrawlingSchedule } from '../../../../src/modules/crawling_manager/sche
 import {
   ADMIN,
   Harness,
+  MEMBER_ID,
   ORG_A,
   call,
   sessionToken,
@@ -93,5 +94,62 @@ describe('Deleting a connector clears its sync schedule', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(schedulesFor('drive-1')).to.have.length(1)
     expect(store.repeatables.size).to.equal(2)
+  })
+
+  it('still removes the other schedules when one of them cannot be removed, and the delete still answers', async () => {
+    await scheduler.scheduleJob('Slack', 'drive-1', EVERY_HOUR, ORG_A, ADMIN._id)
+    const removeJob = scheduler.removeJob.bind(scheduler)
+    const attempted: string[] = []
+    sinon.stub(scheduler, 'removeJob').callsFake(async (connector: string, connectorId: string, orgId: string) => {
+      attempted.push(connector)
+      if (connector === TYPE) throw new Error('redis timed out')
+      return removeJob(connector, connectorId, orgId)
+    })
+    h.backend.on('DELETE', '/api/v1/connectors/drive-1', { status: 202, body: { success: true } })
+
+    expect((await call(h, 'DELETE', '/drive-1', sessionToken(h, ADMIN))).status).to.equal(202)
+
+    await until(() => attempted.length === 2, 'both schedules were tried')
+    await until(
+      () => !schedulesFor('drive-1').some((j) => j.data.connector === 'Slack'),
+      'the Slack schedule is removed',
+    )
+    expect(attempted[0]).to.equal(TYPE)
+    expect(schedulesFor('drive-1').map((j) => j.data.connector)).to.deep.equal([TYPE])
+  })
+
+  describe("when an admin deletes a member's personal connector", () => {
+    // The connector service shows a personal connector's config only to its
+    // creator, so the admin's read of it is refused.
+    beforeEach(async () => {
+      h.backend.on('GET', '/api/v1/connectors/personal-1/config', {
+        status: 404,
+        body: { detail: 'This connector was not found.' },
+      })
+      h.backend.on('DELETE', '/api/v1/connectors/personal-1', {
+        status: 202,
+        body: { success: true, message: 'Connector deletion initiated', connectorId: 'personal-1', status: 'DELETING' },
+      })
+      await scheduler.scheduleJob(TYPE, 'personal-1', EVERY_HOUR, ORG_A, MEMBER_ID)
+    })
+
+    it('still removes its schedule, and leaves the other connectors alone', async () => {
+      const res = await call(h, 'DELETE', '/personal-1', sessionToken(h, ADMIN))
+      expect(res.status).to.equal(202)
+
+      await until(() => schedulesFor('personal-1').length === 0, 'the deleted connector has no pending run')
+      expect(store.repeatables.size).to.equal(2)
+      expect(schedulesFor('drive-1')).to.have.length(1)
+      expect(schedulesFor('drive-2')).to.have.length(1)
+    })
+
+    it('forgets its paused schedule too', async () => {
+      await scheduler.pauseJob(TYPE, 'personal-1', ORG_A)
+
+      expect((await call(h, 'DELETE', '/personal-1', sessionToken(h, ADMIN))).status).to.equal(202)
+
+      await until(() => scheduler.getPausedJobs().size === 0, 'the paused schedule is forgotten')
+      expect(schedulesFor('personal-1')).to.have.length(0)
+    })
   })
 })

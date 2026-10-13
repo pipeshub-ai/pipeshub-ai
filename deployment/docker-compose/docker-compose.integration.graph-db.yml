@@ -15,6 +15,10 @@ services:
       - "17687:7687"
     environment:
       - NEO4J_AUTH=neo4j/ensure-it-pass
+      # The default waits for a lock forever. test_partial_write_failures_real_backends
+      # holds one so a write fails partway; a write already committing cannot be
+      # terminated, only timed out.
+      - NEO4J_db_lock_acquisition_timeout=10s
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474 || exit 1"]
       interval: 5s

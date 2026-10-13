@@ -546,6 +546,29 @@ class TestGroups:
         assert db.deleted_groups == ["g-old"]
         assert {"g-eng", "PUBLIC", "ORG_org-1"} <= set(db.user_groups)
 
+    async def test_a_group_deletion_the_database_refuses_is_tried_again_on_the_next_sync(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (ALICE,))
+        box_api.add_group("g-old", "Old", (ALICE,))
+        box_api.add_group("g-older", "Older", (ALICE,))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        del box_api.groups["g-old"], box_api.groups["g-older"]
+        checkpoints.sync_points.clear()
+        db.fail_group_delete_for.add("g-old")
+
+        await connector.run_sync()
+
+        assert db.deleted_groups == ["g-older"], "the group after the one that failed is still deleted"
+        assert "g-old" in db.user_groups
+
+        db.fail_group_delete_for.clear()
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert db.deleted_groups == ["g-older", "g-old"]
+        assert {"g-eng", "PUBLIC", "ORG_org-1"} <= set(db.user_groups)
+
 
 class TestEventStreamAnchor:
     async def test_a_full_sync_saves_the_stream_position_it_started_from(self, box_api, db, checkpoints) -> None:

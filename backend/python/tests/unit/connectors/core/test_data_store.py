@@ -53,11 +53,14 @@ class ConcreteTransactionStore(TransactionStore):
     async def rollback(self):
         self._rolled_back = True
 
-    async def get_record_by_key(self, key):
+    async def get_record_by_key(self, key, *, raise_on_error=False):
         return self._records.get(key)
 
     async def get_record_by_external_id(self, connector_id, external_id):
         return None
+
+    async def take_back_kept_record_group(self, group_id) -> bool:
+        return True
 
     async def get_record_by_external_revision_id(self, connector_id, external_revision_id):
         return None
@@ -73,6 +76,9 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def get_record_path(self, record_id):
         return None
+
+    async def get_record_path_segments(self, record_id):
+        return []
 
     async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
@@ -97,6 +103,21 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def batch_upsert_people(self, people):
         pass
+
+    async def get_person_by_email(self, email, org_id):
+        return None
+
+    async def upsert_person_by_email(self, person):
+        return None
+
+    async def ensure_app_membership(
+        self, principal_id, principal_collection, connector_id, *,
+        is_external, source_user_id=None,
+    ):
+        pass
+
+    async def reap_stale_external_app_relations(self, connector_id):
+        return 0
 
     async def get_users(self, org_id, active=True):
         return []
@@ -182,7 +203,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection):
         return []
 
-    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection):
+    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection, *, raise_on_error=False):
         return None
 
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
@@ -228,6 +249,9 @@ class ConcreteTransactionStore(TransactionStore):
         return None
 
     async def batch_create_edges(self, edges, collection):
+        pass
+
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
         pass
 
     async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):

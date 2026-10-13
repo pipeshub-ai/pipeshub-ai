@@ -4,3 +4,6 @@ paths:
   .github/workflows/release-changelog.yml:
     ignore:
       - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/release-publish.yml:
+    ignore:
+      - 'unexpected key "queue" for "concurrency" section'

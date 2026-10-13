@@ -161,8 +161,10 @@ test.describe('Share a collection', () => {
       const after = await openCollectionContents(memberPage, kbId);
       if (after.status < 400) {
         expect(after.names, 'the server should return none of the collection\'s files').toEqual([]);
-        // The table has finished loading once it shows its empty state; only then is absence meaningful.
-        await expect(memberPage.getByText(`${kbName} is empty`)).toBeVisible({ timeout: 30_000 });
+        // The page has finished loading once it shows its empty state; only then is absence meaningful.
+        // Breadcrumbs only list what the user can see (#3115), so a revoked user gets no
+        // collection to name and the page shows its no-selection state.
+        await expect(memberPage.getByText('No collection selected')).toBeVisible({ timeout: 30_000 });
       } else {
         expect([403, 404], 'a refused request should be 403 or 404').toContain(after.status);
       }

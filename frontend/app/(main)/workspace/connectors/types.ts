@@ -338,10 +338,18 @@ export interface ConnectorSchemaResponse {
     hideConnector: boolean;
     isAdminAccessRequired?: boolean;
     personalConnectorType?: string | null;
+    /** The credentials can be tried with `testConnection` before they are saved. */
+    supportsConnectionCheck?: boolean;
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;
   };
+}
+
+/** Body of `POST /registry/:connectorType/test-connection`; a failed check is `success: false`. */
+export interface ConnectionCheckResponse {
+  success: boolean;
+  message: string;
 }
 
 // ========================================
@@ -411,6 +419,14 @@ export interface PanelFormData {
 export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
+
+/** Connection check run by the Authenticate tab's Next button. */
+export interface ConnectionCheckState {
+  status: 'idle' | 'checking' | 'failed';
+  message: string | null;
+  /** Set while checking; a reset (panel opened or closed, auth type changed) drops it, voiding the result. */
+  id?: number;
+}
 
 // ========================================
 // Instance page types

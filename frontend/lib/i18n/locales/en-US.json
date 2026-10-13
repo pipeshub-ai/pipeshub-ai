@@ -10,6 +10,73 @@
       "reindexFailedError": "Failed to reindex failed records",
       "manualIndexStart": "Indexing manual-indexing records…",
       "manualIndexError": "Failed to start manual indexing"
+    },
+    "trash": {
+      "menuLabel": "Recently deleted",
+      "title": "Recently deleted",
+      "back": "Back to the collection",
+      "retentionNote": "Deleted items stay here for at least {{days}} days. After that, a scheduled cleanup removes them for good, and they can't be restored.",
+      "columns": {
+        "name": "Name",
+        "type": "Type",
+        "location": "Location",
+        "deletedAt": "Deleted",
+        "deletedBy": "Deleted by",
+        "removedAfter": "Removed for good"
+      },
+      "typeFolder": "Folder",
+      "typeFile": "File",
+      "folderWithItems_one": "Folder with {{count}} item",
+      "folderWithItems_other": "Folder with {{count}} items",
+      "fileWithAttachments_one": "File with {{count}} attachment",
+      "fileWithAttachments_other": "File with {{count}} attachments",
+      "topLevel": "Top level",
+      "unknownUser": "Unknown",
+      "untitled": "Untitled",
+      "removedAfterDate": "After {{date}}",
+      "removedAfterDays": "After {{days}} days",
+      "parentInTrash": "The folder '{{folder}}' is deleted too. Restore it first.",
+      "restore": "Restore",
+      "restoreSelected_one": "Restore {{count}} item",
+      "restoreSelected_other": "Restore {{count}} items",
+      "selected_one": "{{count}} selected",
+      "selected_other": "{{count}} selected",
+      "clearSelection": "Clear selection",
+      "selectAll": "Select all on this page",
+      "selectItem": "Select {{name}}",
+      "restoring": "Restoring…",
+      "emptyTitle": "Nothing was deleted recently",
+      "empty": "Files and folders deleted from this collection appear here, so you can restore them.",
+      "loadFailed": "We couldn't load the recently deleted items. Check your connection, then try again.",
+      "noPermission": "You don't have permission to restore this item. Ask the collection's owner for edit access.",
+      "gone": "This item is no longer in the trash. It may have been restored or removed for good. Refresh the list.",
+      "changed": "This item changed while it was being restored. Refresh the list and try again.",
+      "restoreFailed": "We couldn't restore this item. Try again in a moment.",
+      "failureLine": "'{{name}}': {{reason}}",
+      "moreFailures_one": "…and {{count}} more",
+      "moreFailures_other": "…and {{count}} more",
+      "restoreFailedTitle": "Couldn't restore '{{name}}'",
+      "noneRestored_one": "{{count}} item couldn't be restored",
+      "noneRestored_other": "None of the {{count}} items could be restored",
+      "reindexPending": "Restored, but some files aren't searchable yet because they couldn't be queued for indexing. PipesHub queues them again on its own within about an hour. To do it sooner, open each file's menu and choose {{action}}.",
+      "searchableAfterIndexing": "Restored items are back where they were, and show up in search again once indexing finishes.",
+      "renamed": "'{{from}}' came back as '{{to}}', because another item there already has that name.",
+      "partiallyRestored": "Restored {{restored}} of {{total}} items",
+      "restoredOne": "Restored '{{name}}'",
+      "restoredMany_one": "Restored {{count}} item",
+      "restoredMany_other": "Restored {{count}} items",
+      "showing": "Showing {{from}}–{{to}} of {{total}}",
+      "previous": "Previous",
+      "next": "Next",
+      "nameAndMore_one": "{{name}} and {{count}} more",
+      "nameAndMore_other": "{{name}} and {{count}} more",
+      "deletedTogether_one": "{{count}} item deleted together",
+      "deletedTogether_other": "{{count}} items deleted together",
+      "withOthers": "With {{names}}",
+      "withOthersAndMore_one": "With {{names}} and {{count}} more",
+      "withOthersAndMore_other": "With {{names}} and {{count}} more",
+      "restoredOneAndMore_one": "Restored '{{name}}' and {{count}} more",
+      "restoredOneAndMore_other": "Restored '{{name}}' and {{count}} more"
     }
   },
   "resetPassword": {
@@ -66,7 +133,10 @@
     "errorFallback": "An error occurred. Please try again.",
     "askQuestionResumeFailed": "Couldn't send your answers. Submit again to retry.",
     "copyCode": "Copy",
-    "copiedCode": "Copied"
+    "copiedCode": "Copied",
+    "remoteImageBlocked": "External image not loaded",
+    "remoteImageFrom": "from {{host}}",
+    "remoteImageLoad": "Load image"
   },
   "uploadProgress": {
     "uploadFailedDefault": "Upload failed",
@@ -354,10 +424,12 @@
     "statuses": "Statuses",
     "sources": "Sources",
     "sizes": "Sizes",
-    "clearFilter": "Clear Filter"
+    "clearFilter": "Clear Filter",
+    "applyFilters": "Apply filters"
   },
   "form": {
     "leaveBlankToKeep": "Leave blank to keep the existing value.",
+    "showStoredValues": "Show stored values",
     "title": "Title",
     "description": "Description",
     "search": "Search",
@@ -1114,6 +1186,8 @@
       "label": "Reasoning Effort",
       "overrideHint": "Click again to use the default.",
       "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "modelDefaultHint": "Defaults to {{level}}, this model's own default, when not set.",
+      "modelDefaultLabel": "Default ({{level}})",
       "low": "Low",
       "medium": "Medium",
       "high": "High",
@@ -1798,7 +1872,53 @@
           "label": "Video",
           "badge": "Multimodal"
         }
-      }
+      },
+      "fetchingModels": "Loading models…",
+      "savedLeaveBlank": "Saved — leave blank to keep",
+      "modelPickerEmpty": "No models match your search.",
+      "modelPickerDefault": "Default",
+      "modelPickerFriendlyName": "Friendly name for {{model}}",
+      "badgeContext": "{{value}} tokens",
+      "badgeVision": "Vision",
+      "badgeReasoning": "Reasoning",
+      "badgeDeprecated": "Deprecated",
+      "batchRetry": "Retry",
+      "batchRemove": "Remove",
+      "rotateCredentials": "Rotate credentials",
+      "rotateCredentialsTitle": "Rotate credentials",
+      "rotateCredentialsHint": "Updates the key for every model that was added with this connection.",
+      "rotateCredentialsPlaceholder": "New API key",
+      "rotateCredentialsSave": "Update key",
+      "rotateCredentialsFailed": "Could not update the key",
+      "batchStatus": {
+        "pending": "Waiting",
+        "checking": "Checking",
+        "healthy": "Saved",
+        "failed": "Failed"
+      },
+      "modelPickerSelected": "Selected models ({{count}})",
+      "modelPickerSelectedHint": "Each model is checked and saved on its own. Set its name, context length, and capabilities here.",
+      "modelPickerFieldFor": "{{field}} for {{model}}",
+      "modelPickerDefaultFor": "Make {{model}} the default",
+      "modelPickerRemoveFor": "Remove {{model}}",
+      "modelComboboxAddMore": "Add another model…",
+      "modelComboboxTypeHint": "Type a model name and press Enter.",
+      "modelComboboxOtherGroup": "Other models",
+      "modelComboboxUseTyped": "Use \"{{model}}\"",
+      "modelHintManual": "Type a model name and press Enter. Add several to save them together.",
+      "modelHintNeedsFields": "Fill in the connection details above to load the model list, or type a model name.",
+      "modelHintFailed": "Couldn't load models: {{message}} You can still type a model name.",
+      "modelHintNoneFound": "The provider listed no models of this type. Type a model name.",
+      "modelHintLoaded_one": "{{count}} model available. Search, or type any model name.",
+      "modelHintLoaded_other": "{{count}} models available. Search, or type any model name.",
+      "modelComboboxPlaceholder": "Select or type a model name",
+      "checkingOne": "Checking {{model}} with {{provider}}…",
+      "checkingMany": "Checking {{total}} models with {{provider}}…",
+      "checkingProgress": "Checked {{done}} of {{total}} models…",
+      "checkingHint": "Each model gets a short test call. This usually takes under a minute.",
+      "checkFailedOne": "{{model}} didn't pass the check",
+      "checkFailedMany": "{{failed}} of {{total}} models didn't pass the check",
+      "checkFailedHint": "Open the panel to see why and retry."
     },
     "common": {
       "loadingUsers": "Loading users...",
@@ -2252,6 +2372,30 @@
         "confirm": "Confirm",
         "cancel": "Cancel"
       },
+      "stopSync": {
+        "label": "Stop sync",
+        "labelFull": "Stop full sync",
+        "stopping": "Stopping…"
+      },
+      "stopSyncConfirm": {
+        "title": "Stop the running sync?",
+        "titleFull": "Stop the running full sync?",
+        "message": "Records already synced are kept, but the rest of this run is abandoned. The sync may take a moment to wind down. You can start it again afterwards.",
+        "confirm": "Stop sync",
+        "confirmFull": "Stop full sync"
+      },
+      "disableSyncConfirm": {
+        "title": "Disable sync for {{name}}?",
+        "confirm": "Disable sync",
+        "confirming": "Disabling..."
+      },
+      "disabledSearchNotice": "Records from this connector stay searchable, with the access they had when you disabled it. Changes to sharing in {{source}} won't reach PipesHub until you enable it again. To remove the records, delete the connector.",
+      "fullSync": {
+        "disabledTooltip": "Stop the running sync before starting a full sync"
+      },
+      "sync": {
+        "disabledTooltip": "Stop the running full sync first"
+      },
       "fullSyncConfirm": {
         "title": "Start full sync?",
         "message": "Overwrites and re-syncs all data from scratch and is slower than normal Sync. Use full sync when content is missing, duplicated, or doesn't match the source. For routine updates, use Sync instead.",
@@ -2299,6 +2443,17 @@
         "addRecords": "Add Records"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "Testing connection…",
+          "egressTitle": "Allow PipesHub through your firewall",
+          "egressDescription": "If {{name}} is behind a firewall or only accepts known IP addresses, allow connections from:",
+          "copyIp": "Copy IP address",
+          "ipCopied": "IP address copied",
+          "copyFailed": "Could not copy",
+          "copyFailedDescription": "Copy the address manually or allow clipboard access for this site.",
+          "failedTitle": "Couldn't connect to {{name}}",
+          "requestFailed": "The connection could not be tested. Please try again."
+        },
         "methodLabel": "Authentication Method",
         "methodPlaceholder": "Select auth type...",
         "credentialsHeading": "{{name}} Credentials",
@@ -2434,6 +2589,8 @@
           "syncingTooltip": "This connector is syncing new and updated content.",
           "fullSyncing": "Full sync in progress",
           "fullSyncingTooltip": "This connector is running a full re-sync from the source.",
+          "queued": "Queued",
+          "queuedTooltip": "Waiting for a free sync slot. It will start automatically when one frees up.",
           "removing": "Removing",
           "removingTooltip": "This instance is being deleted."
         }
@@ -2593,7 +2750,8 @@
       "status": {
         "ready": "Ready",
         "notConnected": "Not connected",
-        "needsAuth": "Needs auth"
+        "needsAuth": "Needs auth",
+        "disabled": "Disabled"
       },
       "team": {
         "title": "MCP Servers",
@@ -2715,7 +2873,13 @@
         "noState": "No state parameter was returned.",
         "backendRejected": "The server rejected the authorization request."
       },
-      "deleteDisabledTooltip": "This server cannot be deleted"
+      "deleteDisabledTooltip": "This server cannot be deleted",
+      "stdioPolicy": {
+        "disabledTitle": "Disabled on this deployment",
+        "disabledDescription": "Custom STDIO servers run a command on the PipesHub server, so they stay off unless the operator sets {{flag}}=true in the deployment environment (Docker Compose .env, or config.mcpAllowCustomStdio in Helm). Agents can't use this server's tools until then. You can delete it or switch it to a remote (HTTP) server.",
+        "unavailableHint": "Local command (STDIO) servers are turned off on this deployment. To allow them, the operator must set {{flag}}=true.",
+        "enabledWarning": "This command runs on the PipesHub server with the service's privileges, including its network access and credentials. Only add commands you trust."
+      }
     },
     "bots": {
       "subtitle": "Configure bot credentials and optionally map each bot to an agent",
@@ -4014,6 +4178,9 @@
     "signedInAs": "Signed in as {{display}}",
     "requestHeading": "This application is requesting access to:",
     "unreviewedApp": "This application registered itself. No administrator reviewed it.",
+    "notGrantedHeading": "This application also asked for these permissions. Its settings do not allow them, so it will not get them:",
+    "notGrantedOwnerHint": "The person who created this application can add them in Workspace Settings → Developer Settings → OAuth 2.0 Apps.",
+    "notGrantedOfflineAccess": "The application will not stay signed in. You will need to sign in again when the session ends.",
     "legalNotice": "By clicking “Allow”, you authorize {{appName}} to access your data as described above.",
     "privacyPolicy": "Privacy Policy",
     "deny": "Deny",

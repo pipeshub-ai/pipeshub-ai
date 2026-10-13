@@ -22,6 +22,13 @@ vi.mock('next/navigation', () => ({
   useRouter: () => ({ push: routerPush, replace: vi.fn() }),
 }));
 
+// The reveal hook reaches '@/lib/api', which loads '@/config' while the mock below is still being built.
+vi.mock('@/lib/hooks/use-secret-reveal-available', () => ({
+  REVEAL_PARAMS: { reveal: 'true' },
+  useSecretRevealAvailable: () => false,
+  useRevealScope: () => () => () => true,
+}));
+
 vi.mock('@/config', async () => {
   const { OAuthAppSelector } = await import('../authenticate-tab/oauth-app-selector');
   return { OAuthAppSelector, PermissionLockIcon: () => null };
@@ -456,6 +463,7 @@ describe('ConnectorPanel: saving the sync configuration', () => {
         '"Jira (Engineering)" is currently enabled. To save configuration changes, it will be automatically disabled first. Do you want to proceed?'
       )
     ).toBeTruthy();
+    expect(screen.getByText(/Changes to sharing in Jira won't reach PipesHub until you enable it again/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Disable & Proceed' }));
 

@@ -30,9 +30,8 @@ unchanged.
   the highest-value case, since that's where an org with many attached
   connectors accumulates the most tool schemas.
 - `domain`: each domain child (`register_domain_agents()`) goes lazy over
-  its OWN claimed tools independently — mainly relevant for
-  `internal_exploration_agent`, whose claim grows with every attached
-  knowledge connector (`app_names={"retrieval", "knowledgehub"}`).
+  its OWN claimed tools independently — relevant for a domain that claims
+  many tools.
 - `both`: both, independently (each side's threshold check runs against
   its own tool count).
 
@@ -410,6 +409,18 @@ def register_lazy_tool_meta_tools(
     when a matching tool exists but isn't attached/authenticated — see
     `SearchToolsTool`'s docstring and `EventType.TOOL_UNAVAILABLE`.
     """
+    from app.agents.agent_loop.hooks.progressive_tools import (
+        PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+        SEARCH_ENTITIES_TOOL_NAME,
+    )
+
+    # hooks/progressive_tools.py grants it only when the search remembered an
+    # entity; a failed or empty search leaves it withheld.
+    tool_registry.defer_tool(
+        PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+        unlocked_by=SEARCH_ENTITIES_TOOL_NAME,
+        condition="returns at least one entity",
+    )
     for tool_cls in (ListToolsetsTool, FetchToolsTool):
         try:
             tool_registry.register_tool(tool_cls(tool_registry))

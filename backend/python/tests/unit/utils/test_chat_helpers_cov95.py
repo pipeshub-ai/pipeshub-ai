@@ -88,6 +88,11 @@ def _make_sql_table_record(vrid="vr-1", record_id="rec-sql-1") -> dict:
     }
 
 
+def _all_live(record_ids: list[str], org_id: str, visibility: object = None) -> list[dict]:
+    """``get_records_by_record_ids`` when every related table is live."""
+    return [{"_key": rid, "orgId": org_id} for rid in record_ids]
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -1051,6 +1056,7 @@ class TestEnrichFkChildrenExtraBranches:
     @pytest.mark.asyncio
     async def test_skips_non_dict_record_entries(self):
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         blob = AsyncMock()
@@ -1064,6 +1070,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_blob_fetch_none_sets_placeholder(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1083,6 +1090,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_graph_merge_exception_is_non_fatal(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1103,6 +1111,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_blob_storage_exception_sets_none(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(
@@ -1121,6 +1130,7 @@ class TestEnrichFkChildrenExtraBranches:
     async def test_fk_relations_fetched_when_not_in_precache_for_ddl_branch(self):
         """Lines 603-621: related table without precached FK relations."""
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(
             side_effect=[
                 [{"record_id": "rec-rel"}],  # children of SQL table in vr map
@@ -1157,6 +1167,7 @@ class TestEnrichWarningsNoTableGroup:
     async def test_no_table_block_group_does_not_emit_fk_flattened_entry(self):
         child_rels = [{"record_id": "rec-c1"}]
         gp = AsyncMock()
+        gp.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=child_rels)
         gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
         gp.get_virtual_record_ids_for_record_ids = AsyncMock(

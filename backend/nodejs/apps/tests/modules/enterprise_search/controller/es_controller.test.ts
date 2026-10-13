@@ -5,6 +5,8 @@ import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
+  assignAgentCapabilitiesToPayload,
+  assignRetrievalContextToPayload,
   createConversation,
   getAllConversations,
   getConversationById,
@@ -63,10 +65,11 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { BadRequestError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 
@@ -389,6 +392,11 @@ describe('Enterprise Search Controller', () => {
     // Individual tests can `.resolves(...)` a different value after this.
     if (!(ProjectService.getAccessibleProjectIds as any).restore) {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    }
+    // Scoped-token hydration resolves the sole org before looking the user up,
+    // so every hydration path needs this or it buffers for 10s.
+    if (!(Org.find as any).restore) {
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
     }
   })
 
@@ -2744,9 +2752,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -2761,12 +2768,81 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response).to.have.property('searchId')
-        expect(response).to.have.property('searchResponse')
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.have.property('searchId')
+      expect(response).to.have.property('searchResponse')
+    })
+
+    it('saves every hit as a citation in one ordered insert and keeps hit order', async () => {
+      const handler = search(createMockAppConfig())
+
+      const hitCount = 250
+      const hits = Array.from({ length: hitCount }, (_, i) => ({
+        content: `hit ${i}`,
+        // Every third hit arrives without a chunkIndex and must still save as 0.
+        ...(i % 3 === 0 ? {} : { chunkIndex: i }),
+        citationType: 'vectordb|document',
+        metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+      }))
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: hits, records: [] },
+      } as any)
+
+      const insertedIds = hits.map(() => new mongoose.Types.ObjectId())
+      const insertManyStub = sinon
+        .stub(Citation, 'insertMany')
+        .callsFake(async (docs: any) =>
+          (docs as any[]).map((d, i) => ({ ...d, _id: insertedIds[i] })) as any,
+        )
+      // Resolves like a real save, so on the old code the test fails on the
+      // per-hit saves themselves rather than on a missing return value.
+      const saveStub = sinon
+        .stub(Citation.prototype, 'save')
+        .callsFake(async function (this: any) {
+          return this
+        })
+
+      let savedSearch: any
+      sinon
+        .stub(EnterpriseSemanticSearch.prototype, 'save')
+        .callsFake(async function (this: any) {
+          savedSearch = this
+          return this
+        })
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+
+      expect(saveStub.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      const [docs, options] = insertManyStub.firstCall.args as any[]
+      expect(options).to.deep.include({ ordered: true })
+      expect(docs).to.have.length(hitCount)
+      docs.forEach((doc: any, i: number) => {
+        expect(doc).to.deep.equal({
+          content: `hit ${i}`,
+          chunkIndex: i % 3 === 0 ? 0 : i,
+          citationType: 'vectordb|document',
+          metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+        })
+      })
+
+      expect(savedSearch.citationIds.map(String)).to.deep.equal(
+        insertedIds.map(String),
+      )
     })
 
     it('should call next when AI service returns no data', async () => {
@@ -4515,9 +4591,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -4532,9 +4607,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
     })
 
     it('should handle search with no search results in response', async () => {
@@ -5426,6 +5501,64 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should refuse a Slack-minted token when the instance has more than one org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      // This edition's Slack config carries no orgId, so two orgs means there is
+      // no safe answer — it must refuse rather than pick one.
+      stubMongooseFind(Org, 'find', [
+        { _id: new mongoose.Types.ObjectId(VALID_OID2) },
+        { _id: new mongoose.Types.ObjectId(VALID_OID3) },
+      ])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      // Refused before any user lookup, so no tenant's data is touched.
+      expect(usersFindOne.called).to.be.false
+    })
+
+    it('should scope the user lookup to the sole org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(usersFindOne.calledOnce).to.be.true
+      const lookupFilter = usersFindOne.firstCall.args[0] as { orgId?: unknown }
+      expect(String(lookupFilter.orgId)).to.equal(VALID_OID2)
     })
   })
 
@@ -7932,6 +8065,58 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
+  // search - the query is free text, like a chat question
+  // -----------------------------------------------------------------------
+  describe('search (query in angle brackets)', () => {
+    it('passes a query containing <id> to the search service unchanged', async () => {
+      const handler = search(createMockAppConfig())
+      const query = 'cite [Summary of <id>]'
+
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: [], records: [] },
+      } as any)
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
+        _id: new mongoose.Types.ObjectId(),
+      } as any)
+
+      const req = createMockRequest({
+        body: { query, limit: 5 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(executeStub.calledOnce).to.be.true
+      const sent = JSON.parse((executeStub.firstCall.thisValue as any).body)
+      expect(sent.query).to.equal(query)
+    })
+
+    it('still refuses format specifiers in the query', async () => {
+      const handler = search(createMockAppConfig())
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
+
+      const req = createMockRequest({
+        body: { query: 'show %n records' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // shareConversationById - invalid user ID format
   // -----------------------------------------------------------------------
   describe('shareConversationById (invalid user ID format)', () => {
@@ -9645,9 +9830,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
       sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
         _id: new mongoose.Types.ObjectId(),
       } as any)
@@ -9661,9 +9845,10 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect((insertManyStub.firstCall.args[0] as any[])[0].chunkIndex).to.equal(0)
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -13858,4 +14043,35 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+})
+
+describe('assignRetrievalContextToPayload', () => {
+  it('forwards the flag when true', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: true })
+    expect(payload.includeRetrievalContext).to.equal(true)
+  })
+
+  it('omits the key entirely when absent or false', () => {
+    for (const body of [{}, { includeRetrievalContext: false }]) {
+      const payload: Record<string, unknown> = {}
+      assignRetrievalContextToPayload(payload, body)
+      expect(payload).to.not.have.property('includeRetrievalContext')
+    }
+  })
+
+  it('ignores non-boolean truthy values', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: 'yes' })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
+
+  it('is independent of agentCapabilities forwarding', () => {
+    // Regression: this used to live inside assignAgentCapabilitiesToPayload,
+    // which streamChat only calls in agent mode — so `internal_search`, the
+    // mode evaluations measure, silently never received the flag.
+    const payload: Record<string, unknown> = {}
+    assignAgentCapabilitiesToPayload(payload, { includeRetrievalContext: true })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
 })

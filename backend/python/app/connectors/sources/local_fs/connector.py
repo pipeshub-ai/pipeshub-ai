@@ -86,6 +86,7 @@ from app.models.entities import (
     User,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -93,6 +94,7 @@ from app.services.notification.types import (
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.utils.user_messages import action_failed
 
 from .models import (
     LocalFsFileEvent,
@@ -1423,10 +1425,11 @@ class LocalFsConnector(BaseConnector):
             try:
                 if record is not None:
                     document_id = await self._storage_document_id_of(record)
-                    await self.data_entities_processor.on_record_deleted(
+                    in_trash = await self.data_entities_processor.on_record_deleted(
                         record_id=record.id,
                     )
-                    if document_id:
+                    # A record in the trash keeps its stored copy; the purge removes both.
+                    if document_id and not in_trash:
                         await self._delete_storage_document(document_id)
                 elif ids_known_to_exist:
                     # This id came from the sync point, so a record for it did
@@ -1935,21 +1938,29 @@ class LocalFsConnector(BaseConnector):
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Local FS content unavailable: {exc}",
                 ) from exc
+            self.logger.warning(
+                "Local FS desktop could not serve content for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop could not serve content: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
         except LocalFsDesktopOfflineError as exc:
             # 503 classifies as TRANSIENT for the indexing consumer, so the
             # record is retried once the machine is back rather than failed.
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=str(exc),
+                detail=str(exc),  # user-written message
             ) from exc
         except LocalFsDesktopError as exc:
+            self.logger.warning(
+                "Local FS desktop is not available for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop is not available: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
 
         safe_filename = sanitize_filename_for_content_disposition(
@@ -2074,11 +2085,14 @@ class LocalFsConnector(BaseConnector):
         listed: dict[str, Record] = {}
         offset = 0
         while True:
+            # Every record, trash included: the retire path decides what a trashed
+            # one needs, and a listing that hid it would leave it behind for good.
             records = await self.data_entities_processor.get_records_by_status(
                 self.connector_id,
                 status_filters,
                 limit=FULL_SYNC_RESET_BATCH_SIZE,
                 offset=offset,
+                visibility=RecordVisibility.ALL,
             )
             if not records:
                 break

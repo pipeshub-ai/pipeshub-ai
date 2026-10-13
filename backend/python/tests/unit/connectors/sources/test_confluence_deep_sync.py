@@ -132,7 +132,9 @@ class TestConfluenceRunSync:
             rg = _space_rg()
             connector._sync_spaces = AsyncMock(return_value=[rg])
             connector._sync_folders = AsyncMock()
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+            connector._remove_content_gone_from_source = AsyncMock(return_value=True)
+            connector._remove_spaces_out_of_scope = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
@@ -161,7 +163,9 @@ class TestConfluenceRunSync:
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
             connector._sync_folders = AsyncMock()
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+            connector._remove_content_gone_from_source = AsyncMock(return_value=True)
+            connector._remove_spaces_out_of_scope = AsyncMock()
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()

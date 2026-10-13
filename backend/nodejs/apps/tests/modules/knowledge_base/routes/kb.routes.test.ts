@@ -6,7 +6,6 @@ import type { Router } from 'express';
 import { createKnowledgeBaseRouter } from '../../../../src/modules/knowledge_base/routes/kb.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
-import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service';
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
 import { KB_UPLOAD_LIMITS } from '../../../../src/modules/knowledge_base/constants/kb.constants';
@@ -18,7 +17,6 @@ describe('Knowledge Base Routes', () => {
   let router: Router;
   let mockAuthMiddleware: any;
   let mockAppConfig: any;
-  let mockRecordsEventProducer: any;
   let mockSyncEventProducer: any;
   let mockKeyValueStore: any;
 
@@ -76,12 +74,6 @@ describe('Knowledge Base Routes', () => {
       cmBackend: 'http://localhost:3001',
     };
 
-    mockRecordsEventProducer = {
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      stop: sinon.stub().resolves(),
-    };
-
     mockSyncEventProducer = {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -101,9 +93,6 @@ describe('Knowledge Base Routes', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockAppConfig as any);
-    container
-      .bind<RecordsEventProducer>('RecordsEventProducer')
-      .toConstantValue(mockRecordsEventProducer);
     container
       .bind<SyncEventProducer>('SyncEventProducer')
       .toConstantValue(mockSyncEventProducer);

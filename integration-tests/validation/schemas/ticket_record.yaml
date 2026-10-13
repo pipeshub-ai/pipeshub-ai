@@ -46,6 +46,9 @@ fields:
   reporter_source_timestamp:
     required: false
     type: integer
+  source_status:
+    required: false
+    type: string
   status:
     required: false
     type: string

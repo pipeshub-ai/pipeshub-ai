@@ -2487,14 +2487,16 @@ class Jira:
     async def get_issue(self, issue_key: str) -> tuple[bool, str]:
         """Get a specific JIRA issue"""
         try:
-            response = await self.client.get_issue(issueIdOrKey=issue_key)
+            response = await self.client.get_issue(issueIdOrKey=issue_key, expand="renderedFields")
 
             if response.status == HttpStatusCode.SUCCESS.value:
                 data = response.json()
+                raw_desc = (data.get("fields") or {}).get("description")
+                rendered_desc = (data.get("renderedFields") or {}).get("description")
                 # Clean response: remove redundant fields
                 cleaned_data = (
                     ResponseTransformer(data)
-                    .remove("expand", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
+                    .remove("expand", "renderedFields", "self", "*.self", "*.avatarUrls", "*.expand", "*.iconUrl",
                             "*.subtask", "*.avatarId", "*.hierarchyLevel",
                             "*.statusCategory", "*.active", "*.timeZone", "*.locale", "*.accountType",
                             "*.properties", "*._links", "*.watches", "*.votes", "*.worklog",
@@ -2516,6 +2518,12 @@ class Jira:
                 # Normalize custom fields using field schema (only for fields with values)
                 field_schema = await self._fetch_and_cache_field_schema()
                 cleaned_data = await self._normalize_issues_in_response(cleaned_data, field_schema)
+
+                # "*.description" above also strips the ticket's own description; restore it
+                # (rendered HTML preferred, else the raw ADF document)
+                desc = rendered_desc or raw_desc
+                if desc and isinstance(cleaned_data.get("fields"), dict):
+                    cleaned_data["fields"]["description"] = desc
 
                 # Add web URL if available
                 issue_key = cleaned_data.get("key")

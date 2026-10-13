@@ -58,10 +58,41 @@ class TestParseTimeRange:
         parsed = json.loads(error)
         assert parsed["status"] == "error"
 
-    def test_invalid_calendar_date_rejected(self) -> None:
-        time_range, error = parse_time_range(created_after="2026-02-30")
+    @pytest.mark.parametrize("value", ["2026-13-01", "2026-00-10", "2026-02-32", "2026-02-00"])
+    def test_invalid_calendar_date_rejected(self, value: str) -> None:
+        time_range, error = parse_time_range(created_after=value)
         assert time_range is None
         assert error is not None
+
+    def test_a_day_past_the_month_end_bounds_the_month(self) -> None:
+        """Models write "before 2026-02-29" for "before the end of February":
+        an upper bound clamps to the month's last day, a lower bound rolls over."""
+        time_range, error = parse_time_range(created_after="2026-02-30", created_before="2026-04-31")
+        assert error is None
+        assert time_range == {
+            "source_created_after_ms": _epoch_ms(datetime(2026, 3, 1, tzinfo=timezone.utc)),
+            "source_created_before_ms": _epoch_ms(datetime(2026, 4, 30, 23, 59, 59, 999000, tzinfo=timezone.utc)),
+        }
+
+    def test_february_29_in_a_leap_year_is_itself(self) -> None:
+        time_range, error = parse_time_range(created_before="2028-02-29")
+        assert error is None
+        assert time_range == {
+            "source_created_before_ms": _epoch_ms(datetime(2028, 2, 29, 23, 59, 59, 999000, tzinfo=timezone.utc)),
+        }
+
+    @pytest.mark.parametrize("field", ["created_after", "created_before", "modified_after", "modified_before"])
+    def test_year_zero_is_an_invalid_date_not_an_exception(self, field: str) -> None:
+        time_range, error = parse_time_range(**{field: "0000-01-01"})
+        assert time_range is None
+        assert "invalid calendar date" in json.loads(error)["message"]
+
+    def test_the_last_representable_day_is_an_upper_bound(self) -> None:
+        time_range, error = parse_time_range(created_before="9999-12-31")
+        assert error is None
+        assert time_range == {
+            "source_created_before_ms": _epoch_ms(datetime(9999, 12, 31, 23, 59, 59, 999000, tzinfo=timezone.utc)),
+        }
 
     def test_inverted_created_range_rejected(self) -> None:
         time_range, error = parse_time_range(

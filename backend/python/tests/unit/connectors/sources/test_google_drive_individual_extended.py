@@ -11,6 +11,7 @@ from app.connectors.core.registry.filters import FilterCollection, FilterOperato
 from app.connectors.sources.google.common.connector_google_exceptions import GoogleDriveError
 from app.models.entities import FileRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +126,8 @@ class TestIndividualInit:
             "auth": {},
             "credentials": {"access_token": "t"},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_returns_false_when_oauth_config_not_found(self, mock_fetch, connector):

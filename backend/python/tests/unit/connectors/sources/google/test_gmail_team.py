@@ -15,10 +15,6 @@ from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 from app.config.constants.arangodb import (
     CollectionNames,
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    ProgressStatus,
     RecordRelations,
     RecordTypes,
 )

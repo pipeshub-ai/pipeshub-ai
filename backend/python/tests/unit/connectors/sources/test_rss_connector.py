@@ -18,9 +18,8 @@ import asyncio
 import hashlib
 from io import BytesIO
 from fastapi import HTTPException
-from app.connectors.sources.rss.connector import RSSConnector
 from app.connectors.sources.web.fetch_strategy import FetchResponse
-from app.models.entities import FileRecord, RecordType
+from app.models.entities import FileRecord
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +716,15 @@ class TestFetchAndParseFeed:
             result = await conn._fetch_and_parse_feed("https://feed.com/rss")
         assert result is not None
         assert len(result.entries) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_body_naming_a_local_file_is_not_opened_as_that_file(self, tmp_path):
+        local_feed = tmp_path / "local.xml"
+        local_feed.write_text('<rss version="2.0"><channel><item><title>from disk</title></item></channel></rss>')
+        conn = _make_connector_cov()
+        with _patch_fetch(status=200, content=str(local_feed).encode()):
+            result = await conn._fetch_and_parse_feed("https://feed.com/rss")
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_bozo_feed_with_no_entries_returns_none(self):

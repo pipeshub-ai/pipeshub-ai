@@ -110,9 +110,10 @@ class TestCollection:
     ) -> None:
         model = scripted_model()
         resolver = make_resolver()
-        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon"])
+        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon", "Python"])
         resolution = await resolver.resolve(ctx_factory("r1", "acme", meta))
-        assert meta.languages == ["English", "French", "Klingon"]
+        # Not natural languages: extraction also reports code and made-up ones.
+        assert meta.languages == ["English", "French"]
         assert fake_store.match_calls == []
         assert model.calls == []
         assert resolution.stats.names_deduped == 1
@@ -135,7 +136,8 @@ class TestTier0:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["BUG BASH TESTING"]
+        assert resolution.get(TOPICS, "BUG BASH TESTING").key == key
 
     async def test_hit_carries_existing_aliases(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
@@ -217,7 +219,7 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["match"] == {"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}
+        assert items[0]["matches"] == [{"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}]
         assert resolution.stats.winners_offered == 1
 
     async def test_store_failure_falls_back_to_new_without_raising(
@@ -238,14 +240,15 @@ class TestTier1:
     ) -> None:
         model = scripted_model()
         store = MagicMock()
-        store.find_best_matches = AsyncMock(return_value=[
-            {"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}
+        store.find_candidates = AsyncMock(return_value=[
+            [{"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}]
         ])
         resolver = make_resolver(store=store)
         resolution = await resolver.resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=["Legal"]))
         )
         assert resolution.stats.winners_offered == 0
+        assert resolution.stats.vector_failures == 0
         assert model.calls == []
 
     async def test_no_store_wired_skips_tier1(
@@ -268,7 +271,7 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash", "Bug bash testing"]))
         )
         assert len(model.calls) == 1
-        assert [i["match"] for i in model.calls[0]] == [None, None]
+        assert [i["matches"] for i in model.calls[0]] == [[], []]
 
 
 class TestTier2:
@@ -281,8 +284,12 @@ class TestTier2:
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
             EntityRecord(entity_id="k-legal", entity_type=EntityType.CATEGORY, name="Legal", org_id="acme"),
         ])
+        from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
+
         get_llm = AsyncMock(return_value=(MagicMock(name="llm"), {}))
-        invoke = AsyncMock(return_value=None)
+        # A usable answer: after a failed or empty one the client is rebuilt on
+        # purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
+        invoke = AsyncMock(return_value=MergeDecisions(decisions=[MergeDecision(i=0, same=False)]))
         with patch("app.modules.entity_resolution.resolver.get_llm_for_role", new=get_llm), patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=invoke,
@@ -335,19 +342,22 @@ class TestTier2:
     async def test_a_hung_model_call_times_out_and_falls_back(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, monkeypatch
     ) -> None:
-        """A hung call would hold the record's indexing slot indefinitely."""
+        """A hung call would hold the record's indexing slot indefinitely. The
+        bound is applied by the real helper around the provider call."""
         import asyncio
 
         from app.models.entities import EntityRecord, EntityType
         from app.modules.entity_resolution import resolver as resolver_module
+        from app.utils import streaming
 
-        async def _hang(*_args, **_kwargs):
-            await asyncio.sleep(10)
+        class _HungLlm:
+            async def ainvoke(self, _messages: list) -> None:
+                await asyncio.sleep(10)
 
         monkeypatch.setattr(resolver_module, "MERGE_CALL_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr(resolver_module, "invoke_with_structured_output_and_reflection", _hang)
+        monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
         monkeypatch.setattr(
-            resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {})),
+            resolver_module, "get_llm_for_role", AsyncMock(return_value=(_HungLlm(), {})),
         )
         await fake_store.upsert_entities_batch([
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
@@ -480,8 +490,10 @@ class TestWinnerCheckedAgainstTheGraph:
             "r1", "acme", metadata_factory(topics=["Bug bash session", "Release checklist v2"]),
         ))
 
+        # The first lookup is the winner check; a second may follow for the
+        # merge-redirect check of names that ended up new.
         lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
-        assert len(lookups) == 1
+        assert 1 <= len(lookups) <= 2
         collection, field, ids = lookups[0]
         assert (collection, field) == (TOPICS, "id")
         assert set(ids) <= {"k-bug", "k-rel"}

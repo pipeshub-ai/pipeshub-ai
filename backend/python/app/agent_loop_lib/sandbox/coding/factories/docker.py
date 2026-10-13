@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 import os
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.agent_loop_lib.sandbox.coding.base import (
     CodingSandboxBackend,
@@ -36,6 +36,10 @@ class DockerFactoryConfig(BaseModel):
     working_dir_root: str | None = None
     image_node_modules: str | None = None
     allow_network: bool = False
+    # Private ranges networked containers may still reach, e.g. a package mirror.
+    egress_allow_cidrs: list[str] = Field(default_factory=list)
+    # Image user the firewalled containers drop to once the rules are in.
+    sandbox_user: str = "sandbox"
 
 
 class DockerCodingSandboxFactory(SandboxBackendFactory):
@@ -107,6 +111,8 @@ class DockerCodingSandboxFactory(SandboxBackendFactory):
             package_denylist=denylist,
             image_node_modules=cfg.image_node_modules,
             allow_network=cfg.allow_network,
+            egress_allow_cidrs=tuple(cfg.egress_allow_cidrs),
+            sandbox_user=cfg.sandbox_user,
             context=ctx,
         )
 

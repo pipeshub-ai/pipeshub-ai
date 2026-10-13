@@ -7,7 +7,7 @@ Retry waits are recorded rather than slept (see conftest ``backoff_sleeps``).
 
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -26,6 +26,7 @@ from atlassian_cloud_fakes import (
     CloudRecordsDb,
     RecordingNotifications,
     bearer,
+    drain_notifications,
     oauth_config,
     one_site,
     route_every_http_client,
@@ -33,6 +34,7 @@ from atlassian_cloud_fakes import (
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -529,3 +531,346 @@ class TestAccessControlSafety:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == [], "a deleted group keeps no members"
+
+
+AUDIT = f"{JIRA}/auditing/record"
+FREE_PLAN_REFUSAL = {
+    "errorMessages": [
+        "Audit logs aren't available for this site as all of its Jira Cloud products are on Free plans."
+    ],
+    "errors": {},
+}
+LAST_SYNC_MS = 1_717_000_000_000
+
+
+@pytest.fixture
+def fresh_notification_memory() -> Iterator[Callable[[], None]]:
+    """The suppression cache is class-wide; clearing it is what a connector service restart does."""
+    BaseConnector._notification_cache.clear()
+    yield BaseConnector._notification_cache.clear
+    BaseConnector._notification_cache.clear()
+
+
+class TestDeletedIssuesOnAFreePlan:
+    async def test_a_free_plan_refusal_says_deletions_are_found_by_comparison_with_nothing_to_do(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        (note,) = connector._notification_service.sent
+        assert "Free plan" in note["title"]
+        assert "permission" not in note["title"] + note["message"]
+        assert "compares the issues in each synced project" in note["message"]
+        assert "slower" in note["message"]
+        assert "No action is needed." in note["message"]
+        assert "remove this connector" not in note["message"]
+        assert checkpoints.values_for("issues_audit_deletions") is None, "the deletion window is kept for a later upgrade"
+
+    async def test_the_free_plan_notice_is_sent_once_even_across_syncs_and_restarts(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        fresh_notification_memory()
+        restarted, _ = await ready_connector(db, checkpoints)
+        await restarted._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(restarted)
+
+        assert len(api.calls("GET", AUDIT)) == 3, "every sync still asks Jira"
+        assert len(connector._notification_service.sent) + len(restarted._notification_service.sent) == 1
+
+    async def test_the_marker_is_written_only_once_the_notice_is_sent(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+
+        assert len(connector._notification_service.sent) == 1
+        assert (checkpoints.values_for("issues_audit_free_plan_notice") or {}).get("sent") is True
+
+    async def test_a_notice_the_broker_refused_is_sent_again_later(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._notification_service = RecordingNotifications(broker_answers=[False])
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+        assert checkpoints.values_for("issues_audit_free_plan_notice") is None
+
+        fresh_notification_memory()
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        assert len(connector._notification_service.refused) == 1
+        assert len(connector._notification_service.sent) == 1
+
+    async def test_a_refused_notice_does_not_hold_back_the_next_sync(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._notification_service = RecordingNotifications(broker_answers=[False])
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+
+        assert len(connector._notification_service.refused) == 1
+        assert len(connector._notification_service.sent) == 1, "the backoff only starts once a notice is out"
+        assert (checkpoints.values_for("issues_audit_free_plan_notice") or {}).get("sent") is True
+
+    async def test_a_suppressed_notice_is_not_marked_sent(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point
+        resynced, _ = await ready_connector(db, checkpoints)
+        await resynced._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(resynced)
+        assert resynced._notification_service.sent == [], "the in-memory backoff still holds it back"
+        assert checkpoints.values_for("issues_audit_free_plan_notice") is None
+
+        fresh_notification_memory()
+        await resynced._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(resynced)
+        assert len(resynced._notification_service.sent) == 1
+
+    async def test_a_real_permission_refusal_still_asks_for_the_permission(
+        self, api, db, checkpoints, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(
+            {"errorMessages": ["You do not have permission to view the audit log."], "errors": {}}, status=403,
+        ))
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._handle_issue_deletions(LAST_SYNC_MS)
+        await drain_notifications(connector)
+
+        (note,) = connector._notification_service.sent
+        assert note["title"].endswith("is missing the audit log permission")
+
+
+ID_FIELDS = ["id"]
+ATTACHMENT = {"id": "900", "filename": "log.txt", "mimeType": "text/plain", "size": 12, "created": "2024-05-02T15:00:00.000+0000"}
+
+
+class IssueSearchWithIdListing(IssueSearch):
+    """The issue search, plus the id-only listing answered by page token from ``id_pages``."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.id_pages: dict[str | None, Any] = {}
+        self.id_bodies: list[dict[str, Any]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body.get("fields") != ID_FIELDS:
+            return super().__call__(request)
+        self.id_bodies.append(body)
+        answer = self.id_pages.get(body.get("nextPageToken"), {"issues": []})
+        return answer if isinstance(answer, httpx.Response) else json_response(answer)
+
+
+def ids(*nums: int) -> list[dict[str, str]]:
+    return [{"id": str(n)} for n in nums]
+
+
+def created_on(num: int, created: str) -> dict[str, Any]:
+    ticket = issue(num, "2024-05-01T10:00:00.000+0000")
+    ticket["fields"]["created"] = created
+    return ticket
+
+
+class SiteDbWithIssueKeys(SiteDb):
+    async def get_record_by_issue_key(self, connector_id: str, issue_key: str) -> TicketRecord | None:
+        """Matches the stores: the ticket whose web URL contains ``/browse/<key>``."""
+        for record in self.records.values():
+            if isinstance(record, TicketRecord) and f"/browse/{issue_key}" in (record.weburl or ""):
+                return record
+        return None
+
+
+@pytest.fixture
+def listing(api: AtlassianApiStub) -> IssueSearchWithIdListing:
+    handler = IssueSearchWithIdListing()
+    api.on("POST", SEARCH, handler)
+    return handler
+
+
+@pytest.fixture
+def keyed_db() -> SiteDbWithIssueKeys:
+    return SiteDbWithIssueKeys()
+
+
+async def synced_three_issues(
+    api: AtlassianApiStub, db: SiteDb, checkpoints: FakeCheckpointStore, listing: IssueSearchWithIdListing,
+) -> JiraConnector:
+    """A first sync stores ENG-1, ENG-2 (with an attachment) and ENG-3; later searches find no changes."""
+    stub_site(api)
+    listing.add("ENG", None, {"issues": [
+        issue(1, "2024-05-01T10:00:00.000+0000"),
+        issue(2, "2024-05-01T11:00:00.000+0000", attachments=[ATTACHMENT]),
+        issue(3, "2024-05-01T12:00:00.000+0000"),
+    ]})
+    listing.id_pages[None] = {"issues": ids(1, 2, 3), "isLast": True}
+    connector, _ = await ready_connector(db, checkpoints)
+    await connector.run_sync()
+    assert set(tickets(db)) == {"1", "2", "3"} and "attachment_900" in db.records
+    listing.add("ENG", None, {"issues": []})
+    return connector
+
+
+def issue_reads(api: AtlassianApiStub, ref: int | str) -> int:
+    return len(api.calls("GET", f"{JIRA}/issue/{ref}"))
+
+
+def gone(api: AtlassianApiStub, *refs: int | str) -> None:
+    for ref in refs:
+        api.on("GET", f"{JIRA}/issue/{ref}", json_response(
+            {"errorMessages": ["Issue does not exist or you do not have permission to see it."]}, status=404,
+        ))
+
+
+ENG_2_DELETED = {
+    "records": [{"objectItem": {"typeName": "ISSUE_DELETE", "name": "ENG-2"}, "created": "2024-05-03T10:00:00.000+0000"}],
+    "total": 1,
+}
+
+
+class TestDeletedIssuesFoundByComparingIds:
+    async def test_an_issue_deleted_in_jira_is_removed_by_the_next_sync(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        stub = site_db.records["1"].model_copy(update={"id": "stub-9", "external_record_id": "9", "is_placeholder": True})
+        site_db.records["9"] = stub
+        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
+        gone(api, 2)
+        api.on("GET", f"{JIRA}/issue/3", {"id": "3", "key": "OPS-3"})
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "3", "9"}
+        assert "attachment_900" not in site_db.records, "the attachment goes with its issue"
+        assert issue_reads(api, 3) == 1 and "3" in tickets(site_db), "an issue Jira still has (moved, or not yet searchable) stays"
+        assert issue_reads(api, 1) == 0 and issue_reads(api, 9) == 0, "listed issues and placeholders are not checked"
+        assert len(listing.id_bodies) == 2, "one listing per sync"
+        body = listing.id_bodies[-1]
+        assert body["jql"] == 'project = "ENG" ORDER BY id ASC'
+        assert body["maxResults"] == 5000 and "expand" not in body
+
+    async def test_the_first_sync_after_a_full_resync_still_removes_deleted_issues(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point, not the records
+        listing.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(3, "2024-05-01T12:00:00.000+0000")]})
+        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
+        gone(api, 2)
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "3"}
+        assert checkpoints.values_for("issues_audit_deletions") is None
+
+    @pytest.mark.parametrize("broken_listing", [
+        pytest.param({None: {"issues": ids(1), "nextPageToken": "T2"}, "T2": json_response({"errorMessages": ["boom"]}, status=500)}, id="a-later-page-fails"),
+        pytest.param({None: {"issues": ids(1), "nextPageToken": "T2"}, "T2": {"issues": ids(1), "nextPageToken": "T3"}}, id="the-pages-repeat"),
+        pytest.param({None: {"issues": ids(1), "isLast": False}}, id="more-pages-but-no-token"),
+        pytest.param({None: {"issues": [{"key": "ENG-1"}], "isLast": True}}, id="an-issue-without-an-id"),
+        pytest.param({None: json_response({"errorMessages": ["no"]}, status=400)}, id="the-first-page-fails"),
+    ])
+    async def test_an_unfinished_listing_removes_nothing_and_a_later_full_one_does(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory, broken_listing
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        connector = await synced_three_issues(api, site_db, checkpoints, listing)
+        gone(api, 2, 3)
+        listing.id_pages = dict(broken_listing)
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "2", "3"}
+        assert issue_reads(api, 2) == issue_reads(api, 3) == 0
+
+        listing.id_pages = {None: {"issues": ids(1), "nextPageToken": "T2"}, "T2": {"issues": ids(3), "isLast": True}}
+        api.on("GET", f"{JIRA}/issue/3", {"id": "3", "key": "ENG-3"})
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "3"}
+
+    async def test_an_issue_the_date_filter_now_leaves_out_is_not_removed(
+        self, api, site_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, json_response(FREE_PLAN_REFUSAL, status=403))
+        stub_site(api)
+        listing.add("ENG", None, {"issues": [
+            created_on(1, "2024-06-01T09:00:00.000+0000"),
+            created_on(2, "2024-06-01T09:00:00.000+0000"),
+            created_on(3, "2024-05-01T09:00:00.000+0000"),
+        ]})
+        listing.id_pages[None] = {"issues": ids(1, 2, 3), "isLast": True}
+        connector, config_service = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        listing.add("ENG", None, {"issues": []})
+        cutoff = int(datetime.fromisoformat("2024-05-15T00:00:00+00:00").timestamp() * 1000)
+        config_service.config["filters"] = {
+            "sync": {"values": {"created": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}},
+        }
+        listing.id_pages[None] = {"issues": ids(1, 3), "isLast": True}
+        gone(api, 2, 3)
+
+        await connector.run_sync()
+
+        assert set(tickets(site_db)) == {"1", "3"}
+        assert issue_reads(api, 3) == 0, "a filtered-out issue Jira still has is left alone"
+        assert "created" in listing.bodies[-1]["jql"], "the issue search applies the narrowed filter"
+        assert listing.id_bodies[-1]["jql"] == 'project = "ENG" ORDER BY id ASC', "the id listing does not"
+
+    async def test_a_paid_plan_site_finds_deletions_in_the_audit_log_without_listing_ids(
+        self, api, keyed_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, {"records": [], "total": 0})
+        connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
+        api.on("GET", AUDIT, ENG_2_DELETED)
+        gone(api, "ENG-2", 3)
+        listing.id_pages[None] = {"issues": ids(1), "isLast": True}
+
+        await connector.run_sync()
+
+        assert set(tickets(keyed_db)) == {"1", "3"}, "ENG-3 is not in the audit log, so it stays"
+        assert listing.id_bodies == []
+        assert connector._notification_service.sent == []
+
+    async def test_a_paid_plan_site_acts_on_the_audit_log_in_the_first_sync_after_a_full_resync(
+        self, api, keyed_db, checkpoints, listing, fresh_notification_memory
+    ) -> None:
+        api.on("GET", AUDIT, {"records": [], "total": 0})
+        connector = await synced_three_issues(api, keyed_db, checkpoints, listing)
+        api.on("GET", AUDIT, ENG_2_DELETED)
+        checkpoints.sync_points.clear()  # a full resync deletes every sync point, not the records
+        listing.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(3, "2024-05-01T12:00:00.000+0000")]})
+        gone(api, "ENG-2")
+
+        await connector.run_sync()
+
+        assert set(tickets(keyed_db)) == {"1", "3"}
+        assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
+        assert listing.id_bodies == []

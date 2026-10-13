@@ -228,3 +228,48 @@ class TestShouldRetry:
         """Server errors are transient and should be retried."""
         assert _should_retry(ApiCallError("server error", status_code=500)) is True
         assert _should_retry(ApiCallError("bad gateway", status_code=502)) is True
+
+
+class TestRateLimits:
+    """A 429 carries how long the server asked us to wait, and one that asks
+    for longer than these retries could cover is not retried here."""
+
+    def test_a_short_retry_after_is_retried(self) -> None:
+        assert _should_retry(ApiCallError("slow down", status_code=429, retry_after_seconds=5)) is True
+        assert _should_retry(ApiCallError("slow down", status_code=429, retry_after_seconds=15)) is True
+
+    def test_a_long_retry_after_is_left_to_the_caller(self) -> None:
+        assert _should_retry(ApiCallError("slow down", status_code=429, retry_after_seconds=16)) is False
+        assert _should_retry(ApiCallError("slow down", status_code=429, retry_after_seconds=3600)) is False
+
+    def test_retry_after_does_not_change_other_statuses(self) -> None:
+        assert _should_retry(ApiCallError("down", status_code=503, retry_after_seconds=3600)) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("header", "seconds"), [("1800", 1800.0), (None, None), ("soon", None)])
+    async def test_the_retry_after_header_is_kept_on_the_error(self, header: str | None, seconds: float | None) -> None:
+        response = _make_mock_response(status=429, text="Too many requests to GitHub.")
+        if header is not None:
+            response.headers["Retry-After"] = header
+        session = _make_mock_session(response)
+
+        once = make_api_call.retry_with(stop=lambda retry_state: True, reraise=True)
+        with patch("app.utils.api_call.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(ApiCallError) as exc_info:
+                await once("http://connectors/stream", "token")
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.retry_after_seconds == seconds
+
+    @pytest.mark.asyncio
+    async def test_an_hour_long_rate_limit_is_raised_after_one_attempt(self) -> None:
+        response = _make_mock_response(status=429, text="Too many requests to GitHub.")
+        response.headers["Retry-After"] = "3600"
+        session = _make_mock_session(response)
+
+        with patch("app.utils.api_call.aiohttp.ClientSession", return_value=session):
+            with pytest.raises(ApiCallError) as exc_info:
+                await make_api_call("http://connectors/stream", "token")
+
+        assert session.get.call_count == 1
+        assert exc_info.value.retry_after_seconds == 3600.0
