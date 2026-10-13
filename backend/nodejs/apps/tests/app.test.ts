@@ -65,6 +65,7 @@ import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
@@ -887,6 +888,9 @@ describe('Application', () => {
     it('should finish in-flight requests before disposing containers', async () => {
       (app as any).notificationContainer = new Container();
       const order: string[] = [];
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
+      (app as any).mailServiceContainer = mailContainer;
       (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
       let handlerStarted!: () => void;
       const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
@@ -910,7 +914,7 @@ describe('Application', () => {
       await app.stop();
 
       expect(await inFlight).to.equal('ok');
-      expect(order).to.deep.equal(['response', 'dispose']);
+      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
       expect(server.listening).to.be.false;
     });
 

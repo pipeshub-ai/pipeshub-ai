@@ -898,15 +898,6 @@ export class Application {
         });
       }
       try {
-        this.mailServiceContainer
-          .get<MailSenderService>(MailSenderService)
-          .close();
-      } catch (err) {
-        this.logger.warn('MailSenderService not available during shutdown', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
         registerDesktopPresence(null);
@@ -918,6 +909,17 @@ export class Application {
           { error: err instanceof Error ? err.message : String(err) });
       }
       await drained;
+      // After the drain: an in-flight /mail/emails/sendEmail request may still be
+      // queued on this pool, and close() fails queued messages.
+      try {
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
+      } catch (err) {
+        this.logger.warn('MailSenderService not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       // Stopped before the containers go, because it holds the message
       // producer one of them owns.
       // Awaited: a pass in flight is publishing through a producer the
