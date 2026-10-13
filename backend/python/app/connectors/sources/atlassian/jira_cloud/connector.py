@@ -71,6 +71,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.html_utils import (
     extract_attachment_ids,
@@ -422,6 +423,9 @@ class JiraConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # True when this sync kept stored groups, roles, a lead, a project or its issues it
+        # could not read; full_sync_coverage() then reports the read as incomplete.
+        self._kept_unread_access: bool = False
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -546,6 +550,13 @@ class JiraConnector(BaseConnector):
         """Title like '{instance or Jira} connector {event}' for multi-instance clarity."""
         return f"{self.connector_instance_name or 'Jira'} connector {event}"
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that could not read groups, roles, a lead, a project or a project's
+        issues kept what was stored for them without seeing it, and those cannot be told
+        apart from what Jira removed, so nothing is unlinked after it. A short user read on
+        its own does not count: what it holds back is noted as seen (``_has_stored_access``)."""
+        return FullSyncCoverage(complete=not self._kept_unread_access)
+
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
         full, so a user it names, or a role or lead under a renamed key, may be missing; or it
@@ -617,6 +628,7 @@ class JiraConnector(BaseConnector):
                 return
 
             # 4. Sync Jira users and groups (reuse the active-user list from the guard above)
+            self._kept_unread_access = False
             jira_users = await self._fetch_users(active_pipeshub_users=users)
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
@@ -643,6 +655,7 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
+                self._kept_unread_access = True
             else:
                 await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
             await self._sync_project_lead_roles(raw_projects, jira_users)
@@ -681,6 +694,8 @@ class JiraConnector(BaseConnector):
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
             if failed_keys:
+                # Their issues were not read, so they would look gone to a full sync's unlink.
+                self._kept_unread_access = True
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
                     preview = f"{preview}, and {len(failed_keys) - 10} more"
@@ -1133,44 +1148,6 @@ class JiraConnector(BaseConnector):
                     )
                     continue
             kept.append((role, members))
-        return kept
-
-    async def _has_stored_access(self, entity: str, external_id: str) -> bool:
-        """Whether this connector's ``entity`` (``record_group``, ``user_group`` or ``role``)
-        ``external_id`` already has permission edges stored.
-
-        Asked only when a write may be partial this sync: stored edges are access worth
-        keeping, and with none there is nothing to keep, so what was read is saved. A node
-        found stored is held back, so it is noted as seen by a full sync in progress and the
-        unlink after that sync leaves its edges alone. A read that fails raises
-        ``StoredAccessReadError``, which stops the sync before the write: a failed read is
-        never taken for "nothing stored".
-        """
-        try:
-            return await self.data_entities_processor.has_stored_permissions(
-                entity, self.connector_id, external_id, keep=True
-            )
-        except Exception as e:
-            raise StoredAccessReadError(
-                f"Could not read the stored access of {entity} {external_id}: {e}"
-            ) from e
-
-    async def _keep_stored_project_access(
-        self, projects: list[tuple[RecordGroup, list[Permission]]]
-    ) -> list[tuple[RecordGroup, list[Permission]]]:
-        """Leave out the projects whose access list may be partial this sync and that already
-        have stored access, so their stored list is kept. The rest are saved as read."""
-        kept: list[tuple[RecordGroup, list[Permission]]] = []
-        for group, permissions in projects:
-            if self._project_access_may_be_partial(group.short_name) and await self._has_stored_access(
-                "record_group", str(group.external_group_id)
-            ):
-                self.logger.warning(
-                    "Keeping the stored access of project %s: its access list may be incomplete this sync",
-                    group.short_name,
-                )
-                continue
-            kept.append((group, permissions))
         return kept
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
@@ -2433,6 +2410,7 @@ class JiraConnector(BaseConnector):
                 self.logger.warning(
                     f"⚠️ Keeping the stored members of group {group_name}: its member list could not be read"
                 )
+                self._kept_unread_access = True
                 return (group_id, group_name, user_group, None)
 
             app_users: list[AppUser] = []
@@ -2462,6 +2440,7 @@ class JiraConnector(BaseConnector):
         except Exception as group_error:
             self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
             # Unknown members, not no members: roles that include this group keep what is stored.
+            self._kept_unread_access = True
             return (group.get("groupId"), group.get("name"), None, None)
 
     async def _sync_user_groups(self, jira_users: list[AppUser]) -> Optional[dict[str, Optional[list[AppUser]]]]:
@@ -2850,6 +2829,7 @@ class JiraConnector(BaseConnector):
             preview = ", ".join(failed_project_keys[:10])
             if len(failed_project_keys) > 10:
                 preview = f"{preview}, and {len(failed_project_keys) - 10} more"
+            self._kept_unread_access = True
             self.logger.warning(
                 "Project role sync failed for %s/%s projects: %s",
                 len(failed_project_keys), len(project_keys), preview,
@@ -2946,6 +2926,7 @@ class JiraConnector(BaseConnector):
 
 
             except Exception as lead_error:
+                self._kept_unread_access = True
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
@@ -3163,6 +3144,7 @@ class JiraConnector(BaseConnector):
         built_keys = {rg.short_name for rg, _ in record_groups}
         skipped_keys = [p.get("key") for p in projects if p.get("key") and p.get("key") not in built_keys]
         if skipped_keys:
+            self._kept_unread_access = True
             preview = ", ".join(skipped_keys[:10])
             if len(skipped_keys) > 10:
                 preview = f"{preview}, and {len(skipped_keys) - 10} more"

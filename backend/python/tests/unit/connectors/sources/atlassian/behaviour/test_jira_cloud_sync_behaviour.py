@@ -1331,6 +1331,27 @@ class TestUnfinishedUserRead:
         assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"], "the old-key role keeps its members"
         assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
 
+    async def test_a_full_sync_whose_group_list_fails_keeps_the_stored_members(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+
+        # A full sync (#4119) with a short user read whose group list then fails: the groups and the
+        # roles that need them are kept unread, so they look no different from ones Jira removed.
+        checkpoints.sync_points.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        api.on("GET", f"{JIRA}/group/bulk", json_response({"errorMessages": ["busy"]}, status=503))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert self._access(site_db) == before, "the stored group members and role members survive"
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
