@@ -74,7 +74,7 @@ from app.modules.demo_data.chat import (
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
-from app.utils.time_conversion import set_llm_time_zone
+from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -285,13 +285,21 @@ async def _run_no_tools_degradation(
     blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
 
     yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-    prefetch = await prefetch_retrieval(
-        query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
-        retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
-        filters=query_info.get("filters"), limit=query_info.get("limit"),
-        is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
-        logger=log, force=True,
-    )
+    # The prefetch renders the record headers, so it runs in the user's time
+    # zone like the tool-calling path (see `_produce`). Set and restored
+    # around this one await, with no `yield` between, so the generator never
+    # leaves the zone set in its consumer's context.
+    zone_token = set_llm_time_zone(query_info.get("timezone"))
+    try:
+        prefetch = await prefetch_retrieval(
+            query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
+            retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
+            filters=query_info.get("filters"), limit=query_info.get("limit"),
+            is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
+            logger=log, force=True,
+        )
+    finally:
+        reset_llm_time_zone(zone_token)
     ref_mapper = prefetch.citation_ref_mapper if prefetch else CitationRefMapper()
     context_text = prefetch.formatted_context if prefetch else ""
 

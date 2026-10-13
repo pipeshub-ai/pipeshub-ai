@@ -981,3 +981,30 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_internal_search_prefetch_renders_dates_in_the_users_time_zone(self) -> None:
+        """The no-tools prefetch renders the record headers the model reads, so
+        it uses the user's zone like the tool-calling path, and leaves the
+        caller in UTC afterwards."""
+        seen: dict[str, str] = {}
+
+        async def _fake_prefetch(**kwargs) -> PrefetchResult:
+            seen["header"] = _record_header_created_at()
+            return PrefetchResult(
+                formatted_context="Context.", final_results=[], virtual_record_id_to_result={},
+                tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=False,
+            )
+
+        async def _fake_handle_simple_mode(**kwargs):
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        kwargs = self._base_kwargs(INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"]["timezone"] = "America/Los_Angeles"
+        with (
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=_fake_prefetch),
+            patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_fake_handle_simple_mode),
+        ):
+            [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
