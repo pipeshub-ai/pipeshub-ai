@@ -703,7 +703,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            self._had_sync_checkpoint = await self._get_issues_sync_checkpoint() is not None
+            self._had_sync_checkpoint = await self._sync_started_with_checkpoint()
 
             # Fetch and sync users
             jira_users = await self._fetch_users()
@@ -849,6 +849,22 @@ class JiraDataCenterConnector(BaseConnector):
             return sync_point_data.get("last_sync_time") if sync_point_data else None
         except Exception:
             return None
+
+    async def _sync_started_with_checkpoint(self) -> bool:
+        """Whether earlier syncs left stored access that a short read should not replace.
+
+        A missing checkpoint means a first sync, or a full sync whose prep deleted it with
+        the stored edges. A read that fails is not proof of that, so it counts as a
+        checkpoint: holding back is the safe side when we cannot tell.
+        """
+        try:
+            point = await self.issues_sync_point.read_sync_point("issues_global")
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Could not read the issues sync checkpoint (%s); keeping stored access if a read is short", e
+            )
+            return True
+        return bool(point) and point.get("last_sync_time") is not None
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
