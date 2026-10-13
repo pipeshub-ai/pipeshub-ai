@@ -787,3 +787,30 @@ class TestAGroupContinues:
 
         assert "start_block=0 to read it on its own" in text
         assert _outcome(context, "rec-gl")["blocksRendered"] == 0
+
+
+class TestAFigureInAGroup:
+    """Parsers parent a figure to its list or section with `parent_index`. The
+    group's render leaves images out, so the image branch is what prints them;
+    skipping them as part of the group dropped the figure."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("multimodal", [False, True], ids=["text-only", "multimodal"])
+    async def test_the_figure_and_its_caption_are_shown(self, multimodal: bool) -> None:
+        record = _text_record("fg", 0, 0)
+        record["block_containers"] = {"blocks": [
+            {"index": 0, "type": BlockType.TEXT.value, "parent_index": 0, "data": "fg para 0 the first item"},
+            {"index": 1, "type": BlockType.IMAGE.value, "parent_index": 0,
+             "data": {"uri": _png_uri(), "description": "quarterly revenue chart"}},
+            {"index": 2, "type": BlockType.TEXT.value, "parent_index": 0, "data": "fg para 2 the last item"},
+        ], "block_groups": [{
+            "index": 0, "type": GroupType.LIST.value, "data": {},
+            "children": {"block_ranges": [{"start": 0, "end": 2}]},
+        }]}
+        context = _context(query="", is_multimodal_llm=multimodal)
+        context.tool_state["supports_multipart_tool_result"] = True
+
+        text = await _fetch(context, [record])
+
+        assert "quarterly revenue chart" in text
+        assert set(_outcome(context, "rec-fg")["shownBlocks"]) == {0, 1, 2}

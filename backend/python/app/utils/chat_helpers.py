@@ -4245,7 +4245,9 @@ def record_to_message_content(
             # A row or child of a table or group already rendered (or one
             # that ran out of room) was covered by it; announcing a gap before
             # it would describe blocks the model did read.
-            if block.get("parent_index") is not None and (
+            # Images are the exception: a group's render leaves them out, and
+            # the image branch below is what prints a figure parented to it.
+            if block.get("parent_index") is not None and block_type != BlockType.IMAGE.value and (
                 f"{record.get('virtual_record_id', '')}-{block.get('parent_index')}" in seen_block_groups
             ):
                 continue
