@@ -1254,11 +1254,11 @@ class TestReindexEdgeCases:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the issues checkpoint fail, as a database error would."""
+    """Make reading the stored-access note fail, as a database error would."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        if key.endswith("issues_global"):
+        if key.endswith("stored_access"):
             raise RuntimeError("database unavailable")
         return await real(key, raise_on_error)
 
@@ -1469,7 +1469,7 @@ class TestUnfinishedUserRead:
 
         assert db.groups_saved["devs"] == [], "a refused user list is not kept open by a lookup that failed"
 
-    async def test_a_checkpoint_that_cannot_be_read_keeps_the_stored_access(
+    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
         self, jira, db, store, search, monkeypatch
     ) -> None:
         stub_site(jira, search)
@@ -1480,9 +1480,10 @@ class TestUnfinishedUserRead:
 
         fail_checkpoint_reads(store, monkeypatch)
         self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
 
-        assert self._access(db) == before, "an unreadable checkpoint is not 'nothing stored'"
+        assert self._access(db) == before, "the sync stops before replacing anything"
 
     async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
         self, jira, db, store, search
