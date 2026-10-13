@@ -355,6 +355,9 @@ class RecordEventHandler(BaseEventService):
                 attempts,
                 reason,
             )
+            # FAILED is terminal, so this may have been the repo's last file:
+            # without asking here, the repo waits for an unrelated change.
+            await self._request_code_edge_build_if_repo_drained(record_id, record)
         except Exception as e:
             self.logger.error(
                 "Error while marking record %s FAILED after its message was "
@@ -681,65 +684,89 @@ class RecordEventHandler(BaseEventService):
         if record is not None and not edge_build_trigger.is_code_record(record):
             return
         try:
-            graph_provider = self.event_processor.graph_provider
-            record = await graph_provider.get_document(
+            record = await self.event_processor.graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
             scope = edge_build_trigger.publishable_scope(record)
             if scope is None:
                 return
-            org_id, connector_id, record_group_id = scope
-
-            if await edge_build_trigger.group_has_unfinished_records(
-                graph_provider, org_id, record_group_id
-            ):
-                return
-
-            state = await edge_build_trigger.read_build_state(
-                graph_provider, org_id, record_group_id
-            )
-            redis = await self._redis_client()
-            now_ms = int(time.time() * 1000)
-            # The claim is always taken first, so the tail of a repo asks once.
-            # Only a pending request older than the window, presumed lost,
-            # gets past a lost claim.
-            if not await edge_build_trigger.claim_publish(
-                redis, org_id, record_group_id
-            ) and not edge_build_trigger.request_is_stale(state, now_ms):
-                return
-
-            # Written before the request, so a request that dies in the broker
-            # leaves the repo marked as owing a build rather than leaving
-            # nothing at all.
-            await graph_provider.upsert_sync_point(
-                sync_point_key=edge_build_trigger.sync_point_key_for(
-                    record_group_id
-                ),
-                sync_point_data={
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "syncDataPointType": "codeEdgeBuild",
-                    "edgeBuildPending": True,
-                    "edgeBuildRequestedAt": now_ms,
-                },
-                collection=CollectionNames.SYNC_POINTS.value,
-            )
-            await self._publish_code_edges_event(
-                org_id=org_id,
-                connector_id=connector_id,
-                record_group_id=record_group_id,
-            )
-            self.logger.info(
-                "Requested code edge build for org=%s record_group=%s",
-                org_id,
-                record_group_id,
-            )
+            await self._ask_for_code_edge_build(*scope)
         except Exception as exc:
             self.logger.exception(
                 "Failed to request a code edge build after record %s", record_id
             )
             if self._is_redis_connection_error(exc):
                 await self._discard_redis()
+
+    async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
+        """A deleted code file changes the repo's graph too.
+
+        The record is gone by the time its delete event is handled, so the
+        repo comes from the event itself. Never raises, for the same reason as
+        ``_request_code_edge_build_if_repo_drained``.
+        """
+        if self.producer is None or not edge_build_trigger.is_code_record(payload):
+            return
+        scope = (payload.get("orgId"), payload.get("connectorId"), payload.get("recordGroupId"))
+        if not all(isinstance(value, str) and value for value in scope):
+            return
+        try:
+            await self._ask_for_code_edge_build(*scope)
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to request a code edge build after deleting record %s",
+                payload.get("recordId"),
+            )
+            if self._is_redis_connection_error(exc):
+                await self._discard_redis()
+
+    async def _ask_for_code_edge_build(
+        self, org_id: str, connector_id: str, record_group_id: str
+    ) -> None:
+        graph_provider = self.event_processor.graph_provider
+        if await edge_build_trigger.group_has_unfinished_records(
+            graph_provider, org_id, record_group_id
+        ):
+            return
+
+        state = await edge_build_trigger.read_build_state(
+            graph_provider, org_id, record_group_id
+        )
+        now_ms = int(time.time() * 1000)
+        # The mark comes first and is written every time: only the publish is
+        # deduplicated. A request inside the dedupe window, or one made while
+        # Redis is down, used to leave nothing behind, and the reconciler only
+        # sweeps repos carrying this mark. The fresh request id is what tells a
+        # build that is already running that it was asked again.
+        await graph_provider.upsert_sync_point(
+            sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
+            sync_point_data={
+                "orgId": org_id,
+                "connectorId": connector_id,
+                "syncDataPointType": "codeEdgeBuild",
+                "edgeBuildPending": True,
+                "edgeBuildRequestedAt": now_ms,
+                "edgeBuildRequestId": edge_build_trigger.new_request_id(),
+            },
+            collection=CollectionNames.SYNC_POINTS.value,
+        )
+        redis = await self._redis_client()
+        # Only a pending request older than the window, presumed lost, gets
+        # past a lost claim.
+        if not await edge_build_trigger.claim_publish(
+            redis, org_id, record_group_id
+        ) and not edge_build_trigger.request_is_stale(state, now_ms):
+            return
+        await self._publish_code_edges_event(
+            org_id=org_id,
+            connector_id=connector_id,
+            record_group_id=record_group_id,
+        )
+        self.logger.info(
+            "Requested code edge build for org=%s record_group=%s",
+            org_id,
+            record_group_id,
+        )
 
     async def _trigger_next_queued_duplicate(self, record_id: str, virtual_record_id) -> None:
         try:
@@ -1389,6 +1416,7 @@ class RecordEventHandler(BaseEventService):
                             "its entity point is left for reconciliation",
                             record_id,
                         )
+                await self._request_code_edge_build_for_deleted(payload)
                 # Yield both events since delete is complete
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

@@ -1028,11 +1028,19 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Block) ON (n.orgId, n.qualifiedName)"
         )
 
-        # COMPOSITE: orgId + recordGroupId + name — the symbol index the edge
-        # resolution pass sweeps per repo.
+        # COMPOSITE: orgId + recordGroupId + name — a symbol name within a repo.
         indexes.append(
             "CREATE INDEX block_org_group_name IF NOT EXISTS "
             "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.name)"
+        )
+
+        # COMPOSITE: orgId + recordGroupId + id — the edge builder's per-repo
+        # block scan, which pages by id and orders by (orgId, recordGroupId,
+        # id) so this index serves both the cursor and the ORDER BY. Without it
+        # every page sorted the repo's blocks.
+        indexes.append(
+            "CREATE INDEX block_org_group_id IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.recordGroupId, n.id)"
         )
 
         # SINGLE: recordId — per-file reconciliation on re-index, and the
@@ -3041,6 +3049,8 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         return_field: str = "_from",
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[str]:
         if not target_keys:
             return []
@@ -3078,6 +3088,8 @@ class Neo4jProvider(IGraphDBProvider):
             return result
         except Exception as e:
             self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def delete_edges_by_source_keys(
@@ -3170,6 +3182,8 @@ class Neo4jProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         return_fields: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         try:
             label = collection_to_label(collection)
@@ -3207,6 +3221,8 @@ class Neo4jProvider(IGraphDBProvider):
             ]
         except Exception as e:
             self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def remove_nodes_by_field(
@@ -14992,6 +15008,10 @@ class Neo4jProvider(IGraphDBProvider):
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "connectorId": record.get("connectorId"),
+                # A deleted code file's repo is owed an edge build, and by the
+                # time indexing handles this event the record is gone.
+                "recordGroupId": record.get("recordGroupId"),
+                "connectorName": record.get("connectorName"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")

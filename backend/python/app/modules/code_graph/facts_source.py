@@ -41,6 +41,10 @@ class RecordFacts:
 
     pending_edges: dict[str, list[dict]] = field(default_factory=dict)
     type_table: dict[str, str] = field(default_factory=dict)
+    # False for a blob stored before code files carried code metadata. Its
+    # facts are unknown, not empty: rebuilding from it would delete the file's
+    # call and import edges.
+    recognised: bool = True
 
 
 class CodeFactsSource(Protocol):
@@ -59,6 +63,11 @@ def facts_from_blob_record(record_id: str, record: dict[str, Any]) -> RecordFact
     out = RecordFacts()
     container = record.get("block_containers")
     if not isinstance(container, dict):
+        out.recognised = False
+        return out
+    items = [*(container.get("block_groups") or []), *(container.get("blocks") or [])]
+    if items and not any(_code_metadata(item) for item in items):
+        out.recognised = False
         return out
     for group in container.get("block_groups") or []:
         meta = _code_metadata(group)

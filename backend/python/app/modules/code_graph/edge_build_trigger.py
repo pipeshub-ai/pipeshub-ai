@@ -44,6 +44,7 @@ __all__ = [
     "SYNC_POINT_SUFFIX",
     "acquire_build_lock",
     "claim_publish",
+    "new_request_id",
     "group_has_unfinished_records",
     "is_code_record",
     "pending_builds",
@@ -101,6 +102,9 @@ class BuildState(NamedTuple):
     last_build: int | None
     pending: bool
     requested_at: int | None
+    # Unique per request; a build compares it with the one it started under,
+    # so no clock has to agree with another service's.
+    request_id: str | None = None
 
 
 class PendingBuild(NamedTuple):
@@ -193,7 +197,12 @@ async def read_build_state(
             "orgId": org_id,
             "syncPointKey": sync_point_key_for(record_group_id),
         },
-        return_fields=["lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt"],
+        return_fields=[
+            "lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt", "edgeBuildRequestId",
+        ],
+        # Unreadable must not read as "never built, nothing owed": a finishing
+        # build would clear a request it never saw.
+        raise_on_error=True,
     )
     if not rows:
         return BuildState(None, False, None)
@@ -202,7 +211,16 @@ async def read_build_state(
         _ms_or_none(row.get("lastEdgeBuildAt")),
         bool(row.get("edgeBuildPending")),
         _ms_or_none(row.get("edgeBuildRequestedAt")),
+        _str_or_none(row.get("edgeBuildRequestId")),
     )
+
+
+def _str_or_none(value: object) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def new_request_id() -> str:
+    return uuid4().hex
 
 
 def _ms_or_none(value: object) -> int | None:
@@ -226,7 +244,9 @@ async def pending_builds(graph_provider: "IGraphDBProvider") -> list[PendingBuil
             "lastEdgeBuildAt",
             "edgeBuildPending",
             "edgeBuildRequestedAt",
+            "edgeBuildRequestId",
         ],
+        raise_on_error=True,
     )
     out: list[PendingBuild] = []
     for row in rows or []:
@@ -244,6 +264,7 @@ async def pending_builds(graph_provider: "IGraphDBProvider") -> list[PendingBuil
                     _ms_or_none(row.get("lastEdgeBuildAt")),
                     bool(row.get("edgeBuildPending")),
                     _ms_or_none(row.get("edgeBuildRequestedAt")),
+                    _str_or_none(row.get("edgeBuildRequestId")),
                 ),
             )
         )
@@ -254,12 +275,19 @@ def _non_empty(value: object) -> bool:
     return isinstance(value, str) and bool(value)
 
 
-def still_owed(state: BuildState, started_at_ms: int) -> bool:
-    """Whether a build that started at ``started_at_ms`` leaves one owed.
+def still_owed(state: BuildState, started_at_ms: int,
+               started_request_id: str | None = None) -> bool:
+    """Whether a build leaves one owed: someone asked again while it ran.
 
-    A request stamped after the start was for records this build may not have
-    seen, so clearing ``edgeBuildPending`` there would erase that request.
+    That request was for records this build may not have seen, so clearing
+    ``edgeBuildPending`` there would erase it. Decided by request id when there
+    is one: comparing ``edgeBuildRequestedAt`` (the indexing service's clock)
+    with ``started_at_ms`` (this service's) loses a request whenever the two
+    clocks disagree by more than the gap between them. A mark written before
+    request ids existed falls back to that comparison.
     """
+    if state.request_id is not None or started_request_id is not None:
+        return state.pending and state.request_id != started_request_id
     return state.requested_at is not None and state.requested_at > started_at_ms
 
 
@@ -290,6 +318,9 @@ async def records_updated_since(
         since=since_ms,
         filters={"orgId": org_id, "recordGroupId": record_group_id},
         return_fields=["_key"],
+        # An unreadable graph must not read as "nothing changed": the build
+        # would settle and clear the request it was asked to serve.
+        raise_on_error=True,
     )
     return {row["_key"] for row in rows if isinstance(row.get("_key"), str)}
 

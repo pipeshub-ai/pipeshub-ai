@@ -5177,7 +5177,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 59
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 60
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -5209,7 +5209,8 @@ class TestEnsureIndexes:
             if call.args[0] == CollectionNames.BLOCKS.value
         }
         assert blocks == {
-            ("orgId", "recordGroupId", "name"),           # edge-resolution symbol sweep
+            ("orgId", "recordGroupId", "name"),           # a symbol name within a repo
+            ("orgId", "recordGroupId", "_key"),           # the per-repo block scan (SC-3)
             ("orgId", "recordGroupId", "qualifiedName"),  # resolution target lookup
             ("recordId",),                                # per-file reconciliation
             ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
@@ -7569,7 +7570,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 59
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 60
 
 
 # ---------------------------------------------------------------------------

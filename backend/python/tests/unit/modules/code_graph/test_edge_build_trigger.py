@@ -108,7 +108,7 @@ class TestReadBuildState:
 
         assert await edge_build_trigger.read_build_state(
             graph_provider, "org-1", "repo-1"
-        ) == (None, False, None)
+        ) == (None, False, None, None)
 
     @pytest.mark.asyncio
     async def test_reads_every_field_off_the_sync_point(self) -> None:
@@ -119,7 +119,7 @@ class TestReadBuildState:
         }])
 
         state = await edge_build_trigger.read_build_state(graph_provider, "org-1", "repo-1")
-        assert state == (1700, True, 1800)
+        assert state == (1700, True, 1800, None)
         assert state.requested_at == 1800
 
         kwargs = graph_provider.get_nodes_by_filters.await_args.kwargs
@@ -134,7 +134,7 @@ class TestReadBuildState:
 
         assert await edge_build_trigger.read_build_state(
             graph_provider, "org-1", "repo-1"
-        ) == (None, False, None)
+        ) == (None, False, None, None)
 
 
 class TestClaimPublish:
@@ -305,6 +305,14 @@ class TestPendingRules:
     def test_a_request_the_build_covered_is_settled(self) -> None:
         assert not edge_build_trigger.still_owed(self.BuildState(1000, True, 1999), 2000)
         assert not edge_build_trigger.still_owed(self.BuildState(1000, True, None), 2000)
+
+    def test_a_request_id_decides_regardless_of_clocks(self) -> None:
+        # Stamped "before" the start by a clock running behind, yet a new request.
+        assert edge_build_trigger.still_owed(self.BuildState(1000, True, 1500, "b"), 2000, "a")
+        # Stamped "after" the start by a clock running ahead, yet the same request.
+        assert not edge_build_trigger.still_owed(self.BuildState(1000, True, 2500, "a"), 2000, "a")
+        # A request made while a build with none in hand ran is owed.
+        assert edge_build_trigger.still_owed(self.BuildState(1000, True, 1500, "b"), 2000, None)
 
     def test_a_fresh_pending_request_is_not_stale(self) -> None:
         """The tail of a repo: the first record marked it pending seconds ago."""

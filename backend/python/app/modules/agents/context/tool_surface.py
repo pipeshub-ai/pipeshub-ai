@@ -272,7 +272,7 @@ def _resolve_live_api_apps(
     for name in names_set:
         if "__" in name:
             prefix = name.split("__", 1)[0]
-            if prefix not in internal:
+            if _prefix_key(prefix) not in internal:
                 apps.add(prefix)
 
     return tuple(sorted(apps))
@@ -293,10 +293,37 @@ _FALLBACK_INTERNAL_KEYS = frozenset({
     "databasesandbox", "datecalculator", "imagegenerator", "internaltools",
     "knowledgegraph", "knowledgehub", "retrieval",
 })
+# Tool-name prefixes of internal toolsets that no key normalises to (the
+# Artifact Manager's tools live under /tools/artifacts/). Same sync test.
+_FALLBACK_INTERNAL_PREFIXES = frozenset({"artifacts"})
+
+
+def _prefix_key(name: str) -> str:
+    """Compare a tool-name prefix the way the registry keys its toolsets.
+
+    Prefixes come from the tool path and keep underscores (`date_calculator`);
+    registry keys drop them (`datecalculator`).
+    """
+    return name.lower().replace(" ", "").replace("_", "")
+
+
+def _tool_prefixes(toolset_class: type | None) -> set[str]:
+    """The `<app>` of each `/tools/<app>/<tool>` path a toolset declares."""
+    prefixes: set[str] = set()
+    for attr in vars(toolset_class or object).values():
+        meta = getattr(getattr(attr, "__func__", attr), "_agent_tool_meta", None)
+        parts = (getattr(meta, "path", "") or "").rsplit("/", 2)
+        if len(parts) == 3 and parts[-2]:
+            prefixes.add(_prefix_key(parts[-2]))
+    return prefixes
 
 
 def _internal_toolset_keys() -> frozenset[str]:
     """Toolset keys that are internal, read from the registry.
+
+    Keys are compared in `_prefix_key` form and include each internal
+    toolset's own tool-path prefixes, since a tool's prefix need not be its
+    toolset's name (`artifacts` vs `artifactmanager`).
 
     A hardcoded list went stale the moment the registry started normalising
     names: it said `database_sandbox` / `date_calculator` / `artifacts` while
@@ -315,7 +342,10 @@ def _internal_toolset_keys() -> frozenset[str]:
     except Exception:  # pragma: no cover - registry unavailable in some tests
         registry = {}
     if not registry:
-        return _NON_CONNECTOR_PREFIXES | _FALLBACK_INTERNAL_KEYS
-    return _NON_CONNECTOR_PREFIXES | frozenset(
-        name for name, meta in registry.items() if meta.get("isInternal")
-    )
+        return _NON_CONNECTOR_PREFIXES | _FALLBACK_INTERNAL_KEYS | _FALLBACK_INTERNAL_PREFIXES
+    keys: set[str] = set()
+    for name, meta in registry.items():
+        if meta.get("isInternal"):
+            keys.add(_prefix_key(name))
+            keys |= _tool_prefixes(meta.get("class"))
+    return _NON_CONNECTOR_PREFIXES | frozenset(keys)

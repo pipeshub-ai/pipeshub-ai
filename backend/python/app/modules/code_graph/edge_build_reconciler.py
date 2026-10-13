@@ -38,6 +38,7 @@ RECONCILE_INTERVAL_SECONDS = env_seconds(
 # sweep would otherwise start one for every repo at once.
 RECONCILE_MAX_STARTS_PER_SWEEP = 5
 _JITTER_FRACTION = 0.1
+_FIRST_SWEEP_DELAY_SECONDS = (30.0, 90.0)
 
 
 async def reconcile_once(
@@ -94,11 +95,13 @@ async def reconcile_forever(
     log: Logger,
     interval_s: float = RECONCILE_INTERVAL_SECONDS,
 ) -> None:
-    """Sweep now, then every ``interval_s`` until cancelled.
+    """Sweep after a short randomized delay, then every ``interval_s`` until cancelled.
 
-    The first pass is the startup sweep. Jitter keeps replicas that restarted
-    together from querying the graph in lockstep.
+    The first pass is the startup sweep. Delaying it keeps a replica that is
+    crash-looping on a build from starting that build again the moment it
+    comes up; jitter keeps replicas that restarted together out of lockstep.
     """
+    await asyncio.sleep(random.uniform(*_FIRST_SWEEP_DELAY_SECONDS))
     while True:
         try:
             await reconcile_once(graph_provider, event_service, log)

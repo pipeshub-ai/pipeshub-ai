@@ -31,6 +31,7 @@ async def test_runner_builds_settles_and_releases_lock() -> None:
     redis = _redis()
     logger = MagicMock()
     result = MagicMock()
+    result.facts_missing = 0
     result.as_log_fields.return_value = {"edges_written": 3}
     runner = CodeEdgeBuildRunner(graph_provider, redis, logger)
 

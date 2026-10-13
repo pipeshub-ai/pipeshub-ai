@@ -452,3 +452,24 @@ async def test_the_event_loop_keeps_ticking_while_a_large_source_file_is_parsed(
     assert ticks_during_parse >= 3, (
         f"the event loop ticked {ticks_during_parse} time(s) in the {elapsed:.2f}s the parse took"
     )
+
+
+# -- a file that no longer has blocks loses the old ones (R-9) ---------------
+
+
+async def test_an_emptied_code_file_loses_its_previous_blocks(harness: Harness) -> None:
+    harness.code.parse_to_blocks_off_loop = AsyncMock(return_value=BlocksContainer(blocks=[]))
+
+    events = await harness.run("legacy_metrics.py", b"")
+
+    assert events == DONE
+    harness.graph.delete_blocks_for_records.assert_awaited_once_with(["rec-1"])
+    (write,) = harness.status_writes()
+    assert write["indexingStatus"] == ProgressStatus.EMPTY.value
+
+
+async def test_a_code_file_that_is_now_skipped_loses_its_previous_blocks(harness: Harness) -> None:
+    events = await harness.run("app.min.js", b"function a(){}")
+
+    assert events == DONE
+    harness.graph.delete_blocks_for_records.assert_awaited_once_with(["rec-1"])

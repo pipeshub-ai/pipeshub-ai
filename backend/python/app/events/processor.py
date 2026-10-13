@@ -1804,9 +1804,20 @@ class Processor:
         self.logger.info(
             f"Not indexing {record_name} ({size_bytes} bytes): {cause}; marking as not supported"
         )
+        await self._drop_code_blocks(record_id)
         await self._mark_record(record_id, ProgressStatus.FILE_TYPE_NOT_SUPPORTED, reason=reason)
         yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
         yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+
+    async def _drop_code_blocks(self, record_id: str) -> None:
+        """Remove a code file's previous blocks when it no longer has any.
+
+        A file emptied, made unparseable or skipped kept the blocks of its last
+        version, and the edge builder went on resolving calls into code that no
+        longer exists. Raises, like the projection: the status written next
+        would otherwise claim a state the graph does not have.
+        """
+        await self.graph_provider.delete_blocks_for_records([record_id])
 
     async def project_code_blocks_to_graph(
         self,
@@ -1975,6 +1986,7 @@ class Processor:
                 return
 
             if not block_containers.blocks and not block_containers.block_groups:
+                await self._drop_code_blocks(recordId)
                 await self._mark_record(recordId, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))

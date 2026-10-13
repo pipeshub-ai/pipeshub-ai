@@ -419,6 +419,9 @@ _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
+# Blocks per batch when deleting a connector's or a record set's blocks.
+BLOCK_DELETE_BATCH_SIZE = 1000
+
 class ArangoHTTPProvider(IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
@@ -1101,6 +1104,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.BLOCKS.value,
             ["orgId", "recordGroupId", "name"],
+        )
+
+        # COMPOSITE: the edge builder's per-repo block scan filters on org and
+        # repo and pages by _key. Every other blocks index ends in name or
+        # qualifiedName, so each page re-read the repo's whole index range and
+        # sorted it; _key trailing serves the cursor and the SORT.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["orgId", "recordGroupId", "_key"],
         )
 
         # COMPOSITE: resolution target lookup by the repo-unique symbol identity.
@@ -3818,6 +3830,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         return_field: str = "_from",
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[str]:
         if not target_keys:
             return []
@@ -3840,6 +3854,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return [row for row in rows if isinstance(row, str)]
         except Exception as e:
             self.logger.error(f"❌ Get edges by target keys failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def delete_edges_by_source_keys(
@@ -3932,6 +3948,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         filters: dict[str, Any] | None = None,
         return_fields: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         filter_conditions, bind_vars = self._filter_conditions(filters)
         conditions = [f"doc.{timestamp_field} > @since", *filter_conditions]
@@ -3955,6 +3973,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ) or []
         except Exception as e:
             self.logger.error(f"❌ Get nodes updated since failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def remove_nodes_by_field(
@@ -10739,6 +10759,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 CollectionNames.MEMBER_OF.value,
             ]
 
+            # Blocks are the bulk of a code connector. Deleted inside the
+            # transaction below they could exceed its size or time limit and
+            # roll the whole delete back on every retry, so when this call owns
+            # the transaction they go first, each batch committing on its own.
+            # A later rollback leaves the connector intact and a retry finishes
+            # whatever blocks are left.
+            blocks_deleted_up_front = transaction is None
+            deleted_blocks = 0
+            if blocks_deleted_up_front:
+                deleted_blocks = await self.delete_blocks_by_connector_id(connector_id)
+
             # Start transaction for node deletions only
             # Edge collections still included for isOfType target edge deletion
             if transaction is None:
@@ -10849,7 +10880,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # Blocks join their record by field, and their structural and
                 # cross-file edges carry no connectorId, so neither the record
                 # sweep nor the connector-scoped edge sweep above reaches them.
-                deleted_blocks = await self.delete_blocks_by_connector_id(connector_id, transaction)
+                if not blocks_deleted_up_front:
+                    deleted_blocks = await self.delete_blocks_by_connector_id(
+                        connector_id, transaction
+                    )
 
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)
                 deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
@@ -14086,6 +14120,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "summaryDocumentId": record.get("summaryDocumentId"),
                 "virtualRecordId": record.get("virtualRecordId"),
                 "connectorId": record.get("connectorId"),
+                # A deleted code file's repo is owed an edge build, and by the
+                # time indexing handles this event the record is gone.
+                "recordGroupId": record.get("recordGroupId"),
+                "connectorName": record.get("connectorName"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")
@@ -14544,44 +14582,60 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Edges before nodes, the order ``block_projection`` uses when it replaces a
         file: dropping the nodes on their own leaves every CONTAINS, CALLS and
-        IMPORTS edge pointing at a key that no longer resolves. Both statements
-        re-derive the block set from *condition* so no block key list crosses the
-        wire on a repo-sized delete.
+        IMPORTS edge pointing at a key that no longer resolves.
+
+        Pages in batches of ``BLOCK_DELETE_BATCH_SIZE``. A code connector's
+        blocks deleted in one statement, inside the connector-deletion
+        transaction, could exceed the transaction's size or time limit, roll the
+        whole delete back, and do the same on every retry. With no
+        ``transaction`` each batch commits on its own.
         """
         blocks = CollectionNames.BLOCKS.value
         edges = CollectionNames.RECORD_RELATIONS.value
+        select_query = f"""
+        FOR block IN {blocks}
+            FILTER {condition}
+            LIMIT @batch
+            RETURN block._key
+        """
+        # One equality lookup per direction: `_from IN ids OR _to IN ids` does
+        # not reliably use the edge index and scans the collection.
+        edge_query = f"""
+        LET edge_keys = UNION_DISTINCT(
+            (FOR bid IN @block_ids FOR e IN {edges} FILTER e._from == bid RETURN e._key),
+            (FOR bid IN @block_ids FOR e IN {edges} FILTER e._to == bid RETURN e._key)
+        )
+        FOR key IN edge_keys
+            REMOVE key IN {edges} OPTIONS {{ ignoreErrors: true }}
+            RETURN 1
+        """
+        node_query = f"""
+        FOR key IN @keys
+            REMOVE key IN {blocks} OPTIONS {{ ignoreErrors: true }}
+            RETURN 1
+        """
+        total = 0
         try:
-            edge_query = f"""
-            LET block_ids = (
-                FOR block IN {blocks}
-                    FILTER {condition}
-                    RETURN block._id
-            )
-            // One equality lookup per direction: `_from IN ids OR _to IN ids`
-            // does not reliably use the edge index and scans the collection.
-            LET edge_keys = UNION_DISTINCT(
-                (FOR bid IN block_ids FOR e IN {edges} FILTER e._from == bid RETURN e._key),
-                (FOR bid IN block_ids FOR e IN {edges} FILTER e._to == bid RETURN e._key)
-            )
-            FOR key IN edge_keys
-                REMOVE key IN {edges} OPTIONS {{ ignoreErrors: true }}
-                RETURN 1
-            """
-            await self.http_client.execute_aql(
-                edge_query, bind_vars=bind_vars, txn_id=transaction
-            )
-            node_query = f"""
-            FOR block IN {blocks}
-                FILTER {condition}
-                REMOVE block IN {blocks} OPTIONS {{ ignoreErrors: true }}
-                RETURN 1
-            """
-            rows = await self.http_client.execute_aql(
-                node_query, bind_vars=bind_vars, txn_id=transaction
-            ) or []
-            if rows:
-                self.logger.debug(f"🗑️ Deleted {len(rows)} block(s) from {blocks}")
-            return len(rows)
+            while True:
+                keys = await self.http_client.execute_aql(
+                    select_query, bind_vars={**bind_vars, "batch": BLOCK_DELETE_BATCH_SIZE},
+                    txn_id=transaction,
+                ) or []
+                if not keys:
+                    break
+                await self.http_client.execute_aql(
+                    edge_query, bind_vars={"block_ids": [f"{blocks}/{key}" for key in keys]},
+                    txn_id=transaction,
+                )
+                rows = await self.http_client.execute_aql(
+                    node_query, bind_vars={"keys": keys}, txn_id=transaction
+                ) or []
+                total += len(rows)
+                if len(keys) < BLOCK_DELETE_BATCH_SIZE:
+                    break
+            if total:
+                self.logger.debug(f"🗑️ Deleted {total} block(s) from {blocks}")
+            return total
         except Exception as e:
             self.logger.error(f"❌ Delete blocks failed: {str(e)}")
             raise

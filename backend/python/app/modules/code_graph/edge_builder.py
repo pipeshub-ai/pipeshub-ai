@@ -6,6 +6,7 @@ need both the type tables and the method index.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -22,7 +23,7 @@ from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.symbol_index import SymbolIndex, build_symbol_index
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-__all__ = ["CODE_GRAPH_SOURCE", "EdgeBuildResult", "build_code_graph_edges"]
+__all__ = ["CODE_GRAPH_SOURCE", "EdgeBuildAbortedError", "EdgeBuildResult", "build_code_graph_edges"]
 
 CODE_GRAPH_SOURCE = "code_graph"
 
@@ -72,7 +73,25 @@ RESOLUTION_NAME = "name-heuristic"
 # import get`). It shadows every repo definition of that name in the file.
 _EXTERNAL = ""
 
+# Above this share of re-resolved files without readable facts (and at least
+# this many), the store is presumed unavailable rather than a few blobs being
+# missing, and the build stops before touching any edge.
+_MAX_MISSING_FACTS_SHARE = 0.2
+# A bare name with no import, same-file or module evidence and more definitions
+# than this is left unresolved: a proximity guess among that many is how god
+# nodes form, and scoring every candidate per call made builds quadratic.
+_MAX_HEURISTIC_CANDIDATES = 64
+_MIN_MISSING_FACTS_TO_ABORT = 5
+
 logger = logging.getLogger(__name__)
+
+
+class EdgeBuildAbortedError(RuntimeError):
+    """The build stopped before writing: the inputs it read cannot be trusted.
+
+    Raised before any edge is deleted, so the graph keeps its previous edges,
+    the watermark is not advanced and the repo stays owed a build.
+    """
 
 
 @dataclass
@@ -136,6 +155,7 @@ async def _scan_blocks(graph_provider: IGraphDBProvider, org_id: str,
             sort_field="_key",
             after_key=after_key,
             return_fields=_BLOCK_SCAN_FIELDS,
+            raise_on_error=True,
         )
         if not page:
             break
@@ -164,7 +184,7 @@ async def _scan_file_info(graph_provider: IGraphDBProvider, org_id: str,
     referenced: dict[str, tuple[str, ...]] = {}
     for chunk in _chunks(record_ids, 2000):
         info = await graph_provider.get_file_paths_for_records(
-            org_id=org_id, record_ids=chunk
+            org_id=org_id, record_ids=chunk, raise_on_error=True
         )
         for record_id, file_info in info.items():
             paths[record_id] = file_info.file_path
@@ -191,7 +211,9 @@ async def _scan_repo_paths(graph_provider: IGraphDBProvider, org_id: str,
     record_ids = sorted({row["_key"] for row in rows if row.get("_key")})
     paths: set[str] = set()
     for chunk in _chunks(record_ids, 2000):
-        info = await graph_provider.get_file_paths_for_records(org_id=org_id, record_ids=chunk)
+        info = await graph_provider.get_file_paths_for_records(
+            org_id=org_id, record_ids=chunk, raise_on_error=True
+        )
         paths.update(file_info.file_path for file_info in info.values() if file_info.file_path)
     return paths
 
@@ -217,6 +239,12 @@ class _Builder:
         self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
         self._bases_memo: dict[str, list[str]] = {}
+        # (record, name) -> blocks: the same-file and imported-module rungs look
+        # up one file's definitions instead of filtering every same-named block.
+        self._by_record_name: dict[tuple[str, str], list[str]] = {}
+        for block_id, row in index.rows.items():
+            if row.name:
+                self._by_record_name.setdefault((row.record_id, row.name), []).append(block_id)
 
     # -- emit -----------------------------------------------------------
 
@@ -549,48 +577,49 @@ class _Builder:
                 and (relation not in _TYPE_RELATIONS or bound in self.index.type_blocks)):
             return bound, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT
 
-        candidates = self.index.candidates(name)
-        if not candidates:
+        if not self.index.candidates(name):
             # Nothing in the repo defines this name at all: a third-party or
             # stdlib reference, not a resolution failure.
             self.result.external_refs += 1
             return None, CONFIDENCE_INFERRED, None
 
-        if family:
-            candidates = [cid for cid in candidates if self._family_of(cid) == family]
-        # A type relation must land on a type; a call must land on something callable.
-        if relation in _TYPE_RELATIONS:
-            typed = [cid for cid in candidates if cid in self.index.type_blocks]
-            candidates = typed or candidates
-        elif relation in _CALL_RELATIONS:
-            # Class exclusion: `select(Model)` is not a call to Model.
-            callable_only = [cid for cid in candidates if cid in self.index.callable_blocks]
-            if callable_only:
-                candidates = callable_only
-        if not candidates:
-            self.result.unresolved += 1
-            return None, CONFIDENCE_INFERRED, None
+        if qualified_prefix:
+            # `pkg.mod.Parent` and `Outer.Inner` are evidence the bare name is
+            # not. A qualifier that does not leave exactly one candidate is
+            # ignored, so an unresolved module path falls through below.
+            pinned = self._prefix_candidates(
+                self._eligible(self.index.candidates(name), family, relation),
+                qualified_prefix, call_file, family,
+            )
+            if pinned:
+                return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
-        # `pkg.mod.Parent` and `Outer.Inner` are evidence the bare name is not.
-        # A qualifier that does not leave exactly one candidate is ignored, so
-        # an unresolved module path still falls through to import and proximity.
-        pinned = self._prefix_candidates(candidates, qualified_prefix, call_file, family)
-        if pinned:
-            return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
-
-        same_file = [cid for cid in candidates if self.index.file_by_block.get(cid) == call_file]
-        with_evidence = [cid for cid in candidates if self._has_module_evidence(cid, call_file)]
+        same_file = self._eligible(self._defined_in(call_file, name), family, relation)
         if same_file:
             candidates, confidence, resolution = same_file, CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
-        elif with_evidence:
-            candidates, confidence, resolution = with_evidence, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
-        elif family == "js" and relation in _CALL_RELATIONS:
-            # ES modules have no implicit cross-module scope: without an
-            # import the call cannot be reaching this definition.
-            self.result.unresolved += 1
-            return None, CONFIDENCE_INFERRED, None
         else:
-            confidence, resolution = CONFIDENCE_INFERRED, RESOLUTION_NAME
+            imported = self._eligible(
+                [cid for module in sorted(self.module_imports.get(call_file, ()))
+                 for cid in self._defined_in(module, name)],
+                family, relation,
+            )
+            if imported:
+                candidates, confidence, resolution = imported, CONFIDENCE_EXTRACTED, RESOLUTION_MODULE
+            elif family == "js" and relation in _CALL_RELATIONS:
+                # ES modules have no implicit cross-module scope: without an
+                # import the call cannot be reaching this definition.
+                self.result.unresolved += 1
+                return None, CONFIDENCE_INFERRED, None
+            else:
+                every = self.index.candidates(name)
+                if len(every) > _MAX_HEURISTIC_CANDIDATES:
+                    self.result.ambiguous_skipped += 1
+                    return None, CONFIDENCE_INFERRED, None
+                candidates = self._eligible(every, family, relation)
+                if not candidates:
+                    self.result.unresolved += 1
+                    return None, CONFIDENCE_INFERRED, None
+                confidence, resolution = CONFIDENCE_INFERRED, RESOLUTION_NAME
 
         candidates = prefer_non_test(candidates, self.index.file_by_block, call_file)
         candidates = path_proximity_winner(candidates, self.index.file_by_block, call_file)
@@ -598,6 +627,23 @@ class _Builder:
             self.result.ambiguous_skipped += 1
             return None, confidence, None
         return candidates[0], confidence, resolution
+
+    def _defined_in(self, file_path: str, name: str) -> list[str]:
+        record_id = self.index.record_by_file.get(file_path)
+        return self._by_record_name.get((record_id, name), []) if record_id else []
+
+    def _eligible(self, candidates: list[str], family: str | None, relation: str) -> list[str]:
+        """Same language family; a type for a type relation, a callable for a call."""
+        if family:
+            candidates = [cid for cid in candidates if self._family_of(cid) == family]
+        if relation in _TYPE_RELATIONS:
+            typed = [cid for cid in candidates if cid in self.index.type_blocks]
+            return typed or candidates
+        if relation in _CALL_RELATIONS:
+            # Class exclusion: `select(Model)` is not a call to Model.
+            callable_only = [cid for cid in candidates if cid in self.index.callable_blocks]
+            return callable_only or candidates
+        return candidates
 
     def _resolve_module_qualified_call(self, fact: dict, record_id: str) -> str | None:
         """`import analysis; analysis.analyze_game()`.
@@ -898,14 +944,16 @@ async def build_code_graph_edges(
 
     docs = await _scan_blocks(graph_provider, org_id, record_group_id)
     paths, referenced_names = await _scan_file_info(graph_provider, org_id, docs)
-    index = build_symbol_index(docs, paths, referenced_names)
     repo_paths = await _scan_repo_paths(graph_provider, org_id, record_group_id)
-
-    builder = _Builder(index, org_id, record_group_id, log, repo_paths)
+    # The CPU-bound phases run in a worker thread: this runs on the connectors
+    # service's event loop, which a large repo held for minutes -- no HTTP, no
+    # other syncs, no lease renewal, and Kafka sessions timing out.
+    index = await asyncio.to_thread(build_symbol_index, docs, paths, referenced_names)
+    builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
     builder.result.blocks = len(docs)
     builder.result.files_total = len(index.blocks_by_record)
 
-    reresolve = _select_reresolve_set(index, touched_record_ids)
+    reresolve = await asyncio.to_thread(_select_reresolve_set, index, touched_record_ids)
     if touched_record_ids:
         reresolve |= await _records_pointing_into(
             graph_provider, index, org_id, record_group_id, touched_record_ids
@@ -914,20 +962,20 @@ async def build_code_graph_edges(
     builder.result.files_reresolved = len(reresolve)
 
     if facts_source is not None:
-        await _load_facts(facts_source, index, org_id, reresolve, builder.result, log)
+        unknown = await _load_facts(facts_source, index, org_id, reresolve, builder.result, log)
+        if unknown and len(unknown) >= _MIN_MISSING_FACTS_TO_ABORT \
+                and len(unknown) > _MAX_MISSING_FACTS_SHARE * len(reresolve):
+            raise EdgeBuildAbortedError(
+                f"stored facts unreadable for {len(unknown)} of {len(reresolve)} files; "
+                "keeping the existing edges"
+            )
+        # A file whose facts are unknown keeps the edges it has: resolving it
+        # from its node residue alone used to delete every call and import
+        # edge it owned and report the build a success.
+        reresolve -= unknown
+        builder.result.files_reresolved = len(reresolve)
 
-    work: list[tuple[str, dict]] = []
-    for block_id, row in index.rows.items():
-        if row.record_id not in reresolve:
-            continue
-        for fact in row.pending_edges:
-            work.append((block_id, fact))
-    builder.result.pending_edges_seen = len(work)
-
-    builder.resolve_imports(work)
-    builder.resolve_rest(work)
-    builder.link_overrides()
-    edges = builder.prune_dangling()
+    edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
 
     if not dry_run:
         source_keys = _source_keys_for(index, reresolve)
@@ -940,6 +988,19 @@ async def build_code_graph_edges(
     return builder.result
 
 
+def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list[dict]:
+    work = [
+        (block_id, fact)
+        for block_id, row in index.rows.items() if row.record_id in reresolve
+        for fact in row.pending_edges
+    ]
+    builder.result.pending_edges_seen = len(work)
+    builder.resolve_imports(work)
+    builder.resolve_rest(work)
+    builder.link_overrides()
+    return builder.prune_dangling()
+
+
 async def _load_facts(
     source: CodeFactsSource,
     index: SymbolIndex,
@@ -947,20 +1008,22 @@ async def _load_facts(
     record_ids: set[str],
     result: EdgeBuildResult,
     log: logging.Logger,
-) -> None:
+) -> set[str]:
     """Swap the node residue for the blob's full facts on every re-resolved file.
 
     Runs after the re-resolve set is chosen, which only needs what the nodes
-    carry. A file whose blob cannot be read keeps its node facts, so its call
-    and import edges stay missing until the blob is readable.
+    carry. Returns the files whose facts could not be read or predate code
+    metadata; the caller leaves their edges alone.
     """
     loaded = await source.load(org_id, record_ids)
+    unknown: set[str] = set()
     for record_id in record_ids:
         facts = loaded.get(record_id)
-        if facts is None:
+        if facts is None or not facts.recognised:
             result.facts_missing += 1
+            unknown.add(record_id)
             log.warning(
-                "No stored facts for record %s; resolving from its node residue only",
+                "No usable stored facts for record %s; keeping its existing edges",
                 record_id,
             )
             continue
@@ -971,6 +1034,7 @@ async def _load_facts(
             )
         if facts.type_table:
             index.type_table_by_record[record_id] = facts.type_table
+    return unknown
 
 
 def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None) -> set[str]:
@@ -1035,6 +1099,7 @@ async def _records_pointing_into(
                 "orgId": org_id,
                 "recordGroupId": record_group_id,
             },
+            raise_on_error=True,
         )
         for key in rows:
             if not isinstance(key, str):

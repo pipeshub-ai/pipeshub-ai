@@ -491,10 +491,74 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
         logger.error(f"❌ Error starting messaging producer: {str(e)}")
         raise
 
+# Consumers every connector depends on; health fails without them. The code
+# graph's consumer and reconciler are optional: without them connectors still
+# sync, so health reports them as degraded rather than failing the service.
+_REQUIRED_CONSUMERS = frozenset({"entity", "sync"})
+_RETRY_FIRST_DELAY_SECONDS = 5.0
+_RETRY_MAX_DELAY_SECONDS = 300.0
+
+# What /health reports. Started consumers are read live through is_running();
+# components still retrying or that failed outright are recorded here.
+_started_consumers: list = []
+_component_status: dict[str, dict] = {}
+_retry_tasks: list[asyncio.Task] = []
+
+
+async def _keep_trying(name: str, attempt, logger: logging.Logger, first_error: Exception) -> None:  # noqa: ANN001
+    """Retry an optional component's start with backoff until it comes up.
+
+    A broker or Redis hiccup at boot used to leave the code graph without its
+    consumer (or reconciler) until the next restart, with nothing saying so.
+    """
+    attempts, delay = 1, _RETRY_FIRST_DELAY_SECONDS
+    while True:
+        await asyncio.sleep(delay)
+        attempts += 1
+        try:
+            await attempt()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            _component_status[name] = {"state": "retrying", "attempts": attempts, "error": str(e)}
+            logger.error(f"❌ {name} failed to start (attempt {attempts}); retrying in "
+                         f"{min(delay * 2, _RETRY_MAX_DELAY_SECONDS):.0f}s: {e}")
+            delay = min(delay * 2, _RETRY_MAX_DELAY_SECONDS)
+            continue
+        _component_status.pop(name, None)
+        logger.info(f"✅ {name} started after {attempts} attempts")
+        return
+
+
+def _start_retrying(name: str, attempt, logger: logging.Logger, error: Exception) -> None:  # noqa: ANN001
+    # Set before the task first runs, so health never misses the failure.
+    _component_status[name] = {"state": "retrying", "attempts": 1, "error": str(error)}
+    task = asyncio.create_task(_keep_trying(name, attempt, logger, error), name=f"retry_{name}")
+    _retry_tasks.append(task)
+
+
+def component_health() -> dict[str, dict]:
+    """Each consumer and optional component, with whether health depends on it."""
+    report: dict[str, dict] = {}
+    for name, consumer in _started_consumers:
+        try:
+            running = bool(consumer.is_running())
+        except Exception:
+            running = False
+        report[name] = {"state": "running" if running else "stopped",
+                        "required": name in _REQUIRED_CONSUMERS}
+    for name, component in _component_status.items():
+        report[name] = {**component, "required": name in _REQUIRED_CONSUMERS}
+    return report
+
+
 async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_provider) -> list:
     """Start all message consumers at application level"""
     logger = app_container.logger()
-    consumers = []
+    # The registry /health reads, so a consumer the retry starts later shows up.
+    consumers = _started_consumers
+    consumers.clear()
+    _component_status.clear()
     broker_type = get_message_broker_type()
 
     try:
@@ -552,8 +616,8 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         logger.info("✅ Sync consumer started")
 
         # 3. Code Graph Consumer. Optional: its failure must not stop the
-        # entity and sync consumers already running.
-        try:
+        # entity and sync consumers already running, and it keeps retrying.
+        async def start_code_graph_consumer() -> None:
             logger.info(f"🚀 Starting Code Graph Consumer (broker: {broker_type})...")
             code_graph_config = await MessagingUtils.create_code_graph_consumer_config(
                 app_container
@@ -569,15 +633,22 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
                 graph_provider,
             )
             await code_graph_consumer.start(code_graph_message_handler)
+            # The same list the container holds, so a late start is still
+            # stopped at shutdown and shows in health.
             consumers.append(("code_graph", code_graph_consumer))
             logger.info("✅ Code graph consumer started")
+
+        try:
+            await start_code_graph_consumer()
         except Exception as e:
             logger.error(f"❌ Code graph consumer failed to start: {e}", exc_info=True)
+            _start_retrying("code_graph", start_code_graph_consumer, logger, e)
 
         logger.info(f"✅ All {len(consumers)} consumers started successfully")
         return consumers
 
     except Exception as e:
+        _component_status["message_consumers"] = {"state": "failed", "error": str(e)}
         logger.error(f"❌ Error starting consumers: {str(e)}")
         for name, consumer in consumers:
             try:
@@ -591,6 +662,9 @@ async def stop_kafka_consumers(container: ConnectorAppContainer) -> None:
     """Stop all Kafka consumers"""
 
     logger = container.logger()
+    for task in _retry_tasks:
+        task.cancel()
+    _retry_tasks.clear()
     consumers = getattr(container, 'kafka_consumers', [])
     for name, consumer in consumers:
         try:
@@ -906,7 +980,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         # After the consumers, so the reconciler shares the event service (and
         # its lock client and task manager) the code-graph consumer created.
-        try:
+        async def start_reconciler() -> None:
             code_graph_event_service = await KafkaUtils.create_code_graph_event_service(
                 app_container, graph_provider
             )
@@ -915,8 +989,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 name="code_edge_build_reconcile",
             )
             logger.info("✅ Code edge build reconciler started")
+
+        try:
+            await start_reconciler()
         except Exception as e:
             logger.error(f"❌ Failed to start code edge build reconciler: {str(e)}", exc_info=True)
+            _start_retrying("code_edge_reconciler", start_reconciler, logger, e)
 
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
@@ -1079,10 +1157,18 @@ async def health_check() -> JSONResponse:
             },
         )
     try:
+        components = component_health()
+        down = [name for name, c in components.items() if c["state"] != "running"]
+        required_down = [name for name in down if components[name]["required"]
+                         or name == "message_consumers"]
+        overall = "fail" if required_down else ("degraded" if down else "healthy")
         return JSONResponse(
-            status_code=200,
+            # Degraded stays 200: an optional component missing is not a reason
+            # for an orchestrator to restart a service that is still syncing.
+            status_code=503 if required_down else 200,
             content={
-                "status": "healthy",
+                "status": overall,
+                "components": components,
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

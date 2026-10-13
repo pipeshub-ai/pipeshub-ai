@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames
@@ -17,6 +19,27 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 BuildLease = tuple[str, str]
+
+# How many builds this process runs at once, and per org. A build is CPU-bound
+# for seconds to minutes; nothing bounded them, so an onboarding burst ran one
+# per repo in parallel on the connectors service.
+_MAX_CONCURRENT_BUILDS = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_CONCURRENT", "2")))
+_MAX_BUILDS_PER_ORG = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_PER_ORG", "1")))
+_process_slots: dict[str, asyncio.Semaphore] = {}
+_org_slots: dict[str, asyncio.Semaphore] = {}
+
+
+@asynccontextmanager
+async def _build_slot(org_id: str):  # noqa: ANN202 -- an async context manager
+    """Wait for this org's turn, then for a process-wide one.
+
+    Per org first, so one org's queue of repos never holds a global slot while
+    it waits on itself.
+    """
+    process = _process_slots.setdefault("all", asyncio.Semaphore(_MAX_CONCURRENT_BUILDS))
+    org = _org_slots.setdefault(org_id, asyncio.Semaphore(_MAX_BUILDS_PER_ORG))
+    async with org, process:
+        yield
 
 
 class CodeEdgeBuildRunner:
@@ -77,73 +100,9 @@ class CodeEdgeBuildRunner:
             )
         )
         try:
-            if await edge_build_trigger.group_has_unfinished_records(
-                self._graph_provider,
-                org_id,
-                record_group_id,
-            ):
-                return
-
-            last_build = (
-                await edge_build_trigger.read_build_state(
-                    self._graph_provider,
-                    org_id,
-                    record_group_id,
-                )
-            ).last_build
-
-            # Read before the watermark query: a record updated in between is
-            # invisible now and would otherwise also fall below the next run.
-            started_at_ms = int(time.time() * 1000)
-
-            touched_record_ids = None
-            if last_build is not None:
-                touched_record_ids = await edge_build_trigger.records_updated_since(
-                    self._graph_provider,
-                    org_id,
-                    record_group_id,
-                    last_build,
-                )
-                if not touched_record_ids:
-                    await self._settle(
-                        org_id=org_id,
-                        connector_id=connector_id,
-                        record_group_id=record_group_id,
-                        started_at_ms=started_at_ms,
-                    )
-                    return
-
-            self._log.info(
-                "Automatic code edge build starting for org=%s record_group=%s "
-                "mode=%s touched_records=%s",
-                org_id,
-                record_group_id,
-                "incremental" if touched_record_ids is not None else "full",
-                (
-                    len(touched_record_ids)
-                    if touched_record_ids is not None
-                    else "all"
-                ),
-            )
-            result = await build_code_graph_edges(
-                graph_provider=self._graph_provider,
-                org_id=org_id,
-                record_group_id=record_group_id,
-                touched_record_ids=touched_record_ids,
-                facts_source=self._facts_source,
-                log=self._log,
-            )
-            await self._settle(
-                org_id=org_id,
-                connector_id=connector_id,
-                record_group_id=record_group_id,
-                started_at_ms=started_at_ms,
-                last_build_at=started_at_ms,
-            )
-            self._log.info(
-                "Automatic code edge build complete: %s",
-                result.as_log_fields(),
-            )
+            async with _build_slot(org_id):
+                await self._build(org_id=org_id, connector_id=connector_id,
+                                  record_group_id=record_group_id)
         except Exception:
             self._log.exception(
                 "Automatic code edge build failed for org=%s record_group=%s",
@@ -164,6 +123,84 @@ class CodeEdgeBuildRunner:
                     record_group_id,
                 )
 
+    async def _build(self, *, org_id: str, connector_id: str, record_group_id: str) -> None:
+        if await edge_build_trigger.group_has_unfinished_records(
+            self._graph_provider,
+            org_id,
+            record_group_id,
+        ):
+            return
+
+        start_state = await edge_build_trigger.read_build_state(
+            self._graph_provider,
+            org_id,
+            record_group_id,
+        )
+        last_build = start_state.last_build
+
+        # Read before the watermark query: a record updated in between is
+        # invisible now and would otherwise also fall below the next run.
+        started_at_ms = int(time.time() * 1000)
+
+        touched_record_ids = None
+        if last_build is not None:
+            touched_record_ids = await edge_build_trigger.records_updated_since(
+                self._graph_provider,
+                org_id,
+                record_group_id,
+                last_build,
+            )
+            if not touched_record_ids:
+                await self._settle(
+                    org_id=org_id,
+                    connector_id=connector_id,
+                    record_group_id=record_group_id,
+                    started_at_ms=started_at_ms,
+                    started_request_id=start_state.request_id,
+                )
+                return
+
+        self._log.info(
+            "Automatic code edge build starting for org=%s record_group=%s "
+            "mode=%s touched_records=%s",
+            org_id,
+            record_group_id,
+            "incremental" if touched_record_ids is not None else "full",
+            (
+                len(touched_record_ids)
+                if touched_record_ids is not None
+                else "all"
+            ),
+        )
+        result = await build_code_graph_edges(
+            graph_provider=self._graph_provider,
+            org_id=org_id,
+            record_group_id=record_group_id,
+            touched_record_ids=touched_record_ids,
+            facts_source=self._facts_source,
+            log=self._log,
+        )
+        if result.facts_missing:
+            # Those files kept their old edges; holding the watermark back
+            # keeps them in the next build instead of skipping them for good.
+            self._log.warning(
+                "Code edge build for org=%s record_group=%s skipped %d file(s) "
+                "without readable facts; the watermark stays where it was",
+                org_id, record_group_id, result.facts_missing,
+            )
+        await self._settle(
+            org_id=org_id,
+            connector_id=connector_id,
+            record_group_id=record_group_id,
+            started_at_ms=started_at_ms,
+            started_request_id=start_state.request_id,
+            last_build_at=None if result.facts_missing else started_at_ms,
+        )
+        self._log.info(
+            "Automatic code edge build complete: %s",
+            result.as_log_fields(),
+        )
+
     async def _settle(
         self,
         *,
@@ -171,6 +208,7 @@ class CodeEdgeBuildRunner:
         connector_id: str,
         record_group_id: str,
         started_at_ms: int,
+        started_request_id: str | None = None,
         last_build_at: int | None = None,
     ) -> None:
         state = await edge_build_trigger.read_build_state(
@@ -185,6 +223,7 @@ class CodeEdgeBuildRunner:
             "edgeBuildPending": edge_build_trigger.still_owed(
                 state,
                 started_at_ms,
+                started_request_id,
             ),
         }
         if last_build_at is not None:

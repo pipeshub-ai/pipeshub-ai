@@ -40,10 +40,22 @@ class ImportResolution:
 
     def __init__(self, file_paths: set[str]) -> None:
         self._files = file_paths
-        self._by_suffix: dict[str, list[str]] = {}
+        # Every trailing run of a Python module's path segments -> its files, so
+        # an absolute import looks itself up instead of scanning all files with
+        # the same basename (every `__init__.py`, per unresolved dotted import,
+        # was the quadratic part of a build).
+        self._modules_by_suffix: dict[str, list[str]] = {}
+        self._packages_by_suffix: dict[str, list[str]] = {}
         for path in file_paths:
-            base = path.rsplit("/", 1)[-1]
-            self._by_suffix.setdefault(base, []).append(path)
+            if path == "__init__.py" or path.endswith("/__init__.py"):
+                module, table = path[: -len("__init__.py")].rstrip("/"), self._packages_by_suffix
+            elif path.endswith(".py"):
+                module, table = path[:-3], self._modules_by_suffix
+            else:
+                continue
+            parts = module.split("/") if module else []
+            for i in range(1, len(parts)):
+                table.setdefault("/".join(parts[i:]), []).append(path)
 
     # -- python ---------------------------------------------------------
 
@@ -67,14 +79,12 @@ class ImportResolution:
         # Absolute imports are rooted at a source dir (src/, backend/…), so match
         # on the tail of known paths -- but only where the first segment is a
         # top-level package. `telemetry/logging.py` inside the `app` package is
-        # `app.telemetry.logging`, never `logging`. The basename index narrows
-        # the scan to files sharing the leaf name.
-        leaf = rel.rsplit("/", 1)[-1]
-        for suffix, base in ((f"/{rel}.py", f"{leaf}.py"),
-                             (f"/{rel}/__init__.py", "__init__.py")):
+        # `app.telemetry.logging`, never `logging`.
+        for table, suffix in ((self._modules_by_suffix, f"/{rel}.py"),
+                              (self._packages_by_suffix, f"/{rel}/__init__.py")):
             matches = [
-                p for p in self._by_suffix.get(base, ())
-                if p.endswith(suffix) and self._is_source_root(p[: -len(suffix)])
+                p for p in table.get(rel, ())
+                if self._is_source_root(p[: -len(suffix)])
             ]
             if len(matches) == 1:
                 return matches[0]

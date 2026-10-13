@@ -39,7 +39,8 @@ class FakeGraphProvider:
             if record_id in self.blobs
         }
 
-    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None) -> dict:
+    async def get_file_paths_for_records(self, org_id, record_ids, transaction=None,
+                                         raise_on_error=False) -> dict:
         wanted = set(record_ids)
         return {
             record_id: CodeFileInfo(
@@ -79,7 +80,7 @@ class FakeGraphProvider:
 
     async def get_edges_by_target_keys(
         self, target_keys, edge_collection, filters=None, return_field="_from",
-        transaction=None,
+        transaction=None, raise_on_error=False,
     ):
         targets = set(target_keys)
         return sorted({

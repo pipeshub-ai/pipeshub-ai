@@ -625,7 +625,8 @@ class TestRequestCodeEdges:
     @pytest.mark.asyncio
     async def test_the_tail_after_the_first_ask_is_still_deduped(self) -> None:
         """The first tail record marks the repo pending before publishing, so
-        the rest must not read that mark as a lost request."""
+        the rest must not read that mark as a lost request -- they still
+        record that they asked, but do not publish again."""
         handler = _make_handler()
         graph_provider = handler.event_processor.graph_provider
         graph_provider.get_document = AsyncMock(return_value=self._record())
@@ -645,7 +646,92 @@ class TestRequestCodeEdges:
             await handler._request_code_edge_build_if_repo_drained("record-1")
 
         handler.producer.send_event.assert_not_awaited()
-        graph_provider.upsert_sync_point.assert_not_awaited()
+        mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
+        assert mark["edgeBuildPending"] is True and mark["edgeBuildRequestId"]
+
+    @pytest.mark.asyncio
+    async def test_a_redis_outage_still_leaves_the_repo_marked_owed(self) -> None:
+        """The mark used to be written after the Redis claim, so a Redis outage
+        left nothing for the reconciler to find (O-4)."""
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.get_document = AsyncMock(return_value=self._record())
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+        with patch(
+            "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+            AsyncMock(side_effect=ConnectionError("redis down")),
+        ):
+            await handler._request_code_edge_build_if_repo_drained("record-1")
+
+        mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
+        assert mark["edgeBuildPending"] is True
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_every_ask_gets_a_new_request_id(self) -> None:
+        """A running build tells "asked again" from "the request I started
+        under" by this id, not by comparing two services' clocks."""
+        handler = _make_handler()
+        first, _ = await self._request(handler, self._record())
+        a = first.upsert_sync_point.await_args.kwargs["sync_point_data"]["edgeBuildRequestId"]
+        second, _ = await self._request(handler, self._record(), claimed=False)
+        b = second.upsert_sync_point.await_args.kwargs["sync_point_data"]["edgeBuildRequestId"]
+        assert a and b and a != b
+
+    @pytest.mark.asyncio
+    async def test_deleting_a_code_file_asks_for_its_repos_build(self) -> None:
+        """The record is gone when its delete is handled, so the repo comes
+        from the event; deletions used to ask for nothing (R-4)."""
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=False)
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
+        graph_provider.upsert_sync_point = AsyncMock()
+        redis = MagicMock()
+        redis.set = AsyncMock(return_value=True)
+        redis.aclose = AsyncMock()
+        with patch(
+            "app.services.messaging.kafka.handlers.record.redis_from_config_service",
+            AsyncMock(return_value=redis),
+        ):
+            await handler._request_code_edge_build_for_deleted({
+                "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+                "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+            })
+
+        assert graph_provider.upsert_sync_point.await_args.kwargs["sync_point_key"] == (
+            "repo-1-code-repository/code-edge-build")
+        handler.producer.send_event.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_deleting_anything_else_asks_for_nothing(self) -> None:
+        handler = _make_handler()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "r", "orgId": "o", "connectorId": "c", "recordGroupId": "g",
+            "connectorName": "Slack",
+        })
+        handler.event_processor.graph_provider.upsert_sync_point.assert_not_awaited()
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_abandoned_last_file_still_asks_for_the_build(self) -> None:
+        """A discarded message marks its record FAILED, which is terminal: if it
+        was the repo's last file, nothing else would ask (O-4)."""
+        handler = _make_handler()
+        record = self._record(indexingStatus=ProgressStatus.QUEUED.value)
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.get_document = AsyncMock(return_value=record)
+        graph_provider.compare_and_set_indexing_status = AsyncMock(return_value=True)
+        handler._RecordEventHandler__update_document_status = AsyncMock(return_value=record)
+        handler._request_code_edge_build_if_repo_drained = AsyncMock()
+        message = MagicMock()
+        message.payload = {"recordId": "record-1"}
+
+        await handler.on_message_abandoned(message, reason="retries exhausted", attempts=3)
+
+        handler._request_code_edge_build_if_repo_drained.assert_awaited_once_with("record-1", record)
 
     @pytest.mark.asyncio
     async def test_marks_the_repo_as_owed_before_asking(self) -> None:
