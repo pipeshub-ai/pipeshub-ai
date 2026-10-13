@@ -184,6 +184,29 @@ class TestExactArithmetic:
         assert _result("(1.5\n + 2.25)") == {"result": 3.75}
         assert _result("(1.5\r\n+ 2.25\r+ 0.125\n+ 1e-400*1e400)") == {"result": 4.875}
 
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            # An odd root of a negative number is real: (-b)**(p/q) = (-1)**p * b**(p/q).
+            ("(-10)**(1/3)", -2.15443469003188),
+            ("(-2)**(1/3)", -1.25992104989487),
+            ("(-2)**(2/3)", 1.5874010519682),
+            ("(-16)**(1/5)", -1.74110112659225),
+            ("(-sqrt(2))**(1/3)", -1.12246204830937),
+            # Out of a double's range, computed without converting the input.
+            ("sqrt(2e-400)", 1.4142135623731e-200),
+            ("sqrt(2*10**400)", 1.4142135623731e200),
+            ("log10(1e-400)", -400),
+            ("log(1e-400, 10)", -400),
+            ("log10(10**400)", 400),
+            ("log(10**400) / log(10)", 400),
+        ],
+    )
+    def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
+        payload = _result(expression)
+        assert payload["result"] == pytest.approx(expected, rel=1e-13, abs=0)
+        assert payload["approximate"] is True
+
     def test_floating_point_results_lose_binary_noise(self) -> None:
         # 15 significant digits: sqrt(2)**2 is 2.0000000000000004 in binary.
         assert _result("sqrt(2)**2")["result"] == 2
@@ -233,6 +256,16 @@ class TestRefusedExpressions:
             ("exp(1000)", "too large"),
             ("(-8) ** 0.5", "no real value"),
             ("(-2) ** 1.5", "no real value"),
+            ("(-16) ** (1/4)", "no real value"),
+            ("(-2) ** sqrt(2)", "no real value"),
+            # Below the smallest double: an approximate 0 would be a wrong answer.
+            ("sin(1e-400)", "too small"),
+            ("exp(-800)", "too small"),
+            ("hypot(1e-400, 1e-400)", "too small"),
+            ("1e-400 * pi", "too small"),
+            ("sin(1) * 1e-310", "too small"),
+            ("0.5 ** 2000.5", "too small"),
+            ("radians(1e-307)", "too small"),
             ("١٢ + 1", "Not a valid arithmetic expression"),
             ("2 +", "Not a valid arithmetic expression"),
             ("15% * 200", "Not a valid arithmetic expression"),
@@ -251,7 +284,7 @@ class TestRefusedExpressions:
         "expression",
         [
             "9**9**9", "2**10**6", "10**1001", "(10**300)*(10**300)", "1/10**1001",
-            "sqrt(2*10**800)", "sqrt(2*10**400)", "2 ** 0.5 ** 10000",
+            "sqrt(2*10**800)", "2 ** 0.5 ** 10000",
         ],
     )
     def test_huge_results_are_refused_before_they_are_computed(self, expression: str) -> None:

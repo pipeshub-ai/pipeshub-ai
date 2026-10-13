@@ -17,6 +17,7 @@ import ast
 import calendar
 import math
 import re
+import sys
 import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date
@@ -58,6 +59,7 @@ _HMS = "hms"
 # int()'s digit limit and escape as a plain ValueError.
 _CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?))?")
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
+_TOO_SMALL = "The result is too small for floating-point functions (below about 1e-308)."
 
 # name: (fewest arguments, most arguments or None for any number)
 _ARITY: dict[str, tuple[int, int | None]] = {
@@ -87,6 +89,10 @@ _ALLOWED = (
 
 class CalculationError(ValueError):
     """The input is not something these tools compute; the message says why."""
+
+
+class _OutsideFloatRange(CalculationError):
+    """A value a double cannot hold (it would overflow or underflow)."""
 
 
 @dataclass(frozen=True)
@@ -278,12 +284,17 @@ def _literal(node: ast.Constant, lines: list[bytes]) -> Value:
         raise CalculationError(f"The result is too large (more than {MAX_DIGITS} digits).") from exc
 
 
-def _bounded(value: Value) -> Value:
+def _bounded(value: Value, *, nonzero: bool = False) -> Value:
+    """`nonzero`: the exact result cannot be 0, so a float 0 is an underflow."""
     if isinstance(value, float):
         if math.isnan(value):
             raise CalculationError("The expression did not produce a real number.")
         if math.isinf(value):
             raise CalculationError("The result is too large.")
+        # An approximate 0 (or a subnormal with a few digits left) in place of
+        # a tiny non-zero value would be a wrong answer.
+        if (nonzero and value == 0) or 0 < abs(value) < sys.float_info.min:
+            raise _OutsideFloatRange(_TOO_SMALL)
         return value
     if value.numerator.bit_length() > _MAX_BITS or value.denominator.bit_length() > _MAX_BITS:
         raise CalculationError(f"The result is too large (more than {MAX_DIGITS} digits).")
@@ -292,14 +303,15 @@ def _bounded(value: Value) -> Value:
 
 def _as_float(value: Value) -> float:
     try:
-        return float(value)
+        result = float(value)
     except OverflowError as exc:
-        raise CalculationError("The result is too large for floating-point functions.") from exc
+        raise _OutsideFloatRange("The result is too large for floating-point functions.") from exc
+    return _bounded(result, nonzero=value != 0)
 
 
 def _times(left: Value, right: Value) -> Value:
     if isinstance(left, float) or isinstance(right, float):
-        return _bounded(_as_float(left) * _as_float(right))
+        return _bounded(_as_float(left) * _as_float(right), nonzero=left != 0 and right != 0)
     return _bounded(left * right)
 
 
@@ -345,7 +357,9 @@ def _binary(op: ast.operator, left_q: Quantity, right_q: Quantity) -> Quantity:
             result = a % b
     except ZeroDivisionError as exc:
         raise CalculationError("Division by zero.") from exc
-    return _bounded(Fraction(result) if exact else float(result)), dimension
+    if exact:
+        return _bounded(Fraction(result)), dimension
+    return _bounded(float(result), nonzero=isinstance(op, ast.Div) and a != 0), dimension
 
 
 def _power(base: Value, exponent: Value) -> Value:
@@ -356,13 +370,17 @@ def _power(base: Value, exponent: Value) -> Value:
             root = _exact_root(base, exponent.denominator)
             if root is not None:
                 return _integer_power(root, exponent.numerator)
+    if base < 0 and isinstance(exponent, Fraction) and exponent.denominator % 2 == 1:
+        # An odd root of a negative number is real: (-b)**(p/q) = (-1)**p * b**(p/q).
+        magnitude = _power(-base, exponent)
+        return -magnitude if exponent.numerator % 2 else magnitude
     b, e = _as_float(base), _as_float(exponent)
     if b < 0 and not e.is_integer():
         raise CalculationError("A negative number to a fractional power has no real value.")
     if b == 0 and e < 0:
         raise CalculationError("Division by zero.")
     try:
-        return _bounded(math.pow(b, e))
+        return _bounded(math.pow(b, e), nonzero=b != 0)
     except OverflowError as exc:
         raise CalculationError("The result is too large.") from exc
 
@@ -425,8 +443,40 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
             root = _exact_root(values[0], 2)
             if root is not None:
                 return root, 0
-        return _float_function("sqrt", math.sqrt, values), 0
+        try:
+            return _float_function("sqrt", math.sqrt, values), 0
+        except _OutsideFloatRange:
+            if not isinstance(values[0], Fraction):
+                raise
+            return _scaled_sqrt(values[0]), 0
+    if name in ("log", "log10"):
+        return _logarithm(name, values), 0
     return _float_function(name, _FLOAT_FUNCTIONS[name], values), 0
+
+
+def _scaled_sqrt(value: Fraction) -> float:
+    """The square root of an exact value too large or small for a double:
+    its root always fits, since the value is under `MAX_DIGITS` digits."""
+    shift = (value.numerator.bit_length() - value.denominator.bit_length()) // 2
+    return _bounded(math.ldexp(math.sqrt(value / Fraction(4) ** shift), shift))
+
+
+def _logarithm(name: str, values: list[Value]) -> float:
+    if any(value <= 0 for value in values):
+        raise CalculationError(f"{name}(): math domain error.")
+    try:
+        return _float_function(name, _FLOAT_FUNCTIONS[name], values)
+    except _OutsideFloatRange:
+        # The math module takes logs of integers of any size, so an exact
+        # value outside a double's range is the log of its numerator minus
+        # the log of its denominator.
+        log = math.log10 if name == "log10" else math.log
+        logs = [log(Fraction(v).numerator) - log(Fraction(v).denominator) for v in values]
+    if len(logs) == 1:
+        return _bounded(logs[0])
+    if logs[1] == 0:
+        raise CalculationError(f"{name}(): division by zero.")
+    return _bounded(logs[0] / logs[1])
 
 
 def _unit_preserving(name: str, values: list[Value]) -> Value:
@@ -450,7 +500,7 @@ def _round(value: Value, digits: Value) -> Value:
     magnitude = Fraction(math.floor(abs(exact) * scale + Fraction(1, 2))) / scale
     result = _bounded(magnitude if exact >= 0 else -magnitude)
     # Rounding an approximate value does not make it exact.
-    return float(result) if isinstance(value, float) else result
+    return _as_float(result) if isinstance(value, float) else result
 
 
 def _carried_digits(value: float) -> Fraction:
@@ -460,14 +510,19 @@ def _carried_digits(value: float) -> Fraction:
 
 
 def _float_function(name: str, function: Callable[..., float], values: list[Value]) -> float:
+    # Converted outside the try: an argument a double cannot hold is
+    # `_OutsideFloatRange`, which callers with an exact fallback catch.
+    arguments = [_as_float(value) for value in values]
     try:
-        return _bounded(function(*(_as_float(value) for value in values)))
+        result = function(*arguments)
     except ZeroDivisionError as exc:
         raise CalculationError(f"{name}(): division by zero.") from exc
     except OverflowError as exc:
         raise CalculationError(f"{name}(): the result is too large.") from exc
     except ValueError as exc:
         raise CalculationError(f"{name}(): {exc}.") from exc
+    # exp() is never 0: a 0 from it is an underflow.
+    return _bounded(result, nonzero=name == "exp")
 
 
 def _clip(text: str, limit: int = 40) -> str:
