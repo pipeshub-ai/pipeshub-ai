@@ -15,6 +15,7 @@ in-memory stand-in that replaces members and grants the way the processor does.
 import logging
 import re
 from collections.abc import AsyncIterator
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -25,7 +26,7 @@ from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 
 CONNECTOR_ID = "bs-people"
-EDITOR, VIEWER = 2, 3
+EDITOR, VIEWER, AUDITOR = 2, 3, 4
 # Follows the default role permissions, so every role that may view books is granted.
 DEFAULT_BOOK = 10
 # Has its own role permissions.
@@ -59,7 +60,10 @@ class FakeBookStackApi:
         self.books = {DEFAULT_BOOK: "Handbook", EXPLICIT_BOOK: "Finance"}
         # (path, offset) -> HTTP status answered instead of that page; a path alone fails every call to it.
         self.fail: dict[tuple[str, int | None], int] = {}
+        # The same, for the next call only.
+        self.fail_once: dict[tuple[str, int | None], int] = {}
         self.unanswered: set[tuple[str, int | None]] = set()
+        self.audit: list[dict[str, Any]] = []
 
     def get_base_url(self) -> str:
         return "https://bookstack.test"
@@ -88,6 +92,11 @@ class FakeBookStackApi:
                 raise ConnectionError("connection reset by peer")
             if key in self.fail:
                 return error(self.fail[key])
+            if key in self.fail_once:
+                return error(self.fail_once.pop(key))
+        if path == "/api/audit-log":
+            wanted = params.get("filter[type]")
+            return self._listing([e for e in self.audit if e["type"] == wanted], params)
         if path == "/api/users":
             rows = [{"id": uid, "name": f"User {uid}", "email": email} for uid, email in sorted(self.users.items())]
             return self._listing(rows, params)
@@ -130,10 +139,32 @@ class Directory:
         self.org_id = "org-1"
         self.role_members: dict[str, set[str]] = {}
         self.grants: dict[str, set[tuple[str, str]]] = {}
+        # Users the user sync stored. With require_user_rows, a role write attaches only
+        # members whose user is stored, as the processor's get_user_by_email lookup does.
+        self.user_rows: set[str] = set()
+        self.require_user_rows = False
+        self.fail_role_write = False
+
+    async def on_new_app_users(self, users: list[Any]) -> None:
+        self.user_rows.update(u.email for u in users)
+
+    async def get_user_by_email(self, email: str) -> SimpleNamespace | None:
+        return SimpleNamespace(id=email, email=email) if email in self.user_rows else None
+
+    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> SimpleNamespace | None:
+        return await self.get_user_by_email(f"u{source_user_id}@example.com")
+
+    async def delete_edges_between_collections(self, from_id: str, *_: object, **__: object) -> None:
+        for members in self.role_members.values():
+            members.discard(from_id)
 
     async def on_new_app_roles(self, roles: list[tuple[Any, list[Any]]]) -> None:
+        if self.fail_role_write:
+            raise RuntimeError("graph unavailable")
         for role, members in roles:
-            self.role_members[role.source_role_id] = {m.email for m in members}
+            self.role_members[role.source_role_id] = {
+                m.email for m in members if not self.require_user_rows or m.email in self.user_rows
+            }
 
     async def on_app_role_deleted(self, external_role_id: str, connector_id: str) -> None:
         self.role_members.pop(external_role_id, None)
@@ -186,6 +217,15 @@ class World:
 
     async def sync_roles(self) -> None:
         await self.connector._sync_user_roles()
+
+    async def sync_users(self) -> None:
+        await self.connector._sync_users()
+
+    def role_checkpoint(self) -> dict[str, dict[str, str]]:
+        return self.connector.app_role_sync_point.points
+
+    def user_checkpoint(self) -> dict[str, dict[str, str]]:
+        return self.connector.user_sync_point.points
 
     async def sync_books(self) -> None:
         await self.connector._sync_record_groups()
@@ -344,3 +384,98 @@ async def test_a_complete_role_read_removes_a_deleted_role_from_book_grants(worl
     await world.sync_books()
 
     assert world.book_grants(DEFAULT_BOOK) == {OWNER_GRANT, ("WRITER", f"role {EDITOR}")}
+
+
+# ---- the role list and role details in the full role sync ----
+
+async def test_a_failed_second_role_page_is_read_again_on_the_next_sync(world: World) -> None:
+    world.api.roles[AUDITOR] = {"display_name": "Auditor", "permissions": [], "users": [1]}
+    world.api.fail_once[("/api/roles", 2)] = 429  # the page holding Auditor
+
+    await world.sync_roles()
+
+    assert world.role_checkpoint() == {}
+    assert world.members(AUDITOR) is None
+    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)  # read whole, so written whole
+
+    await world.sync_roles()
+
+    assert world.members(AUDITOR) == emails(1)
+
+
+async def test_a_failed_role_details_read_in_the_role_sync_is_read_again_on_the_next_sync(world: World) -> None:
+    world.api.roles[AUDITOR] = {"display_name": "Auditor", "permissions": [], "users": [1]}
+    world.api.fail_once[(f"/api/roles/{AUDITOR}", None)] = 503
+
+    await world.sync_roles()
+    assert world.role_checkpoint() == {}
+    await world.sync_roles()
+
+    assert world.members(AUDITOR) == emails(1)
+
+
+# ---- the user sync, which stores the users a role write attaches ----
+
+async def test_a_first_sync_whose_user_list_fails_writes_roles_only_once_every_user_is_stored() -> None:
+    w = World()
+    w.directory.require_user_rows = True
+    for uid in (1, 2, 3, 4, 5):
+        w.api.add_user(uid, EDITOR)
+    w.api.fail_once[("/api/users", 2)] = 429  # hit by the user sync's listing only
+
+    await w.sync_users()
+    await w.sync_roles()
+
+    assert w.user_checkpoint() == {}
+    assert w.role_checkpoint() == {}
+
+    await w.sync_users()
+    await w.sync_roles()
+
+    assert w.members(EDITOR) == emails(1, 2, 3, 4, 5)
+
+
+@pytest.fixture
+async def synced_users(world: World) -> AsyncIterator[World]:
+    """The world after a full user sync, with the user checkpoint at a known value."""
+    world.directory.require_user_rows = True
+    await world.sync_users()
+    for point in world.user_checkpoint().values():
+        point["timestamp"] = "2026-01-01T00:00:00Z"
+    yield world
+
+
+def user_updated(world: World, user_id: int) -> None:
+    world.api.audit.append({"type": "user_update", "detail": f"({user_id}) User {user_id}"})
+
+
+async def test_a_user_update_bookstack_refuses_to_show_withdraws_their_roles(synced_users: World) -> None:
+    world = synced_users
+    user_updated(world, 5)
+    world.api.fail[("/api/users/5", None)] = 403
+
+    await world.sync_users()
+
+    assert world.members(EDITOR) == emails(1, 2, 3, 4)
+    assert world.members(VIEWER) == emails(4)
+
+
+async def test_a_user_gone_from_bookstack_is_taken_out_of_their_stored_roles(synced_users: World) -> None:
+    world = synced_users
+    user_updated(world, 5)
+    del world.api.users[5]
+
+    await world.sync_users()
+
+    assert world.members(EDITOR) == emails(1, 2, 3, 4)
+    assert world.members(VIEWER) == emails(4)
+
+
+async def test_a_user_update_whose_role_write_fails_is_applied_again(synced_users: World) -> None:
+    world = synced_users
+    user_updated(world, 4)
+    world.directory.fail_role_write = True
+
+    await world.sync_users()
+
+    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]

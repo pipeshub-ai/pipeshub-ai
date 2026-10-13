@@ -307,6 +307,10 @@ class BookStackConnector(BaseConnector):
         # ended; their callers read them straight after.
         self._users_read = ReadOutcome.COMPLETE
         self._roles_read = ReadOutcome.COMPLETE
+        # How the last get_all_users listing ended, and whether this run's user sync
+        # stored every user: a role write can only attach members whose user is stored.
+        self._user_list_read = ReadOutcome.COMPLETE
+        self._users_stored = True
 
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
@@ -476,31 +480,8 @@ class BookStackConnector(BaseConnector):
         Fetches all users from BookStack, transforms them into AppUser objects,
         """
         self.logger.info("Starting BookStack user sync...")
-        all_bookstack_users = []
-        offset = 0
-
-        # Loop to handle API pagination and fetch all users
-        while True:
-            response = await self.data_source.list_users(
-                count=self.batch_size,
-                offset=offset
-            )
-
-            if not response.success or not response.data:
-                self.logger.error(f"Failed to fetch users from BookStack: {response.error}")
-                break
-
-            users_page = response.data.get("data", [])
-            if not users_page:
-                # No more users to fetch, exit the loop
-                break
-
-            all_bookstack_users.extend(users_page)
-            offset += len(users_page)
-
-            # Stop if we have fetched all available users
-            if offset >= response.data.get("total", 0):
-                break
+        # Whether every page was read is left in self._user_list_read.
+        all_bookstack_users, self._user_list_read = await self._read_listing(self.data_source.list_users, "users")
 
         if not all_bookstack_users:
             self.logger.warning("No users found in BookStack instance.")
@@ -673,21 +654,30 @@ class BookStackConnector(BaseConnector):
         bookstack_user_sync_key = generate_record_sync_point_key("bookstack", "user_logs", "global")
         bookstack_user_sync_point = await self.user_sync_point.read_sync_point(bookstack_user_sync_key)
 
+        self._users_stored = False
         users = await self.get_all_users()
-
+        if self._user_list_read is ReadOutcome.INTERRUPTED:
+            # The users read are still stored, but the sync point stays, so the next
+            # sync reads the whole list again; roles wait for it (_sync_user_roles_full).
+            if users:
+                await self._sync_users_full(users)
+            self.logger.warning("⚠️ BookStack users were not all listed; the next sync reads them again")
+            return
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_user_sync_point.get('timestamp'):
+            await self._sync_users_full(users)
+            self._users_stored = True
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
                 {"timestamp": current_timestamp}
             )
-            await self._sync_users_full(users)
         else:
             last_sync_timestamp = bookstack_user_sync_point.get('timestamp')
             if not await self._sync_users_incremental(users, last_sync_timestamp):
                 self.logger.warning("User changes were not all applied; the next sync reads them again")
                 return
+            self._users_stored = True
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
                 {"timestamp": current_timestamp}
@@ -802,11 +792,13 @@ class BookStackConnector(BaseConnector):
                 user_response = await self.data_source.get_user(user_id)
 
                 if not _answered(user_response):
-                    if _gone(user_response):
-                        continue
                     self.logger.error(f"Failed to fetch details for user ID {user_id}: {user_response.error}")
-                    if read_failure(user_response) is ReadOutcome.INTERRUPTED:
+                    if not _gone(user_response) and read_failure(user_response) is ReadOutcome.INTERRUPTED:
                         done = False
+                    else:
+                        # Gone, or refused for good: their roles can't be confirmed, so
+                        # access through them is withdrawn rather than kept unchecked.
+                        await self._withdraw_user_roles(user_id, name)
                     continue
 
                 user_details = user_response.data
@@ -857,9 +849,22 @@ class BookStackConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error(f"Error processing user upsert for user ID {user_id}: {e}", exc_info=True)
+                # Its role edges may already be deleted; the next sync applies the event again.
+                done = False
 
         self.logger.info("✅ Finished processing user upsert events and role resyncs")
         return done
+
+    async def _withdraw_user_roles(self, user_id: int, name: Optional[str]) -> None:
+        """Take a BookStack user out of every role they are stored in."""
+        user = await self.data_entities_processor.get_user_by_source_id(str(user_id), self.connector_id)
+        if not user:
+            return
+        self.logger.warning(f"Withdrawing the stored roles of user {name} (ID: {user_id})")
+        await self.data_entities_processor.delete_edges_between_collections(
+            user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+            connector_id=self.connector_id,
+        )
 
 
     async def _handle_user_delete_event(self, user_delete_events: List[Dict], app_users: List[AppUser]) -> None:
@@ -947,16 +952,27 @@ class BookStackConnector(BaseConnector):
         Fetches all roles with their detailed user assignments to build and
         upsert user groups with their member users (AppUser objects).
 
-        Returns False when the users could not be read in full: the roles are
-        then left as stored, since writing one replaces its members.
+        Returns False when the roles or users could not be read in full, or this
+        run's user sync didn't store every user: roles that can't be written whole
+        are left as stored, since writing one replaces its members, and the next
+        sync does this again.
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
+        if not self._users_stored:
+            # The processor attaches a member only through their stored user, so a role
+            # written now would leave out everyone the user sync didn't store.
+            self.logger.warning("⚠️ BookStack users were not all stored, so role members stay as stored this sync")
+            return False
 
         # 1. Fetch details for all roles, including the users assigned to each role.
         all_roles_with_details = await self._fetch_all_roles_with_details()
+        roles_complete = self._roles_read is not ReadOutcome.INTERRUPTED
+        if not roles_complete:
+            self.logger.warning("⚠️ BookStack roles were not all read; the next sync reads them again")
         if not all_roles_with_details:
-            self.logger.warning("No roles found in BookStack. Aborting user group sync.")
-            return True
+            if roles_complete:
+                self.logger.warning("No roles found in BookStack. Aborting user group sync.")
+            return roles_complete
         self.logger.info(f"Found {len(all_roles_with_details)} total roles with details.")
 
         # 2. Fetch all user details to get complete user information
@@ -1018,7 +1034,7 @@ class BookStackConnector(BaseConnector):
             self.logger.info("✅ Successfully processed app roles and permissions.")
         else:
             self.logger.info("No app roles were processed.")
-        return True
+        return roles_complete
 
 
     def _parse_timestamp(self, timestamp_str: Optional[str]) -> Optional[int]:
@@ -1037,6 +1053,8 @@ class BookStackConnector(BaseConnector):
         """
         Helper to fetch all roles and then get their detailed profiles,
         including assigned users, concurrently.
+
+        Whether every role was read is left in ``self._roles_read``.
         """
         # First, get the basic list of all roles to find their IDs.
         self.logger.info("Fetching basic list of all roles...")
@@ -1050,12 +1068,14 @@ class BookStackConnector(BaseConnector):
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         detailed_roles = []
-        for i, res in enumerate(responses):
-            if isinstance(res, Exception) or not res.success:
-                role_id = basic_roles[i]['id']
-                self.logger.error(f"Failed to get details for role ID {role_id}: {res}")
-            else:
+        for role, res in zip(basic_roles, responses):
+            if _answered(res):
                 detailed_roles.append(res.data)
+            elif _gone(res):
+                self.logger.info(f"Role ID {role['id']} is no longer in BookStack")
+            else:
+                self._roles_read = _combined(self._roles_read, read_failure(res))
+                self.logger.error(f"Failed to get details for role ID {role['id']}: {getattr(res, 'error', res)}")
 
         self.logger.info(f"Successfully fetched details for {len(detailed_roles)} roles.")
         return detailed_roles
@@ -1108,22 +1128,9 @@ class BookStackConnector(BaseConnector):
         return role_to_permissions_map
 
     async def _fetch_all_roles(self) -> List[Dict]:
-        """Helper to fetch all roles with pagination."""
+        """Helper to fetch all roles with pagination; whether it got to the end is left in ``self._roles_read``."""
         self.logger.info("Fetching all roles from BookStack...")
-        all_roles = []
-        offset = 0
-        while True:
-            response = await self.data_source.list_roles(count=self.batch_size, offset=offset)
-            if not response.success or not response.data:
-                self.logger.error(f"Failed to fetch roles: {response.error}")
-                break
-            roles_page = response.data.get("data", [])
-            if not roles_page:
-                break
-            all_roles.extend(roles_page)
-            offset += len(roles_page)
-            if offset >= response.data.get("total", 0):
-                break
+        all_roles, self._roles_read = await self._read_listing(self.data_source.list_roles, "roles")
         return all_roles
 
     async def _fetch_all_users_with_details(self) -> List[Dict]:
@@ -1197,7 +1204,8 @@ class BookStackConnector(BaseConnector):
             for event in role_delete_events.data['data']:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_delete_event(role_id)
-                done = await self._sync_user_roles_full() and done
+            # One rebuild covers every delete: each one reads every role and user.
+            done = await self._sync_user_roles_full() and done
         return done
 
     async def _read_role_with_members(
