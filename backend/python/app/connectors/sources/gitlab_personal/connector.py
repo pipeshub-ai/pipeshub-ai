@@ -57,11 +57,7 @@ class GitLabPersonalProjectsSync(ProjectsSync):
             group.inherit_permissions = True
         await self.c.data_entities_processor.on_new_record_groups([(group, []) for group in groups])
 
-    async def _ensure_gitlab_group_record_groups(
-        self,
-        group_paths: list[str],
-        candidate_projects: list[Project] | None = None,
-    ) -> None:
+    async def _ensure_gitlab_group_record_groups(self, group_paths: list[str]) -> None:
         """GitLab-group record groups inherit the app. No grants of their own."""
         c = self.c
         if not c.data_source:

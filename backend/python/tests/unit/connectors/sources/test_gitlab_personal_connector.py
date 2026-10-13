@@ -450,9 +450,7 @@ class TestPersonalEnsureGitLabGroupRecordGroups:
         connector.runtime = MagicMock()
         connector.runtime.ds_call = AsyncMock(side_effect=fake_ds_call)
 
-        await connector.projects._ensure_gitlab_group_record_groups(
-            ["org/eng", "org/data"], candidate_projects=[MagicMock(), MagicMock()]
-        )
+        await connector.projects._ensure_gitlab_group_record_groups(["org/eng", "org/data"])
 
         assert (
             connector.data_entities_processor.on_new_record_groups.await_count == 2
