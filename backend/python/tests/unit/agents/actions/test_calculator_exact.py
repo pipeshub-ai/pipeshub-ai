@@ -145,13 +145,13 @@ class TestExactArithmetic:
         [
             ("sqrt(2)", 1.4142135623731),
             ("2*pi", 6.28318530717959),
-            ("log(100, 10)", 2),
-            ("log10(1000)", 3),
-            ("exp(0)", 1),
+            ("log(100) / log(10)", 2),
+            ("log10(1000.5)", 3.00021709297223),
+            ("exp(1)", 2.71828182845905),
             ("sin(pi/2)", 1),
             ("degrees(atan2(1, 1))", 45),
             ("sqrt(2)**2", 2),
-            ("hypot(3, 4)", 5),
+            ("hypot(2, 3)", 3.60555127546399),
         ],
     )
     def test_floating_point_functions_are_marked_approximate(self, expression: str, expected: float) -> None:
@@ -166,9 +166,9 @@ class TestExactArithmetic:
             ("round(sin(1), 20)", 0.841470984807897),
             # Cut to the 15 digits an approximate value carries before
             # rounding: log(1000, 10) is 2.9999999999999996 in binary.
-            ("floor(log(1000, 10))", 3),
+            ("floor(log(1000) / log(10))", 3),
             ("ceil(sqrt(2)**2)", 2),
-            ("round(log(1000, 10))", 3),
+            ("round(log(1000) / log(10))", 3),
         ],
     )
     def test_rounding_an_approximate_value_stays_approximate(self, expression: str, expected: float) -> None:
@@ -200,9 +200,6 @@ class TestExactArithmetic:
             # Out of a double's range, computed without converting the input.
             ("sqrt(2e-400)", 1.4142135623731e-200),
             ("sqrt(2*10**400)", 1.4142135623731e200),
-            ("log10(1e-400)", -400),
-            ("log(1e-400, 10)", -400),
-            ("log10(10**400)", 400),
             ("log(10**400) / log(10)", 400),
             # Values a double rounds to 1: the log comes from the exact gap.
             ("log(1 + 1e-20)", 1e-20),
@@ -256,9 +253,9 @@ class TestExactArithmetic:
             ("0 ** 1e-400", 0),
             ("sin(0) ** 1e-400", 0),
             ("0 ** 1e-20", 0),
-            ("(-10**400) ** log(1)", 1),
-            ("(-1e-400) ** sin(0)", 1),
-            ("(10**400) ** log(1)", 1),
+            ("(-10**400) ** (log(e) - 1)", 1),
+            ("(-1e-400) ** (log(e) - 1)", 1),
+            ("(10**400) ** (log(e) - 1)", 1),
             # An exact trig argument is reduced by 2*pi in decimal, not after
             # rounding it to a double: 10**300 as a double is off by about
             # 10**284 radians, and 100000.1 by 7e-12.
@@ -275,6 +272,9 @@ class TestExactArithmetic:
             ("radians(-10**309)", -1.74532925199433e307),
             ("radians(10**310)", 1.74532925199433e308),
             ("degrees(1e-309)", 5.72957795130823e-308),
+            # sin(0) and cos(0) are exact, so these sums and products stay exact.
+            ("radians(10**309 + sin(0))", 1.74532925199433e307),
+            ("degrees(1e-309 * cos(0))", 5.72957795130823e-308),
             # Within its error bound: the angles are uncertain by about 2e-10
             # and 5e-7 radians.
             ("sin(10**6 * pi)", -2.23191218136087e-10),
@@ -289,6 +289,38 @@ class TestExactArithmetic:
     @pytest.mark.parametrize("expression", ["log(1)", "log10(1)", "log(1, 10)"])
     def test_the_log_of_one_is_zero(self, expression: str) -> None:
         assert _result(expression)["result"] == 0
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            # A transcendental function of a non-zero rational is irrational;
+            # at the trivial points the value is exact and stays exact.
+            ("sin(0)", 0),
+            ("tan(0)", 0),
+            ("atan(0)", 0),
+            ("asin(0)", 0),
+            ("cos(0)", 1),
+            ("exp(0)", 1),
+            ("acos(1)", 0),
+            ("log(1)", 0),
+            ("log10(1000)", 3),
+            ("log10(1e-400)", -400),
+            ("log10(10**400)", 400),
+            ("log(100, 10)", 2),
+            ("log(1e-400, 10)", -400),
+            ("log(1/8, 2)", -3),
+            ("hypot(3, 4)", 5),
+            ("hypot(0.5, 1.2)", 1.3),
+            ("atan2(0, 5)", 0),
+            ("radians(0)", 0),
+            ("(-10**400) ** log(1)", 1),
+            ("(-1e-400) ** sin(0)", 1),
+        ],
+    )
+    def test_functions_at_their_exact_points_stay_exact(self, expression: str, expected: object) -> None:
+        payload = _result(expression)
+        assert payload["result"] == expected
+        assert "approximate" not in payload
 
     def test_floating_point_results_lose_binary_noise(self) -> None:
         # 15 significant digits: sqrt(2)**2 is 2.0000000000000004 in binary.
@@ -379,6 +411,11 @@ class TestRefusedExpressions:
             ("sin(2**51 + sin(1))", "meaningful"),
             ("sin(10**15 + sin(1))", "meaningful"),
             ("sin(2**34 + sin(1))", "meaningful"),
+            # tan amplifies the angle's error by 1 + tan**2: near a pole the
+            # neighbouring doubles straddle it.
+            ("tan((10**6 + 1/2) * pi)", "meaningful"),
+            ("tan((2**32 + 1/2) * pi)", "meaningful"),
+            ("tan(pi / 2)", "meaningful"),
             ("sin(10**400 * pi)", "meaningful"),
             ("cos(exp(1000))", "meaningful"),
             ("atan2(1e-400, 1)", "too small"),

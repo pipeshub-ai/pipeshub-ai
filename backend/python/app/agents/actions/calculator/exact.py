@@ -511,6 +511,9 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         _require_plain(dimensions[1:], "round to")
         return _round(values[0], values[1] if len(values) > 1 else Fraction(0)), dimensions[0]
     _require_plain(dimensions, f"take {name}() of")
+    exact = _exact_point(name, values)
+    if exact is not None:
+        return _bounded(exact), 0
     if name == "sqrt":
         if isinstance(values[0], Fraction):
             if values[0] < 0:
@@ -528,16 +531,8 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         return _logarithm(name, values), 0
     if name in ("asin", "acos"):
         return _arc(name, values[0]), 0
-    if name in ("sin", "cos", "tan"):
-        if isinstance(values[0], Fraction) and abs(values[0]) > 1:
-            angle = _reduced_angle(values[0])
-            return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
-        if isinstance(values[0], float) and math.ulp(values[0]) / 2 > _ANGLE_TOLERANCE:
-            # An approximate angle carries at least half an ulp of rounding,
-            # and |sin'| <= 1 passes it straight to the result: past this the
-            # digits reported would be mostly noise (sin(2**51 + sin(1)) is
-            # off by 0.06).
-            raise CalculationError(_IMPRECISE_ANGLE)
+    if name in _TRIG:
+        return _trigonometric(name, values[0]), 0
     if name in ("radians", "degrees") and isinstance(values[0], Fraction):
         # Scaled on the exact value, so only the result has to fit a double.
         scale = Fraction(math.pi) / 180 if name == "radians" else 180 / Fraction(math.pi)
@@ -610,6 +605,62 @@ def _atan2(y: Value, x: Value) -> float:
     if scale == 0:
         return 0.0
     return _float_function("atan2", math.atan2, [Fraction(y) / scale, Fraction(x) / scale])
+
+
+def _trigonometric(name: str, value: Value) -> float:
+    if isinstance(value, Fraction) and abs(value) > 1:
+        angle = _reduced_angle(value)
+        result = _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos")
+    else:
+        # An approximate angle carries at least half an ulp of rounding, and
+        # a sine or cosine passes it straight to the result (|sin'| <= 1):
+        # past the tolerance the digits reported would be mostly noise
+        # (sin(2**51 + sin(1)) is off by 0.06).
+        if isinstance(value, float) and math.ulp(value) / 2 > _ANGLE_TOLERANCE:
+            raise CalculationError(_IMPRECISE_ANGLE)
+        angle = _as_float(value, flush=True)
+        result = _float_function(name, _FLOAT_FUNCTIONS[name], [value])
+    # tan amplifies the angle's rounding by its derivative, 1 + tan**2: near
+    # a pole the neighbouring doubles of the angle straddle it.
+    if name == "tan" and math.ulp(angle) / 2 * (1 + result * result) > _ANGLE_TOLERANCE * max(1.0, abs(result)):
+        raise CalculationError(_IMPRECISE_ANGLE)
+    return result
+
+
+def _exact_point(name: str, values: list[Value]) -> Fraction | None:
+    """The value of `name` where it is rational, for exact arguments. A
+    transcendental function of a non-zero rational is irrational
+    (Lindemann-Weierstrass), so these are the trivial points, plus exact
+    powers for logs and exact roots for hypot; elsewhere None."""
+    if not all(isinstance(value, Fraction) for value in values):
+        return None
+    x = values[0]
+    if x == 0 and name in ("sin", "tan", "asin", "atan", "radians", "degrees"):
+        return Fraction(0)
+    if x == 0 and name in ("cos", "exp"):
+        return Fraction(1)
+    if x == 1 and name in ("acos", "log") and len(values) == 1:
+        return Fraction(0)
+    if name == "atan2" and values[0] == 0 and values[1] > 0:
+        return Fraction(0)
+    if name == "log10" or (name == "log" and len(values) == 2):
+        return _exact_logarithm(x, Fraction(10) if name == "log10" else values[1])
+    if name == "hypot":
+        return _exact_root(sum(value * value for value in values), 2)
+    return None
+
+
+def _exact_logarithm(value: Fraction, base: Fraction) -> Fraction | None:
+    """k when value is exactly base**k for an integer k."""
+    if value <= 0 or base <= 0 or base == 1:
+        return None
+    with localcontext(Context(prec=_LOG_GUARD_DIGITS)):
+        estimate = _decimal_log(value, base10=False) / _decimal_log(base, base10=False)
+        power = int(estimate.to_integral_value())
+    bits = max(base.numerator.bit_length(), base.denominator.bit_length())
+    if abs(power) * (bits - 1) > 2 * _MAX_BITS:
+        return None
+    return Fraction(power) if base**power == value else None
 
 
 def _reduced_angle(value: Fraction) -> float:
