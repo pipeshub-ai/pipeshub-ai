@@ -3061,17 +3061,7 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
-    async def on_new_record_groups(
-        self, record_groups: list[tuple[RecordGroup, list[Permission] | None]]
-    ) -> None:
-        """Upsert record groups and replace their permission edges.
-
-        ``None`` in place of a group's permission list means the connector could
-        not read who may see it (Slack: ``not_in_channel`` on its member list).
-        The group is still written, and so counts as seen by a full sync, but the
-        permission edges it already has are left as they are. An empty list
-        means nobody, and removes them.
-        """
+    async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         # Most connectors have no dedicated "space renamed"/"project renamed"
         # webhook (Dropbox's team_folder_rename -> update_record_group_name
         # is the only one that does); everyone else re-pushes the group's
@@ -3257,8 +3247,6 @@ class DataSourceEntitiesProcessor:
                             #if inherit records is false we need to remove the edge aswell
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
-                    if permissions is None:
-                        continue
                     if not permissions:
                         await self._write_permission_edges(
                             tx_store, record_group.id, CollectionNames.RECORD_GROUPS.value, [],

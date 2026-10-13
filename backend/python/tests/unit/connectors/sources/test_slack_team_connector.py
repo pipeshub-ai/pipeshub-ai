@@ -4347,7 +4347,7 @@ class TestSlackConnectorCoverageExtended:
         ds = MagicMock()
         ds.conversations_members = AsyncMock(return_value=MagicMock(success=False, error="channel_not_found"))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cx") is None  # unknown, not empty
+            assert await c._fetch_channel_members("Cx") == []  # unreadable: fail closed
 
         # Any other failure leaves the list short, so it is raised, not returned.
         ds2 = MagicMock()
@@ -9869,8 +9869,9 @@ class TestChannelMembersReadPartWay:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
-    async def test_a_skip_error_on_the_first_page_means_members_unknown(self, error: str) -> None:
-        """Not "no members": written as [], it would remove every stored grant."""
+    async def test_a_skip_error_on_the_first_page_fails_closed(self, error: str) -> None:
+        """The members cannot be read with this token: nobody is granted the
+        channel, so a member removed from it never keeps access unseen."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -9878,13 +9879,13 @@ class TestChannelMembersReadPartWay:
         ds = MagicMock()
         ds.conversations_members = AsyncMock(return_value=_slack_failure(error))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cpriv") is None
-            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) is None
+            assert await c._fetch_channel_members("Cpriv") == []
+            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) == []
 
     @pytest.mark.asyncio
-    async def test_a_channel_with_unreadable_members_is_written_without_a_permission_list(self) -> None:
-        """Seen, so not unlinked; its grants kept; and, as the answer repeats every
-        sync, not an incomplete read that would stop all unlinking."""
+    async def test_a_channel_with_unreadable_members_is_written_with_no_grants(self) -> None:
+        """Written with an empty list (fail closed), so seen; and, as the answer
+        repeats every sync, not an incomplete read that would stop all unlinking."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -9896,13 +9897,13 @@ class TestChannelMembersReadPartWay:
         ))
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
-            patch.object(SlackConnector, "_channel_permissions", new_callable=AsyncMock, return_value=None),
+            patch.object(SlackConnector, "_channel_permissions", new_callable=AsyncMock, return_value=[]),
         ):
             rgs = await c._sync_channels()
 
         assert len(rgs) == 1
         (written,) = c.data_entities_processor.on_new_record_groups.await_args.args[0]
-        assert written[1] is None
+        assert written[1] == []
         assert c.full_sync_coverage().complete is True
 
 

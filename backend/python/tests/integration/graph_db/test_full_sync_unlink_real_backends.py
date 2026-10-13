@@ -492,21 +492,25 @@ async def test_a_link_to_a_placeholder_survives_the_unlink(sync: _Sync) -> None:
     assert await links_out() == 1, "the link to the placeholder was unlinked"
 
 
-async def test_a_channel_whose_members_cannot_be_read_keeps_its_access(sync: _Sync) -> None:
+async def test_a_channel_whose_members_cannot_be_read_fails_closed(sync: _Sync) -> None:
     """Slack answers not_in_channel or missing_scope on every sync for such a
-    channel. It is written without a permission list: still seen, grants kept."""
+    channel. It is written with no grants: nobody reads it until its members
+    can be read again, so a removed member never keeps access unseen. It is
+    still seen, so the sync's unlink does not take its links."""
     await _first_sync(sync)
 
     async def script(s: _Sync) -> None:
-        channel, _ = s.channel(readers=())
-        await s.processor.on_new_record_groups([(channel, None)])
+        await s.processor.on_new_record_groups([s.channel(readers=())])
         await s.processor.on_new_records([s.message(n) for n in ("m1", "m2", "m3")])
 
     task, _ = await sync.full_sync(script)
     await asyncio.wait_for(task, timeout=60)
 
     for name in ("m1", "m2", "m3"):
-        assert await sync.can_read(sync.alice, name) and await sync.can_read(sync.bob, name), name
+        assert not await sync.can_read(sync.alice, name), name
+        assert not await sync.can_read(sync.bob, name), name
+        links = await sync.links(RECORDS, await sync.record_id(name))
+        assert links["belongs_to"] == 1 and links["inherits"] == 1, (name, links)
 
 
 async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_full_sync(sync: _Sync) -> None:
