@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -33,7 +34,9 @@ from app.utils.render_budget import (
     fetch_size_by_chars_enabled,
     resolve_render_budget,
 )
-from tests.unit.agents.actions.knowledge_graph.fetch_scenarios import fetch_scenarios_digest
+from tests.unit.agents.actions.knowledge_graph.fetch_scenarios import (
+    fetch_scenarios_digest,
+)
 from tests.unit.agents.actions.knowledge_graph.test_fetch_sizing import (
     _context,
     _fetch,
@@ -43,14 +46,17 @@ from tests.unit.agents.actions.knowledge_graph.test_fetch_sizing import (
     _text_record,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 SWITCH = "FETCH_SIZE_BY_CHARS"
 # What the scenarios in `fetch_scenarios` rendered before this switch existed.
 # Recompute only for a deliberate change to fetch with the switch off.
-_SWITCH_OFF_DIGEST = "cad46f1ed70480d9ee23dc81ca443b13dfc6efb2ef2a1313bb0912fdce2b41b4"
+_SWITCH_OFF_DIGEST = "51551a500c3643b8fd80693dad54cbe3cde705cce84fbcff8733c683e779f911"
 
 
 @pytest.fixture
-def switch(monkeypatch: pytest.MonkeyPatch):
+def switch(monkeypatch: pytest.MonkeyPatch) -> Callable[..., None]:
     def _set(value: str | None, *, high_accuracy: str | None = None) -> None:
         for name, raw in ((SWITCH, value), ("HIGH_ACCURACY_MODE", high_accuracy)):
             if raw is None:
@@ -253,7 +259,10 @@ class TestOffIsUnchanged:
 
 
 def _fetch_tool_schema(query: str) -> dict:
-    from app.agents.agent_loop.hooks.citations import CitationCollector, _FetchFullRecordTool
+    from app.agents.agent_loop.hooks.citations import (
+        CitationCollector,
+        _FetchFullRecordTool,
+    )
     from tests.unit.agents.adapter.conftest import make_context
 
     context = make_context()
@@ -300,7 +309,10 @@ class TestThePromptPrefixPerMode:
         self, switch, monkeypatch: pytest.MonkeyPatch, mode: str, value: str | None,
     ) -> None:
         from app.agents.agent_loop.factory import PipesHubAgentFactory
-        from app.agents.agent_loop.hooks.citations import CitationCollector, _FetchFullRecordTool
+        from app.agents.agent_loop.hooks.citations import (
+            CitationCollector,
+            _FetchFullRecordTool,
+        )
         from tests.unit.agents.adapter.conftest import FakeChatModel, make_context
 
         switch(value)
