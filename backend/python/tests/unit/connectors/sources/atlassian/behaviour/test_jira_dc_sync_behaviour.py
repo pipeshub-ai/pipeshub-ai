@@ -1342,6 +1342,27 @@ class TestUnreadApplicationRoles:
 
         assert acl_summary(db.record_group_permissions["10000"]) == before, "an unreadable checkpoint is not 'nothing stored'"
 
+    async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
+        self, jira, db, store, search, monkeypatch
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        async def stopped(*_: object) -> None:
+            raise RuntimeError("sync stopped")
+
+        monkeypatch.setattr(connector, "_update_issues_sync_checkpoint", stopped)
+        with pytest.raises(RuntimeError, match="sync stopped"):
+            await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert store.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+        monkeypatch.undo()
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before
+
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)

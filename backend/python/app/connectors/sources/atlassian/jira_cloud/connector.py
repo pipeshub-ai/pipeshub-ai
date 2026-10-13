@@ -224,6 +224,12 @@ ANCESTOR_STUB_FIELDS: list[str] = [
 ]
 
 
+# Sync point that notes which kinds of access this connector has saved, so a later sync
+# whose read was cut short knows what it would be replacing (see _stored_access_at_start).
+STORED_ACCESS_SYNC_POINT: str = "stored_access"
+STORED_ACCESS_KINDS: frozenset[str] = frozenset({"groups", "roles", "leads", "projects"})
+
+
 class _ApplicationRolesUnread(Exception):
     """A permission grant names an application role, and the roles could not be read this sync."""
 
@@ -398,10 +404,10 @@ class JiraConnector(BaseConnector):
         # 5xx, a network error, an unparseable body). Projects granted through an application
         # role then keep their stored access this sync instead of losing those groups.
         self._app_roles_unread: bool = False
-        # Whether this sync started with a sync checkpoint, so earlier syncs have stored
-        # grants worth keeping. A first sync has none, and a full sync's prep deletes them
-        # along with the checkpoints.
-        self._had_sync_checkpoint: bool = False
+        # Kinds of access (STORED_ACCESS_KINDS) that earlier syncs saved and that this sync
+        # must not replace from a read that was cut short. Empty on a first sync and after a
+        # full sync's prep, which deletes the stored edges along with every sync point.
+        self._stored_access_kinds: frozenset[str] = frozenset()
         # True when /users/search returned 401/403 — bulk user listing is unavailable, so user
         # resolution degrades to the PipesHub-directory reverse lookup.
         self._user_bulk_forbidden: bool = False
@@ -589,7 +595,7 @@ class JiraConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            self._had_sync_checkpoint = await self._sync_started_with_checkpoint()
+            self._stored_access_kinds = await self._stored_access_at_start()
 
             # 4. Sync Jira users and groups (reuse the active-user list from the guard above)
             jira_users = await self._fetch_users(active_pipeshub_users=users)
@@ -621,6 +627,8 @@ class JiraConnector(BaseConnector):
                         group.short_name,
                     )
             await self.data_entities_processor.on_new_record_groups(readable_projects)
+            if readable_projects:
+                await self._note_stored_access("projects")
 
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -1014,21 +1022,34 @@ class JiraConnector(BaseConnector):
             self.logger.debug("Could not read global issues sync checkpoint (treating as no checkpoint): %s", e)
             return None
 
-    async def _sync_started_with_checkpoint(self) -> bool:
-        """Whether earlier syncs left stored access that a short read should not replace.
+    async def _stored_access_at_start(self) -> frozenset[str]:
+        """Which kinds of access earlier syncs saved, so a short read must not replace them.
 
-        A missing checkpoint means a first sync, or a full sync whose prep deleted it with
-        the stored edges. A read that fails is not proof of that, so it counts as a
-        checkpoint: holding back is the safe side when we cannot tell.
+        Each save notes its kind in the ``stored_access`` sync point right after it lands,
+        so a sync cut short after saving groups still counts its groups. A full sync's prep
+        deletes every sync point along with the stored edges, so after it, and on a first
+        sync, nothing is noted. A connector last synced before these notes existed has only
+        its issues checkpoint, which counts for every kind. A read that fails counts for
+        every kind too: holding back is the safe side when we cannot tell.
         """
         try:
-            point = await self.issues_sync_point.read_sync_point("issues_global")
+            noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
+            checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
         except Exception as e:
             self.logger.warning(
-                "⚠️ Could not read the issues sync checkpoint (%s); keeping stored access if a read is short", e
+                "⚠️ Could not read which access earlier syncs saved (%s); keeping stored access if a read is short", e
             )
-            return True
-        return bool(point) and point.get("last_sync_time") is not None
+            return STORED_ACCESS_KINDS
+        if checkpoint and checkpoint.get("last_sync_time") is not None:
+            return STORED_ACCESS_KINDS
+        return frozenset(kind for kind in STORED_ACCESS_KINDS if (noted or {}).get(kind))
+
+    async def _note_stored_access(self, kind: str) -> None:
+        """Note that a save of ``kind`` landed, for ``_stored_access_at_start`` on later syncs."""
+        try:
+            await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
+        except Exception as e:
+            self.logger.warning("⚠️ Could not note the saved %s access: %s", kind, e)
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """
@@ -2085,7 +2106,7 @@ class JiraConnector(BaseConnector):
                         "applicationRole '%s' unresolvable (403) — granting Jira account '%s' direct access on %s",
                         role_key, jira_email, project_key
                     )
-            elif self._app_roles_unread and self._had_sync_checkpoint:
+            elif self._app_roles_unread and "projects" in self._stored_access_kinds:
                 # Saving the project now would drop the role's groups from its access.
                 # With nothing stored (a first or full sync) the grants that were read
                 # are saved instead, below.
