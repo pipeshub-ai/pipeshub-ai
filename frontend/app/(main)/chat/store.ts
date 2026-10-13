@@ -1677,10 +1677,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       collectionNamesCache: { ...state.collectionNamesCache, ...cache },
     })),
 
+  // Field by field: writers know different things about a node (its place, its file type),
+  // and one leaving a field out must not erase what another wrote.
   setCollectionMetaCache: (cache) =>
-    set((state) => ({
-      collectionMetaCache: { ...state.collectionMetaCache, ...cache },
-    })),
+    set((state) => {
+      const next = { ...state.collectionMetaCache };
+      for (const [id, meta] of Object.entries(cache)) {
+        const defined = Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined));
+        next[id] = { ...next[id], ...defined } as CollectionMeta;
+      }
+      return { collectionMetaCache: next };
+    }),
 
   // ── Reset ────────────────────────────────────────────────────────
 

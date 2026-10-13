@@ -10,6 +10,7 @@ import { useChatStore } from '@/chat/store';
 import { hasAnyFilter } from '@/chat/utils/tree-selection';
 import { useMainChatConnectorDefaultHint } from '@/chat/hooks/use-main-chat-connector-default-hint';
 import { groupByTime, getNonEmptyGroups } from '@/lib/utils/group-by-time';
+import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/app/(main)/knowledge-base/utils';
 import { useDebouncedSearch } from '@/app/(main)/knowledge-base/hooks/use-debounced-search';
 import {
   KnowledgeSearchResults,
@@ -263,21 +264,24 @@ export function CollectionsTab({
   }, [fetchCollections]);
 
   // In 'collections' mode: the Collection/KB roots as one flat list.
+  const trimmedQuery = searchQuery.trim();
+  const queryTooShort = trimmedQuery.length > 0 && trimmedQuery.length < KB_MIN_SEARCH_QUERY_LENGTH;
+
   const flatKbItems = useMemo(() => {
-    if (filterMode !== 'collections') return [];
-    const query = searchQuery.toLowerCase();
+    if (filterMode !== 'collections' || queryTooShort) return [];
+    const query = trimmedQuery.toLowerCase();
     return collections
       .filter(isCollectionAppRow)
       .filter((row) => !query || row.name.toLowerCase().includes(query));
-  }, [filterMode, collections, searchQuery]);
+  }, [filterMode, collections, trimmedQuery, queryTooShort]);
 
   const groupedCollections = useMemo(() => {
     // In 'collections' mode we render flatKbItems instead of this grouped list
-    if (filterMode === 'collections') return [];
+    if (filterMode === 'collections' || queryTooShort) return [];
 
-    let filtered = searchQuery
+    let filtered = trimmedQuery
       ? collections.filter((c) =>
-          c.name.toLowerCase().includes(searchQuery.toLowerCase())
+          c.name.toLowerCase().includes(trimmedQuery.toLowerCase())
         )
       : collections;
 
@@ -288,7 +292,7 @@ export function CollectionsTab({
 
     const groups = groupByTime(filtered, (c) => c.updatedAt);
     return getNonEmptyGroups(groups, (c) => c.updatedAt);
-  }, [collections, searchQuery, filterMode]);
+  }, [collections, trimmedQuery, filterMode, queryTooShort]);
 
   const showDefaultConnectorHint =
     mainChatConnectorDefaultHint &&
@@ -325,7 +329,7 @@ export function CollectionsTab({
           style={{
             flex: 1,
             height: 'var(--space-6)',
-            border: `1px solid ${searchFocused ? 'var(--accent-10)' : 'var(--slate-a5)'}`,
+            border: `1px solid ${searchFocused ? 'var(--accent-11)' : 'var(--olive-3)'}`,
             borderRadius: 'var(--radius-2)',
             paddingLeft: 'var(--space-2)',
             paddingRight: 'var(--space-2)',
@@ -358,7 +362,13 @@ export function CollectionsTab({
         </Flex>
       </Flex>
 
-      {showDefaultConnectorHint && (
+      {queryTooShort && (
+        <Text size="1" style={{ color: 'var(--neutral-a10)', padding: '0 var(--space-1)', flexShrink: 0 }}>
+          {t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })}
+        </Text>
+      )}
+
+      {showDefaultConnectorHint && !queryTooShort && (
         <Text
           size="1"
           style={{
@@ -398,7 +408,7 @@ export function CollectionsTab({
         )}
 
         {/* ── Collections mode: flat KB items, no parent container row ── */}
-        {filterMode === 'collections' && !isLoading && !hasError && (
+        {filterMode === 'collections' && !isLoading && !hasError && !queryTooShort && (
           flatKbItems.length === 0 ? (
             searchingServer ? null : (
             <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
@@ -417,7 +427,7 @@ export function CollectionsTab({
         )}
 
         {/* ── Normal mode (connectors / all): time-grouped root rows ── */}
-        {filterMode !== 'collections' && !isLoading && !hasError && groupedCollections.length === 0 && !searchingServer && (
+        {filterMode !== 'collections' && !isLoading && !hasError && !queryTooShort && groupedCollections.length === 0 && !searchingServer && (
           <Flex align="center" justify="center" style={{ padding: 'var(--space-4)' }}>
             <Text size="2" style={{ color: 'var(--slate-9)' }}>
               {searchQuery || collections.length > 0
@@ -430,6 +440,7 @@ export function CollectionsTab({
         {filterMode !== 'collections' &&
           !isLoading &&
           !hasError &&
+          !queryTooShort &&
           groupedCollections.map(([label, items]) => (
             <Flex key={label} direction="column" gap="1" style={{ width: '100%', minWidth: 0 }}>
               <Flex

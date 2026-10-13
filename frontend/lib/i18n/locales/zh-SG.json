@@ -623,6 +623,8 @@
     "noCollectionsAvailable": "没有可用的集合",
     "noCollectionsCreatePrompt": "没有可用的集合。请创建一个新集合。",
     "seeMoreConnectors": "查看更多连接器",
+    "connectMoreApps": "连接更多应用",
+    "connectMoreAppsHint": "接入更多来源，答案更准确。",
     "suggestedInWorkspace": "工作区推荐",
     "createSubFolder": "创建子文件夹",
     "more": "更多",
@@ -1347,6 +1349,16 @@
     "treeSearching": "正在搜索…",
     "treeSearchFailed": "搜索失败，请重试。",
     "treeSearchMatches": "文件夹和项目",
+    "nodeSearchTooShort": "请至少输入 2 个字符",
+    "mentionNodes": "项目",
+    "mentionNodesLabel": "匹配的项目",
+    "mentionTypeToSearch": "输入名称进行搜索",
+    "mentionSearching": "正在搜索…",
+    "mentionNone": "没有匹配的项目",
+    "mentionYourApps": "你的应用",
+    "mentionCollections": "收藏集",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {
       "generated_other": "已生成 {{count}} 个产物",
       "newerVersion": "有更新的版本 (v{{version}})",
@@ -4821,7 +4833,8 @@
     "isAnyOf": "是其中之一",
     "loadingOptions": "正在加载选项…",
     "refreshingOptions": "正在刷新选项…",
-    "loadingMore": "正在加载更多…"
+    "loadingMore": "正在加载更多…",
+    "clear": "清除{{label}}筛选"
   },
   "moveFolder": {
     "moving": "正在移动...",

@@ -65,6 +65,11 @@ const appliedFilterNodeSchema = z.object({
   name: z.string(),
   nodeType: z.string(),
   connector: z.string(),
+  // For the chip's file-type icon.
+  extension: z.string().optional(),
+  mimeType: z.string().optional(),
+  // Named in the question with @, so it is shown as a chip there.
+  mentioned: z.boolean().optional(),
 });
 
 const appliedFiltersSchema = z
@@ -235,8 +240,10 @@ const filtersSchema = z
   })
   .refine(
     (filters) =>
-      Object.values(filters).reduce((count, ids) => count + (Array.isArray(ids) ? ids.length : 0), 0) <=
-      MAX_FILTER_IDS,
+      Object.values(filters).reduce<number>(
+        (count, ids) => count + (Array.isArray(ids) ? ids.length : 0),
+        0,
+      ) <= MAX_FILTER_IDS,
     { message: `At most ${MAX_FILTER_IDS} ids may be selected in one request` },
   )
   .optional();
@@ -776,7 +783,8 @@ const readAgentKnowledgeFilters = (
   if (!filters || typeof filters !== 'object' || Array.isArray(filters)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'Knowledge filters must be an object, with recordGroups and records as lists of ids',
+      message:
+        'Knowledge filters must be an object, with recordGroups and records as lists of ids',
     });
     return z.NEVER;
   }
@@ -785,7 +793,10 @@ const readAgentKnowledgeFilters = (
   for (const key of AGENT_SOURCE_LIMIT_KEYS) {
     const ids = limit[key];
     if (ids === undefined || ids === null) continue;
-    if (!Array.isArray(ids) || !ids.every((id) => appOrKbIdSchema.safeParse(id).success)) {
+    if (
+      !Array.isArray(ids) ||
+      !ids.every((id) => appOrKbIdSchema.safeParse(id).success)
+    ) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: [key],

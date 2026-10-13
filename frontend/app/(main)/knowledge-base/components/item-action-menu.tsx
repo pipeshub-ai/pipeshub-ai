@@ -74,20 +74,37 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
           color="gray"
           aria-label={triggerLabel}
           onClick={(e) => e.stopPropagation()}
-          style={{ cursor: 'pointer' }}
+          style={{
+            cursor: 'pointer',
+            width: 24,
+            height: 24,
+            minWidth: 24,
+            padding: 0,
+            margin: 0,
+            borderRadius: 'var(--radius-1)',
+          }}
         >
-          <MaterialIcon name="more_horiz" size={16} color="var(--slate-11)" />
+          <MaterialIcon name="more_horiz" size={16} color="var(--neutral-11)" />
         </IconButton>
       </DropdownMenu.Trigger>
       <DropdownMenu.Content
         size="1"
-        style={{ minWidth: '120px' }}
+        style={{
+          minWidth: 140,
+          // The viewport already pads 4px (globals.css); a second 4 here doubles it.
+          padding: 0,
+          background: 'var(--olive-2)',
+          border: '1px solid var(--olive-3)',
+          borderRadius: 'var(--radius-1)',
+          backdropFilter: 'blur(25px)',
+          WebkitBackdropFilter: 'blur(25px)',
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         {visibleActions.map((action, i) => {
           const iconColor =
             action.iconColor ||
-            (action.color === 'red' ? 'var(--red-9)' : 'var(--slate-11)');
+            (action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)');
           const isPending = pendingIndex === i || action.isLoading === true;
           const anyPending = pendingIndex !== null;
           const isBlocked = isPending || (anyPending && pendingIndex !== i) || action.disabled === true;
@@ -99,6 +116,9 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                 color={action.color}
                 disabled={isBlocked || undefined}
                 style={{
+                  height: 24,
+                  padding: '0 8px',
+                  borderRadius: 'var(--radius-1)',
                   marginBottom: i < visibleActions.length - 1 ? '4px' : '0',
                   cursor: isPending ? 'wait' : isBlocked ? 'not-allowed' : 'pointer',
                   opacity: anyPending && pendingIndex !== i ? 0.55 : 1,
@@ -123,13 +143,23 @@ export function ItemActionMenu({ actions, open, onOpenChange, triggerLabel, trig
                   }
                 }}
               >
-                <Flex align="center" gap="2">
+                <Flex align="center" gap="1">
                   {isPending ? (
                     <Spinner size={14} color={iconColor} />
                   ) : (
                     <MaterialIcon name={action.icon} size={16} color={iconColor} />
                   )}
-                  <Text size="2">{action.label}</Text>
+                  <Text
+                    size="1"
+                    style={{
+                      fontWeight: 400,
+                      letterSpacing: '0.04px',
+                      lineHeight: '16px',
+                      color: action.color === 'red' ? 'var(--red-11)' : 'var(--neutral-11)',
+                    }}
+                  >
+                    {action.label}
+                  </Text>
                 </Flex>
               </DropdownMenu.Item>
             </React.Fragment>

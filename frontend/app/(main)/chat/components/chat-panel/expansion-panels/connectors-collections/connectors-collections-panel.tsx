@@ -45,11 +45,19 @@ export function ConnectorsCollectionsPanel({
           color="gray"
           size="1"
           onClick={onToggleView}
-          style={{ cursor: onToggleView ? 'pointer' : 'default' }}
+          style={{
+            cursor: onToggleView ? 'pointer' : 'default',
+            flexShrink: 0,
+            // Radix pulls ghost buttons out by their padding; the header has its own.
+            margin: 0,
+            padding: 0,
+            width: 32,
+            height: 32,
+          }}
         >
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
-            size={18}
+            size={16}
             color="var(--slate-9)"
           />
         </IconButton>

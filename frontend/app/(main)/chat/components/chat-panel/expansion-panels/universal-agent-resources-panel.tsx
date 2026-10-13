@@ -1008,11 +1008,19 @@ export function UniversalAgentResourcesPanel({
           color="gray"
           size="1"
           onClick={onToggleView}
-          style={{ cursor: onToggleView ? 'pointer' : 'default', flexShrink: 0 }}
+          style={{
+            cursor: onToggleView ? 'pointer' : 'default',
+            flexShrink: 0,
+            // Radix pulls ghost buttons out by their padding; the header has its own.
+            margin: 0,
+            padding: 0,
+            width: 32,
+            height: 32,
+          }}
         >
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
-            size={18}
+            size={16}
             color="var(--slate-9)"
           />
         </IconButton>
@@ -1168,8 +1176,18 @@ export function UniversalAgentResourcesPanel({
 
       {/* Footer */}
       <Flex align="center" justify="between" gap="2" style={{ flexShrink: 0 }}>
-        <Button type="button" size="1" variant="outline" color="gray" onClick={resetToDefaults}>
-          {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
+        <Button
+          type="button"
+          size="2"
+          variant="outline"
+          color="gray"
+          onClick={resetToDefaults}
+          style={{ height: 32, cursor: 'pointer' }}
+        >
+          <MaterialIcon name="restart_alt" size={14} color="var(--neutral-11)" />
+          <Text size="2" weight="medium" style={{ color: 'var(--neutral-12)' }}>
+            {t('chat.agentResources.resetDefaults', { defaultValue: 'Reset to defaults' })}
+          </Text>
         </Button>
         {(tab === 'actions' || tab === 'mcp') && (
           <Flex align="center" gap="2">

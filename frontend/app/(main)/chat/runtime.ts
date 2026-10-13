@@ -303,6 +303,11 @@ export function buildStreamChatRequestForSlot(
       : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
+  // Which nodes the question names with @: those show as chips in it when it is read back.
+  const rawMentionIds = outgoingMessage?.metadata?.custom?.mentionIds;
+  const mentionIds = new Set(
+    Array.isArray(rawMentionIds) ? rawMentionIds.filter((id): id is string => typeof id === 'string') : []
+  );
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
     ids
       .filter((id) => id.trim().length > 0)
@@ -313,6 +318,9 @@ export function buildStreamChatRequestForSlot(
           name: meta?.name ?? currentState.collectionNamesCache[id] ?? id,
           nodeType: meta?.nodeType ?? '',
           connector: meta?.connector ?? '',
+          ...(meta?.extension ? { extension: meta.extension } : {}),
+          ...(meta?.mimeType ? { mimeType: meta.mimeType } : {}),
+          mentioned: mentionIds.has(id),
         };
       });
 

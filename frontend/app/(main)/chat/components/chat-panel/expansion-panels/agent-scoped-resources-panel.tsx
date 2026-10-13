@@ -23,6 +23,7 @@ import {
   selectMcpEnabled,
   selectActionsEnabled,
 } from '@/lib/store/feature-flags-store';
+import { KB_MIN_SEARCH_QUERY_LENGTH } from '@/app/(main)/knowledge-base/utils';
 import { useDebouncedSearch } from '@/app/(main)/knowledge-base/hooks/use-debounced-search';
 import {
   KnowledgeSearchResults,
@@ -596,8 +597,10 @@ export function AgentScopedResourcesPanel({
   // A row matches on its own name or on the heading it is listed under.
   const collectionsLabel = t('nav.collections', { defaultValue: 'Collections' });
   const filteredConnectors = useMemo(() => {
-    if (!search.trim()) return connectors;
-    const q = search.toLowerCase();
+    const trimmed = search.trim();
+    if (trimmed.length > 0 && trimmed.length < KB_MIN_SEARCH_QUERY_LENGTH) return [];
+    if (!trimmed) return connectors;
+    const q = trimmed.toLowerCase();
     return connectors.filter(
       (c) =>
         c.label.toLowerCase().includes(q) ||
@@ -607,8 +610,10 @@ export function AgentScopedResourcesPanel({
   }, [connectors, search, collectionsLabel]);
 
   const filteredCollections = useMemo(() => {
-    if (!search.trim()) return collectionRows;
-    const q = search.toLowerCase();
+    const trimmed = search.trim();
+    if (trimmed.length > 0 && trimmed.length < KB_MIN_SEARCH_QUERY_LENGTH) return [];
+    if (!trimmed) return collectionRows;
+    const q = trimmed.toLowerCase();
     return collectionRows.filter(
       (r) =>
         r.name.toLowerCase().includes(q) ||
@@ -936,11 +941,19 @@ export function AgentScopedResourcesPanel({
           color="gray"
           size="1"
           onClick={onToggleView}
-          style={{ cursor: onToggleView ? 'pointer' : 'default', flexShrink: 0 }}
+          style={{
+            cursor: onToggleView ? 'pointer' : 'default',
+            flexShrink: 0,
+            // Radix pulls ghost buttons out by their padding; the header has its own.
+            margin: 0,
+            padding: 0,
+            width: 32,
+            height: 32,
+          }}
         >
           <MaterialIcon
             name={viewMode === 'overlay' ? 'close_fullscreen' : 'open_in_full'}
-            size={18}
+            size={16}
             color="var(--slate-9)"
           />
         </IconButton>
@@ -984,7 +997,9 @@ export function AgentScopedResourcesPanel({
               </Text>
             ) : filteredConnectors.length === 0 && !searchingServer ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.noConnectorsFound')}
+                {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
+                  ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
+                  : t('chat.noConnectorsFound')}
               </Text>
             ) : (
               renderSourceGroups(filteredConnectors, (c) => ({
@@ -1007,9 +1022,11 @@ export function AgentScopedResourcesPanel({
               </Text>
             ) : filteredCollections.length === 0 && !searchingServer ? (
               <Text size="2" style={{ color: 'var(--slate-9)', padding: 'var(--space-3)' }}>
-                {t('chat.agentResources.noCollectionMatches', {
-                  defaultValue: 'No collections match your search.',
-                })}
+                {search.trim().length < KB_MIN_SEARCH_QUERY_LENGTH
+                  ? t('chat.nodeSearchTooShort', { defaultValue: 'Type at least 2 characters' })
+                  : t('chat.agentResources.noCollectionMatches', {
+                      defaultValue: 'No collections match your search.',
+                    })}
               </Text>
             ) : (
               renderSourceGroups(filteredCollections, (row) => ({

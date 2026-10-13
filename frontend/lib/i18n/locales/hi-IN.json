@@ -543,6 +543,8 @@
     "noCollectionsAvailable": "कोई कलेक्शन उपलब्ध नहीं है",
     "noCollectionsCreatePrompt": "कोई कलेक्शन उपलब्ध नहीं है। कृपया एक नया बनाएं।",
     "seeMoreConnectors": "और कनेक्टर्स देखें",
+    "connectMoreApps": "और ऐप्स कनेक्ट करें",
+    "connectMoreAppsHint": "ज़्यादा स्रोत, बेहतर जवाब।",
     "suggestedInWorkspace": "वर्कस्पेस में सुझाया गया",
     "createSubFolder": "उप-फ़ोल्डर बनाएँ",
     "more": "और",
@@ -1264,6 +1266,16 @@
     "treeSearching": "खोज रहे हैं…",
     "treeSearchFailed": "खोज नहीं हो सकी। फिर से कोशिश करें।",
     "treeSearchMatches": "फ़ोल्डर और आइटम",
+    "nodeSearchTooShort": "कम से कम 2 अक्षर लिखें",
+    "mentionNodes": "आइटम",
+    "mentionNodesLabel": "मेल खाते आइटम",
+    "mentionTypeToSearch": "खोजने के लिए नाम लिखें",
+    "mentionSearching": "खोज रहे हैं…",
+    "mentionNone": "कोई आइटम मेल नहीं खाता",
+    "mentionYourApps": "आपके ऐप्स",
+    "mentionCollections": "संग्रह",
+    "mentionBack": "वापस",
+    "mentionRemove": "{{name}} हटाएँ",
     "artifactsPanel": {
       "generated_one": "{{count}} आर्टिफैक्ट बनाया गया",
       "generated_other": "{{count}} आर्टिफैक्ट बनाए गए",
@@ -4835,7 +4847,8 @@
     "isAnyOf": "इनमें से कोई है",
     "loadingOptions": "विकल्प लोड हो रहे हैं…",
     "refreshingOptions": "विकल्प ताज़ा हो रहे हैं…",
-    "loadingMore": "और लोड हो रहा है…"
+    "loadingMore": "और लोड हो रहा है…",
+    "clear": "{{label}} फ़िल्टर हटाएँ"
   },
   "moveFolder": {
     "moving": "स्थानांतरित किया जा रहा है...",

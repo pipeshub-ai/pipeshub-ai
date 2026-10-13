@@ -10,7 +10,7 @@ interface SelectionActionBarProps {
   selectedCount: number;
   onDeselectAll: () => void;
   onChat: () => void;
-  onReindex: () => void;
+  onReindex?: () => void;
   onDelete?: () => void;
   deletePermissionDenied?: boolean;
   pageViewMode?: PageViewMode;
@@ -88,22 +88,24 @@ export function SelectionActionBar({
       </Button>
 
       {/* Re-index button - Neutral style */}
-      <Button
-        size="1"
-        variant="outline"
-        color="gray"
-        onClick={onReindex}
-        style={{
-          borderColor: 'var(--slate-a7)',
-          color: 'var(--slate-11)',
-          cursor: 'pointer',
-          borderRadius: 'var(--radius-2)',
-          padding: 'var(--space-3)'
-        }}
-      >
-        <MaterialIcon name="refresh" size={16} />
-        Re-index
-      </Button>
+      {onReindex && (
+        <Button
+          size="1"
+          variant="outline"
+          color="gray"
+          onClick={onReindex}
+          style={{
+            borderColor: 'var(--slate-a7)',
+            color: 'var(--slate-11)',
+            cursor: 'pointer',
+            borderRadius: 'var(--radius-2)',
+            padding: 'var(--space-3)'
+          }}
+        >
+          <MaterialIcon name="refresh" size={16} />
+          Re-index
+        </Button>
+      )}
 
       {/* Delete button - hidden only in all-records mode */}
       {pageViewMode !== 'all-records' && onDelete && (

@@ -270,6 +270,8 @@ export const KnowledgeHubApi = {
     limit?: number;
     cursor?: string | null;
     signal?: AbortSignal;
+    /** False keeps the search on this level. A global flatten only walks connectors, so a root collection is invisible to it. */
+    flattened?: boolean;
   }): Promise<KnowledgeHubApiResponse> {
     const path = params.parent
       ? `${BASE_URL}/knowledge-hub/nodes/${params.parent.nodeType}/${params.parent.id}`
@@ -277,7 +279,7 @@ export const KnowledgeHubApi = {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(path, {
       params: {
         q: params.q,
-        flattened: true,
+        flattened: params.flattened !== false,
         onlyContainers: false,
         limit: params.limit ?? 20,
         sortBy: 'name',

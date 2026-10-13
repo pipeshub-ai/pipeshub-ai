@@ -1199,6 +1199,22 @@ function ChatContent() {
   useEffect(() => () => { splitResizeCleanupRef.current?.(); }, []);
   // ─────────────────────────────────────────────────────────────────────────
 
+  const showMessageList = !(showInitialLoading || showLoading) && !showSearchView && !showNewChatView;
+  const composerColumn = (
+    <Box
+      style={{
+        ...chatContentColumnStyle(isMobile),
+        paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
+        paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+        // MessageList's composer dock passes clicks through its gutters.
+        pointerEvents: 'auto',
+      }}
+    >
+      {!isInputCentered && showChatInput && <ChatInputWrapper />}
+      <ChatFooterLinks />
+    </Box>
+  );
+
   // ── Chat column body (shared between split-pane and full-width modes) ──────
   const chatColumnBody = (
     <>
@@ -1383,31 +1399,24 @@ function ChatContent() {
           </Flex>
         ) : (
           <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
-            <MessageList />
+            <MessageList composer={composerColumn} />
           </Box>
         )}
 
-        <Flex
-          direction="column"
-          align="center"
-          className="chat-composer-row"
-          style={{
-            width: '100%',
-            flexShrink: 0,
-            paddingBottom: isMobile ? 'var(--space-2)' : 0,
-          }}
-        >
-          <Box
+        {!showMessageList && (
+          <Flex
+            direction="column"
+            align="center"
+            className="chat-composer-row"
             style={{
-              ...chatContentColumnStyle(isMobile),
-              paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
-              paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+              width: '100%',
+              flexShrink: 0,
+              paddingBottom: isMobile ? 'var(--space-2)' : 0,
             }}
           >
-            {!isInputCentered && showChatInput && <ChatInputWrapper />}
-            <ChatFooterLinks />
-          </Box>
-        </Flex>
+            {composerColumn}
+          </Flex>
+        )}
       </Flex>
     </>
   );

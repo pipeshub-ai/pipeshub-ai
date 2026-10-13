@@ -183,10 +183,11 @@ export interface NodePermission {
  * All parameters are optional and can be combined for flexible filtering.
  */
 export interface KnowledgeHubQueryParams {
-  // Pagination is keyset, not offset: `cursor` is an opaque token from a
-  // previous response's pagination block, and its absence means "first page".
-  // There is no page number to send.
+  // Pagination is keyset: `cursor` is the token from a previous response, and
+  // its absence means "first page". `page` is sent only when that response
+  // says another page exists but does not include a cursor.
   cursor?: string;
+  page?: number;
   limit?: number;             // Items per page (1-200)
   
   // Response includes (comma-separated string)

@@ -623,6 +623,8 @@
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
     "noCollectionsCreatePrompt": "사용 가능한 컬렉션이 없습니다. 새로 만들어 주세요.",
     "seeMoreConnectors": "더 많은 커넥터 보기",
+    "connectMoreApps": "더 많은 앱 연결",
+    "connectMoreAppsHint": "소스가 많을수록 답변이 좋아집니다.",
     "suggestedInWorkspace": "워크스페이스 추천",
     "createSubFolder": "하위 폴더 만들기",
     "more": "더 보기",
@@ -1347,6 +1349,16 @@
     "treeSearching": "검색 중…",
     "treeSearchFailed": "검색하지 못했습니다. 다시 시도하세요.",
     "treeSearchMatches": "폴더 및 항목",
+    "nodeSearchTooShort": "2자 이상 입력하세요",
+    "mentionNodes": "항목",
+    "mentionNodesLabel": "일치하는 항목",
+    "mentionTypeToSearch": "검색할 이름을 입력하세요",
+    "mentionSearching": "검색 중…",
+    "mentionNone": "일치하는 항목이 없습니다",
+    "mentionYourApps": "내 앱",
+    "mentionCollections": "컬렉션",
+    "mentionBack": "뒤로",
+    "mentionRemove": "{{name}} 제거",
     "artifactsPanel": {
       "generated_other": "아티팩트 {{count}}개 생성됨",
       "newerVersion": "최신 버전 사용 가능 (v{{version}})",
@@ -4821,7 +4833,8 @@
     "isAnyOf": "다음 중 하나",
     "loadingOptions": "옵션을 불러오는 중…",
     "refreshingOptions": "옵션을 새로 고치는 중…",
-    "loadingMore": "더 불러오는 중…"
+    "loadingMore": "더 불러오는 중…",
+    "clear": "{{label}} 필터 지우기"
   },
   "moveFolder": {
     "moving": "이동 중...",

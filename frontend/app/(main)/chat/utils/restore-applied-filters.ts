@@ -62,6 +62,8 @@ export function restoreAppliedFilters(applied: AppliedFilters, forAgentChat: boo
         name: node.name,
         nodeType: node.nodeType,
         connector: node.connector,
+        ...(node.extension ? { extension: node.extension } : {}),
+        ...(node.mimeType ? { mimeType: node.mimeType } : {}),
         ...(ancestorIds ? { ancestorIds } : {}),
       };
     }

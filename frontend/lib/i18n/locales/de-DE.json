@@ -543,6 +543,8 @@
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
+    "connectMoreApps": "Weitere Apps verbinden",
+    "connectMoreAppsHint": "Mehr Quellen, bessere Antworten.",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
@@ -1264,6 +1266,16 @@
     "treeSearching": "Suche läuft…",
     "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
     "treeSearchMatches": "Ordner und Elemente",
+    "nodeSearchTooShort": "Mindestens 2 Zeichen eingeben",
+    "mentionNodes": "Elemente",
+    "mentionNodesLabel": "Passende Elemente",
+    "mentionTypeToSearch": "Namen zum Suchen eingeben",
+    "mentionSearching": "Suche läuft…",
+    "mentionNone": "Keine passenden Elemente",
+    "mentionYourApps": "Ihre Apps",
+    "mentionCollections": "Sammlungen",
+    "mentionBack": "Zurück",
+    "mentionRemove": "{{name}} entfernen",
     "artifactsPanel": {
       "generated_one": "{{count}} Artefakt erstellt",
       "generated_other": "{{count}} Artefakte erstellt",
@@ -4835,7 +4847,8 @@
     "isAnyOf": "ist einer von",
     "loadingOptions": "Optionen werden geladen…",
     "refreshingOptions": "Optionen werden aktualisiert…",
-    "loadingMore": "Weitere werden geladen…"
+    "loadingMore": "Weitere werden geladen…",
+    "clear": "Filter {{label}} löschen"
   },
   "moveFolder": {
     "moving": "Wird verschoben...",

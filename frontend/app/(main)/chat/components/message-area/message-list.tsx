@@ -15,6 +15,7 @@ import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid }
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { loadOlderMessagesForSlot } from '../../streaming';
 import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { buildMessagePairs, extractTextContent } from './message-pairs';
@@ -51,7 +52,10 @@ function isStreamingFlushWithBottom(el: HTMLElement): boolean {
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-export function MessageList() {
+/** Same band the design hangs behind its composer group; a taller one stretches the ramp thin. */
+const COMPOSER_BLUR_HEIGHT_PX = 180;
+
+export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
@@ -116,6 +120,7 @@ export function MessageList() {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
   const citationCallbacks = useCitationActions();
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevPairCountRef = useRef(0);
@@ -289,6 +294,7 @@ export function MessageList() {
     lastMessageHeight: number;
     scrollHeight: number;
     scrollTop: number;
+    composerHeight: number;
   }) => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
       if (spacerRef.current) spacerRef.current.style.minHeight = '0';
@@ -313,6 +319,9 @@ export function MessageList() {
     const lastMessageHeight = measured?.lastMessageHeight ?? element.getBoundingClientRect().height;
     const totalScrollHeight = measured?.scrollHeight ?? container.scrollHeight;
     const scrollTop = measured?.scrollTop ?? container.scrollTop;
+    // The composer dock is in this scroller's flow (sticky at the bottom), so
+    // it already pads the tail; the spacer only makes up the rest.
+    const composerHeight = measured?.composerHeight ?? composerDockRef.current?.offsetHeight ?? 0;
     const isOverflowing = totalScrollHeight > containerHeight;
 
     let needed = 0;
@@ -322,7 +331,7 @@ export function MessageList() {
     // On desktop: add spacer only when content overflows or user has scrolled
     // away from the top (avoids unnecessary scrollbar on short conversations).
     if (!isMobileRef.current && (isOverflowing || scrollTop > 0)) {
-      needed = Math.max(0, containerHeight - lastMessageHeight);
+      needed = Math.max(0, containerHeight - composerHeight - lastMessageHeight);
     }
 
     if (spacerRef.current) {
@@ -331,7 +340,7 @@ export function MessageList() {
         spacerRef.current.style.minHeight = next;
       }
     }
-    debugLog.spacer(`containerH=${containerHeight} lastMsgH=${Math.round(lastMessageHeight)} overflow=${isOverflowing} → spacer=${needed}`);
+    debugLog.spacer(`containerH=${containerHeight} composerH=${composerHeight} lastMsgH=${Math.round(lastMessageHeight)} overflow=${isOverflowing} → spacer=${needed}`);
   }, []);
 
   /**
@@ -446,17 +455,18 @@ export function MessageList() {
     const containerHeight = container.clientHeight;
     const scrollTop = container.scrollTop;
     const scrollHeight = container.scrollHeight;
+    const composerHeight = composerDockRef.current?.offsetHeight ?? 0;
 
     recalcSpacerHeight({
       containerHeight,
       lastMessageHeight: elementRect.height,
       scrollHeight,
       scrollTop,
+      composerHeight,
     });
 
-    // Composer sits outside this scroll container (flex sibling), so clientHeight
-    // is already the visible message viewport — do not subtract input height again.
-    const visibleHeight = containerHeight;
+    // The composer dock overlays the bottom of this scroller.
+    const visibleHeight = containerHeight - composerHeight;
 
     let nextTop: number;
     if (elementRect.height <= visibleHeight) {
@@ -853,7 +863,8 @@ export function MessageList() {
     };
   }, [messagePairs.length, lastPairKey, recalcSpacerHeight, throttledResize]);
 
-  // ── 3. ResizeObserver on scroll container (window resize) ─────────
+  // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
+  const hasComposer = composer != null;
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -862,9 +873,10 @@ export function MessageList() {
       recalcSpacerHeight();
     });
     observer.observe(container);
+    if (composerDockRef.current) observer.observe(composerDockRef.current);
 
     return () => observer.disconnect();
-  }, [recalcSpacerHeight]);
+  }, [recalcSpacerHeight, hasComposer]);
 
   // ── 3b. Streaming→final scroll-position guard ────────────────────
   // When the assistant-ui runtime atomically swaps the streaming message for
@@ -1023,11 +1035,15 @@ export function MessageList() {
         // writes scrollTop every frame) — native scroll anchoring would otherwise
         // fight those writes whenever streamed table/content geometry shifts.
         overflowAnchor: isStreaming ? 'none' : 'auto',
+        // Column so the composer dock can sit at the bottom of a short transcript.
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
       <Box
         style={{
           ...chatContentColumnStyle(isMobile),
+          flexShrink: 0,
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
           paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-5)',
@@ -1121,6 +1137,35 @@ export function MessageList() {
         }}
         aria-hidden="true"
       />
+
+      {/* Inside the scroller, not a sibling: the scrollbar runs to the bottom of
+          the pane, the transcript passes behind the composer, and a wheel over
+          the composer scrolls the transcript. */}
+      {hasComposer && (
+        <Box
+          ref={composerDockRef}
+          style={{
+            position: 'sticky',
+            bottom: 0,
+            marginTop: 'auto',
+            flexShrink: 0,
+            zIndex: 2,
+            overflowAnchor: 'none',
+            // Only the composer column takes clicks; the gutters on either side
+            // leave the transcript underneath selectable.
+            pointerEvents: 'none',
+          }}
+        >
+          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          <Flex
+            direction="column"
+            align="center"
+            style={{ position: 'relative', paddingBottom: isMobile ? 'var(--space-2)' : 0 }}
+          >
+            {composer}
+          </Flex>
+        </Box>
+      )}
 
       {/* Single inline-citation popover host for the whole message list. It's
           driven by the zustand store so only one popover is ever rendered,

@@ -1,22 +1,18 @@
 'use client';
 
 import React from 'react';
-import { Link } from '@/lib/navigation';
 import { Flex, Box, Text, Button } from '@radix-ui/themes';
-import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SECTION_PADDING_BOTTOM, SECTION_CONTENT_MARGIN_TOP, EMPTY_STATE_PADDING_X, EMPTY_STATE_PADDING_Y, FEATURED_ITEM_MARGIN_BOTTOM, ELEMENT_BORDER, SIDEBAR_COLLECTION_LIMIT } from '@/app/components/sidebar';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useTranslation } from 'react-i18next';
 import { KBSectionHeader } from './section-header';
 import { AppSection, appSectionKey } from './section';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { findNodeInCategorized } from '../utils/find-node';
-import { ConnectorItemComponent, MoreConnectorItem } from './section-element';
+import { ConnectorItemComponent } from './section-element';
 import type {
   Connector,
   ConnectorItem as ConnectorItemType,
-  MoreConnectorLink,
   KnowledgeHubNode,
   NodeType,
   EnhancedFolderTreeNode,
@@ -44,7 +40,6 @@ interface AllRecordsModeProps {
   appChildrenPagination?: Map<string, { hasNext: boolean; nextCursor: string | null }>;
   onLoadMoreAppChildPage?: (appId: string) => void;
   connectors: Connector[];
-  moreConnectors: MoreConnectorLink[];
 
   // Section expansion
   expandedSections: Set<string>;
@@ -62,12 +57,6 @@ interface AllRecordsModeProps {
   // When provided, AppSection renders sub-folder hierarchy correctly.
   kbSharedTree?: EnhancedFolderTreeNode[];
   kbPrivateTree?: EnhancedFolderTreeNode[];
-
-  // Navigation
-  onNavigateToConnectors: () => void;
-  onNavigateToConnector: (connectorTypeParam: string) => void;
-  connectorsHref: string;
-  buildConnectorHref: (connectorTypeParam: string) => string;
 
   // Meatball menu actions
   onReindex?: SidebarReindexHandler;
@@ -91,8 +80,7 @@ interface AllRecordsModeProps {
 
 /**
  * All Records mode sidebar content — renders back header,
- * "All" button, Collections, App sections, Connector sections,
- * and More Connectors.
+ * "All" button, Collections, App sections and Connector sections.
  */
 export function AllRecordsMode({
   isAllSelected,
@@ -107,7 +95,6 @@ export function AllRecordsMode({
   appChildrenPagination,
   onLoadMoreAppChildPage,
   connectors,
-  moreConnectors,
   expandedSections,
   onToggleSection,
   expandedFolders,
@@ -118,10 +105,6 @@ export function AllRecordsMode({
   onNodeExpand,
   kbSharedTree,
   kbPrivateTree,
-  onNavigateToConnectors,
-  onNavigateToConnector,
-  connectorsHref,
-  buildConnectorHref,
   onReindex,
   onRename,
   onDelete,
@@ -133,7 +116,6 @@ export function AllRecordsMode({
   isLoadingRootAppListMore,
 }: AllRecordsModeProps) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
 
   return (
     <>
@@ -283,71 +265,6 @@ export function AllRecordsMode({
         </Box>
       ))}
 
-      {/* More Connectors section — hidden on mobile to keep the drawer compact */}
-      {!isMobile && moreConnectors.length > 0 && (
-        <Box style={{ marginTop: `${SECTION_PADDING_BOTTOM}px` }}>
-          <Text
-            size="2"
-            style={{
-              color: 'var(--slate-11)',
-              letterSpacing: '0.04px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 'var(--space-2)',
-              padding: '4px 4px',
-              marginBottom: 'var(--space-2)',
-              fontWeight: 400,
-              fontStyle: 'normal',
-            }}
-          >
-            <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
-            {t('nav.moreConnectors')}
-          </Text>
-          <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
-            {moreConnectors.map((connector) => (
-              <MoreConnectorItem key={connector.id} connector={connector} href={buildConnectorHref(connector.connectorTypeParam)} onNavigate={onNavigateToConnector} />
-            ))}
-            <Button
-              asChild
-              variant="ghost"
-              size="2"
-              color="gray"
-            >
-              <Link
-                href={connectorsHref}
-                onClick={(e: React.MouseEvent) => {
-                  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-                  e.preventDefault();
-                  onNavigateToConnectors();
-                }}
-                style={{
-                  width: '100%',
-                  justifyContent: 'space-between',
-                  paddingLeft: 'var(--space-3)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  textDecoration: 'none',
-                  color: 'inherit',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <MaterialIcon name="hub" size={16} color="var(--accent-11)" />
-                  <Text size="2" style={{ color: 'var(--slate-11)', fontWeight: 400, fontStyle: 'normal' }}>
-                    {t('sidebar.seeMoreConnectors')}
-                  </Text>
-                </div>
-                <Flex
-                  align="center"
-                  justify="center"
-                  style={{ width: '24px', height: '24px', backgroundColor: 'var(--gray-a3)', borderRadius: 'var(--radius-2)' }}
-                >
-                  <MaterialIcon name="arrow_outward" size={16} color="var(--slate-9)" />
-                </Flex>
-              </Link>
-            </Button>
-          </Flex>
-        </Box>
-      )}
     </>
   );
 }
