@@ -1157,7 +1157,11 @@ class TestUnfinishedUserRead:
 
         assert self._access(site_db) == before
         note = checkpoints.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+        assert all(note.get(kind) for kind in ("groups", "roles")), "groups and roles are noted once"
+        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
+            "the every-project flag is turned into the ids of the projects it stood for, held ones included"
+        )
+        assert note.get("leads") is False and note.get("lead_project_keys") == ["ENG"]
 
     async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
         self, api, site_db, checkpoints, search
@@ -1266,6 +1270,35 @@ class TestUnfinishedUserRead:
         assert [p.external_id for p in site_db.record_group_permissions["10000"]] == [grant], (
             "the access list saved under the old key, whose roles have members, is kept"
         )
+
+    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_from_a_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
+            del checkpoints.sync_points[key]  # as left by a version without the notes
+        await connector.run_sync()  # the backfill sync, with the whole user list
+        eng_before = acl(site_db)
+
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/OPS/role", {})
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 2})
+        api.on("GET", f"{JIRA}/permissionscheme/2/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
+        ]})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl(site_db) == eng_before, "ENG keeps its saved access"
+        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
+        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS was never saved, so the grants that were read are saved"
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
