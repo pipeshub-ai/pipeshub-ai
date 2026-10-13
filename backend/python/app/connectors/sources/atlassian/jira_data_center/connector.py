@@ -740,6 +740,9 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
+                    # Noted as seen by a full sync in progress when it has stored grants, so
+                    # the unlink after that sync does not take away the access kept here.
+                    await self._has_stored_access("record_group", str(group.external_group_id))
             readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 

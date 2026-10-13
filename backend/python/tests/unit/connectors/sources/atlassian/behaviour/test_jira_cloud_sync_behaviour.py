@@ -1094,6 +1094,25 @@ class TestUnfinishedUserRead:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
 
+    async def test_full_sync_coverage_is_incomplete_only_when_stored_access_was_held(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is False, "stored access was held, and not noted as seen"
+
+        # A full sync's prep deletes the sync points, so this run holds nothing back and the unlink may run.
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
 
 class TestUnreadApplicationRoles:
     """ENG's scheme also grants the jira-software application role, which Jira maps to grp-sw."""
@@ -1271,6 +1290,20 @@ class TestUnreadApplicationRoles:
 
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, site_db)
+
+        assert acl(site_db) == before, "the stored grants survive the unlink"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
         self._stub_application_role(api)

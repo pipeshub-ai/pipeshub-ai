@@ -1426,6 +1426,20 @@ class TestUnreadApplicationRoles:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert connector.full_sync_coverage().complete is True
 
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the stored grants survive the unlink"
+
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)

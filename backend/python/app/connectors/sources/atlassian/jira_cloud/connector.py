@@ -672,6 +672,9 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
+                    # Noted as seen by a full sync in progress when it has stored grants, so
+                    # the unlink after that sync does not take away the access kept here.
+                    await self._has_stored_access("record_group", str(group.external_group_id))
             readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
@@ -1123,11 +1126,11 @@ class JiraConnector(BaseConnector):
         return kept
 
     def full_sync_coverage(self) -> FullSyncCoverage:
-        """A full sync whose user list was not read in full did not re-read the users and the
-        access it kept, so nothing is unlinked after it. A project held because the
-        application roles could not be read is noted as seen instead (``_has_stored_access``),
-        so the unlink still runs for what is really gone."""
-        return FullSyncCoverage(complete=not self._user_read_unfinished)
+        """A full sync that held back stored groups, roles or projects on an unfinished user
+        read did not write them, so nothing is unlinked after it. Those holds do not note what
+        they keep as seen; a project held because the application roles could not be read is
+        noted (``_has_stored_access``), so the unlink still runs for what is really gone."""
+        return FullSyncCoverage(complete=not self._keeps_stored_user_access())
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: it grants an application role
