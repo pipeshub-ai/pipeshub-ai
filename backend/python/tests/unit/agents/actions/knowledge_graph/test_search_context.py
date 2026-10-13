@@ -398,6 +398,122 @@ class TestImages:
         assert "not shown" in result
 
 
+def _png(color: tuple[int, int, int]) -> str:
+    import base64
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (640, 480), color).save(buffer, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode()
+
+
+def _figure_record(vrid: str, uris: list[str]) -> dict[str, Any]:
+    record = _record(vrid, blocks=1)
+    record["block_containers"]["blocks"] += [
+        {"index": i + 1, "type": BlockType.IMAGE.value, "data": {"uri": uri, "description": f"figure {i}"}}
+        for i, uri in enumerate(uris)
+    ]
+    for i, block in enumerate(record["block_containers"]["blocks"]):
+        block["index"] = i
+    return record
+
+
+class TestSearchLeavesImageRoomForAFetch:
+    """A search runs before the model can ask for anything. Given the whole
+    per-request image cap it spent all of it, and the record the model then
+    fetched for its figures came back with none."""
+
+    @staticmethod
+    def _multimodal_state(provider: str = "openai") -> dict[str, Any]:
+        from app.utils.image_policy import resolve_image_policy
+
+        budget = ImageBudget()
+        return _state(
+            is_multimodal_llm=True,
+            supports_multipart_tool_result=True,
+            image_budget=budget,
+            image_admission=ImageAdmission(resolve_image_policy(provider=provider, is_multimodal=True), budget=budget),
+        )
+
+    @staticmethod
+    async def _fetch(state: dict[str, Any], record: dict[str, Any]) -> list[Any]:
+        from types import SimpleNamespace
+
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+
+        live = state.setdefault("virtual_record_id_to_result", {})
+        live[record["virtual_record_id"]] = record
+        context = SimpleNamespace(
+            model_name="gpt-4", org_id="o1", user_id="u1", graph_provider=AsyncMock(),
+            full_records_fetched=set(), tool_state=state, is_multimodal_llm=True,
+            context_length=128_000, query="", retrieval_service=None,
+            needs_whole_document=False, include_retrieval_context=False,
+        )
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records=live, citation_ref_mapper=state.get("citation_ref_mapper"),
+            record_ids=[record["id"]], reason="read it",
+        )
+        return output.data if isinstance(output.data, list) else [output.data]
+
+    @staticmethod
+    def _images(parts: list[Any]) -> int:
+        return sum(isinstance(part, ImagePart) or getattr(part, "type", None) == "image" for part in parts)
+
+    @staticmethod
+    def _text(parts: list[Any]) -> str:
+        return "".join(getattr(part, "text", "") or (part if isinstance(part, str) else "") for part in parts)
+
+    @pytest.mark.asyncio
+    async def test_eight_image_hits_leave_half_the_cap_for_a_fetched_record(self) -> None:
+        uris = [_png((i * 30, 80, 160)) for i in range(8)]
+        records = {f"i{i}": _figure_record(f"i{i}", [uris[i]]) for i in range(8)}
+        units = [
+            {"virtual_record_id": f"i{i}", "block_index": 1, "block_type": BlockType.IMAGE.value,
+             "content": uris[i], "metadata": {}, "score": 0.9 - i / 100}
+            for i in range(8)
+        ]
+        state = self._multimodal_state()
+
+        searched = await _search(state, records, units)
+        fetched = await self._fetch(state, _figure_record("f1", [_png((10, 200 + i * 10, 40)) for i in range(3)]))
+
+        assert self._images(searched) == 4
+        assert self._images(fetched) == 3
+        assert "not shown" not in self._text(fetched)
+
+    @pytest.mark.asyncio
+    async def test_a_one_image_model_gives_its_slot_to_the_fetch(self) -> None:
+        uri = _png((90, 90, 90))
+        state = self._multimodal_state("ollama")
+        unit = {"virtual_record_id": "i0", "block_index": 1, "block_type": BlockType.IMAGE.value,
+                "content": uri, "metadata": {}, "score": 0.9}
+
+        searched = await _search(state, {"i0": _figure_record("i0", [uri])}, [unit])
+        fetched = await self._fetch(state, _figure_record("f1", [_png((1, 2, 3))]))
+
+        assert self._images(searched if isinstance(searched, list) else [searched]) == 0
+        assert self._images(fetched) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_fetch_attaches_its_own_copy_of_an_image_search_showed(self) -> None:
+        """Search results can be cleared from the context later; the fetched
+        record must not depend on that copy."""
+        uri = _png((200, 30, 30))
+        record = _figure_record("p1", [uri])
+        unit = {"virtual_record_id": "p1", "block_index": 1, "block_type": BlockType.IMAGE.value,
+                "content": uri, "metadata": {}, "score": 0.9}
+        state = self._multimodal_state()
+
+        searched = await _search(state, {"p1": record}, [unit])
+        fetched = await self._fetch(state, record)
+
+        assert self._images(searched) == 1
+        assert self._images(fetched) == 1
+        assert "shown above" not in self._text(fetched)
+
+
 class TestEmpty:
     @pytest.mark.asyncio
     async def test_hits_whose_records_did_not_load_are_an_empty_search(self) -> None:

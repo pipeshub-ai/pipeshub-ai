@@ -37,6 +37,15 @@ Two properties the callers depend on:
   while the cap counted it once. The transport guard then had to cut the
   overflow, evicting pictures the model had not seen to keep repeats of one
   it had (`agents/agent_loop/image_guard.py`).
+
+  The one exception is a fetched record's image whose only copy so far was a
+  search hit. Search results are not protected from tool-result clearing, so
+  that copy can vanish while the fetch still points at it; the fetch attaches
+  its own copy instead, and pays a slot for it.
+
+Retrieval also gets only part of the per-request cap
+(`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
+otherwise leave nothing for a record the model fetches for its figures.
 """
 
 from __future__ import annotations
@@ -113,6 +122,11 @@ class ImageOrigin(IntEnum):
     FETCHED_RECORD = 1   # the model explicitly fetched the record it lives in
     SEARCH_HIT = 2       # retrieval surfaced it
     HISTORY = 3          # replayed from an earlier turn
+
+    @property
+    def is_retrieved(self) -> bool:
+        """Arrived without the user or the model asking for this record."""
+        return self in (ImageOrigin.SEARCH_HIT, ImageOrigin.HISTORY)
 
 
 class DegradeReason(str, Enum):
@@ -240,6 +254,12 @@ class ImageAdmission:
         # Hashes already sent this request. Gives idempotent re-renders and a
         # stable image set across turns (see the module docstring).
         self._admitted_hashes: set[str] = set()
+        # Copies attached, which exceeds the distinct hashes once a fetch
+        # re-attaches a search hit's image.
+        self._slots_used = 0
+        self._retrieved_slots_used = 0
+        # Admitted hashes whose only copy is in a search result.
+        self._search_only_hashes: set[str] = set()
         # Original hash -> the bytes actually admitted for it, whenever
         # `_normalize` had to rewrite them. Kept because the renderers hold a
         # decision, not a candidate, and re-read the source block's own URI:
@@ -263,6 +283,9 @@ class ImageAdmission:
         budget.used = self.budget.used
         clone = ImageAdmission(self.policy, budget=budget)
         clone._admitted_hashes = set(self._admitted_hashes)
+        clone._slots_used = self._slots_used
+        clone._retrieved_slots_used = self._retrieved_slots_used
+        clone._search_only_hashes = set(self._search_only_hashes)
         clone._normalized_by_hash = self._normalized_by_hash
         clone._normalization_checked = self._normalization_checked
         return clone
@@ -276,8 +299,16 @@ class ImageAdmission:
         """Slots left for *new* images -- the tighter of the two ceilings."""
         if not self.policy.allows_images:
             return 0
-        per_request = self.policy.max_images_per_request - len(self._admitted_hashes)
+        per_request = self.policy.max_images_per_request - self._slots_used
         return max(0, min(per_request, self.budget.remaining))
+
+    def _remaining_for(self, candidates: list[ImageCandidate]) -> int:
+        """Slots left for `candidates`: the retrieval share bounds a batch
+        made only of retrieved images."""
+        if candidates and all(c.origin.is_retrieved for c in candidates):
+            share = self.policy.max_retrieved_images - self._retrieved_slots_used
+            return max(0, min(self.remaining, share))
+        return self.remaining
 
     def already_admitted(self, candidate: ImageCandidate) -> bool:
         return candidate.hash in self._admitted_hashes
@@ -302,6 +333,7 @@ class ImageAdmission:
         degraded: list[DegradedImage] = []
         fresh: list[ImageCandidate] = []
         seen_in_batch: set[str] = set()
+        reattaching: set[str] = set()
 
         for candidate in candidates:
             digest = candidate.hash
@@ -310,10 +342,15 @@ class ImageAdmission:
             # earlier one this request. Deduplication is right whether or not
             # slots are scarce; the pixels are already in the request, and the
             # caller renders this one's text either way.
-            if digest in self._admitted_hashes or digest in seen_in_batch:
+            reattach = (
+                digest in self._search_only_hashes and not candidate.origin.is_retrieved
+            )
+            if (digest in self._admitted_hashes and not reattach) or digest in seen_in_batch:
                 degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
                 continue
             seen_in_batch.add(digest)
+            if reattach:
+                reattaching.add(digest)
             fresh.append(candidate)
 
         # The prefilter exists to stop page furniture from crowding out real
@@ -323,7 +360,8 @@ class ImageAdmission:
         # picture at all.
         # With no slots left at all there is nothing to choose between, and a
         # capacity reason tells the reader more than "too small" would.
-        if self.remaining > 0 and len(fresh) > self.remaining:
+        room = self._remaining_for(fresh)
+        if room > 0 and len(fresh) > room:
             eligible: list[ImageCandidate] = []
             for candidate in fresh:
                 reason = _prefilter_reason(candidate)
@@ -335,15 +373,34 @@ class ImageAdmission:
             eligible = fresh
 
         for candidate in sorted(eligible, key=_rank_key):
-            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0:
+            retrieved = candidate.origin.is_retrieved
+            if self.policy.max_images_per_request - self._slots_used <= 0 or (
+                retrieved
+                and self._retrieved_slots_used >= self.policy.max_retrieved_images
+            ):
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_REQUEST_CAP))
                 continue
             if not self.budget.can_add():
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
                 continue
             _ = self.budget.try_consume(1)
+            self._slots_used += 1
+            if retrieved:
+                self._retrieved_slots_used += 1
+            if candidate.origin is ImageOrigin.SEARCH_HIT:
+                self._search_only_hashes.add(candidate.hash)
+            else:
+                self._search_only_hashes.discard(candidate.hash)
             self._admitted_hashes.add(candidate.hash)
             admitted.append(self._normalize(candidate))
+
+        # A re-attach that lost its slot still has the search hit's copy.
+        if reattaching:
+            degraded = [
+                DegradedImage(d.candidate, DegradeReason.DUPLICATE)
+                if d.candidate.hash in reattaching else d
+                for d in degraded
+            ]
 
         # Ranking decided membership; document order decides presentation, so
         # what the model reads still matches the record it came from.

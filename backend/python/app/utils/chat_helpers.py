@@ -3649,6 +3649,7 @@ def _render_blocks_with_images(
     collected_images: list[dict[str, Any]] | None = None,
     allow_inline_images: bool = True,
     image_admission: "ImageAdmission | None" = None,
+    image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
@@ -3713,7 +3714,7 @@ def _render_blocks_with_images(
                                 admission.admit([ImageCandidate(
                                     ref=item_ref,
                                     data_uri=img_uri,
-                                    origin=ImageOrigin.FETCHED_RECORD,
+                                    origin=image_origin,
                                     block_index=int(item.get("block_index") or 0),
                                     virtual_record_id=item.get("virtual_record_id"),
                                 )])
@@ -4244,7 +4245,7 @@ def record_to_message_content(
                                 })
                                 content.extend(_render_blocks_with_images(
                                     child_results, is_multimodal_llm, image_budget, collected_images,
-                                    image_admission=admission,
+                                    image_admission=admission, image_origin=image_origin,
                                 ))
                             _renderable_rendered += 1
                             render_budget.count_block()
@@ -4297,7 +4298,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": emitted})
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, collected_images,
-                        image_admission=admission,
+                        image_admission=admission, image_origin=image_origin,
                     ))
                 _renderable_rendered += 1
                 # A group is one renderable unit, the same as a table or a
@@ -4853,6 +4854,7 @@ def build_message_content_array(
                     content.extend(_render_blocks_with_images(
                         child_results, is_multimodal_llm, image_budget, _group_collected_images,
                         allow_inline_images=not from_tool, image_admission=admission,
+                        image_origin=ImageOrigin.SEARCH_HIT,
                     ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
@@ -4914,6 +4916,7 @@ def build_message_content_array(
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
                         allow_inline_images=not from_tool, image_admission=admission,
+                        image_origin=ImageOrigin.SEARCH_HIT,
                     ))
             else:
                 continue
