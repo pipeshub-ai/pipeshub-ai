@@ -5,9 +5,11 @@ version integration-tests/uv.lock pins), since every regex reading of YAML
 missed some spelling GitHub accepts. The rest is pattern-based.
 """
 
+import hashlib
 import os
 import re
 import unittest
+from unittest import mock
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +132,46 @@ def _reads_a_head_holding_object(text: str) -> bool:
     return any(_HEAD_HOLDING_OBJECT.search(_dotted(e)) for e in _expressions(text))
 
 
+# Any other field of the pull request or triggering run can name PR code: the title and
+# body are the author's text, and a title of refs/pull/<n>/merge is a ref checkout fetches.
+_UNSAFE_EVENT_FIELD = re.compile(
+    rf"github\.event\.(?:pull_request|workflow_run(?:\.pull_requests{_ANY_INDEX})?)\."
+    rf"(?!(?:number|base\.sha|conclusion)(?![\w.\[])|pull_requests{_ANY_INDEX})",
+    re.IGNORECASE,
+)
+
+
+def _reads_an_unsafe_event_field(text: str) -> bool:
+    return any(_UNSAFE_EVENT_FIELD.search(_dotted(e)) for e in _expressions(text))
+
+
+# A shell or github-script body can fetch PR code from the event file or a ref it builds,
+# which no pattern can rule out, so a privileged workflow runs only bodies a security
+# reviewer has read. Add a body's SHA-256 with the same sign-off as the allowlist below.
+REVIEWED_SCRIPTS = {
+    "45147d6fb514b6317be982e53ec609df75a8e9d9819266d5c7d0582278db3e44": "post-release-probe.yml: Check the probe is configured",
+    "702b7387f6463ee3bf250f858beb60c0b79bf2a69e9b40b09712afc18ac63fc9": "post-release-probe.yml: Probe",
+    "5ecb769ad73c21cabf679e16e9789e26703180160bf1f99c256550d611d66a27": "post-release-probe.yml: Open or update an alert issue",
+    "8ea3df04f08a086a5bd673a77689303e2ebeca9cec5674345406b568089dcdd8": "post-release-probe.yml: Close the alert once healthy again",
+}
+
+
+def _scripts(value: Any) -> list[str]:
+    """Every `run` and `script` string: step commands and actions/github-script bodies."""
+    if isinstance(value, dict):
+        found = [v for k, v in value.items() if k in ("run", "script") and isinstance(v, str)]
+        return found + [s for v in value.values() for s in _scripts(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _scripts(v)]
+    return []
+
+
+def _unreviewed_scripts(workflow: Any) -> list[str]:
+    """The SHA-256 of each script body missing from REVIEWED_SCRIPTS."""
+    hashes = [hashlib.sha256(s.encode("utf-8")).hexdigest() for s in _scripts(workflow)]
+    return [h for h in hashes if h not in REVIEWED_SCRIPTS]
+
+
 def _conditions(value: Any) -> list[str]:
     """Every `if:` value as an expression; a job or step condition needs no `${{ }}`."""
     if isinstance(value, dict):
@@ -153,12 +195,13 @@ def _references_pr_head(text: str) -> bool:
     except yaml.YAMLError:
         return True
     strings = _strings(workflow) + _conditions(workflow)
-    return any(
+    return bool(_unreviewed_scripts(workflow)) or any(
         _PR_HEAD_REF.search(_dotted(s))
         or _computes_an_index(s)
         or _builds_a_string(s)
         or _splices_an_expression(s)
         or _reads_a_head_holding_object(s)
+        or _reads_an_unsafe_event_field(s)
         for s in strings
     )
 
@@ -189,6 +232,13 @@ _EXCLUDES_PULL_REQUEST = re.compile(
 
 def _text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
+
+
+def _parsed(path: Path) -> Any:
+    try:
+        return yaml.load(_text(path), Loader=_StrictLoader)
+    except yaml.YAMLError:
+        return None
 
 
 def _split_top_level(expr: str, op: str) -> list[str]:
@@ -386,7 +436,13 @@ class TestWorkflowTrust(unittest.TestCase):
             for p in WORKFLOWS
             if _privileged(_text(p)) and _references_pr_head(_text(p))
         ]
-        self.assertEqual(offenders, [], "a privileged trigger checks out or references the PR head")
+        unreviewed = {p.name: _unreviewed_scripts(_parsed(p)) for p in WORKFLOWS if p.name in offenders}
+        self.assertEqual(
+            offenders,
+            [],
+            "a privileged trigger checks out or references the PR head; "
+            f"script hashes not in REVIEWED_SCRIPTS: {unreviewed}",
+        )
 
     def test_pull_request_jobs_with_secrets_skip_forks(self) -> None:
         # pull_request gives a fork no secrets anyway; this guards the self-hosted
@@ -675,13 +731,44 @@ class TestUngatedSecretJobs(unittest.TestCase):
                 self.assertFalse(
                     _references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{{{ {unflagged} }}}}\n")
                 )
-        self.assertFalse(
-            _references_pr_head(
-                "jobs:\n  a:\n    steps:\n      - run: echo \"$SUMMARY\" [ok]\n"
-                "        env:\n          SUMMARY: ${{ steps.probe.outputs.summary }}\n"
-            )
+        reviewed = 'echo "$SUMMARY" [ok]'
+        env_form = (
+            f"jobs:\n  a:\n    steps:\n      - run: {reviewed}\n"
+            "        env:\n          SUMMARY: ${{ steps.probe.outputs.summary }}\n"
         )
+        self.assertTrue(_references_pr_head(env_form))
+        with mock.patch.dict(REVIEWED_SCRIPTS, {hashlib.sha256(reviewed.encode()).hexdigest(): "test"}):
+            self.assertFalse(_references_pr_head(env_form))
         self.assertTrue(_references_pr_head("jobs:\n  a:\n    steps:\n      - run: echo ${{ steps.probe.outputs.summary }} [ok]\n"))
+
+    def test_pr_fields_that_can_name_a_ref_are_seen(self) -> None:
+        for field in (
+            "github.event.pull_request.title",
+            "github.event.pull_request['title']",
+            "github.event.pull_request.body",
+            "github.event.workflow_run.pull_requests[0].title",
+            "github.event.workflow_run.display_title",
+            "github.event.pull_request.base.ref",
+            "github.event.pull_request.number.x",
+            "github.event.workflow_run.pull_requests.title",
+        ):
+            with self.subTest(field=field):
+                self.assertTrue(
+                    _references_pr_head(f"jobs:\n  a:\n    steps:\n      - with:\n          ref: ${{{{ {field} }}}}\n")
+                )
+
+    def test_only_reviewed_scripts_run_in_a_privileged_workflow(self) -> None:
+        for step in (
+            "- env:\n          N: ${{ github.event.pull_request.number }}\n"
+            "        run: git fetch origin \"$(printf '%s/%s/%s/%s' refs pull \"$N\" merge)\" && git checkout FETCH_HEAD\n",
+            "- run: |\n          sha=$(jq -r .pull_request.head.sha \"$GITHUB_EVENT_PATH\")\n"
+            "          git fetch origin \"$sha\" && git checkout FETCH_HEAD\n",
+            "- uses: actions/github-script@v7\n        with:\n          script: return 1\n",
+        ):
+            with self.subTest(step=step):
+                self.assertTrue(_references_pr_head(f"jobs:\n  a:\n    steps:\n      {step}"))
+        probe = REPO / ".github" / "workflows" / "post-release-probe.yml"
+        self.assertEqual(_unreviewed_scripts(_parsed(probe)), [])
 
 class TestUnguardedSecretJobs(unittest.TestCase):
     def test_a_guarded_job_does_not_cover_an_unguarded_one(self) -> None:
