@@ -1183,7 +1183,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
@@ -1194,6 +1196,9 @@ class IGraphDBProvider(ABC):
             node_id (str): Full node ID (e.g., "records/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of logging it and
+                returning ``[]``, for callers that must tell "no edges" from
+                "could not look".
 
         Returns:
             List[Dict]: List of edge documents

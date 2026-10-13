@@ -4272,13 +4272,18 @@ class DataSourceEntitiesProcessor:
         """Add the members stored on any of *group_ids* to each of *targets*.
 
         Only adds: a member list this sync could not read in full is never a
-        reason to take anyone out, and a failed read here costs nothing more.
+        reason to take anyone out. A failed read raises, so the group is not
+        marked seen and the sync owes another full sync instead.
         """
         groups = CollectionNames.GROUPS.value
         system_keys = {"_key", "_id", "_rev", "_from", "_to", "from_id", "from_collection", "to_id", "to_collection"}
         members: dict[tuple[str, str], dict] = {}
         for group_id in group_ids:
-            for edge in await tx_store.get_edges_to_node(f"{groups}/{group_id}", CollectionNames.PERMISSION.value) or []:
+            # Raising: a read that failed taken for "no members" would leave the
+            # copy holding a grant with nobody on it, then mark it seen.
+            for edge in await tx_store.get_edges_to_node(
+                f"{groups}/{group_id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            ) or []:
                 if edge.get("_from"):
                     from_collection, _, from_id = edge["_from"].partition("/")
                 else:

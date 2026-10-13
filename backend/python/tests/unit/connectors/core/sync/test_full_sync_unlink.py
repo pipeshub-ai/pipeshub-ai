@@ -393,7 +393,7 @@ class TestWhatTheProcessorNotes:
                            {"from_id": "bob", "from_collection": "users", "type": "USER"}],
             "groups/new": [],
         }
-        tx.get_edges_to_node = AsyncMock(side_effect=lambda node, _collection: stored[node])
+        tx.get_edges_to_node = AsyncMock(side_effect=lambda node, _collection, **_kw: stored[node])
         processor = self._membership_processor(tx)
         run = processor.begin_full_sync_run("c1")
         await processor.create_user_group_membership("u1", "dept-1", "c1")
@@ -406,6 +406,27 @@ class TestWhatTheProcessorNotes:
                    for c in tx.batch_create_edges.await_args_list}
         assert written == {"old": {("users", "alice"), ("users", "bob")}, "new": {("users", "alice"), ("users", "bob")}}
         assert run.has(CollectionNames.GROUPS.value, "old") and run.has(CollectionNames.GROUPS.value, "new")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_of_the_stored_members_raises_and_marks_nothing_seen(self) -> None:
+        """Taken for "no members", the copy holding a grant would keep nobody and
+        be marked seen; raised, the runner skips the unlink and owes a full sync."""
+        tx = self._membership_store(True, False)
+        tx.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "old"}, {"_key": "new"}])
+        tx.get_edges_to_node = AsyncMock(side_effect=RuntimeError("graph read failed"))
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+        await processor.create_user_group_membership("u2", "dept-1", "c1")
+
+        with pytest.raises(RuntimeError):
+            await processor.finish_full_sync_memberships("c1", run)
+
+        assert tx.get_edges_to_node.await_args.kwargs == {"raise_on_error": True}
+        tx.batch_create_edges.assert_not_awaited()
+        tx.replace_edges_to.assert_not_awaited()
+        assert not run.has(CollectionNames.GROUPS.value, "old")
+        assert not run.has(CollectionNames.GROUPS.value, "new")
 
     @pytest.mark.asyncio
     async def test_outside_a_full_sync_memberships_are_not_tracked(self) -> None:
