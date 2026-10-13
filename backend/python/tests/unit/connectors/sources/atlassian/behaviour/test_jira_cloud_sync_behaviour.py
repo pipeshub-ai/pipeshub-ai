@@ -886,7 +886,7 @@ def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
 
 
 
-def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def fail_checkpoint_reads(store: FakeCheckpointStore, monkeypatch: pytest.MonkeyPatch) -> None:
     """Make reading the issues checkpoint fail, as a database error would."""
     real = store.get_sync_point
 
