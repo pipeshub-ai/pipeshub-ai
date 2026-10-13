@@ -253,3 +253,27 @@ class TestWhatTheProcessorNotes:
         assert a.has(RECORDS, "r1") and not b.has(RECORDS, "r1")
         processor.end_full_sync_run("a", a)
         assert processor._full_sync_run("a") is None and processor._full_sync_run("b") is b
+
+    @pytest.mark.asyncio
+    async def test_groups_upserted_without_members_count_as_seen(self) -> None:
+        """ServiceNow writes its organisational groups this way and adds members
+        afterwards; unseen, the unlink would drop those memberships."""
+        from app.models.entities import AppUserGroup
+
+        tx = MagicMock()
+        tx.batch_upsert_user_groups = AsyncMock()
+        tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="stored-id"))
+
+        @contextlib.asynccontextmanager
+        async def transaction() -> AsyncIterator[MagicMock]:
+            yield tx
+
+        processor = self._processor(transaction)
+        run = processor.begin_full_sync_run("c1")
+        group = AppUserGroup(
+            app_name="SERVICENOW", connector_id="c1", source_user_group_id="dept-1", name="Sales"
+        )
+
+        await processor.batch_upsert_user_groups([group])
+
+        assert run.has(CollectionNames.GROUPS.value, "stored-id")

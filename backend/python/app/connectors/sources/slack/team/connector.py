@@ -727,6 +727,9 @@ class SlackConnector(BaseConnector):
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
             if not resp or not resp.success:
+                # The workspace_member role is written from these pages: with one
+                # missing it is left out or short, and must not be unlinked as unseen.
+                self._full_sync_read_failed = True
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
@@ -885,9 +888,14 @@ class SlackConnector(BaseConnector):
             resp = await ds.usergroups_list(include_users=True)
 
             if not resp or not resp.success:
+                error = getattr(resp, "error", "no response")
+                # A missing scope is how this workspace is set up, not a failed read:
+                # its groups can never be read, so they are not kept as if they
+                # might be. Any other error leaves them unread this time.
+                if error != "missing_scope":
+                    self._full_sync_read_failed = True
                 self.logger.warning(
-                    f"⚠️  Could not fetch usergroups (scope missing?): "
-                    f"{getattr(resp, 'error', 'no response')}"
+                    f"⚠️  Could not fetch usergroups (scope missing?): {error}"
                 )
                 return
 
@@ -1071,6 +1079,7 @@ class SlackConnector(BaseConnector):
                         self.channel_id_to_name_cache[cid] = rg.name
                     page_items.append((rg, cd))
                 except Exception as exc:
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to build RecordGroup for {cd.get('name')}: {exc}"
                     )

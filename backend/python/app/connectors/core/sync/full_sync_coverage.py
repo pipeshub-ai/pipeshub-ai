@@ -37,6 +37,13 @@ class FullSyncCoverage:
     windowed_group_types: frozenset[str] = frozenset()
 
 
+#: Not a collection: the records whose permission edges this full sync has
+#: already rewritten from a list the connector fetched. Kept apart from the seen
+#: records, since a metadata or content update sees a record without saying
+#: anything about who may read it.
+PERMISSIONS_REWRITTEN = "permissionsRewritten"
+
+
 @dataclass
 class FullSyncSeen:
     """Ids of the nodes, per collection, that one full sync has written so far."""
@@ -44,12 +51,19 @@ class FullSyncSeen:
     by_collection: dict[str, set[str]] = field(
         default_factory=lambda: {collection: set() for collection in TRACKED_COLLECTIONS}
     )
+    permissions_rewritten: set[str] = field(default_factory=set)
 
     def add(self, collection: str, node_id: str | None) -> None:
-        if node_id and collection in self.by_collection:
+        if not node_id:
+            return
+        if collection == PERMISSIONS_REWRITTEN:
+            self.permissions_rewritten.add(node_id)
+        elif collection in self.by_collection:
             self.by_collection[collection].add(node_id)
 
     def has(self, collection: str, node_id: str) -> bool:
+        if collection == PERMISSIONS_REWRITTEN:
+            return node_id in self.permissions_rewritten
         return node_id in self.by_collection.get(collection, ())
 
     def count(self) -> int:

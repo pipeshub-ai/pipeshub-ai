@@ -31,6 +31,7 @@ from app.config.constants.arangodb import (
     Connectors,
     OriginTypes,
     ProgressStatus,
+    RecordRelations,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -38,7 +39,14 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
-from app.models.entities import MessageRecord, RecordGroup, RecordGroupType, RecordType
+from app.models.entities import (
+    MessageRecord,
+    RecordGroup,
+    RecordGroupType,
+    RecordType,
+    RelatedExternalRecord,
+    TicketRecord,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
@@ -166,6 +174,33 @@ class _Sync:
             source_updated_at=created,
         )
         return record, [self.grant(user) for user in readers]
+
+    def ticket(self, name: str, *, links_to: str) -> tuple[TicketRecord, list[Permission]]:
+        created = self.now - DAY_MS
+        record = TicketRecord(
+            org_id=self.org_id,
+            record_name=name,
+            record_type=RecordType.TICKET,
+            external_record_id=f"{name}-{self.connector_id}",
+            external_revision_id="1",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=self.connector_id,
+            external_record_group_id=f"C-{self.connector_id}",
+            record_group_type=RecordGroupType.SLACK_CHANNEL,
+            indexing_status=ProgressStatus.COMPLETED.value,
+            related_external_records=[RelatedExternalRecord(
+                external_record_id=f"{links_to}-{self.connector_id}",
+                record_type=RecordType.TICKET,
+                relation_type=RecordRelations.BLOCKS,
+            )],
+            created_at=created,
+            updated_at=created,
+            source_created_at=created,
+            source_updated_at=created,
+        )
+        return record, [self.grant(self.alice)]
 
     def grant(self, user_key: str) -> Permission:
         return Permission(email=f"{user_key}@example.com", entity_type=EntityType.USER, type=PermissionType.READ)
@@ -402,3 +437,49 @@ async def test_a_revoked_grant_goes_when_the_full_sync_rereads_the_record(sync: 
     assert await sync.can_read(sync.alice, "m1")
     assert await sync.can_read(sync.alice, "m2") and await sync.can_read(sync.bob, "m2")
     assert await sync.can_read(sync.bob, "m3")
+
+
+async def test_a_rename_in_a_full_sync_leaves_the_grants_alone(sync: _Sync) -> None:
+    """A metadata or content update carries no permissions (Drive, Dropbox,
+    OneDrive and SharePoint call it for a renamed or changed file). Being the
+    only write of a record in a full sync, it must not replace the grants."""
+    await _first_sync(sync, inherit=False)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice, s.bob))])
+        renamed, _ = s.message("m1", inherit=False)
+        renamed.record_name = "m1 (renamed)"
+        renamed.external_revision_id = "2"
+        await s.processor.on_record_metadata_update(renamed)
+        await s.processor.on_new_records(
+            [s.message(name, readers=(s.alice, s.bob), inherit=False) for name in ("m2", "m3")]
+        )
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert (await sync.links(RECORDS, await sync.record_id("m1")))["grants"] == 2
+    assert await sync.can_read(sync.alice, "m1") and await sync.can_read(sync.bob, "m1")
+
+
+async def test_a_link_to_a_placeholder_survives_the_unlink(sync: _Sync) -> None:
+    """A linked issue the sync never reads itself exists only as a placeholder."""
+    await sync.processor.on_new_record_groups([sync.channel(readers=(sync.alice,))])
+    await sync.processor.on_new_records([sync.ticket("t1", links_to="t-elsewhere")])
+
+    async def links_out() -> int:
+        edges = await sync.graph.get_edges_from_node(
+            f"{RECORDS}/{await sync.record_id('t1')}", CollectionNames.RECORD_RELATIONS.value
+        )
+        return len(edges or [])
+
+    assert await links_out() == 1
+
+    async def script(s: _Sync) -> None:
+        await s.processor.on_new_record_groups([s.channel(readers=(s.alice,))])
+        await s.processor.on_new_records([s.ticket("t1", links_to="t-elsewhere")])
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await links_out() == 1, "the link to the placeholder was unlinked"

@@ -9790,3 +9790,37 @@ class TestFullSyncCoverage:
             await c.sync_channel_messages("C1")
 
         assert c.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_users_list_makes_it_incomplete(self) -> None:
+        """No workspace_member role gets written; unlinked as unseen, it would take
+        the Role -> public channel grants with it."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.rate_limiter.acquire = AsyncMock()
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.users_list = AsyncMock(return_value=_slack_failure("ratelimited"))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+
+        assert c.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("error", "complete"), [("ratelimited", False), (None, False), ("missing_scope", True)])
+    async def test_a_failed_usergroups_list(self, error: str | None, complete: bool) -> None:
+        """A missing scope is the workspace's setup, read the same way every time;
+        any other failure leaves the groups unread this time."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.usergroups_list = AsyncMock(return_value=_slack_failure(error))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_user_groups()
+
+        assert c.full_sync_coverage().complete is complete

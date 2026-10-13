@@ -23,7 +23,7 @@ from app.connectors.core.base.data_store.data_store import (
     TransactionStore,
 )
 from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
-from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+from app.connectors.core.sync.full_sync_coverage import PERMISSIONS_REWRITTEN, FullSyncSeen
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.models.entities import (
     AppMetadata,
@@ -672,6 +672,12 @@ class DataSourceEntitiesProcessor:
                     record_name=related_ext_record.record_name,
                 )
                 await tx_store.batch_upsert_records([related_record])
+
+            if related_record is not None and related_record.is_placeholder:
+                # As for a placeholder parent: never re-read as a real record, so a
+                # full sync sees it only through the records linking to it. Left
+                # unseen, the unlink after the sync would drop this link.
+                self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, related_record.id)
 
             # Create relation using the specific relation_type
             if related_record and isinstance(related_record, Record):
@@ -1547,6 +1553,7 @@ class DataSourceEntitiesProcessor:
                     inherit=bool(record.inherit_permissions),
                 )
                 self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, record.id)
+                self._note_full_sync_seen(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
                 if record_group:
                     self._note_full_sync_seen(
                         record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group.id
@@ -1572,10 +1579,16 @@ class DataSourceEntitiesProcessor:
         publishes_event: bool = True,
         pre_old_path: object = _NO_OLD_PATH,
         narrowed_connectors: set[str] | None = None,
+        permissions_fetched: bool = False,
     ) -> tuple[Record | None, list[PendingMove]]:
         """Upsert a record and its edges.
 
         ``narrowed_connectors``: see :meth:`_link_record_to_group`.
+
+        ``permissions_fetched``: *permissions* is the list the connector read
+        from the source for this record, not an empty or partial list from a
+        metadata or content update. Only such a call may replace the record's
+        permission edges during a full sync.
 
         ``moved_virtual_record_ids`` collects the VRIDs whose record-group
         membership actually changed. It is an out-parameter rather than a return
@@ -1828,14 +1841,20 @@ class DataSourceEntitiesProcessor:
         # Create a edge between the base record and the specific record if it doesn't exist - isOfType - File, Mail, Message
 
         # A full sync no longer deletes permission edges before it starts, so the
-        # first time it re-reads a record its permissions are replaced, not added
-        # to: a principal that lost access at the source loses it here. Later
-        # visits in the same sync add, as before, since some connectors see one
-        # record more than once and list part of its permissions each time.
-        replace_permissions = existing_record is not None and self._first_full_sync_visit(
-            record.connector_id, CollectionNames.RECORDS.value, record.id
+        # first time it writes a record's fetched permissions they replace the
+        # stored ones, not add to them: a principal that lost access at the
+        # source loses it here. Later writes in the same sync add, as before,
+        # since some connectors see one record more than once and list part of
+        # its permissions each time. A metadata or content update carries no
+        # permissions (or a single fallback grant) and must leave them alone.
+        replace_permissions = (
+            permissions_fetched
+            and existing_record is not None
+            and self._first_full_sync_visit(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         )
         await self._handle_record_permissions(record, permissions, tx_store, replace=replace_permissions)
+        if permissions_fetched:
+            self._note_full_sync_seen(record.connector_id, PERMISSIONS_REWRITTEN, record.id)
         self._note_full_sync_seen(record.connector_id, CollectionNames.RECORDS.value, record.id)
         self._note_full_sync_seen(record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group_id)
         #Todo: Check if record is updated, permissions are updated or content is updated
@@ -1967,6 +1986,7 @@ class DataSourceEntitiesProcessor:
                         record, permissions, tx_store, moved_virtual_record_ids,
                         pre_old_path=pre_old_path,
                         narrowed_connectors=narrowed_connectors,
+                        permissions_fetched=True,
                     )
                     all_pending_moves.extend(moves)
 
@@ -2406,6 +2426,12 @@ class DataSourceEntitiesProcessor:
                         # fresh parent edge (the stale one was deleted above).
                         await self._handle_parent_record(new_record, tx_store, existing_record=None)
                         await self._handle_record_permissions(new_record, permissions, tx_store)
+                        self._note_full_sync_seen(
+                            new_record.connector_id, CollectionNames.RECORDS.value, new_record.id
+                        )
+                        self._note_full_sync_seen(
+                            new_record.connector_id, CollectionNames.RECORD_GROUPS.value, record_group_id
+                        )
 
             # Compute and attempt the storage move for every record that was
             # actually moved (not new) BEFORE publishing any Kafka event below
@@ -3763,8 +3789,20 @@ class DataSourceEntitiesProcessor:
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         for ug in user_groups:
             ug.org_id = self.org_id
-        async with self.data_store_provider.transaction() as tx_store:
+        async with self._sync_transaction() as tx_store:
             await tx_store.batch_upsert_user_groups(user_groups)
+            # Groups written this way (ServiceNow's organisational entities) get
+            # their members later through create_user_group_membership; a full
+            # sync must count them as seen, or the unlink after it drops those
+            # memberships. Read back for the stored id, which the upsert keeps.
+            for ug in user_groups:
+                if self._full_sync_run(ug.connector_id) is None:
+                    continue
+                stored = await tx_store.get_user_group_by_external_id(
+                    connector_id=ug.connector_id, external_id=ug.source_user_group_id
+                )
+                if stored is not None:
+                    self._note_full_sync_seen(ug.connector_id, CollectionNames.GROUPS.value, stored.id)
 
     async def delete_edges_between_collections(
         self,
@@ -4097,6 +4135,7 @@ class DataSourceEntitiesProcessor:
                     [permission_edge],
                     collection=CollectionNames.PERMISSION.value
                 )
+                self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, user_group.id)
 
                 self.logger.debug(
                     f"Successfully added user {user_email} to group {user_group.name} "
