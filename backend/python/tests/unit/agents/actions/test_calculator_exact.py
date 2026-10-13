@@ -208,6 +208,21 @@ class TestExactArithmetic:
             ("log(10, 1 + 1e-18)", 2.30258509299405e18),
             ("log(10**400, 1 + 1e-20)", 9.21034037197618e22),
             ("log10(1.5)", 0.176091259055681),
+            # A two-argument log divides before converting, so tiny gaps cancel.
+            ("log(1 + 1e-300, 1 + 1e-400)", 1e100),
+            ("log(1 + 1e-400, 1 + 2e-400)", 0.5),
+            ("log(2, 1 + 1e-308)", 6.93147180559945e307),
+            # Near ±1 a double rounds the argument onto the endpoint.
+            ("acos(1 - 1e-20)", 1.4142135623731e-10),
+            ("acos(1 - 5e-17)", 1e-8),
+            ("acos(1 - 1e-16)", 1.4142135623731e-8),
+            ("acos(1 - 1e-400)", 1.4142135623731e-200),
+            ("asin(1 - 1e-20)", 1.57079632665348),
+            ("acos(-1 + 1e-20)", 3.14159265344837),
+            ("asin(-1 + 1e-20)", -1.57079632665348),
+            ("acos(0.75)", 0.722734247813416),
+            ("asin(0.75)", 0.848062078981481),
+            ("acos(-1)", 3.14159265358979),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -279,6 +294,10 @@ class TestRefusedExpressions:
             ("0.5 ** 2000.5", "too small"),
             ("radians(1e-307)", "too small"),
             ("log(1 + 1e-400)", "too small"),
+            ("log(10, 1 + 1e-400)", "too large"),
+            ("log(1, 1)", "division by zero"),
+            ("acos(1 + 1e-20)", "domain"),
+            ("asin(-1 - 1e-20)", "domain"),
             ("١٢ + 1", "Not a valid arithmetic expression"),
             ("2 +", "Not a valid arithmetic expression"),
             ("15% * 200", "Not a valid arithmetic expression"),

@@ -59,6 +59,8 @@ _HMS = "hms"
 # int()'s digit limit and escape as a plain ValueError.
 _CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?))?")
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
+# Digits carried beyond an argument's own when taking its log.
+_LOG_GUARD_DIGITS = 30
 _TOO_SMALL = "The result is too small for floating-point functions (below about 1e-308)."
 
 # name: (fewest arguments, most arguments or None for any number)
@@ -451,6 +453,8 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
             return _scaled_sqrt(values[0]), 0
     if name in ("log", "log10"):
         return _logarithm(name, values), 0
+    if name in ("asin", "acos"):
+        return _arc(name, values[0]), 0
     return _float_function(name, _FLOAT_FUNCTIONS[name], values), 0
 
 
@@ -464,40 +468,55 @@ def _scaled_sqrt(value: Fraction) -> float:
 def _logarithm(name: str, values: list[Value]) -> float:
     if any(value <= 0 for value in values):
         raise CalculationError(f"{name}(): math domain error.")
-    if name == "log10":
-        return _bounded(_log10(values[0]))
-    logs = [_natural_log(value) for value in values]
+    logs = [_decimal_log(value, base10=name == "log10") for value in values]
     if len(logs) == 1:
-        return _bounded(logs[0])
-    if logs[1] == 0:
+        result = logs[0]
+    elif logs[1] == 0:
         raise CalculationError(f"{name}(): division by zero.")
-    return _bounded(logs[0] / logs[1])
+    else:
+        # The quotient is formed before converting: log(1 + 1e-300, 1 + 1e-400)
+        # is 1e100 although neither log fits in a double.
+        with localcontext(Context(prec=_LOG_GUARD_DIGITS)):
+            result = logs[0] / logs[1]
+    return _bounded(float(result), nonzero=result != 0)
 
 
-def _natural_log(value: Value) -> float:
-    """ln of a positive value. Near 1 a double can round an exact value to 1
-    (1 + 1e-20), so its log comes from the exact gap; outside a double's
-    range the math module takes logs of the integers themselves."""
-    if isinstance(value, float):
-        return math.log(value)
-    gap = value - 1
-    if abs(gap) <= Fraction(1, 2):
-        return math.log1p(_as_float(gap)) if gap else 0.0
+def _decimal_log(value: Value, *, base10: bool) -> Decimal:
+    """The log, correctly rounded in decimal at the precision the argument
+    carries: a value a double rounds to 1 (1 + 1e-20) keeps its tiny log,
+    and one outside a double's range keeps its large one. log10 of a power
+    of ten is exact."""
+    exact = Fraction(value)
+    digits = max(len(str(exact.numerator)), len(str(exact.denominator)))
+    with localcontext(Context(prec=digits + _LOG_GUARD_DIGITS)):
+        argument = Decimal(exact.numerator) / Decimal(exact.denominator)
+        return argument.log10() if base10 else argument.ln()
+
+
+def _arc(name: str, value: Value) -> float:
+    """asin or acos. An exact argument is checked against [-1, 1] before any
+    rounding, and near ±1 the angle comes from its exact distance to the
+    endpoint, which a double would round away: acos(1 - 1e-20) is 1.4e-10."""
+    if isinstance(value, Fraction):
+        if abs(value) > 1:
+            raise CalculationError(f"{name}(): math domain error.")
+        if abs(value) > Fraction(1, 2):
+            gap = 1 - abs(value)
+            # acos(|x|) = atan2(sqrt(1 - x²), |x|), with 1 - x² = gap * (2 - gap).
+            angle = math.atan2(_sqrt_of_exact(gap * (2 - gap)), _as_float(abs(value)))
+            if name == "acos":
+                return _bounded(angle if value > 0 else math.pi - angle)
+            return _bounded(math.copysign(math.pi / 2 - angle, value))
+    return _float_function(name, _FLOAT_FUNCTIONS[name], [value])
+
+
+def _sqrt_of_exact(value: Fraction) -> float:
+    if value == 0:
+        return 0.0
     try:
-        return math.log(_as_float(value))
+        return math.sqrt(_as_float(value))
     except _OutsideFloatRange:
-        return math.log(value.numerator) - math.log(value.denominator)
-
-
-def _log10(value: Value) -> float:
-    if isinstance(value, Fraction) and abs(value - 1) <= Fraction(1, 2):
-        return _natural_log(value) / math.log(10)
-    try:
-        # math.log10 keeps exact powers of ten exact: log10(1000) is 3.
-        return math.log10(_as_float(value))
-    except _OutsideFloatRange:
-        exact = Fraction(value)
-        return math.log10(exact.numerator) - math.log10(exact.denominator)
+        return _scaled_sqrt(value)
 
 
 def _unit_preserving(name: str, values: list[Value]) -> Value:
