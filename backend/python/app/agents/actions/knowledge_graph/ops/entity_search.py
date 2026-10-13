@@ -145,7 +145,8 @@ async def execute_search_by_entities(
     if not scope.virtual_record_ids:
         return True, preamble + _nothing_to_search(linking, match_all=match_all)
 
-    names = [result.mention.name for result in linking.results if result.accepted]
+    # Every name asked, linked or not: an unlinked one may still be in the text.
+    names = [result.mention.name for result in linking.results]
     shown_before = set(state.get("virtual_record_id_to_result") or {})
     result = await execute_search(
         state, (query or "").strip() or " ".join(names),
@@ -223,8 +224,15 @@ def render_preamble(
     counts = {name.mention: name.count_label for name in scope.per_name}
     lines = ["Entities:"]
     lines.extend(_line(result, linking.names, counts.get(result.mention.name, "0")) for result in linking.results)
-    if match_all:
+    unlinked = [result.mention.name for result in linking.results if not result.accepted]
+    if match_all and len(linking.results) - len(unlinked) > 1:
         lines.append(_together_line(scope, shortener))
+    if match_all and unlinked and scope.virtual_record_ids:
+        lines.append(
+            f"Note: {', '.join(repr(_trunc(name)) for name in unlinked)} matched no readable entity, so the "
+            "records searched mention the other names only; whether they also mention "
+            f"{'it' if len(unlinked) == 1 else 'them'} was not checked."
+        )
     if linking.timed_out:
         lines.append("Note: access checks were cut short for this call, so results may be incomplete; retry.")
     if scope.note:

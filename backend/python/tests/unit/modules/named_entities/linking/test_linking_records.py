@@ -165,3 +165,14 @@ async def test_a_complete_listing_adds_no_note(listings: dict[str, Any]) -> None
     graph = _Graph({"a": {"r1": [0]}})
     scope = await readable_records(graph, CONTEXT, [_link("A", "a")], match_all=False)
     assert scope.note == "" and scope.record_names == {"r1": ""}
+
+
+@pytest.mark.asyncio
+async def test_the_scope_cap_keeps_every_name_and_says_what_it_cut(
+    listings: dict[str, Any], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(records_module, "MAX_SCOPE_RECORDS", 4)
+    graph = _Graph({"a": {f"a{i}": [0] for i in range(6)}, "b": {"b1": [0], "b2": [0]}})
+    scope = await readable_records(graph, CONTEXT, [_link("A", "a"), _link("B", "b")], match_all=False)
+    assert len(scope.record_ids) == 4 and {"b1", "b2"} <= set(scope.record_ids)
+    assert "Only 4 of the 8 readable records were searched." in scope.note

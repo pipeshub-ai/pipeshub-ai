@@ -210,10 +210,20 @@ async def _search_many(
     named_entity_kinds: list[str] | None,
 ) -> tuple[bool, str]:
     asked = queries[:MAX_QUERIES]
-    answers = await asyncio.gather(*(
+    raw = await asyncio.gather(*(
         execute_search_entities(state, q, entity_types, top_k, named_entity_kinds, entity_search_offered=True)
         for q in asked
-    ))
+    ), return_exceptions=True)
+    answers: list[tuple[bool, str]] = []
+    for q, answer in zip(asked, raw):
+        if isinstance(answer, Exception):
+            # One query failing must not lose the others' results.
+            logger.warning("search_entities: query %r failed", q, exc_info=answer)
+            answers.append((False, _error("Entity search failed — try again.")))
+        elif isinstance(answer, BaseException):
+            raise answer
+        else:
+            answers.append(answer)
     grouped: list[dict[str, Any]] = []
     for q, (ok, text) in zip(asked, answers):
         payload = json.loads(text)

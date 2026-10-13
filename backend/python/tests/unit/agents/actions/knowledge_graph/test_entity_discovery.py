@@ -330,6 +330,20 @@ class TestWhereEntitySearchIsOffered:
         assert ok and "results" in payload["queries"][0] and "error" in payload["queries"][1]
 
     @pytest.mark.asyncio
+    async def test_an_unexpected_failure_in_one_query_keeps_the_others(self, patched) -> None:
+        _, search = patched
+
+        async def broken(store, graph, context, query, **kwargs) -> list[EntityHit]:
+            if query == "B":
+                raise RuntimeError("driver blew up")
+            return [_hit("e-a", "named_entity")]
+
+        search.side_effect = broken
+        ok, payload = await self._offered(query=None, queries=["A", "B"])
+        assert ok and payload["queries"][0]["results"][0]["entityId"] == "e-a"
+        assert payload["queries"][1]["error"] == "Entity search failed — try again."
+
+    @pytest.mark.asyncio
     async def test_a_hit_carries_its_kind(self, patched) -> None:
         _, search = patched
         hit = _hit("e1", "named_entity")

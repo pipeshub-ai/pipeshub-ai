@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from itertools import zip_longest
 from typing import TYPE_CHECKING, Any
 
 from app.modules.retrieval.entity_permissions import list_accessible_entity_records
@@ -110,7 +111,10 @@ async def readable_records(
     if not per_name:
         return scope
     if not match_all or len(per_name) == 1:
-        selected = list(dict.fromkeys(key for name in per_name for key in name.record_ids))
+        # Round-robin over the names, so the scope cap below never drops a whole name.
+        selected = list(dict.fromkeys(
+            key for group in zip_longest(*(name.record_ids for name in per_name)) for key in group if key
+        ))
         partial = [name.mention for name in per_name if not name.complete]
         if partial:
             # Listing is newest first, so the older records of a popular name are
@@ -138,7 +142,9 @@ async def readable_records(
                     "each other; searching every readable record that mentions them all."
                 )
                 selected = sorted(selected, key=lambda key: scope.together.get(key, (SAME_RECORD, -1))[0])
-    selected = selected[:MAX_SCOPE_RECORDS]
+    if len(selected) > MAX_SCOPE_RECORDS:
+        scope.note += f"Only {MAX_SCOPE_RECORDS} of the {len(selected)} readable records were searched. "
+        selected = selected[:MAX_SCOPE_RECORDS]
     scope.record_ids = selected
     scope.record_names = {key: str(rows_by_key[key].get("recordName") or "") for key in selected if key in rows_by_key}
     scope.virtual_record_ids = list(dict.fromkeys(

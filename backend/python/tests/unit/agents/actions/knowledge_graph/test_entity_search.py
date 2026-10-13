@@ -175,6 +175,34 @@ async def test_linked_names_are_searched_inside_their_records(wired: dict[str, A
 
 
 @pytest.mark.asyncio
+async def test_all_with_a_name_that_did_not_link_says_it_was_not_checked(wired: dict[str, Any]) -> None:
+    wired["linking"] = _linking(
+        _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]),
+        _result("Initech", LinkStatus.NOT_FOUND),
+    )
+    wired["scope"] = RecordScope(per_name=[NameRecords("Acme", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
+    text = await entity_search.execute_search_by_entities(_state(), mentions=["Acme", "Initech"], match="all")
+    assert "Together:" not in text
+    assert "'Initech' matched no readable entity" in text and "was not checked" in text
+    assert wired["search"][0][0] == "Acme Initech", "the unlinked name may still be in the text"
+
+
+@pytest.mark.asyncio
+async def test_all_with_two_linked_names_and_one_unlinked_keeps_the_together_line(wired: dict[str, Any]) -> None:
+    wired["linking"] = _linking(
+        _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e1", "Acme")]),
+        _result("Globex", LinkStatus.MATCHED, accepted=[_candidate("e2", "Globex")]),
+        _result("Initech", LinkStatus.NOT_FOUND),
+    )
+    wired["scope"] = RecordScope(
+        per_name=[NameRecords("Acme", ["r1"], True), NameRecords("Globex", ["r1"], True)],
+        record_ids=["r1"], virtual_record_ids=["v1"], together={"r1": (SAME_RECORD, -1)},
+    )
+    text = await entity_search.execute_search_by_entities(_state(), mentions=["Acme", "Globex", "Initech"], match="all")
+    assert "Together: 1 readable record(s) searched." in text and "'Initech' matched no readable entity" in text
+
+
+@pytest.mark.asyncio
 async def test_a_query_is_passed_as_given(wired: dict[str, Any]) -> None:
     wired["linking"] = _linking(_result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]))
     wired["scope"] = RecordScope(per_name=[NameRecords("Acme", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
@@ -281,7 +309,11 @@ async def test_the_whole_lookup_has_a_deadline(wired: dict[str, Any], monkeypatc
 
 def test_together_line_without_nearby_records_counts_only() -> None:
     scope = RecordScope(per_name=[], record_ids=["r1"], virtual_record_ids=["v1"], together={"r1": (SAME_RECORD, -1)})
-    text = entity_search.render_preamble(_linking(), scope, match_all=True, notes=[])
+    linking = _linking(
+        _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e1", "Acme")]),
+        _result("Globex", LinkStatus.MATCHED, accepted=[_candidate("e2", "Globex")]),
+    )
+    text = entity_search.render_preamble(linking, scope, match_all=True, notes=[])
     assert "Together: 1 readable record(s) searched." in text
 
 
