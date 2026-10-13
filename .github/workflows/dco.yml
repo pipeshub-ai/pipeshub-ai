@@ -1,0 +1,60 @@
+name: dco
+
+# Developer Certificate of Origin (https://developercertificate.org): every commit in a
+# PR needs a "Signed-off-by: Name <email>" trailer matching its author email.
+# Add it with `git commit -s`; fix a branch with `git rebase --signoff origin/main`.
+
+# pull_request_target runs this file as it is on the base branch, so a pull request
+# cannot edit its own check. Its commits are only read with git log and the API:
+# never check them out or run anything from them here.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  signoff:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check Signed-off-by on every commit
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          OPENER: ${{ github.event.pull_request.user.login }}
+          OPENER_TYPE: ${{ github.event.pull_request.user.type }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Commits already on pipeshub-ai main were checked there (or predate this check).
+          git fetch -q --no-tags https://github.com/pipeshub-ai/pipeshub-ai.git +refs/heads/main:refs/upstream/main
+          git fetch -q --no-tags origin "$HEAD"
+          # An assignment, not `for … in $(…)`, so a rev-list failure stops the step instead of checking nothing.
+          commits=$(git rev-list --no-merges "$HEAD" --not "$BASE" refs/upstream/main)
+          missing=0
+          for sha in $commits; do
+            email=$(git log -1 --format=%ae "$sha")
+            signers=$(git log -1 --format='%(trailers:key=Signed-off-by,valueonly,separator=%x0A)' "$sha" \
+              | sed -n 's/^.*<\([^<>]*\)>[[:space:]]*$/\1/p')
+            if [ -n "$email" ] && printf '%s\n' "$signers" | grep -qixF -- "$email"; then
+              continue
+            fi
+            # Bots such as Dependabot sign off with another address. Accept only commits GitHub
+            # signed itself for the bot account that opened this PR; commit emails alone are forgeable.
+            if [ "$OPENER_TYPE" = Bot ] && [ "$(gh api "repos/$REPO/commits/$sha" \
+                 --jq '"\(.author.login) \(.committer.login) \(.commit.verification.verified)"')" = "$OPENER web-flow true" ]; then
+              continue
+            fi
+            echo "::error::$(git log -1 --format='%h %s' "$sha") has no Signed-off-by trailer for <$email>"
+            missing=1
+          done
+          if [ "$missing" = 1 ]; then
+            echo "Sign off your own commits with: git rebase --signoff $BASE && git push --force-with-lease"
+            echo "A commit by someone else needs its author to sign it off (see CONTRIBUTING.md)."
+            exit 1
+          fi
