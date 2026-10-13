@@ -395,6 +395,17 @@ class TestALinkedConnectorSavedAgainBehavesAsOnTheAuthOnlySave:
         assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == "app-1"
         assert "clientSecret" not in store.values[CONFIG_PATH]["auth"]
 
+    async def test_a_failed_connector_write_puts_the_named_app_back(self) -> None:
+        store = _linked_store()
+        store.failing_paths = (CONFIG_PATH,)
+        before = copy.deepcopy(store.values)
+
+        with pytest.raises(HTTPException) as caught:
+            await _save(store, {"auth": {"oauthConfigId": "app-1", "clientSecret": "new-secret"}})
+
+        assert caught.value.status_code == 500
+        assert store.values == before
+
     async def test_a_get_then_put_round_trip_changes_nothing(self) -> None:
         store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
         await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})

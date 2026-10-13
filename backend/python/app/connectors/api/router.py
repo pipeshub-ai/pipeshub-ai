@@ -3925,11 +3925,12 @@ async def _full_save_oauth_app(
     container: object,
     base_url: str,
     logger: logging.Logger,
-) -> tuple[str, bool] | None:
+) -> tuple[str, bool, dict[str, Any] | None] | None:
     """The OAuth app an admin's full settings save links, written as ``PUT /config/auth`` writes it.
 
-    Returns the app's id and whether this save created it, or None when the save leaves
-    OAuth apps alone. Credentials only change an app when they differ from both the
+    Returns the app's id, whether this save created it, and the app as it was before this
+    save updated it (None when it was created), or None when the save leaves OAuth apps
+    alone. Credentials only change an app when they differ from both the
     connector's stored values and the app's: a GET-then-PUT round trip (the secret sent
     back as the mask, the client ID unchanged) changes nothing. Changed credentials update
     the app only when the request names it in ``auth.oauthConfigId``; otherwise a new app
@@ -3953,10 +3954,12 @@ async def _full_save_oauth_app(
     named_app_id = incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
     current_app_id = named_app_id or stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
+    current_app: dict[str, Any] | None = None
     if current_app_id:
-        current_app = await resolve_oauth_config(
+        # A copy: the write below may change the stored entry in place.
+        current_app = copy.deepcopy(await resolve_oauth_config(
             container, _get_oauth_config_path(connector_type), org_id, current_app_id, config_service
-        )
+        ))
         if named_app_id and not current_app:
             # The link step answers a named app that does not resolve with a 404.
             return None
@@ -4020,7 +4023,8 @@ async def _full_save_oauth_app(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail="Failed to create/update OAuth configuration"
         )
-    return app_id, app_id != named_app_id
+    created = app_id != named_app_id
+    return app_id, created, None if created else current_app
 
 
 async def _remove_oauth_app(
@@ -4037,6 +4041,39 @@ async def _remove_oauth_app(
             await config_service.set_config(oauth_config_path, [app for app in apps if app.get("_id") != app_id])
     except Exception as e:
         logger.error(f"Could not remove OAuth app {app_id} after the connector save failed: {e}")
+
+
+async def _undo_oauth_app_write(
+    created_app_id: str | None,
+    app_before_update: dict[str, Any] | None,
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Undo this request's OAuth app write when the connector's settings were not stored."""
+    if created_app_id:
+        await _remove_oauth_app(created_app_id, connector_type, config_service, logger)
+    elif app_before_update:
+        await _restore_oauth_app(app_before_update, connector_type, config_service, logger)
+
+
+async def _restore_oauth_app(
+    previous_app: dict[str, Any],
+    connector_type: str,
+    config_service: ConfigurationService,
+    logger: logging.Logger,
+) -> None:
+    """Put back an OAuth app this request updated, when the connector it was for could not be saved."""
+    app_id = previous_app.get("_id")
+    try:
+        oauth_config_path = _get_oauth_config_path(connector_type)
+        apps = await config_service.get_config(oauth_config_path, default=[], use_cache=False)
+        if isinstance(apps, list) and any(app.get("_id") == app_id for app in apps):
+            await config_service.set_config(
+                oauth_config_path, [previous_app if app.get("_id") == app_id else app for app in apps]
+            )
+    except Exception as e:
+        logger.error(f"Could not restore OAuth app {app_id} after the connector save failed: {e}")
 
 
 async def _prepare_connector_config(
@@ -5444,8 +5481,10 @@ async def update_connector_instance_config(
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
     # An OAuth app this save creates is taken back if the connector's settings are not
-    # stored, so it is neither left unlinked nor met by a retry as a name conflict.
+    # stored, so it is neither left unlinked nor met by a retry as a name conflict; an app
+    # it updates is put back as it was.
     created_oauth_app_id: str | None = None
+    oauth_app_before_update: dict[str, Any] | None = None
     config_saved = False
 
     try:
@@ -5595,7 +5634,7 @@ async def update_connector_instance_config(
                         logger=logger,
                     )
                     if oauth_app:
-                        oauth_app_id, created = oauth_app
+                        oauth_app_id, created, oauth_app_before_update = oauth_app
                         new_config[OAuthConfigKeys.AUTH][OAuthConfigKeys.OAUTH_CONFIG_ID] = oauth_app_id
                         if created:
                             created_oauth_app_id = oauth_app_id
@@ -5775,13 +5814,17 @@ async def update_connector_instance_config(
         }
 
     except HTTPException:
-        if created_oauth_app_id and not config_saved:
-            await _remove_oauth_app(created_oauth_app_id, connector_type, config_service, logger)
+        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
+            await _undo_oauth_app_write(
+                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
+            )
         raise
     except Exception as e:
         logger.error(f"Error updating config for instance {connector_id}: {e}")
-        if created_oauth_app_id and not config_saved:
-            await _remove_oauth_app(created_oauth_app_id, connector_type, config_service, logger)
+        if not config_saved and (created_oauth_app_id or oauth_app_before_update):
+            await _undo_oauth_app_write(
+                created_oauth_app_id, oauth_app_before_update, connector_type, config_service, logger
+            )
         raise HTTPException(
             status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
             detail=action_failed("save this connector's settings")
