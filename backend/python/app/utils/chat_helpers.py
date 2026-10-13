@@ -634,6 +634,14 @@ class CitationRefMapper:
         self._ref_to_url[ref] = full_url
         return ref
 
+    def copy(self) -> "CitationRefMapper":
+        """An independent mapper that continues numbering from this one."""
+        clone = CitationRefMapper()
+        clone._counter = self._counter
+        clone._url_to_ref = dict(self._url_to_ref)
+        clone._ref_to_url = dict(self._ref_to_url)
+        return clone
+
     @property
     def ref_to_url(self) -> dict[str, str]:
         """Snapshot of ref→URL mapping (safe to pass downstream without exposing mutability)."""
@@ -680,6 +688,14 @@ class RecordIdShortener:
         self._full_to_short[full_id] = short
         self._short_to_full[short] = full_id
         return short
+
+    def copy(self) -> "RecordIdShortener":
+        """An independent shortener that continues numbering from this one."""
+        clone = RecordIdShortener()
+        clone._counter = self._counter
+        clone._full_to_short = dict(self._full_to_short)
+        clone._short_to_full = dict(self._short_to_full)
+        return clone
 
     def shorten_if_known(self, full_id: str) -> str:
         """Return the short label if already mapped, otherwise the full ID unchanged."""

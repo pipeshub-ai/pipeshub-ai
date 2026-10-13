@@ -251,6 +251,22 @@ class ImageAdmission:
         # needed no rewrite. Without it a no-op re-decodes on every render.
         self._normalization_checked: set[str] = set()
 
+    def trial(self) -> "ImageAdmission":
+        """An arbiter that decides exactly as this one would from here on,
+        without spending this one's slots.
+
+        For sizing a render before committing to it. The downscale caches are
+        shared, not copied: they depend only on the bytes and the policy, so
+        work a trial does is not repeated by the real render.
+        """
+        budget = ImageBudget(self.budget.max_images)
+        budget.used = self.budget.used
+        clone = ImageAdmission(self.policy, budget=budget)
+        clone._admitted_hashes = set(self._admitted_hashes)
+        clone._normalized_by_hash = self._normalized_by_hash
+        clone._normalization_checked = self._normalization_checked
+        return clone
+
     @property
     def allows_images(self) -> bool:
         return self.policy.allows_images
