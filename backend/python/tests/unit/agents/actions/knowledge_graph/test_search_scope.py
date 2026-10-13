@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 from contextlib import ExitStack
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,11 +20,14 @@ from tests.unit.agents.actions.knowledge_graph.test_search import (
     _state,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
 _SEARCH = "app.agents.actions.knowledge_graph.ops.search"
 
 
 @pytest.fixture(autouse=True)
-def _no_time_range():
+def _no_time_range() -> Iterator[None]:
     with patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None)):
         yield
 

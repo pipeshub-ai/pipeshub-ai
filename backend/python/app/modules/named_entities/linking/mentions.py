@@ -32,6 +32,8 @@ NAME_KINDS: tuple[EntityKind, ...] = (
     EntityKind.EMAIL,
     EntityKind.URL,
 )
+# What an agent may say a name is; an address is still tried when no kind is given.
+MENTION_KIND_HINTS: tuple[str, ...] = tuple(kind.value for kind in NAME_KINDS if kind is not EntityKind.ADDRESS)
 # The extractor files one place under any of these, so a hint of one means all.
 LOCATION_FAMILY: tuple[EntityKind, ...] = (
     EntityKind.LOCATION, EntityKind.CITY, EntityKind.STATE, EntityKind.COUNTRY_REGION,

@@ -110,6 +110,11 @@ from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
 )
+from app.agents.agent_loop.entity_search_tool import (
+    ENTITY_SEARCH_OFFERED_STATE_KEY,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    entity_search_tool_offered,
+)
 from app.agents.agent_loop.hooks import (
     CitationCollector,
     ToolErrorTracker,
@@ -218,6 +223,11 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__navigate",
     "knowledgegraph__lookup_record",
 })
+
+# Tools a deployment switch adds to the knowledge tools. Not counted toward
+# the lazy-disclosure threshold, so turning one on never hides web search or
+# connector tools behind fetch_tools for a request that was eager without it.
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
@@ -447,6 +457,7 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
+        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = await entity_search_tool_offered(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
@@ -762,6 +773,7 @@ class PipesHubAgentFactory:
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
                 essential_names=frozenset(essential_toolset_names),
                 context=context,
+                uncounted_names=_SWITCHED_TOOL_NAMES,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
@@ -852,6 +864,7 @@ class PipesHubAgentFactory:
             ),
             essential_names=frozenset(essential_toolset_names),
             context=context,
+            uncounted_names=_SWITCHED_TOOL_NAMES,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above

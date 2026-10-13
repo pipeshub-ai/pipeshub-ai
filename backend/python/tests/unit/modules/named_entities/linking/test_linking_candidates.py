@@ -178,3 +178,17 @@ async def test_each_mention_gets_the_same_candidates_whatever_the_order(order: t
     _, found = await _find(nodes, {n["id"] for n in nodes}, [mentions[i] for i in order])
     by_name = {e.mention.name: [c.entity_id for c in e.candidates] for e in found.per_mention}
     assert by_name == {"Acme": [nodes[0]["id"]], "Sam": [nodes[1]["id"]], "Atlas": [nodes[2]["id"]]}
+
+
+@pytest.mark.asyncio
+async def test_unreadable_prefix_matches_past_the_row_limit_hide_nothing_and_decide_nothing() -> None:
+    """The prefix read is bounded before the access check, so a readable match
+    behind more unreadable ones than the limit is missed: never shown, and the
+    unreadable ones never make the name ambiguous."""
+    from app.modules.named_entities.linking.candidates import PREFIX_ROW_LIMIT
+
+    hidden = [_node("person", f"name:person:sam a{i:02d}", f"Sam A{i:02d}") for i in range(PREFIX_ROW_LIMIT + 4)]
+    readable = _node("person", "name:person:sam zed", "Sam Zed")
+    _, found = await _find([*hidden, readable], {readable["id"]}, [{"name": "Sam", "kind": "person"}])
+    (entry,) = found.per_mention
+    assert entry.candidates == [] and entry.ambiguous is False

@@ -31,6 +31,9 @@ _EXPECTED_TOOL_PATHS = {
     "/tools/knowledgegraph/search_entities",
     "/tools/knowledgegraph/find_records_by_entity",
     "/tools/knowledgegraph/find_records_by_value",
+    # Declared on the class; the toolset withholds it unless the deployment
+    # offers it (``KnowledgeGraph.tools_for_request``).
+    "/tools/knowledgegraph/search_by_entities",
 }
 
 # Parameters whose default is the tool's page/result-size cap.
