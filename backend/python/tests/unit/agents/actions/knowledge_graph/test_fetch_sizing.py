@@ -916,3 +916,39 @@ class TestAnInfiniteOffsetIsAToolError:
 
         assert output.success is False
         assert "whole number" in output.error
+
+
+class TestATinyCallStillReadsItsLastRecord:
+    """The 2,000-character floor names a record "not read" so that the other
+    records of a call get room. When the record's share is the whole call,
+    there is no one to make room for, and the note made every retry the same."""
+
+    @pytest.mark.asyncio
+    async def test_a_single_record_under_the_floor_is_read_and_advances(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_FULL_RECORD_MAX_CHARS", "1500")
+        record = _text_record("tc", 30, 300)
+        context = _context(query="")
+        start = 0
+        seen: set[int] = set()
+        for _ in range(60):
+            text = await _fetch(context, [record], start_block=start, start_block_sent=start > 0)
+            assert "was not read" not in text
+            seen |= _shown(text, "tc")
+            match = re.search(r"start_block=(\d+)", text)
+            if match is None:
+                break
+            assert int(match.group(1)) > start
+            start = int(match.group(1))
+        assert seen == set(range(30))
+
+    @pytest.mark.asyncio
+    async def test_a_record_crowded_out_by_later_ones_is_still_named(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PIPESHUB_FULL_RECORD_MAX_CHARS", "3000")
+        context = _context(query="")
+        text = await _fetch(context, [_text_record(f"cr{i}", 30, 300) for i in range(3)])
+
+        assert "was not read" in text

@@ -338,7 +338,11 @@ async def execute_fetch_record(
             # estimate is rough, and a record that fits must not be cut short.
             remaining = budget.call_chars_remaining
             shares = fair_shares(estimates[position:], remaining)
-            if shares[0] < min(_MIN_RECORD_SHARE_CHARS, estimates[position]):
+            # The floor makes room for the records after this one; the last
+            # record takes the rest of the call, however small, and is read
+            # (a clipped prefix if need be) so that a retry advances.
+            later = position < len(records) - 1
+            if later and shares[0] < min(_MIN_RECORD_SHARE_CHARS, estimates[position]):
                 unread.add(record_key)
                 note = _not_read_note(record, record_id_shortener)
                 budget.charge_framing(note)
