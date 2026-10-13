@@ -275,6 +275,9 @@ class TestExactArithmetic:
             ("radians(-10**309)", -1.74532925199433e307),
             ("radians(10**310)", 1.74532925199433e308),
             ("degrees(1e-309)", 5.72957795130823e-308),
+            # Within its error bound: the angle is uncertain by about 5e-10.
+            ("sin(10**6 * pi)", -2.23191218136087e-10),
+            ("sin(2**51 + sin(1))", 0.892431998674941),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -366,11 +369,14 @@ class TestRefusedExpressions:
             ("(2*10**400) ** exp(10)", "too large"),
             ("radians(10**311)", "too large"),
             # An approximate angle this large cannot tell whole radians apart.
-            ("sin(10**22 + sin(1))", "no accurate digits"),
-            ("sin(10**22 * pi)", "no accurate digits"),
-            ("cos((10**22 + 1/2) * pi)", "no accurate digits"),
-            ("tan(2**53 * pi)", "no accurate digits"),
-            ("sin(10**400 * pi)", "too large"),
+            # An approximate angle whose uncertainty (one ulp) reaches a radian.
+            ("sin(10**22 + sin(1))", "meaningful"),
+            ("sin(10**22 * pi)", "meaningful"),
+            ("cos((10**22 + 1/2) * pi)", "meaningful"),
+            ("tan(2**53 * pi)", "meaningful"),
+            ("sin(2**52 + sin(1))", "meaningful"),
+            ("sin(10**400 * pi)", "meaningful"),
+            ("cos(exp(1000))", "meaningful"),
             ("atan2(1e-400, 1)", "too small"),
             ("asin(1e-400)", "too small"),
             ("(2e-400) ** 2.5", "too small"),

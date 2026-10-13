@@ -63,6 +63,12 @@ _CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?)
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
 # Digits carried beyond an argument's own when taking its log.
 _LOG_GUARD_DIGITS = 30
+_IMPRECISE_ANGLE = (
+    "The angle is too large for its precision to give a meaningful sine, cosine or "
+    "tangent; reduce it first (for example use exact multiples of pi, or write the "
+    "angle exactly)."
+)
+_TRIG = frozenset({"sin", "cos", "tan"})
 _TOO_SMALL = "The result is too small for floating-point functions (below about 1e-308)."
 
 # name: (fewest arguments, most arguments or None for any number)
@@ -97,6 +103,10 @@ class CalculationError(ValueError):
 
 class _OutsideFloatRange(CalculationError):
     """A value a double cannot hold (it would overflow or underflow)."""
+
+    def __init__(self, message: str, *, too_large: bool = False) -> None:
+        super().__init__(message)
+        self.too_large = too_large
 
 
 @dataclass(frozen=True)
@@ -217,8 +227,27 @@ def _evaluate(root: ast.expr, lines: list[bytes]) -> Quantity:
             stack.append((node, True))
             stack.extend((operand, False) for operand in reversed(operands))
             continue
-        done[id(node)] = _apply(node, [done.pop(id(operand)) for operand in operands], lines)
+        try:
+            done[id(node)] = _apply(node, [done.pop(id(operand)) for operand in operands], lines)
+        except _OutsideFloatRange as exc:
+            # An approximate angle past a double's range has no meaningful
+            # sine either: say that rather than "too large" (sin(10**400 * pi)).
+            if exc.too_large and _inside_trig_argument(root, node):
+                raise CalculationError(_IMPRECISE_ANGLE) from exc
+            raise
     return done[id(root)]
+
+
+def _inside_trig_argument(root: ast.expr, node: ast.expr) -> bool:
+    """Whether `node` lies in the argument of a sin, cos or tan call. Only
+    walked when an overflow occurs."""
+    parents = {id(child): parent for parent in ast.walk(root) for child in ast.iter_child_nodes(parent)}
+    current = parents.get(id(node))
+    while current is not None:
+        if isinstance(current, ast.Call) and isinstance(current.func, ast.Name) and current.func.id in _TRIG:
+            return True
+        current = parents.get(id(current))
+    return False
 
 
 def _operands(node: ast.expr) -> list[ast.expr]:
@@ -294,7 +323,7 @@ def _bounded(value: Value, *, nonzero: bool = False) -> Value:
         if math.isnan(value):
             raise CalculationError("The expression did not produce a real number.")
         if math.isinf(value):
-            raise CalculationError("The result is too large.")
+            raise _OutsideFloatRange("The result is too large.", too_large=True)
         # An approximate 0 (or a subnormal with a few digits left) in place of
         # a tiny non-zero value would be a wrong answer.
         if (nonzero and value == 0) or 0 < abs(value) < sys.float_info.min:
@@ -313,7 +342,7 @@ def _as_float(value: Value, *, flush: bool = False) -> float:
     try:
         result = float(value)
     except OverflowError as exc:
-        raise _OutsideFloatRange("The result is too large for floating-point functions.") from exc
+        raise _OutsideFloatRange("The result is too large for floating-point functions.", too_large=True) from exc
     if flush and value != 0 and abs(result) < sys.float_info.min:
         return -0.0 if value < 0 else 0.0
     return _bounded(result, nonzero=value != 0)
@@ -413,7 +442,7 @@ def _power(base: Value, exponent: Value) -> Value:
     try:
         return _bounded(math.pow(b, e), nonzero=True)
     except OverflowError as exc:
-        raise CalculationError("The result is too large.") from exc
+        raise _OutsideFloatRange("The result is too large.", too_large=True) from exc
 
 
 def _decimal_power(base: Fraction, exponent: Value) -> float:
@@ -425,7 +454,7 @@ def _decimal_power(base: Fraction, exponent: Value) -> float:
             result = (Decimal(exact.numerator) / Decimal(exact.denominator) * _decimal_log(base, base10=False)).exp()
     except DecimalOverflow as exc:
         # Past even the decimal context's exponent range.
-        raise CalculationError("The result is too large.") from exc
+        raise _OutsideFloatRange("The result is too large.", too_large=True) from exc
     return _bounded(float(result), nonzero=True)
 
 
@@ -501,13 +530,10 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         if isinstance(values[0], Fraction) and abs(values[0]) > 1:
             angle = _reduced_angle(values[0])
             return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
-        if isinstance(values[0], float) and abs(values[0]) >= 2.0**53:
-            # Neighbouring doubles here are 2 or more apart: an approximate
-            # angle cannot even tell whole radians apart, so any result is noise.
-            raise CalculationError(
-                f"{name}(): this angle is approximate and so large that the result has no "
-                "accurate digits. Write the angle exactly (without pi or a function of it).",
-            )
+        if isinstance(values[0], float) and math.ulp(values[0]) >= 1:
+            # The angle is only known to within one ulp, here a radian or more:
+            # the full scale of a sine, so no digit of the result is meaningful.
+            raise CalculationError(_IMPRECISE_ANGLE)
     if name in ("radians", "degrees") and isinstance(values[0], Fraction):
         # Scaled on the exact value, so only the result has to fit a double.
         scale = Fraction(math.pi) / 180 if name == "radians" else 180 / Fraction(math.pi)
@@ -658,7 +684,7 @@ def _float_function(name: str, function: Callable[..., float], values: list[Valu
     except ZeroDivisionError as exc:
         raise CalculationError(f"{name}(): division by zero.") from exc
     except OverflowError as exc:
-        raise CalculationError(f"{name}(): the result is too large.") from exc
+        raise _OutsideFloatRange(f"{name}(): the result is too large.", too_large=True) from exc
     except ValueError as exc:
         raise CalculationError(f"{name}(): {exc}.") from exc
     return _bounded(result, nonzero=_nonzero_result(name, values))
