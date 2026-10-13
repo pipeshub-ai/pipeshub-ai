@@ -131,15 +131,19 @@ def test_a_whole_read_prints_each_ref_beside_its_own_block(multimodal: bool) -> 
 @pytest.mark.parametrize("multimodal", [False, True], ids=["text-only", "multimodal"])
 def test_a_cut_read_and_its_continuation_share_one_consistent_mapping(multimodal: bool) -> None:
     record = _record()
-    mapper = CitationRefMapper()
-    collected: list[dict[str, Any]] = []
-    first_budget = RenderBudget(max_chars=260)
-
-    first, mapper = record_to_message_content(
-        record, ref_mapper=mapper, is_multimodal_llm=multimodal,
-        collected_images=collected, image_budget=ImageBudget(max_images=50), budget=first_budget,
-    )
-    stop = first_budget.outcome(RECORD_ID).stopped_at_block
+    # The smallest allowance that renders something: how much a record's
+    # framing costs is the renderer's business, not this test's.
+    for max_chars in range(200, 2_000, 20):
+        mapper = CitationRefMapper()
+        collected: list[dict[str, Any]] = []
+        first_budget = RenderBudget(max_chars=max_chars)
+        first, mapper = record_to_message_content(
+            record, ref_mapper=mapper, is_multimodal_llm=multimodal,
+            collected_images=collected, image_budget=ImageBudget(max_images=50), budget=first_budget,
+        )
+        stop = first_budget.outcome(RECORD_ID).stopped_at_block
+        if stop:
+            break
     assert stop is not None and 0 < stop <= 10, "the budget cut the first read"
 
     second, mapper = record_to_message_content(

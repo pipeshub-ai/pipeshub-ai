@@ -469,7 +469,7 @@ class TestRecordToMessageContent:
         collected: list[dict] = []
         content, _ = record_to_message_content(record, is_multimodal_llm=True, collected_images=collected)
         joined = "".join(p.get("text", "") for p in content)
-        assert "[Table #0]" in joined and "cell" in joined
+        assert "[Table #0: T]" in joined and "cell" in joined
         assert len(collected) == 1
         text_only, _ = record_to_message_content(record)
         assert "cell" in "".join(p.get("text", "") for p in text_only)
