@@ -15,9 +15,12 @@ import pytest
 from app.agent_loop_lib.core.messages import ImagePart, TextPart
 from app.agents.actions.knowledge_graph.ops.search import execute_search
 from app.agents.agent_loop.retrieval_ledger import RetrievalContextLedger
+from app.agents.chat_modes.prefetch import prefetch_retrieval
 from app.models.blocks import BlockType
 from app.modules.retrieval.context.ordering import RELEVANCE_ORDERED_CONTEXT_ENV_VAR
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget
+from app.utils.image_admission import ImageAdmission, admission_from_state
+from app.utils.image_policy import permissive_policy
 
 _SEARCH = "app.agents.actions.knowledge_graph.ops.search"
 _BUILDER = "app.modules.retrieval.context.builder"
@@ -315,6 +318,37 @@ class TestImages:
         assert isinstance(result[0], TextPart)
         assert [type(part) for part in result[1:]] == [ImagePart]
         assert "pending_tool_images" not in state
+        assert state["image_budget"].used == 1
+
+    @pytest.mark.asyncio
+    async def test_an_image_prefetch_attached_is_not_attached_again_by_a_search(self) -> None:
+        records, units = _image_units()
+        state = _state(is_multimodal_llm=True)
+        state["image_admission"] = ImageAdmission(permissive_policy(1), budget=state.setdefault("image_budget", ImageBudget()))
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [{"virtual_record_id": "v1"}], "virtual_to_record_map": {},
+        }
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update(records)
+            return [dict(unit) for unit in units]
+
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock):
+            prefetched = await prefetch_retrieval(
+                query="q", org_id="o1", user_id="u1", retrieval_service=retrieval,
+                graph_provider=object(), blob_store=object(), filters={}, limit=10,
+                is_multimodal_llm=True, previous_conversations=None, logger=MagicMock(),
+                image_budget=state["image_budget"], image_admission=admission_from_state(state),
+            )
+        assert len(prefetched.collected_images) == 1
+
+        result = await _search(state, records, units)
+
+        assert isinstance(result, str)
+        assert "shown above" in result
         assert state["image_budget"].used == 1
 
     @pytest.mark.asyncio

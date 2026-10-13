@@ -76,6 +76,7 @@ from app.modules.demo_data.chat import (
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 
@@ -516,6 +517,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
+                        image_admission=admission_from_state(context.tool_state),
                     )
                 )
                 if policy.prefetch_retrieval else None

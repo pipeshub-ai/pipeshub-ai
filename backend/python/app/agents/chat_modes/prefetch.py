@@ -19,13 +19,15 @@ from typing import TYPE_CHECKING, Any
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import render_knowledge
-from app.utils.chat_helpers import CitationRefMapper, ImageBudget
+from app.modules.retrieval.context.units import unit_children
+from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
 if TYPE_CHECKING:
     import logging
 
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+    from app.utils.image_admission import ImageAdmission
 
 __all__ = ["PrefetchResult", "filter_notice_constraint", "prefetch_retrieval"]
 
@@ -90,6 +92,7 @@ async def prefetch_retrieval(
     force: bool = False,
     ref_mapper: CitationRefMapper | None = None,
     image_budget: ImageBudget | None = None,
+    image_admission: ImageAdmission | None = None,
 ) -> PrefetchResult | None:
     """Runs upfront retrieval for the current query.
 
@@ -108,6 +111,10 @@ async def prefetch_retrieval(
     through one mapper, so a mapper swap after prefetch resolves doesn't
     orphan refs those tools already registered. See `bridge.py`'s
     `_produce()` for the call site this matters for.
+
+    `image_admission`, when given, is the request's arbiter: images prefetch
+    attaches count against the model's cap, and a later search sees them as
+    already sent.
     """
     if not force and _is_followup(previous_conversations):
         return None
@@ -183,6 +190,13 @@ async def prefetch_retrieval(
             is_empty=True,
         )
 
+    if image_admission is not None and is_multimodal_llm:
+        await image_admission.warm([
+            content
+            for unit in knowledge.ranked
+            for item in (unit, *unit_children(unit))
+            if is_base64_image(content := item.get("content"))
+        ])
     rendered = render_knowledge(
         knowledge.ranked,
         virtual_record_id_to_result,
@@ -190,6 +204,7 @@ async def prefetch_retrieval(
         is_multimodal_llm=is_multimodal_llm,
         by_relevance=relevance_ordered_context(),
         image_budget=image_budget if image_budget is not None else ImageBudget(),
+        image_admission=image_admission,
     )
     flat_parts = [item for sublist in rendered.parts for item in sublist]
     formatted_context = "\n".join(
