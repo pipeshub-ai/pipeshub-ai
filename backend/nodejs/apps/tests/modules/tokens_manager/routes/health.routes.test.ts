@@ -5,7 +5,7 @@ import { ConfigService } from '../../../../src/modules/tokens_manager/services/c
 import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
 import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
 
-const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40), buildTime: '2026-09-30T10:12:00Z' }
+const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40) }
 
 describe('tokens_manager/routes/health.routes', () => {
   let mockRedis: any

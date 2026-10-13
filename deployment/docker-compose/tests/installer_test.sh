@@ -533,15 +533,13 @@ mkdir -p "$BI_REPO"
 )
 BI_HEAD="$(git -C "$BI_REPO" rev-parse HEAD)"
 check "version is the newest release tag, without the v" \
-  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; echo "[$APP_VERSION]")" "[1.2.3]"
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$BI_REPO"; echo "[$APP_VERSION]")" "[1.2.3]"
 check "commit is the full HEAD SHA" \
-  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; echo "[$GIT_COMMIT]")" "[$BI_HEAD]"
-check "build time is a UTC timestamp" \
-  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$BI_REPO"; [[ "$BUILD_TIME" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z$ ]] && echo utc)" "utc"
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$BI_REPO"; echo "[$GIT_COMMIT]")" "[$BI_HEAD]"
 check "values already in the environment win" \
-  "$(APP_VERSION=9.9.9 GIT_COMMIT=abc BUILD_TIME=then; export_build_info "$BI_REPO"; echo "[$APP_VERSION $GIT_COMMIT $BUILD_TIME]")" "[9.9.9 abc then]"
+  "$(APP_VERSION=9.9.9 GIT_COMMIT=abc; export_build_info "$BI_REPO"; echo "[$APP_VERSION $GIT_COMMIT]")" "[9.9.9 abc]"
 check "a directory without git leaves version and commit empty" \
-  "$(unset APP_VERSION GIT_COMMIT BUILD_TIME; export_build_info "$TMP_ROOT"; echo "[$APP_VERSION|$GIT_COMMIT]")" "[|]"
+  "$(unset APP_VERSION GIT_COMMIT; export_build_info "$TMP_ROOT"; echo "[$APP_VERSION|$GIT_COMMIT]")" "[|]"
 check "local build exports the build info before compose up" "$inner" 'export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"'
 for f in docker-compose.yml docker-compose.build.neo4j.yml; do
   check "$f passes the build info as build args" "$(cat "$COMPOSE_DIR/$f")" 'GIT_COMMIT: ${GIT_COMMIT:-}'

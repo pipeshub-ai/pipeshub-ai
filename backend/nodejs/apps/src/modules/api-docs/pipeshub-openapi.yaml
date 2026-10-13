@@ -540,7 +540,6 @@ components:
       required:
         - version
         - commitId
-        - buildTime
       properties:
         version:
           type: string
@@ -552,12 +551,6 @@ components:
           nullable: true
           description: Full SHA of the git commit the build was made from.
           example: 84614464bb120e9f8e8c85420001260e709d99bb
-        buildTime:
-          type: string
-          format: date-time
-          nullable: true
-          description: When the build was made, in UTC. Null for a run from source.
-          example: '2026-09-30T10:12:00Z'
     OpenAIModel:
       type: object
       required: [id, object, created, owned_by, task, root, parent]

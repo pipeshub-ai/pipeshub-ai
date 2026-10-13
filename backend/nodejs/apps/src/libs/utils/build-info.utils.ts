@@ -5,12 +5,11 @@ import path from 'path';
 export interface BuildInfo {
   version: string | null;
   commitId: string | null;
-  buildTime: string | null;
 }
 
 export type GitRunner = (args: string[]) => string | null;
 
-const ENV_KEYS = ['APP_VERSION', 'GIT_COMMIT', 'BUILD_TIME'] as const;
+const ENV_KEYS = ['APP_VERSION', 'GIT_COMMIT'] as const;
 const GIT_TIMEOUT_MS = 2000;
 
 // `npm run build` writes this next to the compiled entry point (dist/).
@@ -43,7 +42,6 @@ export function parseBuildInfo(raw: unknown): BuildInfo | null {
   return {
     version: stringOrNull(record.version),
     commitId: stringOrNull(record.commitId),
-    buildTime: stringOrNull(record.buildTime),
   };
 }
 
@@ -52,7 +50,6 @@ export function readBuildInfoFromGit(git: GitRunner = runGit): BuildInfo {
   return {
     version: tag ? tag.replace(/^v/, '') : null,
     commitId: git(['rev-parse', 'HEAD']),
-    buildTime: null,
   };
 }
 
@@ -75,7 +72,6 @@ export function resolveBuildInfo(
     return {
       version: stringOrNull(env.APP_VERSION),
       commitId: stringOrNull(env.GIT_COMMIT),
-      buildTime: stringOrNull(env.BUILD_TIME),
     };
   }
   return readBuildInfoFile(file) ?? readBuildInfoFromGit(git);

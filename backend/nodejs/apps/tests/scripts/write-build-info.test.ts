@@ -20,23 +20,21 @@ describe('scripts/write-build-info', () => {
     fs.rmSync(dir, { recursive: true, force: true })
   })
 
-  it('should write the tag, the commit and the build time', () => {
+  it('should write the tag and the commit', () => {
     const git: GitRunner = (args) => (args[0] === 'describe' ? 'v0.9.1' : COMMIT)
-    const now = new Date('2026-09-30T10:12:00.000Z')
 
-    expect(writeBuildInfo(file, now, git)).to.be.true
+    expect(writeBuildInfo(file, git)).to.be.true
 
     expect(JSON.parse(fs.readFileSync(file, 'utf8'))).to.deep.equal({
       version: '0.9.1',
       commitId: COMMIT,
-      buildTime: '2026-09-30T10:12:00.000Z',
     })
   })
 
   it('should write nothing and remove a stale file when git has no commit', () => {
     fs.writeFileSync(file, JSON.stringify({ commitId: 'stale' }))
 
-    expect(writeBuildInfo(file, new Date(), () => null)).to.be.false
+    expect(writeBuildInfo(file, () => null)).to.be.false
 
     expect(fs.existsSync(file)).to.be.false
   })

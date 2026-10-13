@@ -36,16 +36,12 @@ describe('build-info.utils', () => {
       fs.writeFileSync(file, JSON.stringify({ version: '1.2.3', commitId: 'file' }))
 
       const info = resolveBuildInfo(
-        { APP_VERSION: '0.9.1', GIT_COMMIT: COMMIT, BUILD_TIME: '2026-09-30T10:12:00Z' },
+        { APP_VERSION: '0.9.1', GIT_COMMIT: COMMIT },
         file,
         git as GitRunner,
       )
 
-      expect(info).to.deep.equal({
-        version: '0.9.1',
-        commitId: COMMIT,
-        buildTime: '2026-09-30T10:12:00Z',
-      })
+      expect(info).to.deep.equal({ version: '0.9.1', commitId: COMMIT })
       expect(git.called).to.be.false
     })
 
@@ -54,32 +50,29 @@ describe('build-info.utils', () => {
       const git = gitAnswering({ 'rev-parse': COMMIT })
 
       const info = resolveBuildInfo(
-        { APP_VERSION: '', GIT_COMMIT: '', BUILD_TIME: '' },
+        { APP_VERSION: '', GIT_COMMIT: '' },
         file,
         git as GitRunner,
       )
 
-      expect(info).to.deep.equal({ version: null, commitId: null, buildTime: null })
+      expect(info).to.deep.equal({ version: null, commitId: null })
       expect(git.called).to.be.false
     })
 
     it('should prefer the build file over git', () => {
       const git = gitAnswering({ describe: 'v9.9.9', 'rev-parse': 'later-pull' })
-      fs.writeFileSync(
-        file,
-        JSON.stringify({ version: '0.9.1', commitId: COMMIT, buildTime: '2026-09-30T10:12:00Z' }),
-      )
+      fs.writeFileSync(file, JSON.stringify({ version: '0.9.1', commitId: COMMIT }))
 
       const info = resolveBuildInfo({}, file, git as GitRunner)
 
       expect(info.commitId).to.equal(COMMIT)
-      expect(info.buildTime).to.equal('2026-09-30T10:12:00Z')
+      expect(info.version).to.equal('0.9.1')
       expect(git.called).to.be.false
     })
 
     it('should fall back to git when the build file is missing or not JSON', () => {
       const git = gitAnswering({ describe: 'v0.9.1', 'rev-parse': COMMIT })
-      const expected = { version: '0.9.1', commitId: COMMIT, buildTime: null }
+      const expected = { version: '0.9.1', commitId: COMMIT }
 
       expect(resolveBuildInfo({}, file, git as GitRunner)).to.deep.equal(expected)
 
@@ -96,19 +89,11 @@ describe('build-info.utils', () => {
 
     it('should report the commit when the checkout has no tags', () => {
       const git = gitAnswering({ 'rev-parse': COMMIT })
-      expect(readBuildInfoFromGit(git as GitRunner)).to.deep.equal({
-        version: null,
-        commitId: COMMIT,
-        buildTime: null,
-      })
+      expect(readBuildInfoFromGit(git as GitRunner)).to.deep.equal({ version: null, commitId: COMMIT })
     })
 
     it('should give null values when git fails', () => {
-      expect(readBuildInfoFromGit(gitAnswering({}) as GitRunner)).to.deep.equal({
-        version: null,
-        commitId: null,
-        buildTime: null,
-      })
+      expect(readBuildInfoFromGit(gitAnswering({}) as GitRunner)).to.deep.equal({ version: null, commitId: null })
     })
   })
 
@@ -121,8 +106,8 @@ describe('build-info.utils', () => {
 
     it('should keep string fields and drop every other type', () => {
       expect(
-        parseBuildInfo({ version: ' 0.9.1 ', commitId: 123, buildTime: '', extra: 'x' }),
-      ).to.deep.equal({ version: '0.9.1', commitId: null, buildTime: null })
+        parseBuildInfo({ version: ' 0.9.1 ', commitId: 123, extra: 'x' }),
+      ).to.deep.equal({ version: '0.9.1', commitId: null })
     })
   })
 
@@ -130,7 +115,7 @@ describe('build-info.utils', () => {
     it('should resolve once and return the same object', () => {
       const first = getBuildInfo()
       expect(getBuildInfo()).to.equal(first)
-      expect(first).to.have.all.keys('version', 'commitId', 'buildTime')
+      expect(first).to.have.all.keys('version', 'commitId')
     })
   })
 })

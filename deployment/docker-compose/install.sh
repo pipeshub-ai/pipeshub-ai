@@ -1788,7 +1788,6 @@ export_build_info() { # args: repo_root
   tag="$(git -C "$repo_root" describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
   export APP_VERSION="${APP_VERSION:-${tag#v}}"
   export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)}"
-  export BUILD_TIME="${BUILD_TIME:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 }
 
 _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"

@@ -464,13 +464,10 @@ COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoin
 # variables are empty and the services report null.
 ARG APP_VERSION=""
 ARG GIT_COMMIT=""
-ARG BUILD_TIME=""
 ENV APP_VERSION=${APP_VERSION} \
-    GIT_COMMIT=${GIT_COMMIT} \
-    BUILD_TIME=${BUILD_TIME}
+    GIT_COMMIT=${GIT_COMMIT}
 LABEL org.opencontainers.image.version=${APP_VERSION} \
-      org.opencontainers.image.revision=${GIT_COMMIT} \
-      org.opencontainers.image.created=${BUILD_TIME}
+      org.opencontainers.image.revision=${GIT_COMMIT}
 
 EXPOSE 3000 8002 8092 8093
 

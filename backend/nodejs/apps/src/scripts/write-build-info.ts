@@ -9,7 +9,6 @@ import {
 // and the image's environment variables are the source instead.
 export function writeBuildInfo(
   file: string = BUILD_INFO_FILE,
-  now: Date = new Date(),
   git?: GitRunner,
 ): boolean {
   const info = readBuildInfoFromGit(git);
@@ -20,7 +19,7 @@ export function writeBuildInfo(
   }
   fs.writeFileSync(
     file,
-    `${JSON.stringify({ ...info, buildTime: now.toISOString() }, null, 2)}\n`,
+    `${JSON.stringify(info, null, 2)}\n`,
   );
   return true;
 }
