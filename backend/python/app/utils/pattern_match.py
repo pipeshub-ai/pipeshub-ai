@@ -1584,17 +1584,9 @@ async def merge_pattern_match_results(
     if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
         return []
 
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if vrid and vrid not in seen:
-            seen.add(vrid)
-            unique.append(r)
-
     # Rank across connectors before the cap; each connector's list is already
     # ranked, but concatenation order would otherwise decide who is dropped.
-    unique.sort(key=keyword_match_rank, reverse=True)
+    unique = _best_hit_per_record(raw_records)
     new_records = [
         r
         for r in unique
@@ -1722,6 +1714,17 @@ async def merge_pattern_match_results(
     return results
 
 
+def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:
+    """Each record's best-ranked grep hit, best first; ties keep the order
+    the hits arrived in."""
+    best: dict[str, dict] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if vrid and (vrid not in best or keyword_match_rank(raw) > keyword_match_rank(best[vrid])):
+            best[vrid] = raw
+    return sorted(best.values(), key=keyword_match_rank, reverse=True)
+
+
 def _best_match_by_vrid(raw_records: list[dict]) -> dict[str, tuple[int, str | None]]:
     """Per record: the match count of its best-ranked hit, and the preview of
     its best-ranked hit that has one.
@@ -1759,15 +1762,12 @@ def grep_hits_on_loaded_records(
     can still be fetched. Only records already in the map qualify, and those
     passed the semantic search's own permission check.
     """
-    first: dict[str, dict] = {}
-    for raw in raw_records:
-        vrid = raw.get("virtual_record_id")
-        if vrid and isinstance(virtual_record_id_to_result.get(vrid), dict):
-            first.setdefault(vrid, raw)
     matches = _best_match_by_vrid(raw_records)
     entries: list[dict] = []
-    for raw in sorted(first.values(), key=keyword_match_rank, reverse=True):
+    for raw in _best_hit_per_record(raw_records):
         vrid = raw["virtual_record_id"]
+        if not isinstance(virtual_record_id_to_result.get(vrid), dict):
+            continue
         entry: dict[str, Any] = {"virtual_record_id": vrid, "score": 0.0, "source": "pattern_match"}
         match_count, snippet = matches[vrid]
         if match_count > 0:

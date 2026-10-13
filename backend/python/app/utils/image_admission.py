@@ -41,7 +41,8 @@ Two properties the callers depend on:
   The one exception is a fetched record's image whose only copy so far was a
   search hit. Search results are not protected from tool-result clearing, so
   that copy can vanish while the fetch still points at it; the fetch attaches
-  its own copy instead, and pays a slot for it.
+  its own copy instead, after the record's unseen images and out of search's
+  share of the cap.
 
 Retrieval also gets only part of the per-request cap
 (`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
@@ -220,9 +221,10 @@ def _prefilter_reason(candidate: ImageCandidate) -> DegradeReason | None:
     return None
 
 
-def _rank_key(candidate: ImageCandidate) -> tuple[int, float, int, int, int]:
-    """Sort key for a scarce slot: origin tier, then relevance, then size,
-    then recency, with document order as a deterministic final tiebreak.
+def _rank_key(candidate: ImageCandidate, *, reattach: bool = False) -> tuple[int, bool, float, int, int, int]:
+    """Sort key for a scarce slot: origin tier, then new before a second copy
+    of a search hit, then relevance, then size, then recency, with document
+    order as a deterministic final tiebreak.
 
     Size enters below relevance rather than above it: a large image is a
     weak signal that it is a figure rather than a thumbnail, but a small
@@ -231,6 +233,7 @@ def _rank_key(candidate: ImageCandidate) -> tuple[int, float, int, int, int]:
     """
     return (
         int(candidate.origin),
+        reattach,
         -candidate.relevance,
         -candidate.area,
         -candidate.turn_index,
@@ -372,8 +375,10 @@ class ImageAdmission:
         else:
             eligible = fresh
 
-        for candidate in sorted(eligible, key=_rank_key):
-            retrieved = candidate.origin.is_retrieved
+        for candidate in sorted(eligible, key=lambda c: _rank_key(c, reattach=c.hash in reattaching)):
+            # A re-attach is a second copy of a search hit, so it is charged
+            # to search's share: the reserve stays for images not yet seen.
+            retrieved = candidate.origin.is_retrieved or candidate.hash in reattaching
             if self.policy.max_images_per_request - self._slots_used <= 0 or (
                 retrieved
                 and self._retrieved_slots_used >= self.policy.max_retrieved_images

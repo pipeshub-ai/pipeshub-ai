@@ -775,6 +775,27 @@ class TestMergePatternMatchResults:
         assert (vr_map["vr-1"]["_match_count"], vr_map["vr-1"]["_match_snippet"]) == (5, "INV-1 total")
 
     @pytest.mark.asyncio
+    async def test_the_record_cap_keeps_records_by_their_best_hit(self) -> None:
+        raw = [
+            {"virtual_record_id": "vr-1", "matched_terms": 1},
+            {"virtual_record_id": "vr-2", "matched_terms": 2},
+            {"virtual_record_id": "vr-1", "matched_terms": 3},
+        ]
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(
+            return_value=[{"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"}],
+        )
+
+        await merge_pattern_match_results(
+            raw_records=raw, virtual_record_id_to_result={}, user_id="user-1", org_id="org-1",
+            blob_store=AsyncMock(), graph_provider=graph_provider,
+            is_multimodal_llm=False, logger_instance=MagicMock(), max_records=1,
+        )
+
+        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1"]
+
+    @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
         raw = [{"virtual_record_id": "vr-1"}]
         graph_provider = AsyncMock()
@@ -3727,3 +3748,12 @@ class TestGrepHitsOnLoadedRecords:
         assert grep_hits_within(entries, loaded, one * 3) == entries
         assert grep_hits_within(entries, loaded, one - 1) == []
         assert grep_hits_within(entries, {}, 10_000) == []
+
+    def test_a_record_ranks_by_its_best_hit_not_its_first(self) -> None:
+        raw = [
+            {"virtual_record_id": "a", "matched_terms": 1, "match_count": 1},
+            {"virtual_record_id": "b", "matched_terms": 2, "match_count": 1},
+            {"virtual_record_id": "a", "matched_terms": 3, "match_count": 1},
+        ]
+        entries = grep_hits_on_loaded_records(raw, {v: self._loaded(v) for v in "ab"})
+        assert [e["virtual_record_id"] for e in entries] == ["a", "b"]

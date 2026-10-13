@@ -231,6 +231,34 @@ class TestAFetchReattachesWhatOnlySearchShowed:
         assert fetched.admitted == []
         assert [d.reason for d in fetched.degraded] == [DegradeReason.DUPLICATE]
 
+    def test_a_fetch_attaches_unseen_figures_before_second_copies(self) -> None:
+        """The reserve is for what the model has not seen: a re-attach is a
+        copy of a search hit, so it is charged to search's share."""
+        admission = _model_admission("openai")
+        searched = admission.admit([_candidate(i) for i in (0, 1, 50, 51)])
+        assert len(searched.admitted) == 4
+
+        record = [_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in (0, 1, 2, 3, 4)]
+        fetched = admission.admit(record)
+
+        assert sorted(c.ref for c in fetched.admitted) == ["ref2", "ref3", "ref4"]
+        assert sorted((d.candidate.ref, d.reason) for d in fetched.degraded) == [
+            ("ref0", DegradeReason.DUPLICATE), ("ref1", DegradeReason.DUPLICATE),
+        ]
+
+    def test_a_reattach_ranks_after_the_batch_s_new_images(self) -> None:
+        admission = _model_admission("openai")
+        admission.admit([_candidate(0)])
+        admission.admit([_candidate(10 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(6)])
+
+        fetched = admission.admit([
+            _candidate(0, origin=ImageOrigin.FETCHED_RECORD, relevance=0.9),
+            _candidate(20, origin=ImageOrigin.FETCHED_RECORD),
+        ])
+
+        assert [c.ref for c in fetched.admitted] == ["ref20"]
+        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref0", DegradeReason.DUPLICATE)]
+
     def test_a_replayed_history_image_is_not_reattached(self) -> None:
         admission = _model_admission("openai")
         admission.admit([_candidate(0, origin=ImageOrigin.HISTORY)])
