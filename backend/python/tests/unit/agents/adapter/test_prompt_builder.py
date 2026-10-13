@@ -12,7 +12,7 @@ to touch this file (see the "Prompt consolidation" plan, Part 4).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,7 +67,7 @@ class FakeTool(Tool):
     def parameters(self) -> list[ToolParameter]:
         return self._parameters
 
-    async def execute(self, **kwargs: Any) -> ToolOutput:
+    async def execute(self, **kwargs: object) -> ToolOutput:
         return ToolOutput(success=True, data="ok")
 
 
