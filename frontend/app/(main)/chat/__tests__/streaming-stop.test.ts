@@ -206,6 +206,19 @@ describe('cancelStreamForSlot — Stop before the conversation id is known (firs
     expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
     expect(abortSpy).not.toHaveBeenCalled();
     expect(mockedCancelStream).not.toHaveBeenCalled();
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteRunInProgress, 'sends wait for the cancel').toBe(true);
+  });
+
+  it('refuses a new send while that cancel is still unresolved', async () => {
+    seedSlot({ convId: null, isTemp: true });
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage');
+
+    await streamMessageForSlot(SLOT_ID, 'next question', { query: 'next question' } as never);
+
+    expect(streamSpy).not.toHaveBeenCalled();
+    streamSpy.mockRestore();
   });
 
   it('drops the connection once the retry window closes without ever learning the id', async () => {
@@ -217,6 +230,7 @@ describe('cancelStreamForSlot — Stop before the conversation id is known (firs
     await vi.advanceTimersByTimeAsync(25_000);
 
     expect(abortSpy).toHaveBeenCalledTimes(1);
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteRunInProgress, 'sends are allowed again').toBe(false);
   });
 
   it('still cancels when conversation_created arrives after the grace timer has settled the UI', async () => {
@@ -310,7 +324,8 @@ describe('cancelStreamForSlot — handing a first-turn chat over to the remote-r
     cancelStreamForSlot(SLOT_ID);
     await vi.advanceTimersByTimeAsync(5000);
     callbacks.onConnected?.({ conversationId: 'conv-late' });
-    useChatStore.getState().updateSlot(SLOT_ID, { convId: 'conv-other' });
+    // Opening another conversation sets the flag from that conversation's own status.
+    useChatStore.getState().updateSlot(SLOT_ID, { convId: 'conv-other', remoteRunInProgress: false });
     await vi.advanceTimersByTimeAsync(25_000);
 
     const slot = useChatStore.getState().slots[SLOT_ID];
