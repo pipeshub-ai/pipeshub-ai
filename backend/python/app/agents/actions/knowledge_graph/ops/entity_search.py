@@ -56,6 +56,7 @@ from app.utils.chat_helpers import get_record_id_shortener_if_enabled
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
+    from app.agent_loop_lib.core.messages import Part
     from app.modules.agents.qna.chat_state import ChatState
     from app.modules.named_entities.linking.candidates import Candidate, DenseSearch
     from app.modules.named_entities.linking.records import RecordScope
@@ -91,7 +92,7 @@ async def execute_search_by_entities(
     mentions: Any = None,  # noqa: ANN401 - tool argument, any JSON shape
     match: str | None = None,
     query: str | None = None,
-) -> tuple[bool, str] | str:
+) -> tuple[bool, str] | str | list[Part]:
     if not state:
         return False, LOOKUP_FAILED_MSG
     if not await _named_entities_enabled(state):

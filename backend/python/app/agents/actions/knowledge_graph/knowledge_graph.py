@@ -1142,7 +1142,7 @@ class KnowledgeGraph:
         mentions: list[dict[str, Any]] | None = None,
         match: str | None = None,
         query: str | None = None,
-    ) -> tuple[bool, str] | str:
+    ) -> tuple[bool, str] | str | list[Part]:
         """Entity-linked search — calls ops/entity_search.py."""
         from .ops.entity_search import execute_search_by_entities
         return await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
