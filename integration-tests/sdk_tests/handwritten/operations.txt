@@ -8,9 +8,5 @@ streamAgentConversation
 streamAgentConversationMessage
 regenerateAgentConversationMessage
 updateAgentConversationMessageFeedback
-uploadRecords
-streamRecordBuffer
-updateRecord
-moveRecord
-reindexRecord
-deleteRecord
+getConversationById
+deleteConversationById
