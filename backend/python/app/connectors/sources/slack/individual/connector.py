@@ -1172,6 +1172,9 @@ class SlackIndividualConnector(BaseConnector):
                     total += 1
 
                 except Exception as exc:
+                    # Not written, so not seen: without this the unlink after the
+                    # sync would take the channel's links away.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to process channel {cd.get('name')}: {exc}"
                     )

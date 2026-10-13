@@ -1098,11 +1098,16 @@ class SlackConnector(BaseConnector):
             batch: list[tuple[RecordGroup, list[Permission]]] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
+                    # Written with no permissions, the channel would lose every
+                    # member: on_new_record_groups replaces an existing group's
+                    # grants. Leave it as it is until a sync can read its members,
+                    # and skip its messages this time; their checkpoint stays put.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Permission resolution failed for "
-                        f"{cd.get('name')}: {perms}"
+                        f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
-                    perms = []
+                    continue
                 batch.append((rg, perms))
                 record_groups.append(rg)
                 total += 1
@@ -1196,22 +1201,29 @@ class SlackConnector(BaseConnector):
                         self.logger.debug(
                             f"Cannot fetch members for {channel_id}: {error}"
                         )
-                    else:
-                        self.logger.warning(
-                            f"conversations.members({channel_id}) failed: {error}"
-                        )
-                    break
+                        break
+                    # Any other failure leaves the member list short. Returned,
+                    # it would replace the channel's grants and lock out every
+                    # member not yet read; raised, the channel is left as it is.
+                    self.logger.warning(
+                        f"conversations.members({channel_id}) failed: {error}"
+                    )
+                    raise RuntimeError(
+                        f"conversations.members({channel_id}) failed part-way: {error}"
+                    )
 
                 members.extend(resp.data.get("members", []))
                 cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
                 if not cursor:
                     break
 
+            except RuntimeError:
+                raise
             except Exception as exc:
                 self.logger.error(
                     f"_fetch_channel_members({channel_id}): {exc}", exc_info=True
                 )
-                break
+                raise RuntimeError(f"conversations.members({channel_id}) failed: {exc}") from exc
 
         return members
 

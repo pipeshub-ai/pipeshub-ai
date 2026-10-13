@@ -10032,10 +10032,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ungranted, failed_grants = await self._delete_all_edges_for_nodes(
                 transaction, outside_window, [CollectionNames.PERMISSION.value]
             )
-            self.logger.info(
-                f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
-                f"{len(outside_window)} outside its window kept their links"
-            )
+            if failed or failed_grants:
+                self.logger.warning(
+                    f"Full sync of {connector_id}: could not remove the links of the "
+                    f"{len(unlink)} node(s) it missed from {failed or []}, or the grants "
+                    f"of the {len(outside_window)} outside its window from {failed_grants or []}"
+                )
+            else:
+                self.logger.info(
+                    f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
+                    f"{len(outside_window)} outside its window kept their links"
+                )
             return (unlinked + ungranted, not failed and not failed_grants)
         except Exception as e:
             self.logger.error(

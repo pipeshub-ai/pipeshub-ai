@@ -579,8 +579,12 @@ async def run_sync_task(
     unlink_failed = False
     skipped_code: str | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
-    processor, seen = _begin_full_sync_run(connector, connector_id) if full_sync else (None, None)
+    processor, seen = None, None
     try:
+        # Inside the try: if it raised before it, the finalizer below would never
+        # write IDLE or release the lease.
+        if full_sync:
+            processor, seen = _begin_full_sync_run(connector, connector_id)
         await write_app_status(graph_provider, logger, connector_id, start_status)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
@@ -628,7 +632,11 @@ async def run_sync_task(
         raise
     finally:
         if seen is not None:
-            processor.end_full_sync_run(connector_id, seen)
+            try:
+                processor.end_full_sync_run(connector_id, seen)
+            except Exception as e:
+                # Logged, not raised: the finalizer below must still run.
+                logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():

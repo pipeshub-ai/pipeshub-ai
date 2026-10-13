@@ -9093,29 +9093,35 @@ class Neo4jProvider(IGraphDBProvider):
         if not self.client:
             raise RuntimeError("Neo4j client not connected")
 
-        node_keys = [sid.split("/", 1)[1] for sid in node_ids if "/" in sid]
-        if not node_keys:
+        # Matched under each node's own label: ids are unique per collection, not
+        # across all of them, and a label lets the match use the id index instead
+        # of scanning every node.
+        keys_by_label: dict[str, list[str]] = {}
+        for sid in node_ids:
+            if "/" in sid:
+                collection, key = sid.split("/", 1)
+                keys_by_label.setdefault(collection_to_label(collection), []).append(key)
+        if not keys_by_label:
             return (0, [])
 
         rel_types = [edge_collection_to_relationship(ec) for ec in edge_collections]
         rel_pattern = "|".join(rel_types)
-        query = f"""
-        MATCH (n)
-        WHERE n.id IN $node_keys
-        MATCH (n)-[r:{rel_pattern}]-()
-        DELETE r
-        RETURN count(r) AS deleted_count
-        """
-        parameters = {"node_keys": node_keys}
 
         try:
-            results = await self.client.execute_query(
-                query,
-                parameters=parameters,
-                txn_id=transaction
-            )
-
-            deleted_count = sum(row.get("deleted_count", 0) for row in results) if results else 0
+            deleted_count = 0
+            for label, node_keys in keys_by_label.items():
+                results = await self.client.execute_query(
+                    f"""
+                    MATCH (n:{label})
+                    WHERE n.id IN $node_keys
+                    MATCH (n)-[r:{rel_pattern}]-()
+                    DELETE r
+                    RETURN count(r) AS deleted_count
+                    """,
+                    parameters={"node_keys": node_keys},
+                    txn_id=transaction,
+                )
+                deleted_count += sum(row.get("deleted_count", 0) for row in results) if results else 0
 
             self.logger.debug(f"✅ Deleted {deleted_count} relationships for {len(node_ids)} nodes")
 
@@ -9405,10 +9411,17 @@ class Neo4jProvider(IGraphDBProvider):
             ungranted, failed_grants = await self._delete_all_edges_for_nodes(
                 transaction or "", outside_window, [CollectionNames.PERMISSION.value]
             )
-            self.logger.info(
-                f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
-                f"{len(outside_window)} outside its window kept their links"
-            )
+            if failed or failed_grants:
+                self.logger.warning(
+                    f"Full sync of {connector_id}: could not remove the links of the "
+                    f"{len(unlink)} node(s) it missed from {failed or []}, or the grants "
+                    f"of the {len(outside_window)} outside its window from {failed_grants or []}"
+                )
+            else:
+                self.logger.info(
+                    f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
+                    f"{len(outside_window)} outside its window kept their links"
+                )
             return (unlinked + ungranted, not failed and not failed_grants)
         except Exception as e:
             self.logger.error(

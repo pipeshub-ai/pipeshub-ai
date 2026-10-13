@@ -196,6 +196,27 @@ async def test_an_unlink_that_failed_owes_another_full_sync(outcome) -> None:
     assert _owed(gp)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("step", ["begin_full_sync_run", "end_full_sync_run"])
+async def test_a_tracking_failure_still_finalizes(step: str) -> None:
+    """IDLE is written and the lease released even if the tracking itself raises;
+    otherwise the connector stays FULL_SYNCING until the lease expires."""
+    gp = _graph_provider()
+    connector = _connector(None)
+    connector.run_sync = _writes_one_record(connector)
+    setattr(connector.data_entities_processor, step, MagicMock(side_effect=RuntimeError("tracking")))
+    coordinator = AsyncMock()
+    lease = SyncLease("c1", "tok", 1)
+
+    with contextlib.suppress(RuntimeError):
+        await run_sync_task(connector, "c1", gp, _LOG, start_status=AppStatus.FULL_SYNCING.value,
+                            lease=lease, coordinator=coordinator)
+
+    statuses = [c.args[2].get("status") for c in gp.update_node.await_args_list]
+    assert AppStatus.IDLE.value in statuses
+    coordinator.end.assert_awaited_once_with(lease)
+
+
 class TestWhatTheProcessorNotes:
     """Seen only once its write committed; first visit replaces, later ones add."""
 
