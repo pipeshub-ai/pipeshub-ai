@@ -120,6 +120,22 @@ def case_id(test_name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", test_name.lower()).removeprefix("test")
 
 
+def _problem_detail(problem: ET.Element) -> str:
+    """The error of a <failure> or <error>, on one line."""
+    message = (problem.get("message") or "").strip()
+    if message and message != "Failed":
+        return message
+    # go-junit-report writes only "Failed"; the error is in the body, spread over
+    # testify's labelled lines. Keep the lines that say what went wrong.
+    lines = (line.strip() for line in (problem.text or "").splitlines())
+    kept = [
+        line
+        for line in lines
+        if line and not line.startswith(("Error Trace:", "Test:"))
+    ]
+    return re.sub(r"\s+", " ", " ".join(kept)) or message
+
+
 def read_junit(path: Path) -> dict[str, Case] | None:
     """Cases by ID, or None when the suite wrote no report."""
     if not path.is_file():
@@ -136,8 +152,7 @@ def read_junit(path: Path) -> dict[str, Case] | None:
         if problem is None:
             problem = element.find("error")
         if problem is not None:
-            detail = (problem.get("message") or problem.text or "").strip()
-            cases[case_id(name)] = Case(name, Status.FAILED, detail)
+            cases[case_id(name)] = Case(name, Status.FAILED, _problem_detail(problem))
         elif element.find("skipped") is not None:
             cases[case_id(name)] = Case(
                 name, Status.SKIPPED, "skipped: the case never ran"

@@ -307,6 +307,30 @@ def test_a_truncated_report_is_block(tmp_path: Path, content: str):
     assert overall_verdict(results) is Verdict.BLOCK
 
 
+def test_a_go_failure_shows_the_error_from_its_body(tmp_path: Path):
+    """go-junit-report puts only "Failed" in the message attribute."""
+    write_all_passing(tmp_path, "current")
+    write_report(
+        tmp_path,
+        "current",
+        "go",
+        '<testcase name="TestAgents_AgentLifecycle"><failure message="Failed">'
+        "    agents_test.go:33: \n"
+        "        \tError Trace:\t/tmp/sdk/tests/agents_test.go:33\n"
+        "        \tError:      \tReceived unexpected error:\n"
+        "        \t            \tdial tcp 127.0.0.1:9: connection refused\n"
+        "        \tTest:       \tTestAgents_AgentLifecycle\n"
+        "</failure></testcase>",
+    )
+
+    summary = render_summary(read_results(tmp_path))
+
+    assert (
+        "- go current: TestAgents_AgentLifecycle: agents_test.go:33: Error: "
+        "Received unexpected error: dial tcp 127.0.0.1:9: connection refused"
+    ) in summary
+
+
 def test_a_failure_with_no_message_still_renders(tmp_path: Path):
     write_all_passing(tmp_path, "current")
     write_report(
