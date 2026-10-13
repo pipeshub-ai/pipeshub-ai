@@ -267,6 +267,31 @@ class TestExactArithmetic:
             ("cos(10**300 / 12.5)", -0.296129482721992),
             ("sin(10**499 + 1/3)", -0.0124529466817837),
             ("tan(10**22)", -1.6287782256069),
+            # Near a zero or pole the residual after reducing by pi/2 is tiny;
+            # it is computed in decimal, not rounded onto pi first.
+            ("sin(3.14159265358979323846)", 2.64338327950288e-21),
+            ("cos(1.570796326794896619)", 2.31321691639751e-19),
+            ("tan(3.14159265358979323846)", -2.64338327950288e-21),
+            ("cos(3.14159265358979323846)", -1),
+            ("sin(4.712388980384689857)", -1),
+            ("tan(1.570796326794896619)", 4.3229841218581e18),
+            # The residual cancels more digits than the angle has: precision
+            # grows until enough of it survives.
+            ("tan(1647533557310758242795542778250)", 3.78133285112983e30),
+            ("cos(1647533557310758242795542778250)", -2.64457015388426e-31),
+            ("sin(1647533557310758242795542778250)", -1),
+            # Integers nearest a multiple of pi or pi/2: the residual is far
+            # below the angle's own digits.
+            ("sin(2646693125139304345)", 1.18848857958684e-20),
+            ("sin(23317502333402457908402376300016)", -7.08381527389479e-32),
+            ("sin(41629395862109680461101929914153)", -8.26174040105404e-33),
+            ("tan(11658751166701228954201188150008)", -2.82333731565585e31),
+            ("cos(11658751166701228954201188150008)", 3.54190763694739e-32),
+            # A continued-fraction convergent of pi/2: as close to a multiple
+            # of pi/2 as an integer of its size can be.
+            ("cos(2085083560376813133713475929088424186954)", -3.5275763910637e-40),
+            ("tan(2085083560376813133713475929088424186954)", -2.83480749710557e39),
+            ("sin(2085083560376813133713475929088424186954)", 1),
             # Scaled on the exact value: the angle need not fit, the result does.
             ("radians(10**309)", 1.74532925199433e307),
             ("radians(-10**309)", -1.74532925199433e307),
@@ -462,6 +487,16 @@ class TestRefusedExpressions:
         except CalculationError:
             return
         assert payload["result"] == 1
+
+    def test_the_closest_large_angle_to_a_quarter_turn_stays_fast(self) -> None:
+        # A 494-digit convergent of pi/2: its reduction cancels about 494
+        # more digits. Its sine (1.3e-495) is below a double's range.
+        convergent = "17839370513524201499748668616592542108626995409288572013029872004471324123607627527454223464272772054176082126556885213677277954876867504992212681236462708790448353242926198280850747392707199373021378606222557604413387879486933906869398442149234697972962966389238328329808193081488550161312884326085994415166742276475551449836263931234426093372624990964550490295016812656093335087914326890380938534417693168481758783330959477883741143485211273518438907375097830567310289121244081038348220434485"
+        started = time.monotonic()
+        assert _result(f"cos({convergent})")["result"] == 1
+        with pytest.raises(CalculationError, match="too small"):
+            evaluate(f"sin({convergent})")
+        assert time.monotonic() - started < 1.0
 
     def test_worst_case_operands_stay_fast(self) -> None:
         # Every intermediate sits just under the digit cap: the cap bounds
