@@ -62,8 +62,11 @@ class Calculator:
 
     @tool(
         path="/tools/calculator/calculate_single_operand",
-        short_description="Single-operand math (square root, cube root)",
-        description="Calculate the result of a mathematical operation with a single operand (square root, cube root).",
+        short_description="Single-operand math (square root, cube root); use evaluate_expression for anything longer",
+        description=(
+            "Calculate the result of a mathematical operation with a single operand (square root, cube root). "
+            "For anything with more than one step, or exact fractions, use evaluate_expression."
+        ),
         parameters=[
             ToolParameter(name="a", type=ParameterType.FLOAT, description="The number to operate on", required=True),
             ToolParameter(name="operation", type=ParameterType.STRING, description="Mathematical operation: 'sqrt' (square root), 'cbrt' (cube root)", required=True),
@@ -88,8 +91,11 @@ class Calculator:
 
     @tool(
         path="/tools/calculator/calculate_two_operands",
-        short_description="Two-operand math (add, subtract, multiply, divide, power)",
-        description="Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power).",
+        short_description="Two-operand math (add, subtract, multiply, divide, power); use evaluate_expression for anything longer",
+        description=(
+            "Calculate the result of a mathematical operation with two operands (add, subtract, multiply, divide, power). "
+            "For anything with more than one step, or exact fractions, use evaluate_expression."
+        ),
         parameters=[
             ToolParameter(name="a", type=ParameterType.FLOAT, description="The first number", required=True),
             ToolParameter(name="b", type=ParameterType.FLOAT, description="The second number", required=True),

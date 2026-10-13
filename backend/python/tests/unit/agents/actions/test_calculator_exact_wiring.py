@@ -46,6 +46,16 @@ class TestToolset:
         assert len(description.split()) <= 35
 
     @pytest.mark.parametrize(
+        "name", ["calculator__calculate_single_operand", "calculator__calculate_two_operands"],
+    )
+    def test_legacy_tools_point_to_evaluate_expression(self, name: str) -> None:
+        # A model that loads the toolset sees these too; one picked the
+        # two-operand tool for a step of a longer calculation.
+        tool = _tool(name)
+        assert "evaluate_expression" in tool.description
+        assert "evaluate_expression" in tool.short_description
+
+    @pytest.mark.parametrize(
         ("name", "required"),
         [
             ("calculator__evaluate_expression", {"expression"}),
@@ -85,6 +95,12 @@ class TestOutputs:
         payload = json.loads(await Calculator().count_text(text="Hello World", letter="l"))
         assert payload["letters"] == 10
         assert payload["letter_occurrences"] == 3
+
+    @pytest.mark.parametrize("letter", ["", "   "])
+    async def test_count_text_with_an_empty_letter_counts_everything(self, letter: str) -> None:
+        # Models send `letter: ""` when they have no letter to count.
+        payload = json.loads(await Calculator().count_text(text="Hello World", letter=letter))
+        assert payload == {"letters": 10, "characters": 11, "characters_excluding_spaces": 10, "words": 2}
 
     async def test_count_text_reports_errors_instead_of_raising(self) -> None:
         payload = json.loads(await Calculator().count_text(text="a" * (MAX_TEXT_CHARS + 1)))
