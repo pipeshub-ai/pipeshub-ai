@@ -729,8 +729,10 @@ class EventService:
                 return True, False
             # Owed means this fresh read found pendingFullSync. The event itself
             # carries fullSync false, and connector_doc above was read without
-            # raise_on_error, so a failed read there left effective_full_sync
-            # false and the resume would run incrementally first.
+            # raise_on_error, so a failed read there left both of these false:
+            # the resume would run incrementally first, and a full one would
+            # leave the flag set for the next sync to redo the prep.
+            pending_full_sync = True
             effective_full_sync = True
 
         if effective_full_sync:

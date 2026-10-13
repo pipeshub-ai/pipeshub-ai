@@ -571,6 +571,8 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
         graph.delete_sync_points_by_connector_id.assert_awaited_once()
         graph.delete_connector_sync_edges.assert_awaited_once()
         coordinator.spawn.assert_awaited_once()
+        # Consumed, so the next sync does not delete sync points and edges again.
+        assert {_FULL: False} in [c.args[2] for c in graph.update_node.await_args_list]
 
     @pytest.mark.asyncio
     async def test_a_failed_read_at_capacity_redelivers_without_queueing(self) -> None:
