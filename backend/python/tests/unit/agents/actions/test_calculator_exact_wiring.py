@@ -78,6 +78,11 @@ class TestOutputs:
         payload = json.loads(await Calculator().evaluate_expression(expression="1/0"))
         assert payload == {"expression": "1/0", "error": "Division by zero."}
 
+    async def test_an_oversized_clock_time_is_an_error_not_an_exception(self) -> None:
+        expression = 'hms("' + "1" * 5000 + ':00:00")'
+        payload = json.loads(await Calculator().evaluate_expression(expression=expression))
+        assert "h:mm:ss" in payload["error"]
+
     @pytest.mark.parametrize("expression", [None, 42, ["1+1"]])
     async def test_evaluate_expression_with_a_non_string(self, expression: object) -> None:
         payload = json.loads(await Calculator().evaluate_expression(expression=expression))  # type: ignore[arg-type]

@@ -54,7 +54,9 @@ _TYPOGRAPHIC_OPERATORS = str.maketrans({"×": "*", "÷": "/", "−": "-"})
 _CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 _SECONDS_PER: dict[str, int] = {"seconds": 1, "minutes": 60, "hours": 3600, "days": 86_400}
 _HMS = "hms"
-_CLOCK = re.compile(r"(\d+):(\d{1,2})(?::(\d{1,2}(?:\.\d+)?))?")
+# ASCII digits with bounded field lengths: an unbounded field could exceed
+# int()'s digit limit and escape as a plain ValueError.
+_CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?))?")
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
 
 # name: (fewest arguments, most arguments or None for any number)
@@ -143,7 +145,7 @@ def evaluate(expression: str) -> Evaluation:
         )
     if sum(1 for _ in ast.walk(tree)) > _MAX_NODES:
         raise CalculationError(f"The expression has too many terms (more than {_MAX_NODES}).")
-    value, dimension = _evaluate(tree.body, source)
+    value, dimension = _evaluate(tree.body, source.encode().splitlines(keepends=True))
     if dimension not in _UNITS:
         raise CalculationError(f"The result is in seconds^{dimension}, which is not a usable unit.")
     return Evaluation(value, _UNITS[dimension])
@@ -193,7 +195,7 @@ def _approximate_number(value: float) -> int | float:
     return int(rounded) if rounded.is_integer() and abs(rounded) < 2**53 else rounded
 
 
-def _evaluate(root: ast.expr, source: str) -> Quantity:
+def _evaluate(root: ast.expr, lines: list[bytes]) -> Quantity:
     """Post-order over the tree with an explicit stack: a sum of a few
     thousand terms is a chain deeper than Python's recursion limit."""
     done: dict[int, Quantity] = {}
@@ -205,7 +207,7 @@ def _evaluate(root: ast.expr, source: str) -> Quantity:
             stack.append((node, True))
             stack.extend((operand, False) for operand in reversed(operands))
             continue
-        done[id(node)] = _apply(node, [done.pop(id(operand)) for operand in operands], source)
+        done[id(node)] = _apply(node, [done.pop(id(operand)) for operand in operands], lines)
     return done[id(root)]
 
 
@@ -230,9 +232,9 @@ def _operands(node: ast.expr) -> list[ast.expr]:
     raise CalculationError(_ALLOWED)
 
 
-def _apply(node: ast.expr, operands: list[Quantity], source: str) -> Quantity:
+def _apply(node: ast.expr, operands: list[Quantity], lines: list[bytes]) -> Quantity:
     if isinstance(node, ast.Constant):
-        return _literal(node, source), 0
+        return _literal(node, lines), 0
     if isinstance(node, ast.Name):
         return _CONSTANTS[node.id], 0
     if isinstance(node, ast.BinOp):
@@ -257,18 +259,23 @@ def _apply(node: ast.expr, operands: list[Quantity], source: str) -> Quantity:
     return _call(name, operands)
 
 
-def _literal(node: ast.Constant, source: str) -> Value:
+def _literal(node: ast.Constant, lines: list[bytes]) -> Value:
     value = node.value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CalculationError(f"{value!r} is not a real number.")
     if isinstance(value, int):
         return _bounded(Fraction(value))
-    # The digits as typed, not the nearest double: 1e-400 is not zero.
-    text = ast.get_source_segment(source, node) or repr(value)
+    # The digits as typed, not the nearest double: 1e-400 is not zero. Read
+    # from the source split once per expression (`ast.get_source_segment`
+    # splits it again on every call). AST column offsets are UTF-8 bytes.
+    text = repr(value)
+    if node.end_lineno == node.lineno and node.end_col_offset is not None:
+        text = lines[node.lineno - 1][node.col_offset:node.end_col_offset].decode()
     try:
         return _bounded(Fraction(text.replace("_", "")))
-    except ValueError:
-        return _bounded(Fraction(repr(value)))
+    except ValueError as exc:
+        # Past int()'s digit limit; the cap is far lower.
+        raise CalculationError(f"The result is too large (more than {MAX_DIGITS} digits).") from exc
 
 
 def _bounded(value: Value) -> Value:
@@ -431,18 +438,25 @@ def _unit_preserving(name: str, values: list[Value]) -> Value:
         return max(values)
     rounding = math.floor if name == "floor" else math.ceil
     value = values[0]
-    if isinstance(value, float):
-        value = Fraction(repr(value))
-    return Fraction(rounding(value))
+    result = Fraction(rounding(_carried_digits(value) if isinstance(value, float) else value))
+    return float(result) if isinstance(value, float) else result
 
 
-def _round(value: Value, digits: Value) -> Fraction:
+def _round(value: Value, digits: Value) -> Value:
     if not isinstance(digits, Fraction) or digits.denominator != 1 or abs(digits) > MAX_DIGITS:
         raise CalculationError("round(): the number of digits must be a whole number.")
-    exact = Fraction(repr(value)) if isinstance(value, float) else value
+    exact = _carried_digits(value) if isinstance(value, float) else value
     scale = Fraction(10) ** digits.numerator
     magnitude = Fraction(math.floor(abs(exact) * scale + Fraction(1, 2))) / scale
-    return _bounded(magnitude if exact >= 0 else -magnitude)
+    result = _bounded(magnitude if exact >= 0 else -magnitude)
+    # Rounding an approximate value does not make it exact.
+    return float(result) if isinstance(value, float) else result
+
+
+def _carried_digits(value: float) -> Fraction:
+    """An approximate value at the precision it is reported to, so rounding
+    sees log(1000, 10) as 3, not 2.9999999999999996."""
+    return Fraction(f"{value:.{_SIGNIFICANT_DIGITS}g}")
 
 
 def _float_function(name: str, function: Callable[..., float], values: list[Value]) -> float:
@@ -456,13 +470,17 @@ def _float_function(name: str, function: Callable[..., float], values: list[Valu
         raise CalculationError(f"{name}(): {exc}.") from exc
 
 
+def _clip(text: str, limit: int = 40) -> str:
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
 def _parse_hms(args: list[ast.expr]) -> Fraction:
     if len(args) != 1 or not isinstance(args[0], ast.Constant) or not isinstance(args[0].value, str):
         raise CalculationError('hms() takes one quoted time, e.g. hms("2:00:35") or hms("38:10").')
     text = args[0].value.strip()
     match = _CLOCK.fullmatch(text)
     if match is None:
-        raise CalculationError(f'hms({text!r}): write it as "h:mm:ss" or "mm:ss".')
+        raise CalculationError(f'hms({_clip(text)!r}): write it as "h:mm:ss" or "mm:ss".')
     first, second, third = match.groups()
     if third is None:
         hours, minutes, seconds = 0, int(first), Fraction(second)

@@ -155,6 +155,35 @@ class TestExactArithmetic:
         assert payload["result"] == pytest.approx(expected, rel=1e-14)
         assert payload["approximate"] is True
 
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("round(2*pi, 10)", 6.2831853072),
+            ("round(sin(1), 20)", 0.841470984807897),
+            # Cut to the 15 digits an approximate value carries before
+            # rounding: log(1000, 10) is 2.9999999999999996 in binary.
+            ("floor(log(1000, 10))", 3),
+            ("ceil(sqrt(2)**2)", 2),
+            ("round(log(1000, 10))", 3),
+        ],
+    )
+    def test_rounding_an_approximate_value_stays_approximate(self, expression: str, expected: float) -> None:
+        payload = _result(expression)
+        assert payload["result"] == expected
+        assert payload["approximate"] is True
+        assert "exact" not in payload
+
+    def test_float_literals_are_read_from_one_split_of_the_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # get_source_segment re-splits the whole source on every call: with
+        # thousands of literals that is quadratic.
+        def _refuse(*_args: object, **_kwargs: object) -> str:
+            raise AssertionError("get_source_segment called")
+
+        monkeypatch.setattr("ast.get_source_segment", _refuse)
+        assert _result(" + ".join(["0.1"] * 10)) == {"result": 1}
+        assert _result("(1.5\n + 2.25)") == {"result": 3.75}
+        assert _result("(1.5\r\n+ 2.25\r+ 0.125\n+ 1e-400*1e400)") == {"result": 4.875}
+
     def test_floating_point_results_lose_binary_noise(self) -> None:
         # 15 significant digits: sqrt(2)**2 is 2.0000000000000004 in binary.
         assert _result("sqrt(2)**2")["result"] == 2
@@ -207,6 +236,7 @@ class TestRefusedExpressions:
             ("١٢ + 1", "Not a valid arithmetic expression"),
             ("2 +", "Not a valid arithmetic expression"),
             ("15% * 200", "Not a valid arithmetic expression"),
+            ("0." + "1" * 5000, "too large"),
         ],
     )
     def test_refused_with_a_message_the_model_can_act_on(self, expression: str, hint: str) -> None:
@@ -313,6 +343,9 @@ class TestDurations:
             ('hms("1:00:60")', "seconds must be under 60"),
             ('hms("abc")', "h:mm:ss"),
             ('hms("-1:00")', "h:mm:ss"),
+            ('hms("' + "1" * 5000 + ':00:00")', "h:mm:ss"),
+            ('hms("1:00:00.' + "1" * 5000 + '")', "h:mm:ss"),
+            ('hms("\u0661:00")', "h:mm:ss"),
             ("hms(5)", "quoted time"),
             ('hms("1:00", "2:00")', "quoted time"),
         ],
