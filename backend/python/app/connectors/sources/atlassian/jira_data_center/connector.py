@@ -64,6 +64,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
 from app.connectors.sources.atlassian.core.read_outcome import (
@@ -845,6 +846,12 @@ class JiraDataCenterConnector(BaseConnector):
                 continue
             kept.append((group, permissions))
         return kept
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that kept stored access because the application roles could not be
+        read did not re-read what it kept, so nothing is unlinked after it: unlinking would
+        delete the edges it kept."""
+        return FullSyncCoverage(complete=not bool(self._projects_naming_unread_roles))
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: it grants an application role
