@@ -246,6 +246,132 @@ class TestGrepOnly:
         assert state["retrieved_by"]["v1"].layers == ["pattern_match"]
 
 
+class TestGrepHitOnARecordTheFitDrops:
+    """Grep hits on records semantic search already loaded are not merged as
+    keyword records, since their blocks are about to be shown. When the fit
+    then leaves such a record out, the hint must name it, or nothing in the
+    result points at the record that matched the query's exact terms."""
+
+    @staticmethod
+    async def _search_with_grep(
+        state: dict[str, Any], grep_hits: list[dict[str, Any]], records: dict[str, Any] | None = None,
+        units: list[dict[str, Any]] | None = None, merged: list[dict[str, Any]] | None = None, cap: int = 3_000,
+    ) -> str | list[Any]:
+        if records is None:
+            records, units = _five_records()
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            for entry in merged or []:
+                kwargs["virtual_record_id_to_result"][entry["virtual_record_id"]] = entry["graph_record"]
+            return [{"virtual_record_id": e["virtual_record_id"], "source": "pattern_match"} for e in merged or []]
+
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep_hits)), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge):
+            return await _search(state, records, units, cap=cap)
+
+    @pytest.mark.asyncio
+    async def test_the_dropped_record_is_named_and_can_be_fetched(self) -> None:
+        state = _state(config_service=MagicMock(), include_retrieval_context=True)
+        grep = [{"virtual_record_id": "v4", "match_count": 3, "match_preview": "INV-4242 total"}]
+
+        result = await self._search_with_grep(state, grep)
+
+        assert isinstance(result, str)
+        assert len(result) <= 3_000
+        assert "v4 xxx" not in result
+        hint = result[result.index("Additional records found via pattern matching"):]
+        assert "Record ID: rec-v4\nName: Doc v4\nKeyword Matches: 3\nMatched Text: INV-4242 total" in hint
+        assert "v4" in state["virtual_record_id_to_result"]
+        assert "rec-v4" in state["known_record_ids"]
+        assert "v4" not in {u["virtual_record_id"] for u in state["final_results"]}
+        assert state["retrieved_by"]["v4"].layers == ["pattern_match"]
+        delta = RetrievalContextLedger().take_delta(state)
+        dropped = next(r for r in delta.records if r.virtualRecordId == "v4")
+        assert dropped.blockIndices == []
+
+    @pytest.mark.asyncio
+    async def test_a_shown_record_is_not_named_again(self) -> None:
+        state = _state(config_service=MagicMock())
+
+        result = await self._search_with_grep(state, [{"virtual_record_id": "v0"}])
+
+        assert "v0 xxx" in result
+        assert "pattern matching" not in result
+
+    @pytest.mark.asyncio
+    async def test_nothing_dropped_means_no_hint(self) -> None:
+        state = _state(config_service=MagicMock())
+        records, units = _five_records()
+
+        result = await self._search_with_grep(state, [{"virtual_record_id": "v4"}], records, units, cap=100_000)
+
+        assert "v4 xxx" in result
+        assert "pattern matching" not in result
+
+    @pytest.mark.asyncio
+    async def test_named_after_the_grep_only_records(self) -> None:
+        state = _state(config_service=MagicMock())
+        grep_only = {"virtual_record_id": "g1", "graph_record": {"_key": "rec-g1", "recordName": "Grep doc"}}
+
+        result = await self._search_with_grep(
+            state, [{"virtual_record_id": "v4"}, {"virtual_record_id": "g1"}], merged=[grep_only],
+        )
+
+        assert "Grep doc" in result
+        assert result.index("Grep doc") < result.index("rec-v4")
+        assert {"g1", "v4"} <= set(state["virtual_record_id_to_result"])
+
+    @pytest.mark.asyncio
+    async def test_best_grep_rank_first(self) -> None:
+        state = _state(config_service=MagicMock())
+        grep = [
+            {"virtual_record_id": "v3", "matched_terms": 1, "match_count": 1},
+            {"virtual_record_id": "v4", "matched_terms": 2, "match_count": 1},
+        ]
+
+        result = await self._search_with_grep(state, grep, cap=2_500)
+
+        assert "v3 xxx" not in result and "v4 xxx" not in result
+        assert result.index("rec-v4") < result.index("rec-v3")
+
+    @pytest.mark.timeout(180)
+    def test_identical_under_any_hash_seed(self) -> None:
+        from tests.support.hash_seeds import outputs_across_hash_seeds
+
+        outputs = outputs_across_hash_seeds(
+            "import asyncio\n"
+            "from unittest.mock import MagicMock\n"
+            "from tests.unit.agents.actions.knowledge_graph.test_search_context import "
+            "TestGrepHitOnARecordTheFitDrops as T, _state\n"
+            "grep = [{'virtual_record_id': v, 'match_count': 2} for v in ('v4', 'v3', 'v2')]\n"
+            "print(repr(asyncio.run(T._search_with_grep(_state(config_service=MagicMock()), grep, cap=2_500))))\n"
+        )
+
+        assert len(outputs) == 1
+        assert "pattern matching" in outputs.pop()
+
+    @pytest.mark.asyncio
+    async def test_with_several_sources(self) -> None:
+        state = _state(config_service=MagicMock(), filters={"apps": ["a1", "a2", "a3"], "kb": []})
+        records, units = _five_records()
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update(records)
+            return [dict(unit) for unit in units]
+
+        grep = AsyncMock(return_value=[{"virtual_record_id": "v4"}])
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock), \
+                patch(f"{_SEARCH}.BlobStorage"), patch(f"{_SEARCH}.DEFAULT_MAX_RESULT_CHARS", 3_000), \
+                patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", grep):
+            result = await execute_search(state, "annual fee", source_ids=["a1", "a2", "a3"])
+
+        assert state["retrieval_service"].search_with_filters.await_count == 3
+        assert "v4 xxx" not in result
+        assert "Name: Doc v4" in result
+        assert "v4" in state["virtual_record_id_to_result"]
+
+
 class TestReadingOrder:
     @pytest.mark.asyncio
     async def test_by_default_records_keep_their_id_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
