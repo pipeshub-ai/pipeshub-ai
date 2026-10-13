@@ -5653,7 +5653,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """
         Get a user by their source system ID (sourceUserId field in userAppRelation edge).
@@ -5662,6 +5664,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             source_user_id: The user ID from the source system
             connector_id: Connector ID
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed query instead of returning None
 
         Returns:
             User object if found, None otherwise
@@ -5710,6 +5713,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to get user by source_id {source_user_id}: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_user_id(

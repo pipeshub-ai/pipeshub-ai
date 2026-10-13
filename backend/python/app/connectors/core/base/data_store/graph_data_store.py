@@ -334,8 +334,12 @@ class GraphTransactionStore(TransactionStore):
         self._memo_put(key, value)
         return value
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_source_id(source_user_id, connector_id, transaction=self.txn)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> Optional[User]:
+        return await self.graph_provider.get_user_by_source_id(
+            source_user_id, connector_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)

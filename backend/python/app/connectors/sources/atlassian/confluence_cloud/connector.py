@@ -4021,10 +4021,15 @@ class ConfluenceConnector(BaseConnector):
             return None
 
     async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
-        """Build AppUser for a Confluence accountId linked to this connector."""
+        """Build AppUser for a Confluence accountId linked to this connector.
+
+        Returns None when no user is linked to the accountId. A failed read
+        raises instead: a group saved from it would lose its members.
+        """
         user = await self.data_entities_processor.get_user_by_source_id(
             source_user_id=account_id,
             connector_id=self.connector_id,
+            raise_on_error=True,
         )
         if not user or not user.email:
             return None

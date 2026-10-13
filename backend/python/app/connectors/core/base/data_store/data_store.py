@@ -210,7 +210,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> Optional[User]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers None."""
         pass
 
     @abstractmethod

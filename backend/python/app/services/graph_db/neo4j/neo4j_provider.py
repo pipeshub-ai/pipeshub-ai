@@ -4309,9 +4309,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
-        """Get user by source ID"""
+        """Get user by source ID.
+
+        ``raise_on_error`` raises a failed query instead of returning None.
+        """
         try:
             query = """
             MATCH (app:App {id: $connector_id})
@@ -4335,6 +4340,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user by source ID failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_user_id(

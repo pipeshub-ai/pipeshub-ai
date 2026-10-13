@@ -613,6 +613,43 @@ class TestGroups:
         assert group.source_user_group_id == "grp-eng"
         assert saved_members == []
 
+    async def test_a_failed_account_id_lookup_does_not_empty_the_group(self, api, db, checkpoints) -> None:
+        # Confluence hides emails, so the members come back as account ids only.
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId", {"results": [{"accountId": "acc-ana"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        async def failing_read(
+            source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+        ) -> None:
+            # Like the graph providers: a failed query answers None unless asked to raise.
+            if raise_on_error:
+                raise ConnectionError("database unavailable")
+            return None
+
+        db.get_user_by_source_id = failing_read
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+    async def test_an_account_id_with_no_linked_user_is_left_off_the_group(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana"}, {"accountId": "acc-unknown"}], "size": 2})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng"
+        assert [m.email for m in saved_members] == ["ana@acme.com"]
+
     async def test_short_pages_that_say_more_follow_are_followed(self, api, db, checkpoints) -> None:
         for source_id, email in (("acc-ana", "ana@acme.com"), ("acc-bo", "bo@acme.com")):
             db.app_users.append(AppUser(

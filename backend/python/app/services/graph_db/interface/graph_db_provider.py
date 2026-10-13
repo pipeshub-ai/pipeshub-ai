@@ -2396,7 +2396,9 @@ class IGraphDBProvider(ABC):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by their source system ID.
@@ -2405,6 +2407,8 @@ class IGraphDBProvider(ABC):
             source_user_id (str): User ID in source system
             connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed query instead of returning
+                None, so a caller can tell "not found" from "could not read".
 
         Returns:
             Optional[Dict]: User data if found, None otherwise

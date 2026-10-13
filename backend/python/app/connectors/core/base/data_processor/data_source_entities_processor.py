@@ -3617,11 +3617,12 @@ class DataSourceEntitiesProcessor:
             )
             
     async def get_user_by_source_id(
-        self, source_user_id: str, connector_id: str
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None:
+        """``raise_on_error`` raises a failed read instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_by_source_id(
-                source_user_id, connector_id
+                source_user_id, connector_id, raise_on_error=raise_on_error
             )
 
     async def get_user_by_email(self, email: str) -> User | None:
