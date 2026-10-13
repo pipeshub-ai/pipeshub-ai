@@ -228,9 +228,10 @@ deployment/docker-compose/bootstrap-first-run.env
 # Local scratch workspace, not part of the repo
 loom/
 node_modules
-# Personal Claude Code state stays local; shared agent config is tracked.
-.claude/*
-!.claude/settings.json
-!.claude/rules/
-!.claude/skills/
-!.claude/agents/
+# Personal Claude Code state stays local; shared agent config at the repo root is tracked.
+*/**/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/rules/
+!/.claude/skills/
+!/.claude/agents/
