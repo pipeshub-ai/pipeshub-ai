@@ -4032,6 +4032,48 @@ def _resolve_pending_images(
     return resolved
 
 
+def _image_item_bound(ref: str) -> int:
+    """Longest line `_render_blocks_with_images` prints for one image item."""
+    marker = f"[{ref}]"
+    forms = [f"    {marker} (image)\n"]
+    forms += [
+        "    " + image_marker_text(marker, reason=reason).rstrip() + "\n"
+        for reason in (None, *DegradeReason)
+    ]
+    return max(len(form) for form in forms)
+
+
+def _images_render_bound(blocks_list: list[dict[str, Any]]) -> int:
+    """An upper bound on the text `_render_blocks_with_images` prints for these
+    entries, whatever admission decides for their images. Mirrors its layout:
+    one `[idx|ref]` line per block index, then each fragment indented."""
+    total = 0
+    for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
+        group = list(group_iter)
+        first = group[0]
+        label = f"[{first.get('block_index')}|{first.get('citation_ref', '')}]"
+        if len(group) == 1 and first.get("block_type") != BlockType.IMAGE.value:
+            total += len(f"{label} {first.get('content')}\n")
+            continue
+        total += len(f"{label}\n")
+        for item in group:
+            if item.get("block_type") == BlockType.IMAGE.value:
+                total += _image_item_bound(item.get("citation_ref", ""))
+            else:
+                total += len(f"    {item.get('content')}\n")
+    return total
+
+
+def _without_pixels(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Entries with each image replaced by a text placeholder: the form a unit
+    takes when it must be clipped to fit, where its pixels cannot go."""
+    return [
+        {**entry, "block_type": BlockType.TEXT.value, "content": "(image, not shown)"}
+        if entry.get("block_type") == BlockType.IMAGE.value else entry
+        for entry in entries
+    ]
+
+
 def _fk_lines_text(record: dict[str, Any]) -> str:
     """The foreign-key tables a SQL table record points to, or ""."""
     fk_parent = record.get("fk_parent_record_ids")
@@ -4310,14 +4352,19 @@ def record_to_message_content(
                         # A selection enters a table at its first selected row
                         # and reads on from there, after the gap it announced.
                         first_row = start_block if include_blocks is None else max(start_block, block_index)
+                        # A selection reads only its own rows of the table; the rows
+                        # between are announced inside the table, where the walk
+                        # will not reach them again.
                         rows_to_be_included_list = [
-                            r for r in rows_to_be_included_list if r >= first_row
+                            r for r in rows_to_be_included_list
+                            if r >= first_row and (include_blocks is None or r in include_blocks)
                         ]
                         # The header (a SQL table's DDL included) and each row's
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
                         framing = _TableFraming(block_group_index, table_summary_text(data))
+                        image_table_header = f"[Table #{block_group_index}: {table_summary_text(data)}]\n"
                         truncation_reserve = framing.row(
                             block_index, "",
                             f"[… showing {rows_total} of {rows_total} rows; the rest did not fit …]",
@@ -4342,7 +4389,26 @@ def record_to_message_content(
                                 if child["block_type"] != BlockType.IMAGE.value
                                 else framing.row(row_index, peeked_ref, "")
                                 for child in row_children
-                            ) + (framing.header if table_charged == 0 else 0)
+                            )
+                            if is_multimodal_llm:
+                                # A table with an image row prints every row in
+                                # the image form, so a row costs the larger of
+                                # the two.
+                                cost = max(cost, _images_render_bound(
+                                    [{**child, "citation_ref": peeked_ref} for child in row_children],
+                                ))
+                            if table_charged == 0:
+                                cost += max(framing.header, len(image_table_header))
+                            gap_row = None
+                            if rows_rendered and row_index in gap_markers:
+                                gap_row = {
+                                    "content": gap_markers[row_index].strip(),
+                                    "block_type": BlockType.TABLE_ROW.value,
+                                    "block_index": "…",
+                                    "block_web_url": "",
+                                    "citation_ref": "",
+                                }
+                                cost += framing.row("…", "", gap_row["content"])
                             reserve = 0 if row_index == last_row else truncation_reserve
                             if not render_budget.can_afford_chars(cost + reserve):
                                 rows_exhausted = True
@@ -4350,6 +4416,9 @@ def record_to_message_content(
                                 break
                             render_budget.charge_chars(cost)
                             table_charged += cost
+                            if gap_row is not None:
+                                child_results.append(gap_row)
+                                gaps_emitted = True
                             child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
                             for child in row_children:
                                 child["citation_ref"] = child_citation_ref
@@ -4410,15 +4479,15 @@ def record_to_message_content(
                                     render_budget.charge_framing_chars(len(table_text) - table_charged)
                                 content.append({"type": "text", "text": table_text})
                             else:
-                                header = f"[Table #{block_group_index}: {table_summary_text(data)}]\n"
-                                content.append({
-                                    "type": "text",
-                                    "text": header,
-                                })
-                                content.extend(_render_blocks_with_images(
+                                printed = [{"type": "text", "text": image_table_header}]
+                                printed.extend(_render_blocks_with_images(
                                     child_results, is_multimodal_llm, image_budget, collected_images,
                                     image_admission=admission, image_origin=image_origin,
                                 ))
+                                printed_chars = sum(len(item.get("text", "")) for item in printed)
+                                if printed_chars > table_charged:
+                                    render_budget.charge_framing_chars(printed_chars - table_charged)
+                                content.extend(printed)
                             _renderable_rendered += 1
                             render_budget.count_block()
                             render_budget.note_shown(rows_rendered)
@@ -4465,19 +4534,35 @@ def record_to_message_content(
                         render_budget.stop_at(block_index)
                         break
                     content.append({"type": "text", "text": emitted})
-                else:
-                    header = f"[{block_group.get('type')} #{parent_index}]\n"
-                    emitted = render_budget.take(header)
-                    if emitted is None:
-                        if _truncated_at is None:
-                            _truncated_at = block_index
-                        render_budget.stop_at(block_index)
-                        break
-                    content.append({"type": "text", "text": emitted})
-                    content.extend(_render_blocks_with_images(
+                elif render_budget.can_afford_chars(
+                    len(f"[{block_group.get('type')} #{parent_index}]\n")
+                    + _images_render_bound(group_blocks),
+                ):
+                    group_header = f"[{block_group.get('type')} #{parent_index}]\n"
+                    printed = [{"type": "text", "text": group_header}]
+                    printed.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, collected_images,
                         image_admission=admission, image_origin=image_origin,
                     ))
+                    render_budget.charge_chars(sum(len(item.get("text", "")) for item in printed))
+                    content.extend(printed)
+                elif _renderable_rendered == 0:
+                    # The first unit of a read must make progress: its text is
+                    # clipped like a text block's, and its pixels are not sent.
+                    text_form = template.render(
+                        block_group_index=parent_index,
+                        block_group_web_url="",
+                        label=block_group.get("type"),
+                        blocks=_without_pixels(group_blocks),
+                        file_path=record_file_path,
+                    )
+                    emitted = render_budget.take(f"{text_form}\n\n")
+                    content.append({"type": "text", "text": emitted or ""})
+                else:
+                    if _truncated_at is None:
+                        _truncated_at = block_index
+                    render_budget.stop_at(block_index)
+                    break
                 _renderable_rendered += 1
                 # A group is one renderable unit, the same as a table or a
                 # top-level block. Without this it cost nothing against

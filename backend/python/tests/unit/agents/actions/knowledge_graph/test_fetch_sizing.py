@@ -295,16 +295,48 @@ class TestTheResultFitsTheToolResultCap:
         assert next_start == max(outcome["shownBlocks"]) + 1
 
 
-class TestATableReadInOrderSaysSo:
-    """G6: a large sheet renders its rows in order. It overran the budget
-    (row framing was not counted) and was labelled "most relevant"."""
+class TestLargeSheets:
+    """G6: a large sheet is one table of thousands of rows. Its rows were read
+    in order from the first selected row whatever was selected, so a hit deep
+    in the sheet was dropped, and the in-order read was labelled "most
+    relevant". Row framing was not counted, so it overran the budget."""
 
-    @pytest.mark.asyncio
-    async def test_rows_in_order_with_a_continuation(self) -> None:
+    @staticmethod
+    def _service() -> MagicMock:
         service = MagicMock()
         service.search_with_filters = AsyncMock(return_value={"searchResults": [
             {"metadata": {"virtualRecordId": "vr-s", "blockIndex": 4200}}]})
-        context = _context(retrieval_service=service)
+        return service
+
+    @pytest.mark.asyncio
+    async def test_a_hit_deep_in_the_sheet_is_shown_after_its_gap(self) -> None:
+        context = _context(retrieval_service=self._service())
+        text = await _fetch(context, [_sheet("s", 5000)])
+
+        rows = [int(r) for r in re.findall(r"row (\d+):", text)]
+        assert 0 in rows and 4200 in rows
+        assert rows == sorted(rows)
+        gaps = [int(g) for g in _GAP.findall(text)]
+        assert any(0 < g < 4200 for g in gaps), "the rows between are announced as a gap"
+        claimed = re.search(r"showed the (\d+) block\(s\) most relevant to the question, of 5000", text)
+        assert claimed is not None and int(claimed.group(1)) == len(rows)
+        assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
+
+    @pytest.mark.asyncio
+    async def test_a_gap_inside_the_sheet_is_read_in_order(self) -> None:
+        context = _context(retrieval_service=self._service())
+        first = await _fetch(context, [_sheet("s", 5000)])
+        start = next(int(g) for g in _GAP.findall(first) if 0 < int(g) < 4200)
+
+        second = await _fetch(context, [_sheet("s", 5000)], start_block=start, start_block_sent=True)
+
+        rows = [int(r) for r in re.findall(r"row (\d+):", second)]
+        assert rows == list(range(start, start + len(rows)))
+        assert "most relevant" not in second
+
+    @pytest.mark.asyncio
+    async def test_a_sheet_read_in_order_says_so(self) -> None:
+        context = _context(retrieval_service=self._service(), needs_whole_document=True)
         text = await _fetch(context, [_sheet("s", 5000)])
 
         rows = [int(r) for r in re.findall(r"row (\d+):", text)]
@@ -561,3 +593,82 @@ class TestEdgesOfACall:
 
         assert len(text) <= DEFAULT_MAX_RESULT_CHARS
         assert all(_shown(text, f"s{i}") for i in range(3))
+
+
+def _png_uri() -> str:
+    from tests.unit.utils.test_fetch_citation_refs import _png
+
+    return _png(3)
+
+
+class TestImageFormsAreCharged:
+    """A group or table row that carries an image renders in another form;
+    its text was not charged, so a large one passed the cap while the record
+    was reported complete."""
+
+    @staticmethod
+    def _list_with_an_image(items: int, chars: int) -> dict[str, Any]:
+        blocks: list[dict[str, Any]] = [
+            {"index": i, "type": BlockType.TEXT.value, "parent_index": 0,
+             "data": f"gl para {i} " + "x" * chars}
+            for i in range(items)
+        ]
+        # Item 1 is split around an inline image: its text and pixels are fragments.
+        blocks[1] = {"index": 1, "type": BlockType.TEXT.value, "parent_index": 0, "data": ""}
+        blocks.append({"index": items, "type": BlockType.TEXT.value, "parent_block_index": 1,
+                       "data": "gl para 1 caption text"})
+        blocks.append({"index": items + 1, "type": BlockType.IMAGE.value, "parent_block_index": 1,
+                       "data": {"uri": _png_uri()}})
+        record = _text_record("gl", 0, 0)
+        record["block_containers"] = {"blocks": blocks, "block_groups": [{
+            "index": 0, "type": GroupType.LIST.value, "data": {},
+            "children": {"block_ranges": [{"start": 0, "end": items - 1}]},
+        }]}
+        return record
+
+    @pytest.mark.asyncio
+    async def test_a_group_with_an_image_stays_inside_the_budget(self) -> None:
+        context = _context(query="", is_multimodal_llm=True)
+        context.tool_state["supports_multipart_tool_result"] = True
+
+        text = await _fetch(context, [self._list_with_an_image(items=60, chars=1_500)])
+
+        assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
+        assert _outcome(context, "rec-gl")["complete"] is False
+        assert "rec-gl" not in context.full_records_fetched
+
+    @pytest.mark.asyncio
+    async def test_a_group_with_an_image_that_fits_is_read_whole(self) -> None:
+        context = _context(query="", is_multimodal_llm=True)
+        context.tool_state["supports_multipart_tool_result"] = True
+
+        text = await _fetch(context, [self._list_with_an_image(items=6, chars=100)])
+
+        assert _outcome(context, "rec-gl")["complete"] is True
+        assert "gl para 5" in text
+
+    @pytest.mark.asyncio
+    async def test_a_table_with_image_rows_stays_inside_the_budget(self) -> None:
+        blocks: list[dict[str, Any]] = [
+            {"index": i, "type": BlockType.TABLE_ROW.value, "parent_index": 0,
+             "data": {"row_natural_language_text": "" if i % 2 else f"row {i}: " + "v" * 200}}
+            for i in range(400)
+        ]
+        fragments = []
+        for i in range(1, 400, 2):
+            fragments.append({"index": 1000 + 2 * i, "type": BlockType.TEXT.value, "parent_block_index": i,
+                              "data": f"row {i}: " + "w" * 200})
+            fragments.append({"index": 1001 + 2 * i, "type": BlockType.IMAGE.value, "parent_block_index": i,
+                              "data": {"uri": _png_uri(), "description": "a chart " + "d" * 300}})
+        record = _sheet("ti", 0)
+        record["block_containers"] = {"blocks": blocks + fragments, "block_groups": [{
+            "index": 0, "type": GroupType.TABLE.value, "data": {"table_summary": "Sheet1"},
+            "children": {"block_ranges": [{"start": 0, "end": 399}]},
+        }]}
+        context = _context(query="", is_multimodal_llm=True)
+        context.tool_state["supports_multipart_tool_result"] = True
+
+        text = await _fetch(context, [record])
+
+        assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
+        assert _outcome(context, "rec-ti")["complete"] is False
