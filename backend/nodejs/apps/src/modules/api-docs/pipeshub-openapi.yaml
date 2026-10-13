@@ -6841,6 +6841,7 @@ components:
         where:
           description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
           not: {}
+          x-speakeasy-ignore: true
 
     AppliedFilterNode:
       type: object
