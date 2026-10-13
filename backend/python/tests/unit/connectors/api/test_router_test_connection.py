@@ -90,7 +90,7 @@ _PASSWORD_SCHEMA = {
 }
 
 
-async def test_editing_keeps_a_saved_secret_sent_back_as_the_mask(checking_connector):
+async def test_editing_keeps_a_saved_secret_sent_back_as_the_mask(checking_connector) -> None:
     saved = {"auth": {"host": "db.example.com", "password": "saved-pw"}}
     request, config_service = _make_request(
         {"auth": {"host": "db.example.com", "password": REDACTED_PLACEHOLDER}, "connectorId": "c1"},
@@ -107,7 +107,7 @@ async def test_editing_keeps_a_saved_secret_sent_back_as_the_mask(checking_conne
     assert auth == {"host": "db.example.com", "password": "saved-pw"}
 
 
-async def test_a_new_secret_replaces_the_saved_one(checking_connector):
+async def test_a_new_secret_replaces_the_saved_one(checking_connector) -> None:
     saved = {"auth": {"host": "db.example.com", "password": "saved-pw"}}
     request, config_service = _make_request(
         {"auth": {"password": "new-pw"}, "connectorId": "c1"}, saved_config=saved, metadata=_PASSWORD_SCHEMA
