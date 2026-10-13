@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
-from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY, multi_step_answer_rules
 from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
@@ -427,6 +427,9 @@ def _build_finding_information(
             "same query WITHOUT date filters before concluding nothing "
             "exists."
         )
+        multi_step = multi_step_answer_rules()
+        if multi_step:
+            parts.append(multi_step)
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
