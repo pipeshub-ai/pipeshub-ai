@@ -3936,6 +3936,7 @@ async def _full_save_oauth_app(
     is created and linked, because an app the request did not name may be shared by other
     connectors, which would all switch credentials while only this one is signed out.
     """
+    auth_type = instance.get("authType", "").upper()
     named_app_id = incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
     current_app_id = named_app_id or stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
@@ -4001,7 +4002,7 @@ async def _full_save_oauth_app(
         is_admin=True,
         config_service=config_service,
         oauth_config_id=None,
-        auth_type=AuthType.OAUTH,
+        auth_type=auth_type,
         base_url=base_url,
         logger=logger,
         connector_scope=instance.get("scope"),

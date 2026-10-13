@@ -13,6 +13,7 @@ import json
 import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -474,7 +475,7 @@ class TestServiceNowProviderUrls:
 
     async def test_registry_placeholder_urls_saved_earlier_never_go_into_an_app(self) -> None:
         defaults = router_module._registry_oauth_urls("ServiceNow")
-        assert "example.service-now.com" in defaults["authorizeUrl"]
+        assert urlparse(defaults["authorizeUrl"]).hostname == "example.service-now.com"
         store = InMemoryConfigService(
             {CONFIG_PATH: {"auth": {"connectorScope": "team", "instanceUrl": SN_URLS["instanceUrl"], **defaults}}}
         )
