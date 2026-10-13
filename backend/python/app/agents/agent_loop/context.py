@@ -37,9 +37,9 @@ class AgentContext(BaseModel):
     # One ledger per request so `retrieval_context` frames carry only what
     # is new since the last tool call, not the whole accumulated set.
     _retrieval_ledger: Any = PrivateAttr(default=None)
-    # LLM calls made outside `Agent`'s own turn loop (auto-compact
-    # summaries), which `Agent.usage` never sees.
-    _auxiliary_usage: Any = PrivateAttr(default=None)
+    # LLM calls made outside `Agent`'s own turn loop (sub-agents, auto-compact
+    # summaries, grep-command generation), which `Agent.usage` never sees.
+    _usage_ledger: Any = PrivateAttr(default=None)
 
     # Identity
     org_id: str
@@ -461,12 +461,12 @@ class AgentContext(BaseModel):
         return self._retrieval_ledger
 
     @property
-    def auxiliary_usage(self) -> Any:  # noqa: ANN401
-        from app.agent_loop_lib.core.responses import RunUsage
+    def usage_ledger(self) -> Any:  # noqa: ANN401
+        from app.agents.agent_loop.protocol.run_usage import UsageLedger
 
-        if self._auxiliary_usage is None:
-            self._auxiliary_usage = RunUsage()
-        return self._auxiliary_usage
+        if self._usage_ledger is None:
+            self._usage_ledger = UsageLedger()
+        return self._usage_ledger
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -545,6 +545,9 @@ class AgentContext(BaseModel):
             # Mirrored so a tool can see the flag without reaching for the
             # context (`fetch.py` records render outcomes only when it is on).
             "include_retrieval_context": self.include_retrieval_context,
+            # Tools that call a model themselves (grep-command generation)
+            # report into it; absent unless the request opted in.
+            "usage_ledger": self.usage_ledger if self.include_retrieval_context else None,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,

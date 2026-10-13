@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -20,6 +21,7 @@ from app.agent_loop_lib.modules.stores.timeline.base import TimelineStore
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
+    from app.agent_loop_lib.core.responses import RunUsage, TokenUsage
     from app.agent_loop_lib.core.scope import RunScope
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agent_loop_lib.tools.summarizer import ToolSummarizer
     from app.agent_loop_lib.transport.registry import TransportRegistry
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["AgentRuntime", "MAX_SPAWN_DEPTH"]
 
@@ -92,6 +96,13 @@ class AgentRuntime:
     # `None` (the default, e.g. `ControlPlane` standalone agents) means
     # "no summaries" — every downstream consumer already tolerates that.
     summarizer: "ToolSummarizer | None" = None
+
+    # Receives `(source, usage)` for every LLM call a child agent made,
+    # `source` being `"sub_agent:<spec name>"`. A child is a separate `Agent`
+    # with its own `usage`, which `run_child()` callers never see, so a
+    # caller accounting for a whole request's model calls needs this. `None`
+    # (the default) costs nothing.
+    usage_sink: "Callable[[str, TokenUsage], None] | None" = None
 
     def __post_init__(self) -> None:
         if self.hooks is None:
@@ -242,6 +253,19 @@ class AgentRuntime:
             goal=goal,
             project_name=self.opik_project_name,
         ) as span:
-            result = await child.run(goal)
+            try:
+                result = await child.run(goal)
+            finally:
+                self._report_child_usage(spec.name, child.usage)
             record_agent_span_result(span, result=result)
             return result
+
+    def _report_child_usage(self, name: str, usage: "RunUsage") -> None:
+        if self.usage_sink is None:
+            return
+        try:
+            for request_usage in usage.per_request:
+                self.usage_sink(f"sub_agent:{name}", request_usage)
+        except Exception:
+            # Accounting must never cost the child's result.
+            logger.warning("run_child: usage sink failed for %s", name, exc_info=True)

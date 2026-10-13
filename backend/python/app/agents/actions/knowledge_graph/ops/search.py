@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.ops.entity_records import (
     resolve_entity_virtual_ids,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
@@ -460,6 +461,7 @@ async def execute_search(
                     logger_instance=logger_instance,
                     llm=state.get("llm"),
                     user_query=state.get("query"),
+                    on_llm_usage=grep_generation_usage_reporter(state),
                 )
             )
 

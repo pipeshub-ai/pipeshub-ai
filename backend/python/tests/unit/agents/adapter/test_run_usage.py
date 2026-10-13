@@ -2,18 +2,24 @@
 
 from __future__ import annotations
 
-import inspect
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
 from app.agent_loop_lib.core.responses import RunUsage, TokenUsage
 from app.agent_loop_lib.core.types import UserMessage
 from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import make_llm_summarizer
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
-from app.agents.agent_loop.protocol.run_usage import RunUsagePayload, emit_run_usage
+from app.agents.agent_loop.protocol.run_usage import (
+    MAX_CALLS_PER_FRAME,
+    RunUsagePayload,
+    UsageLedger,
+    emit_run_usage,
+    grep_generation_usage_reporter,
+)
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -26,15 +32,47 @@ def _usage(requests: int, inp: int, out: int, cache_read: int = 0, cache_write: 
     return usage
 
 
-def test_payload_sums_loop_and_auxiliary_usage() -> None:
-    payload = RunUsagePayload.from_usage(_usage(3, 100, 10, 40, 5), _usage(1, 500, 50), model="m")
-    assert payload.llmCalls == 4
-    assert payload.inputTokens == 800
-    assert payload.outputTokens == 80
-    assert payload.cacheReadTokens == 120
-    assert payload.auxiliaryLlmCalls == 1
+def _ledger(*entries: tuple[str, TokenUsage]) -> UsageLedger:
+    ledger = UsageLedger()
+    for source, usage in entries:
+        ledger.add(source, usage)
+    return ledger
+
+
+def test_payload_sums_the_main_loop_and_every_other_call() -> None:
+    ledger = _ledger(
+        ("auto_compact", TokenUsage(input_tokens=500, output_tokens=50)),
+        ("sub_agent:researcher", TokenUsage(input_tokens=60, output_tokens=6, cache_read_tokens=30)),
+        ("grep_generation", TokenUsage(input_tokens=9, output_tokens=1)),
+    )
+
+    payload = RunUsagePayload.from_usage(_usage(3, 100, 10, 40, 5), ledger, model="m")
+
+    assert payload.llmCalls == 6
+    assert payload.auxiliaryLlmCalls == 3
+    assert payload.inputTokens == 300 + 500 + 60 + 9
+    assert payload.outputTokens == 30 + 50 + 6 + 1
+    assert payload.cacheReadTokens == 120 + 30
     assert payload.cacheWriteTokens == 15
-    assert payload.calls == [[100, 10, 40, 5]] * 3 + [[500, 50, 0, 0]]
+    assert payload.calls == [[100, 10, 40, 5]] * 3 + [[500, 50, 0, 0], [60, 6, 30, 0], [9, 1, 0, 0]]
+    assert payload.callSources == [
+        "main", "main", "main", "auto_compact", "sub_agent:researcher", "grep_generation",
+    ]
+
+
+def test_a_frame_within_the_call_cap_carries_no_truncated_key() -> None:
+    payload = RunUsagePayload.from_usage(_usage(2, 1, 1), UsageLedger(), model="m")
+    assert "truncated" not in payload.to_wire_dict()
+
+
+def test_the_per_call_breakdown_is_capped_but_the_totals_are_not() -> None:
+    loop_calls = MAX_CALLS_PER_FRAME + 4
+    ledger = _ledger(("auto_compact", TokenUsage(input_tokens=500, output_tokens=50)))
+    payload = RunUsagePayload.from_usage(_usage(loop_calls, 10, 1), ledger, model="m")
+    assert len(payload.calls) == len(payload.callSources) == MAX_CALLS_PER_FRAME
+    assert payload.truncated is True
+    assert payload.llmCalls == loop_calls + 1
+    assert payload.inputTokens == loop_calls * 10 + 500
 
 
 def test_agui_frame_is_custom_run_usage() -> None:
@@ -62,6 +100,23 @@ async def test_summarizer_reports_usage() -> None:
     assert seen == [TokenUsage(input_tokens=7, output_tokens=3)]
 
 
+@pytest.mark.asyncio
+async def test_a_failing_usage_callback_keeps_the_summary() -> None:
+    class _Transport:
+        async def complete(self, **_: Any) -> Any:  # noqa: ANN401
+            return SimpleNamespace(
+                message=SimpleNamespace(text="the model's summary"),
+                usage=TokenUsage(input_tokens=7, output_tokens=3),
+            )
+
+    def broken_callback(_usage: TokenUsage) -> None:
+        raise RuntimeError("telemetry bug")
+
+    registry = SimpleNamespace(resolve=lambda _provider: _Transport())
+    summarize = make_llm_summarizer(registry, "langchain", "m", on_usage=broken_callback)
+    assert await summarize([UserMessage(content="hi")]) == "the model's summary"
+
+
 class TestLoopOutcomeFieldsAreValidatedOnAssignment:
     """`emit_run_usage` sets the loop-outcome fields after construction.
     Pydantic does not validate assignment by default, so `payload.turns =
@@ -73,10 +128,6 @@ class TestLoopOutcomeFieldsAreValidatedOnAssignment:
         payload = RunUsagePayload()
         with pytest.raises(ValidationError):
             payload.turns = []  # type: ignore[assignment]
-
-    def test_turns_is_a_count_not_the_turn_list(self) -> None:
-        from app.agents.agent_loop.protocol.run_usage import emit_run_usage
-        assert "len(turns)" in inspect.getsource(emit_run_usage)
 
 
 @pytest.mark.asyncio
@@ -126,3 +177,21 @@ async def test_emit_run_usage_never_raises_onto_the_answer_path() -> None:
     await emit_run_usage(context, agent, result, model="m")
 
     assert written == []
+
+
+class TestGrepGenerationUsage:
+    def test_reports_into_the_request_ledger(self) -> None:
+        ledger = UsageLedger()
+        report = grep_generation_usage_reporter({"usage_ledger": ledger})
+        assert report is not None
+
+        report(AIMessage(content="", usage_metadata={
+            "input_tokens": 40, "output_tokens": 12, "total_tokens": 52,
+        }))
+
+        assert ledger.entries == [("grep_generation", TokenUsage(input_tokens=40, output_tokens=12))]
+
+    def test_nothing_is_wired_unless_the_request_opted_in(self) -> None:
+        assert grep_generation_usage_reporter({"usage_ledger": None}) is None
+        assert grep_generation_usage_reporter({}) is None
+        assert grep_generation_usage_reporter(None) is None

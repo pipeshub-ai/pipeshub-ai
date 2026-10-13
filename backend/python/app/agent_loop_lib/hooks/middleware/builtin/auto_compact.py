@@ -166,7 +166,11 @@ def make_llm_summarizer(
                 model=model,
             )
             if on_usage is not None and getattr(response, "usage", None) is not None:
-                on_usage(response.usage)
+                try:
+                    on_usage(response.usage)
+                except Exception:
+                    # Usage accounting must not cost the summary it accounts for.
+                    logger.warning("auto_compact: on_usage callback failed", exc_info=True)
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)

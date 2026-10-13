@@ -2221,6 +2221,44 @@ class TestGenerateGrepCommandViaLlm:
         assert result == ['grep -rci "ttl" .']
 
     @pytest.mark.asyncio
+    async def test_every_attempt_that_returned_reports_its_usage(self) -> None:
+        """Grep generation calls the model outside the agent loop, so the
+        request's usage misses it unless the call reports it."""
+        empty = AIMessage(content="", usage_metadata={"input_tokens": 30, "output_tokens": 2, "total_tokens": 32})
+        good = AIMessage(content="", usage_metadata={"input_tokens": 31, "output_tokens": 9, "total_tokens": 40})
+        parsed = GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .'])
+        structured_llm = _mock_structured_llm(side_effect=[
+            {"raw": empty, "parsed": None, "parsing_error": None},
+            {"raw": good, "parsed": parsed, "parsing_error": None},
+        ])
+        seen: list[AIMessage] = []
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(), on_llm_usage=seen.append,
+            )
+
+        assert result == ['grep -rci "ttl" .']
+        assert seen == [empty, good]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_usage_callback_keeps_the_commands(self) -> None:
+        parsed = GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .'])
+        structured_llm = _mock_structured_llm(
+            return_value={"raw": AIMessage(content=""), "parsed": parsed, "parsing_error": None},
+        )
+
+        def broken(_message: AIMessage) -> None:
+            raise RuntimeError("accounting bug")
+
+        with self._patches(structured_llm):
+            result = await generate_grep_command_via_llm(
+                query="q", llm=MagicMock(), logger_instance=MagicMock(), on_llm_usage=broken,
+            )
+
+        assert result == ['grep -rci "ttl" .']
+
+    @pytest.mark.asyncio
     async def test_agent_query_leads_and_question_is_context(self) -> None:
         structured_llm = _mock_structured_llm(
             return_value=GrepCommandResult(reasoning="r", grep_commands=['grep -rci "ttl" .']),
