@@ -33,11 +33,22 @@ from app.modules.parsers.code_parser.lang_config import (
 )
 from app.modules.parsers.code_parser.models import Relation
 from app.services.parsing.interface import ParseResult, ParserProvider
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from app.modules.parsers.code_parser.models import ParsedFile, ParsedSymbol
 
 __all__ = ["CodeFileParser", "parse_code_to_blocks", "qualified_name_for"]
+
+# A file past these is data or generator output that slipped past the name and
+# content checks in ``routing``: every block is a graph node and an embedding,
+# and a 2 MB file of one-line functions made 50,000 of each; the largest real
+# file in PipesHub's own repo has about 3,200 spans. It is read as text instead.
+# Repeated facts go first, which costs no edges (the edge builder keeps one per
+# from, to and relation); the cap on distinct ones sits well above a large
+# hand-written function's few hundred callees.
+MAX_BLOCKS_PER_FILE = max(1, env_int("CODE_FILE_MAX_BLOCKS", 5000))
+MAX_FACTS_PER_BLOCK = max(1, env_int("CODE_BLOCK_MAX_FACTS", 2000))
 
 _MAX_SIGNATURE_CHARS = 300
 _MAX_DOCSTRING_CHARS = 500
@@ -200,7 +211,8 @@ class CodeFileParser:
         file_path: str | None = None,
         language: str | None = None,
     ) -> BlocksContainer | None:
-        """Return blocks, or ``None`` when the file was skipped (e.g. oversized).
+        """Return blocks, or ``None`` when the file was skipped (oversized, or
+        more than ``MAX_BLOCKS_PER_FILE`` definitions).
 
         Callers receiving ``None`` should fall back to an alternative parser
         rather than treating the file as empty.
@@ -215,6 +227,8 @@ class CodeFileParser:
             return None
         if not parsed.symbols:
             return BlocksContainer()
+        if len(parsed.symbols) > MAX_BLOCKS_PER_FILE:
+            return None
         return self._to_container(parsed, path, record_name)
 
     # ------------------------------------------------------------------
@@ -389,9 +403,19 @@ class CodeFileParser:
                         blocks: list[Block], groups: list[BlockGroup]) -> list[dict]:
         """Bucket pending facts by owning block; return the file-level ones."""
         buckets: dict[tuple[bool, int] | None, list[dict]] = {}
+        seen: dict[tuple[bool, int] | None, set[tuple]] = {}
         for fact in parsed.pending:
             key = placement.get(fact.from_symbol) if fact.from_symbol is not None else None
-            buckets.setdefault(key, []).append(fact.to_dict())
+            facts = buckets.setdefault(key, [])
+            if len(facts) >= MAX_FACTS_PER_BLOCK:
+                continue
+            fact_dict = fact.to_dict()
+            # The same call on another line resolves to the same edge.
+            identity = tuple(sorted((k, v) for k, v in fact_dict.items() if k != "line"))
+            if identity in seen.setdefault(key, set()):
+                continue
+            seen[key].add(identity)
+            facts.append(fact_dict)
 
         for key, facts in buckets.items():
             if key is None:

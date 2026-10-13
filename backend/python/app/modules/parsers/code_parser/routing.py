@@ -15,7 +15,10 @@ from enum import Enum
 
 from app.config.constants.arangodb import ExtensionTypes
 from app.modules.parsers.code_parser import engine
-from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.file_role import (
+    is_generated_content,
+    is_generated_file_name,
+)
 from app.modules.parsers.code_parser.lang_config import config_for_extension
 from app.utils.user_errors import (
     BINARY_FILE_SKIPPED,
@@ -108,7 +111,7 @@ def plan_code_file(
 
     *repository_file* is True for a file a connector synced out of a code
     repository (a ``CODE_FILE`` record). Only those are filtered: generated
-    files, data dumps with no parser and binary content are skipped, and the
+    files (by name, or by minified or generator-marked content), data dumps with no parser and binary content are skipped, and the
     text fallback is held to the code size limit. A source file someone
     uploaded keeps what it had before, the code parser's own size limit and an
     unlimited text fallback.
@@ -117,7 +120,10 @@ def plan_code_file(
     those parsers' own limits and nothing added here.
     """
     path = file_path or record_name
-    if repository_file and (is_generated_file_name(record_name) or is_generated_file_name(path)):
+    if repository_file and (
+        is_generated_file_name(record_name) or is_generated_file_name(path)
+        or is_generated_content(content)
+    ):
         return _skip(SkipCause.GENERATED, GENERATED_FILE_SKIPPED)
 
     declared = _declared_extension(extension)

@@ -1973,7 +1973,7 @@ class Processor:
                 code_binary, recordName, file_path, plan.parser
             )
 
-            if block_containers is None:
+            if block_containers is None and len(code_binary) > code_parser_engine.MAX_FILE_SIZE_BYTES:
                 async for event in self._skip_code_file(
                     recordName, recordId, len(code_binary), "too_large",
                     text_file_too_large(
@@ -1981,6 +1981,24 @@ class Processor:
                         code_parser_engine.MAX_FILE_SIZE_BYTES,
                         repository_file=repository_file,
                     ),
+                ):
+                    yield event
+                return
+
+            if block_containers is None:
+                # Too many definitions for the code graph (or no grammar build):
+                # still searchable, just not as graph nodes.
+                self.logger.info(
+                    f"{recordName} has too many definitions for the code graph; indexing it as text"
+                )
+                await self._drop_code_blocks(recordId)
+                async for event in self.process_md_document(
+                    recordName=recordName,
+                    recordId=recordId,
+                    md_binary=decode_text(code_binary),
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
                 ):
                     yield event
                 return

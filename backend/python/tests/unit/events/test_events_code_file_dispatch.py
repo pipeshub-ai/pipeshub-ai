@@ -244,3 +244,53 @@ async def test_source_and_small_text_files_are_sent_unchanged(name: str) -> None
     sent = parsing_client.parse.await_args.kwargs
     assert (sent["extension"], sent["mime_type"]) == (name.rsplit(".", 1)[-1], "text/plain")
     processor.process_code_document.assert_not_called()
+
+
+# -- secrets (S-2) -------------------------------------------------------------
+
+_LEAKY = b'import os\nPAYMENTS_API_KEY = os.getenv("PAYMENTS_API_KEY", "CANARYSECRET-7f3a9c1e5b2d4086")\n'
+
+
+def _recorded_redactions(ep: EventProcessor) -> list[int]:
+    return [
+        call.args[2]["secretsRedacted"]
+        for call in ep.graph_provider.update_node.await_args_list
+        if "secretsRedacted" in call.args[2]
+    ]
+
+
+async def test_secrets_are_redacted_before_the_code_file_path_sees_the_bytes() -> None:
+    processor = _legacy_processor()
+    ep = _make_event_processor(processor=processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("settings.py", "text/plain", _LEAKY))
+
+    sent = processor.process_code_document.call_args.kwargs["code_binary"]
+    assert b"CANARYSECRET" not in sent
+    assert "«REDACTED:generic-secret»".encode() in sent
+    assert _recorded_redactions(ep) == [1]
+
+
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_secrets_are_redacted_before_the_parsing_service_sees_the_bytes() -> None:
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("settings.py", "text/plain", _LEAKY))
+
+    sent = parsing_client.parse.await_args.kwargs
+    payload = next(v for v in sent.values() if isinstance(v, (bytes, bytearray)))
+    assert b"CANARYSECRET" not in payload
+
+
+async def test_a_clean_file_writes_no_redaction_count() -> None:
+    processor = _legacy_processor()
+    ep = _make_event_processor(processor=processor)
+    _as_code_file(ep, "text/plain")
+
+    await _drain(ep, _repository_event("main.py", "text/plain", b"x = 1\n"))
+
+    assert processor.process_code_document.call_args.kwargs["code_binary"] == b"x = 1\n"
+    assert _recorded_redactions(ep) == []

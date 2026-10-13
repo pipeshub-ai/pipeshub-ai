@@ -473,3 +473,34 @@ async def test_a_code_file_that_is_now_skipped_loses_its_previous_blocks(harness
 
     assert events == DONE
     harness.graph.delete_blocks_for_records.assert_awaited_once_with(["rec-1"])
+
+
+# -- dense and minified files (P-4) -------------------------------------------
+
+
+async def test_a_file_with_too_many_definitions_is_indexed_as_text_not_as_graph(
+    harness: Harness,
+) -> None:
+    # The parser declines a file past its block cap.
+    harness.code.parse_to_blocks_off_loop = AsyncMock(return_value=None)
+
+    events = await harness.run("tables.py", b"def f0(): pass\n")
+
+    assert events == DONE
+    assert harness.parsed_as_markdown()
+    harness.graph.delete_blocks_for_records.assert_awaited_once_with(["rec-1"])
+    assert harness.status_writes() == []
+
+
+async def test_a_minified_bundle_without_a_telling_name_is_skipped_unparsed(
+    harness: Harness,
+) -> None:
+    bundle = b"!function(w){" + b"function a(t){return t}r.k=a;" * 2000 + b"}(window);"
+
+    events = await harness.run("embed.js", bundle)
+
+    assert events == DONE
+    assert not harness.parsed_as_code()
+    (write,) = harness.status_writes()
+    assert write["indexingStatus"] == ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value
+    assert "generated file" in write["reason"]

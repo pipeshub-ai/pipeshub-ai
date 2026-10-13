@@ -1,7 +1,7 @@
 """Parsing source files into blocks and deferred edge facts."""
 import pytest
 
-from app.modules.parsers.code_parser import CodeFileParser
+from app.modules.parsers.code_parser import CodeFileParser, code_file_parser
 from app.modules.parsers.code_parser.engine import decode_source, parse_code
 
 NESTED_PY = b'''
@@ -270,3 +270,36 @@ def test_file_summary_keeps_every_export() -> None:
         if e["relation"] == "EXPORTS"
     }
     assert exported == {f"f{i}" for i in range(export_count)}
+
+
+# -- density caps (P-4) --------------------------------------------------------
+
+
+def test_a_file_past_the_block_cap_is_declined(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(code_file_parser, "MAX_BLOCKS_PER_FILE", 3)
+    four = b"".join(b"def f%d():\n    return %d\n" % (i, i) for i in range(4))
+    three = b"".join(b"def f%d():\n    return %d\n" % (i, i) for i in range(3))
+
+    assert CodeFileParser().parse_to_blocks(four, "m.py", "m.py", "python") is None
+    assert CodeFileParser().parse_to_blocks(three, "m.py", "m.py", "python") is not None
+
+
+def _facts(container, name) -> list[dict]:
+    return _blocks_by_name(container)[name].code_metadata.pending_edges or []
+
+
+def test_repeated_calls_keep_one_fact_and_facts_per_block_are_capped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    body = "".join(f"    g{i}()\n    g{i}()\n" for i in range(10))
+    source = f"def f():\n{body}".encode()
+
+    container = CodeFileParser().parse_to_blocks(source, "m.py", "m.py", "python")
+    calls = [f["toName"] for f in _facts(container, "f")]
+    assert calls == [f"g{i}" for i in range(10)]
+    # The first call site's line is the one kept.
+    assert _facts(container, "f")[0]["line"] == 2
+
+    monkeypatch.setattr(code_file_parser, "MAX_FACTS_PER_BLOCK", 4)
+    container = CodeFileParser().parse_to_blocks(source, "m.py", "m.py", "python")
+    assert [f["toName"] for f in _facts(container, "f")] == ["g0", "g1", "g2", "g3"]

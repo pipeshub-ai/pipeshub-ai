@@ -33,6 +33,7 @@ from app.config.constants.arangodb import (
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.transformers.pipeline import IndexingPipeline
@@ -400,6 +401,21 @@ class EventProcessor:
         return record_type == RecordTypes.CODE_FILE.value and (
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
+
+    async def _redact_code_secrets(
+        self, doc: dict[str, Any], record_name: str, content: bytes | str
+    ) -> bytes | str:
+        """Strip credentials from a code file before anything indexes it (S-2)."""
+        raw = content.encode("utf-8") if isinstance(content, str) else content
+        redacted, result = await asyncio.to_thread(redact_secrets_bytes, raw)
+        if result.count:
+            self.logger.info(
+                "Redacted %s secret(s) (%s) from %s before indexing",
+                result.count, ", ".join(result.kinds), record_name,
+            )
+        if result.count != (doc.get("secretsRedacted") or 0):
+            await self.update_record_fields(doc, {"secretsRedacted": result.count})
+        return redacted if result.count else content
 
     def _use_service_pipeline(self) -> bool:
         """Return True when the new HTTP service pipeline should be used."""
@@ -1521,6 +1537,10 @@ class EventProcessor:
             reads_as_code_file = self._reads_as_code_file(
                 record_type, mime_type, code_ext, record_name
             )
+            if reads_as_code_file:
+                # Once, ahead of both pipelines: blocks, embeddings, LLM
+                # extraction and read_code all derive from these bytes.
+                file_content = await self._redact_code_secrets(doc, record_name, file_content)
 
             # ── New service pipeline (opt-in via USE_PARSING_SERVICE=true) ──
             if self._use_service_pipeline():

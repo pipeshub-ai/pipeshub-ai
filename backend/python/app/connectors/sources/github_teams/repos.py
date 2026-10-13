@@ -15,8 +15,9 @@ The flow, top to bottom, mirrors this file's layout:
                       emptied folders removed bottom-up.
 5. Record builders  — plain records handed to the data-entities processor,
                       which owns new-vs-update, versioning, and reindex decisions.
-6. Content streaming— raw bytes at index time, with the 1-5MB blob fallback
-                      and the oversized-413 guard.
+6. Content streaming— raw bytes at index time: one Git Blob call by the
+                      record's sha (Contents API when it has none), and the
+                      oversized-413 guard.
 
 Failure ladder: incremental failure -> full sync same run; any persist failure
 -> checkpoint withheld -> redone next sync (all writes are idempotent upserts).
@@ -24,7 +25,11 @@ An untrusted delta (force-push, branch reset, GitHub's 300-file/250-commit
 caps) is never applied — full sync re-baselines and pruning removes what the
 delta could not see.
 
-Every file in the tree gets a record — nothing is skipped. Files above
+Dependency, build-output, cache and generated trees (the ``file_role`` list
+GitLab uses) and files ``.gitattributes`` marks ``linguist-generated`` or
+``linguist-vendored`` get no record: they are never fetched, parsed, embedded
+or classified, and records left from before are pruned. Every other file in
+the tree gets a record. Files above
 ``CODE_FILE_MAX_SIZE_BYTES`` still get a record (visible, name-searchable) but
 have content indexing switched off with a reason; the stream-time 413 guard
 covers the incremental path, where Compare Commits carries no blob size.
@@ -37,6 +42,7 @@ or a record's identity. Source timestamps live in ``timestamps.py``.
 from __future__ import annotations
 
 import base64
+import time
 import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
@@ -59,7 +65,16 @@ from app.connectors.core.base.error.stream_errors import (
 from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
 from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
-from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
+from app.modules.parsers.code_parser.file_role import (
+    FileRole,
+    classify_file_role,
+    should_index_code_file,
+    should_index_code_folder,
+)
+from app.modules.parsers.code_parser.gitattributes import (
+    LinguistExclusions,
+    parse_linguist_exclusions,
+)
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -95,6 +110,24 @@ def _git_tree_entries(prefix: str, tree: Any) -> list[tuple[str, str, str, int |
     return entries
 
 
+# How long a streamed file's repository lookup is reused. Long enough to cover
+# one indexing burst; a rename inside it surfaces as a 404 that drops the entry.
+_STREAM_REPO_TTL_SECONDS = 300.0
+
+
+def _oversized(file_path: str, repo_name: str, size: int) -> HTTPException:
+    # 413 is TERMINAL for the indexing consumer: the record fails once with this
+    # reason instead of retrying, and stays synced and searchable by name.
+    return HTTPException(
+        status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
+        detail=(
+            f"File {file_path!r} in {repo_name} is {size} bytes, above the "
+            f"{CODE_FILE_MAX_SIZE_BYTES}-byte content-indexing limit; "
+            "metadata synced, content not indexed"
+        ),
+    )
+
+
 class ReposSync:
     """Handles code repository (file/blob) synchronisation for ``GitHubTeamsConnector``."""
 
@@ -102,6 +135,11 @@ class ReposSync:
         self.c = connector
         self.logger = connector.logger
         self.timestamps = TimestampBackfill(connector)
+        # Per repo, loaded at the start of each run.
+        self._linguist = LinguistExclusions()
+        # repo id -> (fetched at, repo). Indexing streams every file of a repo
+        # in a burst, and a lookup per file was a third of the content budget.
+        self._stream_repos: dict[int, tuple[float, GhObject]] = {}
 
     # ------------------------------------------------------------------
     # 1. Entry point: dispatch + checkpoints
@@ -128,6 +166,8 @@ class ReposSync:
         if not current_sha:
             self.logger.error("No HEAD commit SHA on branch %s for %s", default_branch, repo.full_name)
             return
+
+        self._linguist = await self._load_linguist_exclusions(repo, current_sha)
 
         checkpoint = await self._get_checkpoint(repo.id)
         last_sha = checkpoint.get(GitHubLiterals.LAST_COMMIT_SHA.value) if checkpoint else None
@@ -167,6 +207,76 @@ class ReposSync:
             await self._update_checkpoint(repo, current_sha, default_branch)
         else:
             self.logger.warning("Full sync fallback for %s completed with errors; checkpoint not advanced", repo.full_name)
+
+    # ------------------------------------------------------------------
+    # Which paths get records
+    # ------------------------------------------------------------------
+
+    async def _load_linguist_exclusions(self, repo: GhObject, sha: str) -> LinguistExclusions:
+        """The repo's root ``.gitattributes`` linguist rules at ``sha``; none when absent."""
+        c = self.c
+        try:
+            res = await c.runtime.ds_call(
+                c.data_source.get_file_contents, repo.owner.login, repo.name, ".gitattributes", sha
+            )
+        except Exception as e:
+            self.logger.warning("Could not read .gitattributes for %s: %s", repo.full_name, e)
+            return LinguistExclusions()
+        content = getattr(res.data, "content", None) if res.success and res.data is not None else None
+        if not content:
+            return LinguistExclusions()
+        try:
+            text = base64.b64decode(content).decode(GitHubLiterals.UTF_8.value, errors="replace")
+        except (ValueError, TypeError):
+            return LinguistExclusions()
+        rules = parse_linguist_exclusions(text)
+        if rules:
+            self.logger.info(
+                "%s: %s linguist-generated/vendored rule(s) from .gitattributes", repo.full_name, len(rules.rules)
+            )
+        return rules
+
+    def _keeps_file(self, path: str) -> bool:
+        return should_index_code_file(path)[0] and not self._linguist.excludes(path)
+
+    def _keeps_folder(self, path: str) -> bool:
+        return should_index_code_folder(path)
+
+    def _kept_entries(
+        self, entries: list[tuple[str, str, str, int | None]]
+    ) -> list[tuple[str, str, str, int | None]]:
+        return [
+            e for e in entries
+            if (self._keeps_folder(e[0]) if e[1] == "tree" else self._keeps_file(e[0]))
+        ]
+
+    def _is_excluded_path(self, path: str) -> bool:
+        """A stored record's path the rules now exclude. The store does not say
+        whether it was a file or a folder, so either reading counts."""
+        return not self._keeps_folder(path) or not self._keeps_file(path)
+
+    def _drop_excluded_changes(
+        self,
+        deletes: dict[str, str],
+        adds: dict[str, str],
+        modifies: dict[str, str],
+        renames: list[tuple[str, str, str]],
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str], list[tuple[str, str, str]]]:
+        """Filter a compare delta. A move out of an excluded tree is a fresh add;
+        a move into one deletes the old record."""
+        deletes = dict(deletes)
+        kept_renames: list[tuple[str, str, str]] = []
+        for old_path, new_path, sha in renames:
+            if not self._keeps_file(new_path):
+                deletes[old_path] = ""
+            elif not self._keeps_file(old_path):
+                deletes[old_path] = ""
+                adds = {**adds, new_path: sha}
+            else:
+                kept_renames.append((old_path, new_path, sha))
+        adds = {p: sha for p, sha in adds.items() if self._keeps_file(p)}
+        modifies = {p: sha for p, sha in modifies.items() if self._keeps_file(p)}
+        return deletes, adds, modifies, kept_renames
 
     def _checkpoint_key(self, repo_id: int) -> str:
         return generate_record_sync_point_key(
@@ -212,15 +322,17 @@ class ReposSync:
             )
             return await self._full_sync_untruncated(repo, head_sha)
 
-        entries = [
+        all_entries = [
             (el.path, el.type, el.sha, getattr(el, "size", None))
             for el in (tree.tree or [])
             if el.path
         ]
+        entries = self._kept_entries(all_entries)
         persisted_ok, folders, blobs = await self._persist_tree_entries(repo, entries)
         self.logger.info(
-            "Full code sync for %s: %s folder(s), %s file(s) persisted in 1 tree call",
-            repo.full_name, folders, blobs,
+            "Full code sync for %s: %s folder(s), %s file(s) persisted in 1 tree call "
+            "(%s excluded as dependency/build/generated)",
+            repo.full_name, folders, blobs, len(all_entries) - len(entries),
         )
         if persisted_ok:
             await self._prune_deleted_paths(repo, {path for path, *_ in entries})
@@ -299,6 +411,11 @@ class ReposSync:
                     continue
                 entries = _git_tree_entries(prefix, res.data)
                 children = [(p, sha_) for p, t, sha_, _sz in entries if t == "tree"]
+
+            # Excluded subtrees are not walked at all, which also saves their
+            # tree calls on a giant repo.
+            entries = self._kept_entries(entries)
+            children = [(p, sha_) for p, sha_ in children if self._keeps_folder(p)]
 
             if entries:
                 ok, n_folders, n_blobs = await self._persist_tree_entries(repo, entries)
@@ -405,15 +522,20 @@ class ReposSync:
         stale_trashed = {path: rec_id for path, rec_id in trashed.items() if path not in walked_paths}
         if not stale and not stale_trashed:
             return
+        # Records the rules now exclude (a node_modules ingested before them)
+        # are deliberate removals, so they don't count toward the truncation
+        # valve: they can be most of an old repo's records.
+        missing = [path for path in stale if not self._is_excluded_path(path)]
+        judged = len(existing) - (len(stale) - len(missing))
         if (
-            len(stale) > REPO_DELETE_VALVE_MIN_ABSOLUTE
-            and existing
-            and len(stale) / len(existing) >= REPO_DELETE_VALVE_MAX_FRACTION
+            len(missing) > REPO_DELETE_VALVE_MIN_ABSOLUTE
+            and judged
+            and len(missing) / judged >= REPO_DELETE_VALVE_MAX_FRACTION
         ):
             self.logger.error(
                 "Refusing to prune %s of %s code records (%.0f%%) in %s on a single walk — "
                 "this looks like a truncated tree rather than real deletions.",
-                len(stale), len(existing), len(stale) / len(existing) * 100, repo.full_name,
+                len(missing), judged, len(missing) / judged * 100, repo.full_name,
             )
             return
 
@@ -535,6 +657,7 @@ class ReposSync:
             self.logger.info(
                 "SHA reconcile promoted %s delete+add pair(s) to rename for %s", len(extra_renames), repo.full_name
             )
+        deletes, adds, modifies, renames = self._drop_excluded_changes(deletes, adds, modifies, renames)
 
         # Order is load-bearing: deletes before upserts (file->folder swaps),
         # folder cleanup last (folder->file swaps).
@@ -830,6 +953,7 @@ class ReposSync:
             extension=extension.lower() or None,
             preview_renderable=extension.lower() in PREVIEW_RENDERABLE_EXTENSIONS if extension else True,
             file_path=path, file_hash=sha, file_role=file_role.value,
+            size_in_bytes=size,
             language=detect_language(name),
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
@@ -893,17 +1017,23 @@ class ReposSync:
                 f"Cannot resolve repo path for record {record.id}",
             )
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
-        if not repo_res.success or not repo_res.data:
-            raise_for_stream_fetch(
-                success=repo_res.success,
-                has_payload=bool(repo_res.data),
-                connector=c.display_name,
-                status=repo_res.status_code,
-                retry_after=repo_res.retry_after_seconds,
-                message=repo_res.error,
-            )
-        repo = repo_res.data
+        repo = await self._stream_repo(repo_id)
+
+        # A full sync records each blob's size, so its file is one Git Blob call
+        # by sha. The Contents API costs the same call plus a second for files
+        # over 1 MB; it stays for incremental records, whose size is unknown and
+        # whose content must not be downloaded before the size guard below.
+        size = getattr(record, "size_in_bytes", None)
+        if record.file_hash and size is not None:
+            if size > CODE_FILE_MAX_SIZE_BYTES:
+                raise _oversized(file_path, repo.full_name, size)
+            if size == 0:
+                return b""
+            content = await self._fetch_blob_by_sha(repo, record, file_path)
+            if content is not None:
+                return content
+            self._stream_repos.pop(repo_id, None)
+            repo = await self._stream_repo(repo_id)
 
         content_res = await c.runtime.ds_call(
             c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
@@ -921,19 +1051,10 @@ class ReposSync:
         # Incrementally-added/modified files bypass the full-sync size stamp
         # (Compare Commits entries carry no blob size), so this is the only
         # remaining checkpoint before an oversized file's content would be
-        # indexed. 413 is classified TERMINAL by the indexing consumer, so the
-        # record fails once with a clear reason instead of a retry storm — the
-        # record itself (name, path, weburl) stays synced and searchable.
+        # indexed.
         blob_size = getattr(content_file, "size", None)
         if blob_size is not None and blob_size > CODE_FILE_MAX_SIZE_BYTES:
-            raise HTTPException(
-                status_code=HttpStatusCode.PAYLOAD_TOO_LARGE.value,
-                detail=(
-                    f"File {file_path!r} in {repo.full_name} is {blob_size} bytes, above the "
-                    f"{CODE_FILE_MAX_SIZE_BYTES}-byte content-indexing limit; "
-                    "metadata synced, content not indexed"
-                ),
-            )
+            raise _oversized(file_path, repo.full_name, blob_size)
         try:
             decoded = content_file.decoded_content
             if decoded:
@@ -948,24 +1069,53 @@ class ReposSync:
             return base64.b64decode(raw)
 
         # The Contents API returns empty content for blobs over 1 MB while the
-        # guard above admits up to CODE_FILE_MAX_SIZE_BYTES, so every 1-5 MB
-        # file lands here. The Git Data API serves it by sha.
+        # guard above admits up to CODE_FILE_MAX_SIZE_BYTES, so an incremental
+        # 1-5 MB file lands here. The Git Data API serves it by sha.
         if blob_size:
-            return await self._fetch_blob_by_sha(repo, record, file_path, blob_size)
+            if not record.file_hash:
+                raise not_downloadable(
+                    f"Contents API returned no content for {file_path!r} ({blob_size} bytes) in "
+                    f"{repo.full_name} and the record carries no blob sha to fall back on",
+                    connector=c.display_name,
+                )
+            content = await self._fetch_blob_by_sha(repo, record, file_path)
+            if content is None:
+                raise_for_stream_fetch(
+                    success=False, has_payload=False, connector=c.display_name,
+                    status=HttpStatusCode.NOT_FOUND.value,
+                )
+            return content
         return b""
 
-    async def _fetch_blob_by_sha(
-        self, repo: Any, record: CodeFileRecord, file_path: str, blob_size: int,
-    ) -> bytes:
+    async def _stream_repo(self, repo_id: int) -> GhObject:
+        """The repository a streamed file belongs to, looked up once per burst."""
         c = self.c
-        blob_sha = getattr(record, "file_hash", None)
-        if not blob_sha:
-            raise not_downloadable(
-                f"Contents API returned no content for {file_path!r} ({blob_size} bytes) in "
-                f"{repo.full_name} and the record carries no blob sha to fall back on",
+        cached = self._stream_repos.get(repo_id)
+        if cached and time.monotonic() - cached[0] < _STREAM_REPO_TTL_SECONDS:
+            return cached[1]
+        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        if not repo_res.success or not repo_res.data:
+            raise_for_stream_fetch(
+                success=repo_res.success,
+                has_payload=bool(repo_res.data),
                 connector=c.display_name,
+                status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
+                message=repo_res.error,
             )
+        self._stream_repos[repo_id] = (time.monotonic(), repo_res.data)
+        return repo_res.data
+
+    async def _fetch_blob_by_sha(
+        self, repo: Any, record: CodeFileRecord, file_path: str,
+    ) -> bytes | None:
+        """The record's blob, or None on a 404: a force-push GitHub has since
+        garbage-collected, or a repository renamed under the cached lookup."""
+        c = self.c
+        blob_sha = record.file_hash
         blob_res = await c.runtime.ds_call(c.data_source.get_git_blob, repo.owner.login, repo.name, blob_sha)
+        if blob_res.status_code == HttpStatusCode.NOT_FOUND.value:
+            return None
         if not blob_res.success or blob_res.data is None:
             raise_for_stream_fetch(
                 success=blob_res.success,
@@ -975,6 +1125,9 @@ class ReposSync:
                 retry_after=blob_res.retry_after_seconds,
                 message=blob_res.error,
             )
+        blob_size = getattr(blob_res.data, "size", None)
+        if blob_size is not None and blob_size > CODE_FILE_MAX_SIZE_BYTES:
+            raise _oversized(file_path, repo.full_name, blob_size)
         blob_content = getattr(blob_res.data, "content", None)
         if not blob_content:
             raise not_downloadable(
