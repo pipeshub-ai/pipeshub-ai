@@ -933,7 +933,8 @@ describe('XSS Sanitization Middleware', () => {
 
     before(async () => {
       const app = express()
-      app.use(express.json())
+      // Same body limit as the app (src/app.ts), so long questions reach the middleware.
+      app.use(express.json({ limit: '10mb' }))
       app.use(xssSanitizationMiddleware)
       // Echo the body as the route handler would receive it.
       app.all('*', (req, res) => {
@@ -1020,6 +1021,31 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(status).to.equal(400)
       expect(body.error.message).to.include('"params._meta.note"')
+    })
+
+    it('still refuses a question over 100,000 characters as too long', async () => {
+      const tooLong = 'a'.repeat(100001)
+      const cases = [
+        ['/mcp', toolCall('pipeshub_chat', { query: tooLong }), '"params.arguments.query"'],
+        ['/mcp', toolCall('pipeshub_search', { query: tooLong }), '"params.arguments.query"'],
+        ['/api/v1/search', { query: tooLong }, '"query"'],
+      ] as const
+
+      for (const [path, payload, field] of cases) {
+        const { status, body } = await post(path, payload)
+
+        expect(status).to.equal(400)
+        expect(body.error.message).to.include(field)
+        expect(body.error.message).to.include('longer than 100,000 characters')
+      }
+    })
+
+    it('accepts a question of exactly 100,000 characters', async () => {
+      const longest = 'a'.repeat(99995) + ' <id>'
+      const { status, body } = await post('/mcp', toolCall('pipeshub_chat', { query: longest }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(longest)
     })
 
     it('still checks the query of any other MCP tool', async () => {

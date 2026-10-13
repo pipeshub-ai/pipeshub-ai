@@ -189,18 +189,26 @@ function findQuestionField(req: Request): QuestionField | undefined {
   return undefined;
 }
 
-/** True when `holder[key]` is the request's question field. */
+/**
+ * True when `holder[key]` is the request's question field and is no longer
+ * than XSS_CHECK_MAX_LENGTH. A longer question is not passed through: it is
+ * checked like any other field, which refuses it as too long, so the
+ * exemption never lifts the length ceiling the check enforces.
+ */
 function isQuestionField(
   holder: unknown,
   key: string,
   question: QuestionField | undefined,
 ): boolean {
-  return (
-    question !== undefined &&
-    holder === question.holder &&
-    key === question.key &&
-    typeof question.holder[key] === 'string'
-  );
+  if (
+    question === undefined ||
+    holder !== question.holder ||
+    key !== question.key
+  ) {
+    return false;
+  }
+  const text = question.holder[key];
+  return typeof text === 'string' && text.length <= XSS_CHECK_MAX_LENGTH;
 }
 
 /**
