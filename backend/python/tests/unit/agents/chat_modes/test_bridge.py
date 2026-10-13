@@ -1229,6 +1229,36 @@ class TestRunChatStreamNoToolsDegradation:
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
 
+    async def test_answer_rules_never_reach_the_no_tools_prompt(self, answer_rule_env: SetEnv) -> None:
+        """Models without tool calls get a fixed system prompt and no fetch or
+        search tools, so neither the rules nor their extra turns apply."""
+        prefetch_result = PrefetchResult(
+            formatted_context="Context.", final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={}, tool_records=[], citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        seen: list[list[Any]] = []
+
+        async def _fake_handle_simple_mode(**kwargs: object):  # noqa: ANN202
+            seen.append(list(kwargs["messages"]))  # type: ignore[call-overload]
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        async def _messages() -> str:
+            with (
+                patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+                patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_fake_handle_simple_mode),
+            ):
+                [chunk async for chunk in run_chat_stream(**self._base_kwargs(INTERNAL_SEARCH_POLICY))]
+            return json.dumps(seen[-1], default=str)
+
+        off = await _messages()
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        on = await _messages()
+
+        assert on == off
+        for marker in (_COMPOSITION_MARKER, _THOROUGH_MARKER, "Multi-step questions"):
+            assert marker not in on
+
     async def test_internal_search_prefetch_renders_dates_in_the_users_time_zone(self) -> None:
         """The no-tools prefetch renders the record headers the model reads, so
         it uses the user's zone like the tool-calling path, and leaves the
