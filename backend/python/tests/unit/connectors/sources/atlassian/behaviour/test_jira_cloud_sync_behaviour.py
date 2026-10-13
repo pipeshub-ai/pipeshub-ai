@@ -885,12 +885,15 @@ def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the stored-access note fail, as a database error would."""
+    """Make reading the stored-access note fail as the graph stores do: a failed read raises
+    only when the caller asks for that, and otherwise comes back as None (no sync point)."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         if key.endswith("stored_access"):
-            raise RuntimeError("database unavailable")
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return None
         return await real(key, raise_on_error)
 
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
@@ -961,6 +964,7 @@ class TestUnfinishedUserRead:
             pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
             pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
             pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(lambda: json_response({"unexpected": True}), id="not-a-page"),
         ],
     )
     async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
@@ -1154,6 +1158,65 @@ class TestUnfinishedUserRead:
         assert self._access(site_db) == before
         note = checkpoints.values_for("stored_access") or {}
         assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+
+    async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/group/bulk", json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert site_db.user_groups == [], "the group list could not be read, so no group is saved"
+        assert not (checkpoints.values_for("stored_access") or {}).get("groups"), "nor noted as stored"
+
+        api.on("GET", f"{JIRA}/group/bulk", {"values": [{"groupId": "grp-dev", "name": "devs"}], "isLast": True})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com"], "nothing was stored, so what was read is saved"
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_from_a_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/OPS/role", {})
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        eng_before = acl(site_db)
+        assert "20000" not in site_db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 2})
+        api.on("GET", f"{JIRA}/permissionscheme/2/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
+        ]})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl(site_db) == eng_before, "ENG's saved access is kept"
+        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
+        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_a_group_save_that_fails_after_its_note_stops_the_sync(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        async def failing_save(groups: list[tuple[Any, list[Any]]]) -> None:
+            raise RuntimeError("write rolled back")
+
+        monkeypatch.setattr(site_db, "on_new_user_groups", failing_save)
+        with pytest.raises(RuntimeError, match="write rolled back"):
+            await connector.run_sync()
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
