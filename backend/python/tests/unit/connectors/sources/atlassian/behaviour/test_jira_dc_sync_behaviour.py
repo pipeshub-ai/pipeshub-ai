@@ -752,10 +752,10 @@ class TestUserDirectoryFallbacks:
             ({"values": [{"key": "a"}], "nextPage": f"{BASE}{API}/user/list?cursor=c2"}, ["a"], "c2"),
             ({"values": [], "nextPage": "c3"}, [], "c3"),
             ({"values": [{"key": "a"}], "nextCursor": "c4", "isLast": True}, ["a"], None),
-            ("not json", [], None),
         ],
     )
     def test_user_list_page_shapes(self, payload, expected_keys, expected_cursor) -> None:
+        assert _parse_jira_dc_user_list_page(payload) is not None
         users, cursor = _parse_jira_dc_user_list_page(payload)
         assert [u["key"] for u in users] == expected_keys
         assert cursor == expected_cursor
@@ -1254,12 +1254,15 @@ class TestReindexEdgeCases:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the stored-access note fail, as a database error would."""
+    """Make reading the stored-access note fail as the graph stores do: a failed read raises
+    only when the caller asks for that, and otherwise comes back as None (no sync point)."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
         if key.endswith("stored_access"):
-            raise RuntimeError("database unavailable")
+            if raise_on_error:
+                raise RuntimeError("database unavailable")
+            return None
         return await real(key, raise_on_error)
 
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
@@ -1326,6 +1329,7 @@ class TestUnfinishedUserRead:
             pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
             pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
             pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(lambda: json_response({"unexpected": True}), id="not-a-page"),
         ],
     )
     async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
@@ -1548,3 +1552,81 @@ class TestUnfinishedUserRead:
         assert self._access(db) == before
         note = store.values_for("stored_access") or {}
         assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+
+    @pytest.mark.parametrize("payload", ["not json", 5, {"other": 1}, {"values": "x"}, {"users": None}])
+    def test_a_user_list_answer_that_is_not_a_page_is_not_read_as_the_last_page(self, payload) -> None:
+        assert _parse_jira_dc_user_list_page(payload) is None
+
+    async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert db.groups_saved == {}, "the group list could not be read, so no group is saved"
+        assert not (store.values_for("stored_access") or {}).get("groups"), "nor noted as stored"
+
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}], "total": 2})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com"], (
+            "nothing was stored, so the group is saved from the users that were read"
+        )
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_from_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+        assert "20000" not in db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "carol-key"}},
+        ]})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG's saved access is kept"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_a_group_save_that_fails_after_its_note_stops_the_sync(self, jira, db, store, search, monkeypatch) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        async def failing_save(groups: list[tuple[Any, list[Any]]]) -> None:
+            raise RuntimeError("write rolled back")
+
+        monkeypatch.setattr(db, "on_new_user_groups", failing_save)
+        with pytest.raises(RuntimeError, match="write rolled back"):
+            await connector.run_sync()
+
+    async def test_an_older_jira_user_search_answer_that_is_not_a_page_is_unfinished(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+        page1 = [user(f"u{i}-key", f"u{i}", f"u{i}@corp.example") for i in range(50)]
+
+        def directory(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("username") != ".":
+                return json_response([])
+            return json_response(page1 if q.get("startAt") == "0" else {"other": 1})
+
+        jira.on("GET", f"{API}/user/search", directory)
+        connector, _ = await make_connector(db, store)
+
+        await connector._fetch_users()
+
+        assert connector._user_read_unfinished is True

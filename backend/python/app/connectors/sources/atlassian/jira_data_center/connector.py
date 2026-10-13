@@ -202,7 +202,7 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
 
 
 # Sync point that notes which kinds of access this connector has saved, so a later sync
-# whose read was cut short knows what it would be replacing (see _stored_access_at_start).
+# whose read was cut short knows what it would be replacing (see _load_stored_access).
 STORED_ACCESS_SYNC_POINT: str = "stored_access"
 STORED_ACCESS_KINDS: frozenset[str] = frozenset({"groups", "roles", "leads", "projects"})
 
@@ -220,17 +220,23 @@ def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
     return is_inconclusive_status(status)
 
 
-def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
-    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``."""
+def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None] | None:
+    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``.
+
+    Returns None when the payload is not a page of users (a scalar, or an object with no
+    list of ``values`` or ``users``): that says nothing about whether more pages follow.
+    """
     if isinstance(payload, list):
         return [u for u in payload if isinstance(u, dict)], None
     if not isinstance(payload, dict):
-        return [], None
+        return None
 
     raw_users = payload.get("values")
     if raw_users is None:
         raw_users = payload.get("users")
-    users = [u for u in raw_users if isinstance(u, dict)] if isinstance(raw_users, list) else []
+    if not isinstance(raw_users, list):
+        return None
+    users = [u for u in raw_users if isinstance(u, dict)]
 
     next_cursor = payload.get("nextCursor")
     if not next_cursor and isinstance(payload.get("nextPage"), str):
@@ -445,6 +451,9 @@ class JiraDataCenterConnector(BaseConnector):
         # must not replace from a read that was cut short. Empty on a first sync and after a
         # full sync's prep, which deletes the stored edges along with every sync point.
         self._stored_access_kinds: frozenset[str] = frozenset()
+        # Keys of the projects whose access list, and whose lead role, earlier syncs saved.
+        self._stored_project_keys: set[str] = set()
+        self._stored_lead_project_keys: set[str] = set()
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
@@ -709,17 +718,16 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            self._stored_access_kinds = await self._stored_access_at_start()
+            await self._load_stored_access()
 
             # Fetch and sync users
             jira_users = await self._fetch_users()
-            if self._user_read_unfinished and STORED_ACCESS_KINDS - self._stored_access_kinds:
-                # Nothing stored to keep for these kinds (a first sync, or a full sync whose prep
-                # deleted it): holding back would leave them with no access at all.
+            if self._user_read_unfinished:
+                # What no earlier sync saved (a first sync, or a full sync whose prep deleted it)
+                # is saved from what was read: holding it back would leave it with no access.
                 self.logger.warning(
-                    "⚠️ Saving %s from a Jira user list that could not be read in full: no earlier sync "
-                    "saved any to keep. The next sync reads them again",
-                    ", ".join(sorted(STORED_ACCESS_KINDS - self._stored_access_kinds)),
+                    "⚠️ The Jira user list could not be read in full: access that earlier syncs saved is "
+                    "kept, and anything not saved before is saved from what was read. The next sync reads it again"
                 )
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
@@ -733,7 +741,6 @@ class JiraDataCenterConnector(BaseConnector):
                     "Keeping the stored members of every group: the Jira user list could not be read in full"
                 )
             else:
-                await self._note_stored_access("groups")
                 group_memberships = await self._sync_user_groups(jira_users)
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
@@ -773,7 +780,6 @@ class JiraDataCenterConnector(BaseConnector):
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
             else:
-                await self._note_stored_access("roles")
                 await self._sync_project_roles(
                     project_keys_for_roles,
                     jira_users,
@@ -782,7 +788,6 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             # Sync project lead roles
-            await self._note_stored_access("leads")
             await self._sync_project_lead_roles(raw_projects, jira_users)
 
             # Saving a project replaces its access list, so projects whose scheme could not
@@ -794,8 +799,7 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            if readable_projects:
-                await self._note_stored_access("projects")
+            await self._note_stored_project_keys("project_keys", [group.short_name for group, _ in readable_projects])
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # Sync issues for all projects
@@ -865,39 +869,55 @@ class JiraDataCenterConnector(BaseConnector):
         except Exception:
             return None
 
-    async def _stored_access_at_start(self) -> frozenset[str]:
-        """Which kinds of access earlier syncs saved, so a short read must not replace them.
+    async def _load_stored_access(self) -> None:
+        """Load which access earlier syncs saved, so a short read does not replace it.
 
-        Each kind is noted in the ``stored_access`` sync point just before it is saved, so
-        a sync cut short after saving groups still counts its groups. A full sync's prep
-        deletes every sync point along with the stored edges, so after it, and on a first
-        sync, nothing is noted. A connector last synced before these notes existed has
-        only its issues checkpoint: every kind counts once, and is noted, so from then on
-        the notes alone decide.
+        Groups and project roles are noted as a whole; project access lists and lead roles
+        by project key. Each is noted just before it is saved, so a sync cut short after a
+        save still counts it. A full sync's prep deletes every sync point along with the
+        stored edges, so after it, and on a first sync, nothing is noted. A connector last
+        synced before these notes existed has only its issues checkpoint: everything counts
+        once, and is noted, so from then on the notes alone decide.
 
         A read or write that fails is raised, so the sync stops before any write that
         replaces stored access. Carrying on could save nothing now and then write the
         checkpoint, which would make an empty store look like a kept one on the next sync.
         """
         noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
-        if noted:
-            return frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind))
-        checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
-        if checkpoint and checkpoint.get("last_sync_time") is not None:
-            await self.issues_sync_point.update_sync_point(
-                STORED_ACCESS_SYNC_POINT, dict.fromkeys(STORED_ACCESS_KINDS, True)
-            )
-            return STORED_ACCESS_KINDS
-        return frozenset()
+        if not noted:
+            checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
+            if checkpoint and checkpoint.get("last_sync_time") is not None:
+                noted = dict.fromkeys(STORED_ACCESS_KINDS, True)
+                await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, noted)
+        noted = noted or {}
+        # "projects" or "leads" set to True is the note for every project (from the checkpoint).
+        self._stored_access_kinds = frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind) is True)
+        self._stored_project_keys = set(noted.get("project_keys") or [])
+        self._stored_lead_project_keys = set(noted.get("lead_project_keys") or [])
+
+    def _project_access_stored(self, project_key: str) -> bool:
+        return "projects" in self._stored_access_kinds or project_key in self._stored_project_keys
+
+    def _project_lead_stored(self, project_key: str) -> bool:
+        return "leads" in self._stored_access_kinds or project_key in self._stored_lead_project_keys
 
     async def _note_stored_access(self, kind: str) -> None:
-        """Note, before saving ``kind``, that it is stored, for ``_stored_access_at_start`` later.
+        """Note, just before saving groups or project roles, that they are stored.
 
         Noted first so that a save is never left without its note: if the note cannot be
         written the error stops the sync before the save, and a save that fails after it
         only makes a later short read hold back, which keeps access rather than dropping it.
         """
         await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
+
+    async def _note_stored_project_keys(self, field: str, project_keys: list[str]) -> None:
+        """Note, just before saving them, the projects whose access lists or lead roles are stored."""
+        stored = self._stored_project_keys if field == "project_keys" else self._stored_lead_project_keys
+        keys = {key for key in project_keys if key}
+        if keys <= stored:
+            return
+        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | keys)})
+        stored.update(keys)
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
@@ -1433,7 +1453,12 @@ class JiraDataCenterConnector(BaseConnector):
                 self._user_read_unfinished = True
                 break
 
-            batch_users, next_cursor = _parse_jira_dc_user_list_page(payload)
+            page = _parse_jira_dc_user_list_page(payload)
+            if page is None:
+                self.logger.error("/user/list response is not a page of users, stopping list fetch")
+                self._user_read_unfinished = True
+                break
+            batch_users, next_cursor = page
             if not batch_users and not next_cursor:
                 break
 
@@ -1504,10 +1529,13 @@ class JiraDataCenterConnector(BaseConnector):
 
             if isinstance(users_batch, list):
                 batch_users = users_batch
+            elif isinstance(users_batch, dict) and isinstance(users_batch.get("values"), list):
+                batch_users = users_batch["values"]
             else:
-                batch_users = (
-                    users_batch.get("values", []) if isinstance(users_batch, dict) else []
-                )
+                # Not a page of users: it says nothing about whether more follow.
+                self.logger.error("/user/search response is not a page of users, stopping user fetch")
+                self._user_read_unfinished = True
+                break
 
             if not batch_users:
                 break
@@ -2013,7 +2041,7 @@ class JiraDataCenterConnector(BaseConnector):
                             email=resolved_email,
                             type=PermissionType.READ
                         ))
-                    elif self._keeps_stored_user_access("projects"):
+                    elif self._user_read_unfinished and self._project_access_stored(project_key):
                         # The user may be missing only because the read stopped early.
                         self.logger.warning(
                             "Keeping the stored access of project %s: it grants a user who was not "
@@ -2092,6 +2120,9 @@ class JiraDataCenterConnector(BaseConnector):
         (saving only upserts those groups, so the ones past the limit keep what is
         stored) and comes back marked ``cut_off``.
         """
+        # Set once the groups are noted as stored: from then on a failure must stop the sync,
+        # or it would finish as a success with the note saying groups are stored.
+        saving = False
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -2184,13 +2215,18 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Save all groups in one batch
             if user_groups_batch:
+                saving = True
+                await self._note_stored_access("groups")
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
+                saving = False
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
             return GroupMemberships(groups_members_map, cut_off)
 
         except Exception as e:
+            if saving:
+                raise
             self.logger.error(f"❌ Error syncing user groups: {e}")
             await self._notify_group_sync_failed()
             return None
@@ -2602,6 +2638,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
+            await self._note_stored_access("roles")
             await self.data_entities_processor.on_new_app_roles(roles_to_sync)
             self.logger.info(
                 f"✅ Synced {total_roles} project roles with {total_members} direct user members"
@@ -2626,6 +2663,7 @@ class JiraDataCenterConnector(BaseConnector):
         }
 
         lead_roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
+        lead_project_keys: list[str] = []
         total_leads = 0
 
         # Iterate through raw project data already fetched with lead
@@ -2666,7 +2704,7 @@ class JiraDataCenterConnector(BaseConnector):
                     if lead_identifier:
                         lead_user = user_by_account_id.get(lead_identifier)
 
-                        if not lead_user and self._keeps_stored_user_access("leads"):
+                        if not lead_user and self._user_read_unfinished and self._project_lead_stored(project_key):
                             self.logger.warning(
                                 "Keeping the stored lead of project %s: the lead was not in the "
                                 "Jira user list, which could not be read in full",
@@ -2683,6 +2721,7 @@ class JiraDataCenterConnector(BaseConnector):
                 # Always sync the role (even with empty members list) to ensure old edges are deleted
                 members = [lead_user] if lead_user else []
                 lead_roles_to_sync.append((app_role, members))
+                lead_project_keys.append(project_key)
                 total_leads += 1
 
 
@@ -2692,6 +2731,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
+            await self._note_stored_project_keys("lead_project_keys", lead_project_keys)
             await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
         else:
             self.logger.info("No project leads to sync")
