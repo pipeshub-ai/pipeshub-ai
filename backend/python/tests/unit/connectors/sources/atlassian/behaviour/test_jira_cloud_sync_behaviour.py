@@ -874,3 +874,135 @@ class TestDeletedIssuesFoundByComparingIds:
         assert set(tickets(keyed_db)) == {"1", "3"}
         assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
         assert listing.id_bodies == []
+
+
+def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
+    row: dict[str, Any] = {"accountId": account_id, "accountType": "atlassian", "active": True, "displayName": account_id}
+    if email:
+        row["emailAddress"] = email
+    return row
+
+
+class TestUnfinishedUserRead:
+    """A user list that stops part-way must not shrink who can see what.
+
+    Bo is on the second page of ``/users/search``. He is in the devs group, in the
+    Developers role by name, he leads ENG and the ENG scheme names him directly.
+    """
+
+    FIRST_PAGE = [person("acc-ana", "ana@acme.com")] + [person(f"acc-{i}", f"u{i}@elsewhere.example") for i in range(49)]
+
+    @staticmethod
+    def _stub_bo_everywhere(api: AtlassianApiStub) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/group/member", {"values": [{"accountId": "acc-ana"}, {"accountId": "acc-bo"}], "isLast": True})
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        api.on("GET", f"{JIRA}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-bo"}},
+        ]})
+        api.on("GET", f"{JIRA}/user/search", json_response([]))
+
+    def _second_page(self, api: AtlassianApiStub, answer: Callable[[], httpx.Response]) -> None:
+        def users(request: httpx.Request) -> httpx.Response:
+            start = AtlassianApiStub.query(request).get("startAt")
+            if start == "0":
+                return json_response(self.FIRST_PAGE)
+            if start == "50":
+                return answer()
+            return json_response([])
+
+        api.on("GET", f"{JIRA}/users/search", users)
+
+    @staticmethod
+    def _access(db: SiteDb) -> dict[str, Any]:
+        return {
+            "devs": saved_members(db, "grp-dev"),
+            "developers": sorted(m.email for m in db.app_roles["ENG_10002"]),
+            "lead": [m.email for m in db.app_roles["ENG_projectLead"]],
+            "project": acl(db),
+        }
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
+            pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
+            pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+        ],
+    )
+    async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
+        self, api, site_db, checkpoints, search, answer
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+        assert before["devs"] == ["ana@acme.com", "bo@acme.com"]
+        assert before["developers"] == ["bo@acme.com"]
+        assert before["lead"] == ["bo@acme.com"]
+        assert ("EntityType.USER", "bo@acme.com") in before["project"]
+
+        self._second_page(api, answer)
+        groups_saved = len(site_db.user_groups)
+        await connector.run_sync()
+
+        assert self._access(site_db) == before
+        assert len(site_db.user_groups) == groups_saved, "no group is saved again"
+        assert "1" in tickets(site_db), "issues are still synced"
+
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        site_db.active_users.append(type("U", (), {"email": "bo@acme.com"})())
+        # Bo's email is hidden, so only the lookup by his PipesHub email finds him.
+        self._second_page(api, lambda: json_response([person("acc-bo", None)]))
+        api.on("GET", f"{JIRA}/user/search", lambda r: json_response(
+            [person("acc-bo", None)] if AtlassianApiStub.query(r).get("query") == "bo@acme.com" else []
+        ))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        site_db.app_users.clear()  # nothing cached from the last sync, so the lookup is needed again
+        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+    async def test_a_complete_read_that_drops_a_user_removes_them(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "bo@acme.com" in self._access(site_db)["devs"]
+
+        # Bo leaves Jira: the user list no longer has him, though older answers still name him.
+        self._second_page(api, lambda: json_response([]))
+        await connector.run_sync()
+
+        after = self._access(site_db)
+        assert after["devs"] == ["ana@acme.com"]
+        assert after["developers"] == []
+        assert after["lead"] == []
+        assert ("EntityType.USER", "bo@acme.com") not in after["project"]
+
+    async def test_a_user_list_refused_from_the_first_page_fails_closed(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        # The account cannot list users at all, so no one is kept on stale access.
+        api.on("GET", f"{JIRA}/users/search", json_response({"errorMessages": ["denied"]}, status=403))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == []
