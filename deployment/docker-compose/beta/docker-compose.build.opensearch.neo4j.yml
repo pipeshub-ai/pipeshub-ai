@@ -175,13 +175,15 @@ services:
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
       # true: features that trade some compute or tokens per question for
       # better answers (keyword hits merged by rank fusion, keyword-dense
-      # search queries). Off by default. A feature's own switch below, when
+      # search queries, search results with the most relevant record first).
+      # Off by default. A feature's own switch below, when
       # set to true or false, overrides it for that feature; blank follows it.
       # It also turns on named-entity extraction while indexing, and the
       # entity tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
       - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
       - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}

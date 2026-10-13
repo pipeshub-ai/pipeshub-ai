@@ -328,8 +328,10 @@ config:
   agentMaxTurnOutputChars: ""
   # true: features that trade some compute or tokens per question for better
   # answers (keyword hits merged by rank fusion, keyword-dense search
-  # queries). Off by default. To override one feature, set its switch
-  # (GREP_RANK_FUSION, KEYWORD_SEARCH_QUERIES) to "true" or "false" through extraEnv.
+  # queries, search results with the most relevant record first). Off by
+  # default. To override one feature, set its switch (GREP_RANK_FUSION,
+  # KEYWORD_SEARCH_QUERIES, RELEVANCE_ORDERED_CONTEXT) to "true" or "false"
+  # through extraEnv.
   # It also turns on named-entity extraction while indexing, and the entity
   # tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
   highAccuracyMode: false
