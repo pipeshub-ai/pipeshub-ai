@@ -727,6 +727,11 @@ class EventService:
                     "longer owed (stopped, disabled or already run since boot)"
                 )
                 return True, False
+            # Owed means this fresh read found pendingFullSync. The event itself
+            # carries fullSync false, and connector_doc above was read without
+            # raise_on_error, so a failed read there left effective_full_sync
+            # false and the resume would run incrementally first.
+            effective_full_sync = True
 
         if effective_full_sync:
             # No "is one already running" check here: begin() above already

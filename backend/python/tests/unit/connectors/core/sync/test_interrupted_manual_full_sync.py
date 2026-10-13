@@ -556,6 +556,23 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
         coordinator.end.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_a_failed_read_at_the_top_of_the_start_still_runs_in_full(self) -> None:
+        """The event carries fullSync false, so only the app doc says the resume
+        is a full sync. That read does not ask to raise, so a failed one answers
+        None; the owed check after init reads the doc again and decides."""
+        owed = _app(**_INTERRUPTED)
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            owed,
+            # before admission, at the top of the start, then after init
+            reads=[owed, RuntimeError("db blip"), owed],
+        )
+        assert not _asked_to_raise(graph, 1)
+        graph.delete_sync_points_by_connector_id.assert_awaited_once()
+        graph.delete_connector_sync_edges.assert_awaited_once()
+        coordinator.spawn.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_a_failed_read_at_capacity_redelivers_without_queueing(self) -> None:
         owed = _app(**_INTERRUPTED)
         graph, _ = await _consume(
