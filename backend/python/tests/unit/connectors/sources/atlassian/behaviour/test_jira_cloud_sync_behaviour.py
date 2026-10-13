@@ -1006,3 +1006,7 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert saved_members(site_db, "grp-dev") == []
+
+    def test_the_connector_class_keeps_its_registration(self) -> None:
+        # The helpers live in the same module; the builder decorator must still land on the connector.
+        assert "_connector_metadata" in JiraConnector.__dict__

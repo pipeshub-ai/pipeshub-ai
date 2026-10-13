@@ -223,6 +223,24 @@ ANCESTOR_STUB_FIELDS: list[str] = [
 ]
 
 
+class _UserMissingFromUnfinishedRead(Exception):
+    """A permission grant names a user the unfinished user read did not return."""
+
+
+def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
+    """Whether a failed user lookup left the user unknown rather than absent.
+
+    Rate limits and server errors (still failing after the client's retries) may pass,
+    so the user is unknown. A 401/403 is the account's lasting answer when the bulk user
+    list was refused too; when the bulk list was allowed, it means the token stopped
+    working part-way. Any other status (400, 404) answers the same way on every sync,
+    so it is treated as "no such user".
+    """
+    if status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
+        return not bulk_forbidden
+    return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+
+
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_description("Sync issues from Jira Cloud")\
@@ -344,24 +362,6 @@ ANCESTOR_STUB_FIELDS: list[str] = [
         ))
     )\
     .build_decorator()
-class _UserMissingFromUnfinishedRead(Exception):
-    """A permission grant names a user the unfinished user read did not return."""
-
-
-def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
-    """Whether a failed user lookup left the user unknown rather than absent.
-
-    Rate limits and server errors (still failing after the client's retries) may pass,
-    so the user is unknown. A 401/403 is the account's lasting answer when the bulk user
-    list was refused too; when the bulk list was allowed, it means the token stopped
-    working part-way. Any other status (400, 404) answers the same way on every sync,
-    so it is treated as "no such user".
-    """
-    if status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
-        return not bulk_forbidden
-    return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
-
-
 class JiraConnector(BaseConnector):
     """
     Jira connector for syncing projects, issues, groups, roles and users from Jira
