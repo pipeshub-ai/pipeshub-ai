@@ -1324,7 +1324,8 @@ class TestUnfinishedUserRead:
         assert any("could not be read in full" in m for m in logged(logs, "warning"))
         assert "1001" in db.records, "issues are still synced"
 
-    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, jira, db, store, search) -> None:
+    @pytest.mark.parametrize("status", [503, 408])
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, jira, db, store, search, status) -> None:
         stub_site(jira, search)
 
         def members(request: httpx.Request) -> httpx.Response:
@@ -1341,7 +1342,7 @@ class TestUnfinishedUserRead:
 
         def lookups(request: httpx.Request) -> httpx.Response:
             if AtlassianApiStub.query(request).get("username") == "dave@example.com":
-                return json_response({"errorMessages": ["busy"]}, status=503)
+                return json_response({"errorMessages": ["busy"]}, status=status)
             return json_response([])
 
         jira.on("GET", f"{API}/user/search", lookups)

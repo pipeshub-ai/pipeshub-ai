@@ -66,6 +66,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
+from app.connectors.sources.atlassian.core.read_outcome import is_inconclusive_status
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -203,15 +204,14 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
 def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
     """Whether a failed user lookup left the user unknown rather than absent.
 
-    Rate limits and server errors (still failing after the client's retries) may pass,
-    so the user is unknown. A 401/403 is the account's lasting answer when the bulk user
-    list was refused too; when the bulk list was allowed, it means the token stopped
-    working part-way. Any other status (400, 404) answers the same way on every sync,
-    so it is treated as "no such user".
+    A 401/403 is the account's lasting answer when the bulk user list was refused too;
+    when the bulk list was allowed, it means the token stopped working part-way. Other
+    statuses follow ``is_inconclusive_status``: 400 and 404 mean "no such user", and
+    anything else (408, 429, 5xx, ...) leaves the user unknown.
     """
     if status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
         return not bulk_forbidden
-    return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+    return is_inconclusive_status(status)
 
 
 def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
