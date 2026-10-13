@@ -175,6 +175,8 @@ def _unavailable_note(
 def _not_read_note(
     record: dict[str, Any], record_id_shortener: "RecordIdShortener | None" = None,
 ) -> str:
+    """What a record left without room in a multi-record call says instead of
+    an empty shell the model would read as "not in the document"."""
     record_id = str(record.get("id") or record.get("virtual_record_id") or "")
     label = (
         record_id_shortener.shorten_if_known(record_id)

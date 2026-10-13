@@ -4033,6 +4033,7 @@ def _resolve_pending_images(
 
 
 def _fk_lines_text(record: dict[str, Any]) -> str:
+    """The foreign-key tables a SQL table record points to, or ""."""
     fk_parent = record.get("fk_parent_record_ids")
     fk_child = record.get("fk_child_record_ids")
     if not (fk_parent or fk_child):
@@ -4208,6 +4209,12 @@ def record_to_message_content(
                     )
                     if has_image and is_multimodal_llm else None
                 )
+                if candidate is not None and not render_budget.can_afford_chars(
+                    _max_image_text_chars(ref, description),
+                ) and _renderable_rendered == 0:
+                    # The first unit of a read must make progress: its text is
+                    # clipped like a text block's, and its pixels are not sent.
+                    candidate = None
                 if candidate is not None:
                     # Which marker it gets is known only after admission, so the
                     # longest one is charged now and the plan cannot overrun.
@@ -4316,6 +4323,7 @@ def record_to_message_content(
                             f"[… showing {rows_total} of {rows_total} rows; the rest did not fit …]",
                         )
                         table_charged = 0
+                        unfit_row: tuple[int, list[dict[str, Any]], str] | None = None
                         last_row = rows_to_be_included_list[-1] if rows_to_be_included_list else None
                         for row_index in rows_to_be_included_list:
                             row_block = blocks_by_index.get(row_index)
@@ -4338,7 +4346,7 @@ def record_to_message_content(
                             reserve = 0 if row_index == last_row else truncation_reserve
                             if not render_budget.can_afford_chars(cost + reserve):
                                 rows_exhausted = True
-                                render_budget.stop_at(row_index)
+                                unfit_row = (row_index, row_children, child_block_web_url)
                                 break
                             render_budget.charge_chars(cost)
                             table_charged += cost
@@ -4360,7 +4368,30 @@ def record_to_message_content(
                                 # Not even the first row fits after earlier blocks:
                                 # the table waits for the continuation instead of
                                 # arriving as a header with no rows.
+                                render_budget.stop_at(unfit_row[0])
                                 break
+                            if rows_shown == 0 and unfit_row is not None:
+                                # The first unit of this read: waiting would send
+                                # every retry back to this row, so it is clipped
+                                # like a text block and reading resumes after it.
+                                row_index, row_children, row_url = unfit_row
+                                row_ref = ref_mapper.get_or_create_ref(row_url)
+                                row_text = [
+                                    {**child, "citation_ref": row_ref, "content": (
+                                        "(image)" if child["block_type"] == BlockType.IMAGE.value
+                                        else child["content"]
+                                    )}
+                                    for child in row_children
+                                ]
+                                clipped = render_budget.take(f"{framing.render(row_text)}\n\n")
+                                render_budget.stop_at(row_index + 1)
+                                if clipped:
+                                    content.append({"type": "text", "text": clipped})
+                                    _renderable_rendered += 1
+                                    render_budget.count_block()
+                                break
+                            if unfit_row is not None:
+                                render_budget.stop_at(unfit_row[0])
                             child_results.append({
                                 "content": (
                                     f"[… showing {rows_shown} of {rows_total} rows; "

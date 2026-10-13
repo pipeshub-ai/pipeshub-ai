@@ -81,6 +81,7 @@ def estimate_block_chars(block: dict[str, Any]) -> int:
 
 
 def _render_cost(block: dict[str, Any]) -> int:
+    """A block's estimated size as rendered, its label included."""
     return estimate_block_chars(block) + BLOCK_RENDER_OVERHEAD
 
 
@@ -389,6 +390,7 @@ def selection_hint(label: str, shown: int, total: int) -> str:
 
 
 def no_fit_hint(label: str, next_start: int) -> str:
+    """A record that got no room in a multi-record result, and how to read it."""
     return (
         f"\n[Record {label}: no blocks fit in this result. Call "
         f"knowledgegraph__fetch_record with record_ids=[\"{label}\"] "

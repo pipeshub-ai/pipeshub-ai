@@ -100,6 +100,7 @@ def _str_or_none(value: object) -> str | None:
 
 
 def _int_or_none(value: object) -> int | None:
+    """An int that is not a bool, else None: entries come from tool state."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 

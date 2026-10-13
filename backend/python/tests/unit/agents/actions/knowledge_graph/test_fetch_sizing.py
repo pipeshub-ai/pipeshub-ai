@@ -426,3 +426,64 @@ class TestWindowsAndModalities:
         else:
             assert delivered == set()
             assert "(image, not shown)" in text
+
+
+class TestAFirstUnitThatDoesNotFitStillMakesProgress:
+    """The first unit of a read that does not fit is clipped, as a text block
+    is, so the continuation it points to moves past it. A table row or an
+    image that only waited would send every retry back to the same block."""
+
+    @staticmethod
+    def _sql_table(rows: int, ddl_chars: int) -> dict[str, Any]:
+        record = _sheet("d", rows)
+        record["block_containers"]["block_groups"][0]["data"]["ddl"] = (
+            "CREATE TABLE t (" + "col INT, " * (ddl_chars // 9) + ")"
+        )
+        return record
+
+    @pytest.mark.asyncio
+    async def test_a_table_whose_header_does_not_fit_advances(self) -> None:
+        record = self._sql_table(rows=30, ddl_chars=60_000)
+        context = _context(query="")
+        offsets: list[int] = []
+        start = 0
+        for _ in range(40):
+            text = await _fetch(context, [record], start_block=start, start_block_sent=start > 0)
+            match = re.search(r"start_block=(\d+) — one record", text)
+            if match is None:
+                break
+            start = int(match.group(1))
+            assert not offsets or start > offsets[-1], f"no progress past block {start}"
+            offsets.append(start)
+        else:
+            pytest.fail("the continuations never reached the end of the table")
+        assert offsets and offsets[0] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_clipped_first_row_leaves_the_record_incomplete(self) -> None:
+        context = _context(query="")
+        await _fetch(context, [self._sql_table(rows=3, ddl_chars=60_000)])
+
+        outcome = _outcome(context, "rec-d")
+        assert outcome["complete"] is False
+        assert "rec-d" not in context.full_records_fetched
+
+    @pytest.mark.asyncio
+    async def test_an_image_whose_text_does_not_fit_advances(self) -> None:
+        from tests.unit.utils.test_fetch_citation_refs import _png
+
+        record = _text_record("im", 0, 0)
+        record["block_containers"] = {"blocks": [
+            {"index": 0, "type": BlockType.IMAGE.value,
+             "data": {"uri": _png(1), "description": "figure " + "z" * 70_000}},
+            {"index": 1, "type": BlockType.TEXT.value, "data": "im para 1 after the figure"},
+        ], "block_groups": []}
+        context = _context(query="", is_multimodal_llm=True)
+        context.tool_state["supports_multipart_tool_result"] = False
+
+        text = await _fetch(context, [record])
+
+        assert "start_block=1" in text
+        assert context.tool_state.get("pending_tool_images", []) == []
+        second = await _fetch(context, [record], start_block=1, start_block_sent=True)
+        assert _shown(second, "im") == {1}
