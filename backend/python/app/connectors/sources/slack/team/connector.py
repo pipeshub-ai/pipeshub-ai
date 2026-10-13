@@ -1074,6 +1074,9 @@ class SlackConnector(BaseConnector):
                 try:
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
@@ -1197,7 +1200,9 @@ class SlackConnector(BaseConnector):
                 if not resp or not resp.success:
                     # Connector may lack membership scope — log and bail
                     error = getattr(resp, "error", "no response")
-                    if error in ("channel_not_found", "not_in_channel", "missing_scope"):
+                    # On the first page these mean the members cannot be read at
+                    # all. After it they cut the list short like any other error.
+                    if cursor is None and error in ("channel_not_found", "not_in_channel", "missing_scope"):
                         self.logger.debug(
                             f"Cannot fetch members for {channel_id}: {error}"
                         )

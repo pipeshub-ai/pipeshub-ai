@@ -1160,6 +1160,9 @@ class SlackIndividualConnector(BaseConnector):
 
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
 
                     if rg.name:

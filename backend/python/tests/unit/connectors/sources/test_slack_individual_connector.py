@@ -3995,3 +3995,26 @@ class TestFullSyncCoverage:
             await c._sync_channels()
 
         assert c.full_sync_coverage().complete is False
+
+
+    @pytest.mark.asyncio
+    async def test_a_channel_that_could_not_be_built_makes_it_incomplete(self) -> None:
+        """_to_channel_record_group logs and answers None; the channel goes unwritten."""
+        c = _make_connector()
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(return_value=None)
+        c.rate_limiter = MagicMock()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "C1", "name": "general", "is_member": True}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_to_channel_record_group", return_value=None),
+        ):
+            await c._sync_channels()
+
+        assert c.full_sync_coverage().complete is False

@@ -9848,3 +9848,54 @@ class TestChannelMembersReadPartWay:
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
                 pytest.raises(RuntimeError, match="ratelimited"):
             await c._fetch_channel_members("Cpriv")
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
+    async def test_a_skip_error_after_the_first_page_is_raised(self, error: str) -> None:
+        """On a later page these leave the list short, like any other failure."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_members = _pages(
+            MagicMock(success=True, data={"members": ["U1"], "response_metadata": {"next_cursor": "c2"}}),
+            _slack_failure(error),
+        )
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
+                pytest.raises(RuntimeError, match=error):
+            await c._fetch_channel_members("Cpriv")
+
+    @pytest.mark.asyncio
+    async def test_a_skip_error_on_the_first_page_means_no_members(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_members = _pages(_slack_failure("not_in_channel"))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            assert await c._fetch_channel_members("Cpriv") == []
+
+
+class TestUnbuildableChannel:
+    @pytest.mark.asyncio
+    async def test_a_channel_that_could_not_be_built_makes_it_incomplete(self) -> None:
+        """_to_channel_record_group logs and answers None; the channel goes unwritten."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "C1", "name": "general", "is_private": False}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_to_channel_record_group", return_value=None),
+        ):
+            assert await c._sync_channels() == []
+
+        assert c.full_sync_coverage().complete is False
