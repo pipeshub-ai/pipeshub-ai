@@ -108,6 +108,8 @@ async def test_summary_embedding_time_is_counted_once() -> None:
     sink.vector_store.index_record_summary = AsyncMock(side_effect=embed_summary)
     sink.blob_storage.apply = AsyncMock()
     sink.enrich = AsyncMock()
+    sink.extract_named_entities = AsyncMock(return_value=None)
+    sink.persist_named_entities = AsyncMock()
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
 

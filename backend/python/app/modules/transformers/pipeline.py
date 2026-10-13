@@ -217,6 +217,9 @@ class IndexingPipeline:
         try:
             with stage("extract"):
                 await self.document_extraction.apply(ctx)
+            # Entity extraction runs alongside classification; only the wait
+            # left once classification is done counts here.
+            with stage("entities.extract"):
                 extraction = await ner_task
         finally:
             if not ner_task.done():
@@ -245,12 +248,14 @@ class IndexingPipeline:
                 )
 
         await self.sink_orchestrator.enrich(ctx)
-        await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+        with stage("entities.persist"):
+            await self.sink_orchestrator.persist_named_entities(ctx, extraction)
         from app.modules.named_entities.stage import extraction_blob_holder
 
         with extraction_blob_holder(record, extraction) as held:
             if held:
-                await self.sink_orchestrator.blob_storage.apply(ctx)
+                with stage("blob.write"):
+                    await self.sink_orchestrator.blob_storage.apply(ctx)
 
     async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
         """Stub: publish an event for deferred enrichment via Kafka.

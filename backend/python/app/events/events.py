@@ -533,11 +533,11 @@ class EventProcessor:
         else:
             ner_task = None
             try:
-                departments = await self.graph_provider.get_departments(org_id)
                 ner_task = asyncio.create_task(
                     self.sink_orchestrator.extract_named_entities(ctx, client=self.extraction_client)
                 )
                 with stage("extract"):
+                    departments = await self.graph_provider.get_departments(org_id)
                     semantic_metadata = await self.extraction_client.classify(
                         block_container=block_container,
                         org_id=org_id,
@@ -545,6 +545,9 @@ class EventProcessor:
                         record_name=record.record_name,
                         record_type=record.record_type.value,
                     )
+                # Entity extraction runs alongside classification; only the wait
+                # left once classification is done counts here.
+                with stage("entities.extract"):
                     extraction = await ner_task
 
                 record.semantic_metadata = semantic_metadata
@@ -565,7 +568,8 @@ class EventProcessor:
                     )
 
                 await self.sink_orchestrator.enrich(ctx)
-                await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+                with stage("entities.persist"):
+                    await self.sink_orchestrator.persist_named_entities(ctx, extraction)
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
                 )
