@@ -5,6 +5,7 @@ import { createMockRequest, createMockResponse, createMockNext, createAuthentica
 import { createMockAppConfig } from '../../../helpers/fixtures/config.fixture'
 import { Logger } from '../../../../src/libs/services/logger.service'
 import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
+import { requestContextMiddleware } from '../../../../src/libs/middlewares/request.context'
 
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
@@ -593,6 +594,162 @@ describe('MCP Controller — handleMCPRequest', () => {
       await handleMCPRequest(appConfig)(req, res as any, next)
 
       expect(next.called).to.be.false
+    })
+  })
+
+  // =========================================================================
+  // Request-ID and completion logging
+  // =========================================================================
+  describe('request-ID logging', () => {
+    let infoStub: sinon.SinonStub
+    let errorStub: sinon.SinonStub
+    const loggerInstance = Logger.getInstance()
+
+    beforeEach(() => {
+      if (typeof (loggerInstance.info as any).restore === 'function') {
+        (loggerInstance.info as any).restore()
+      }
+      if (typeof (loggerInstance.error as any).restore === 'function') {
+        (loggerInstance.error as any).restore()
+      }
+      infoStub = sinon.stub(loggerInstance, 'info')
+      errorStub = sinon.stub(loggerInstance, 'error')
+    })
+
+    it('should log success with requestId and JSON-RPC method when x-request-id header is provided', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: {} },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-request-id': 'pilot-1' },
+        context: { requestId: 'pilot-1' },
+        body: { jsonrpc: '2.0', method: 'initialize', id: 1 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.calledOnce).to.be.true
+      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(infoStub.firstCall.args[1]).to.deep.equal({
+        method: 'initialize',
+        requestId: 'pilot-1',
+      })
+      expect(next.called).to.be.false
+    })
+
+    it('should log success with requestId when parsed via requestContextMiddleware', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: {} },
+      })
+
+      const getStub = sinon.stub()
+      getStub.withArgs('user-agent').returns('test-agent')
+      getStub.withArgs('X-Request-ID').returns('pilot-1')
+
+      const req = createMockRequest({
+        headers: { 'x-request-id': 'pilot-1' },
+        get: getStub,
+        body: { jsonrpc: '2.0', method: 'tools/call', id: 2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      requestContextMiddleware(req, res as any, () => {})
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.calledOnce).to.be.true
+      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(infoStub.firstCall.args[1]).to.deep.equal({
+        method: 'tools/call',
+        requestId: 'pilot-1',
+      })
+      expect(next.called).to.be.false
+    })
+
+    it('should log success with requestId undefined when context is missing', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: {} },
+      })
+
+      const req = createMockRequest({
+        body: { jsonrpc: '2.0', method: 'tools/list', id: 3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.calledOnce).to.be.true
+      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
+      expect(infoStub.firstCall.args[1]).to.deep.equal({
+        method: 'tools/list',
+        requestId: undefined,
+      })
+      expect(next.called).to.be.false
+    })
+
+    it('should include requestId in error metadata when transport.handleRequest rejects', async () => {
+      const error = new Error('transport failure')
+      sdkTransportExports.StreamableHTTPServerTransport = class {
+        constructor() {}
+        handleRequest() {
+          return Promise.reject(error)
+        }
+      }
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: {} },
+      })
+
+      const req = createMockRequest({
+        method: 'POST',
+        headers: { 'x-request-id': 'pilot-1' },
+        context: { requestId: 'pilot-1' },
+        user: { userId: 'user-42' },
+        body: { jsonrpc: '2.0', method: 'tools/call', id: 4 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(errorStub.calledOnce).to.be.true
+      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
+      expect(errorStub.firstCall.args[1]).to.deep.include({
+        error: 'transport failure',
+        method: 'POST',
+        userId: 'user-42',
+        requestId: 'pilot-1',
+      })
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.equal(error)
+    })
+
+    it('should log error with requestId undefined when req.context is not set', async () => {
+      const error = new Error('init failure')
+      mcpServerExports.createMCPServer = sinon.stub().throws(error)
+
+      const req = createMockRequest({
+        method: 'POST',
+        user: { userId: 'user-42' },
+        body: {},
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(errorStub.calledOnce).to.be.true
+      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
+      expect(errorStub.firstCall.args[1]).to.deep.include({
+        error: 'init failure',
+        method: 'POST',
+        userId: 'user-42',
+        requestId: undefined,
+      })
+      expect(next.calledOnce).to.be.true
     })
   })
 
