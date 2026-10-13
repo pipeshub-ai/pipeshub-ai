@@ -303,17 +303,23 @@ def _bounded(value: Value, *, nonzero: bool = False) -> Value:
     return value
 
 
-def _as_float(value: Value) -> float:
+def _as_float(value: Value, *, flush: bool = False) -> float:
+    """`flush`: a non-zero value below a double's range becomes 0.0 instead of
+    an error, for a caller whose result does not depend on it (pi + 1e-400)
+    and which refuses a result that comes out 0 when it cannot be."""
     try:
         result = float(value)
     except OverflowError as exc:
         raise _OutsideFloatRange("The result is too large for floating-point functions.") from exc
+    if flush and value != 0 and abs(result) < sys.float_info.min:
+        return 0.0
     return _bounded(result, nonzero=value != 0)
 
 
 def _times(left: Value, right: Value) -> Value:
     if isinstance(left, float) or isinstance(right, float):
-        return _bounded(_as_float(left) * _as_float(right), nonzero=left != 0 and right != 0)
+        product = _as_float(left, flush=True) * _as_float(right, flush=True)
+        return _bounded(product, nonzero=left != 0 and right != 0)
     return _bounded(left * right)
 
 
@@ -345,7 +351,19 @@ def _binary(op: ast.operator, left_q: Quantity, right_q: Quantity) -> Quantity:
     else:
         raise CalculationError(f"Unsupported operator: {type(op).__name__}.")
     exact = isinstance(left, Fraction) and isinstance(right, Fraction)
-    a, b = (left, right) if exact else (_as_float(left), _as_float(right))
+    if exact:
+        a, b = left, right
+    else:
+        a = _as_float(left, flush=True)
+        if isinstance(op, (ast.Div, ast.FloorDiv, ast.Mod)) and right != 0:
+            try:
+                b = _as_float(right)
+            except _OutsideFloatRange as exc:
+                if abs(right) < 1:
+                    raise CalculationError("The result is too large.") from exc
+                raise
+        else:
+            b = _as_float(right, flush=True)
     try:
         if isinstance(op, ast.Add):
             result = a + b
@@ -361,7 +379,14 @@ def _binary(op: ast.operator, left_q: Quantity, right_q: Quantity) -> Quantity:
         raise CalculationError("Division by zero.") from exc
     if exact:
         return _bounded(Fraction(result)), dimension
-    return _bounded(float(result), nonzero=isinstance(op, ast.Div) and a != 0), dimension
+    if isinstance(op, ast.Div):
+        nonzero = left != 0
+    elif isinstance(op, (ast.Add, ast.Sub)):
+        # Exact comparison: 0.0 + 1e-400 is not 0, although both flush to 0.
+        nonzero = Fraction(left) != (-Fraction(right) if isinstance(op, ast.Add) else Fraction(right))
+    else:
+        nonzero = False
+    return _bounded(float(result), nonzero=nonzero), dimension
 
 
 def _power(base: Value, exponent: Value) -> Value:
@@ -376,7 +401,13 @@ def _power(base: Value, exponent: Value) -> Value:
         # An odd root of a negative number is real: (-b)**(p/q) = (-1)**p * b**(p/q).
         magnitude = _power(-base, exponent)
         return -magnitude if exponent.numerator % 2 else magnitude
-    b, e = _as_float(base), _as_float(exponent)
+    e = _as_float(exponent, flush=True)
+    try:
+        b = _as_float(base)
+    except _OutsideFloatRange:
+        if not isinstance(base, Fraction) or base <= 0:
+            raise
+        return _decimal_power(base, exponent)
     if b < 0 and not e.is_integer():
         raise CalculationError("A negative number to a fractional power has no real value.")
     if b == 0 and e < 0:
@@ -385,6 +416,15 @@ def _power(base: Value, exponent: Value) -> Value:
         return _bounded(math.pow(b, e), nonzero=b != 0)
     except OverflowError as exc:
         raise CalculationError("The result is too large.") from exc
+
+
+def _decimal_power(base: Fraction, exponent: Value) -> float:
+    """A positive exact base outside a double's range to a fractional power,
+    as exp(exponent * ln(base)) in decimal: (2e-400) ** 0.5 is 1.4e-200."""
+    exact = Fraction(exponent)
+    with localcontext(Context(prec=_LOG_GUARD_DIGITS)):
+        result = (Decimal(exact.numerator) / Decimal(exact.denominator) * _decimal_log(base, base10=False)).exp()
+    return _bounded(float(result), nonzero=True)
 
 
 def _integer_power(base: Fraction, exponent: int) -> Fraction:
@@ -455,6 +495,12 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         return _logarithm(name, values), 0
     if name in ("asin", "acos"):
         return _arc(name, values[0]), 0
+    if name == "atan" and isinstance(values[0], Fraction) and abs(values[0]) > 1:
+        # atan(x) = ±pi/2 - atan(1/x): fits for any x, 10**400 included.
+        inverse = math.atan(_as_float(1 / values[0], flush=True))
+        return _bounded((math.pi / 2 if values[0] > 0 else -math.pi / 2) - inverse), 0
+    if name == "atan2":
+        return _atan2(values[0], values[1]), 0
     return _float_function(name, _FLOAT_FUNCTIONS[name], values), 0
 
 
@@ -506,8 +552,17 @@ def _arc(name: str, value: Value) -> float:
             angle = math.atan2(_sqrt_of_exact(gap * (2 - gap)), _as_float(abs(value)))
             if name == "acos":
                 return _bounded(angle if value > 0 else math.pi - angle)
-            return _bounded(math.copysign(math.pi / 2 - angle, value))
+            return _bounded(math.pi / 2 - angle if value > 0 else angle - math.pi / 2)
     return _float_function(name, _FLOAT_FUNCTIONS[name], [value])
+
+
+def _atan2(y: Value, x: Value) -> float:
+    """atan2 depends only on the ratio, so both are scaled by the larger
+    magnitude first: atan2(10**400, 10**400) is pi/4."""
+    scale = max(abs(Fraction(y)), abs(Fraction(x)))
+    if scale == 0:
+        return 0.0
+    return _float_function("atan2", math.atan2, [Fraction(y) / scale, Fraction(x) / scale])
 
 
 def _sqrt_of_exact(value: Fraction) -> float:
@@ -550,9 +605,11 @@ def _carried_digits(value: float) -> Fraction:
 
 
 def _float_function(name: str, function: Callable[..., float], values: list[Value]) -> float:
-    # Converted outside the try: an argument a double cannot hold is
-    # `_OutsideFloatRange`, which callers with an exact fallback catch.
-    arguments = [_as_float(value) for value in values]
+    # Converted outside the try: an argument past a double's range is
+    # `_OutsideFloatRange`, which callers with an exact fallback catch. One
+    # below it flushes to 0: exp(1e-400) is 1, and sin(1e-400) comes out 0,
+    # which `_nonzero_result` then refuses.
+    arguments = [_as_float(value, flush=True) for value in values]
     try:
         result = function(*arguments)
     except ZeroDivisionError as exc:
@@ -561,8 +618,18 @@ def _float_function(name: str, function: Callable[..., float], values: list[Valu
         raise CalculationError(f"{name}(): the result is too large.") from exc
     except ValueError as exc:
         raise CalculationError(f"{name}(): {exc}.") from exc
-    # exp() is never 0: a 0 from it is an underflow.
-    return _bounded(result, nonzero=name == "exp")
+    return _bounded(result, nonzero=_nonzero_result(name, values))
+
+
+def _nonzero_result(name: str, values: list[Value]) -> bool:
+    """Whether the exact result of `name` is non-zero, so a 0 is an underflow."""
+    if name == "exp":
+        return True
+    if name in ("hypot",):
+        return any(value != 0 for value in values)
+    if name in ("sin", "tan", "asin", "atan", "atan2", "radians", "degrees", "sqrt"):
+        return values[0] != 0
+    return False
 
 
 def _clip(text: str, limit: int = 40) -> str:

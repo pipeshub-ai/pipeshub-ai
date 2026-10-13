@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import contextlib
+import json
+import math
+import random
 import time
 
 import pytest
@@ -109,6 +112,7 @@ class TestExactArithmetic:
             ("-8 ** (1/3)", -2),
             ("4 ** 0.5", 2),
             ("sqrt(10**400) / 10**199", 10),
+            ("(1e-400) ** 0.3", 1e-120),
         ],
     )
     def test_exact_roots_stay_exact(self, expression: str, expected: object) -> None:
@@ -223,6 +227,22 @@ class TestExactArithmetic:
             ("acos(0.75)", 0.722734247813416),
             ("asin(0.75)", 0.848062078981481),
             ("acos(-1)", 3.14159265358979),
+            # An input below a double's range that the result does not depend on.
+            ("pi + 1e-400", 3.14159265358979),
+            ("sqrt(2) - 1e-400", 1.4142135623731),
+            ("exp(1e-400)", 1),
+            ("cos(1e-400)", 1),
+            ("acos(1e-400)", 1.5707963267949),
+            ("hypot(1, 1e-400)", 1),
+            ("atan2(1, 1e-400)", 1.5707963267949),
+            ("2 ** 1e-400", 1),
+            # An input past a double's range whose result fits.
+            ("atan(10**400)", 1.5707963267949),
+            ("atan(-10**400)", -1.5707963267949),
+            ("atan2(10**400, 10**400)", 0.785398163397448),
+            ("(2e-400) ** 0.5", 1.4142135623731e-200),
+            ("(2e-400) ** 0.25", 1.18920711500272e-100),
+            ("(2*10**400) ** (1/3)", 2.71441761659491e133),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -295,6 +315,11 @@ class TestRefusedExpressions:
             ("radians(1e-307)", "too small"),
             ("log(1 + 1e-400)", "too small"),
             ("log(10, 1 + 1e-400)", "too large"),
+            ("0 * pi + 1e-400", "too small"),
+            ("pi / 1e-400", "too large"),
+            ("atan2(1e-400, 1)", "too small"),
+            ("asin(1e-400)", "too small"),
+            ("(2e-400) ** 2.5", "too small"),
             ("log(1, 1)", "division by zero"),
             ("acos(1 + 1e-20)", "domain"),
             ("asin(-1 - 1e-20)", "domain"),
@@ -356,6 +381,47 @@ class TestRefusedExpressions:
     def test_too_many_terms_are_refused(self) -> None:
         with pytest.raises(CalculationError, match="too many"):
             evaluate("+".join(["1"] * 3000))
+
+
+class TestNoUnexpectedErrors:
+    """Every expression either computes or is refused with a CalculationError
+    the tool turns into JSON: never another exception, never NaN or inf."""
+
+    _VALUES = (
+        "0", "1", "-1", "2", "0.5", "1e-400", "-1e-400", "2e-400", "1e-310", "1e-300", "1e300",
+        "10**400", "-10**400", "1 + 1e-20", "1 - 1e-20", "1/3", "pi", "e", "sqrt(2)", "7**-300",
+        "(10**499 - 1)/(10**498 + 7)", 'hms("1:02:03.5")',
+    )
+    _UNARY = (
+        "abs", "floor", "ceil", "round", "sqrt", "exp", "log", "log10", "sin", "cos", "tan",
+        "asin", "acos", "atan", "radians", "degrees", "-", "+", "minutes", "seconds",
+    )
+    _BINARY = ("+", "-", "*", "/", "//", "%", "**", "atan2", "hypot", "log", "min", "max", "round")
+
+    @staticmethod
+    def _expressions(count: int) -> list[str]:
+        rng = random.Random(4125)
+        cls = TestNoUnexpectedErrors
+        expressions = []
+        for _ in range(count):
+            a, b = rng.choice(cls._VALUES), rng.choice(cls._VALUES)
+            if rng.random() < 0.5:
+                expressions.append(f"{rng.choice(cls._UNARY)}({a})")
+            else:
+                op = rng.choice(cls._BINARY)
+                expressions.append(f"{op}({a}, {b})" if op[0].isalpha() else f"({a}) {op} ({b})")
+        return expressions
+
+    def test_random_combinations_compute_or_refuse_cleanly(self) -> None:
+        for expression in self._expressions(4000):
+            try:
+                payload = evaluate(expression).to_dict()
+            except CalculationError:
+                continue
+            json.dumps(payload)
+            result = payload["result"]
+            if isinstance(result, float):
+                assert math.isfinite(result), expression
 
 
 class TestDurations:
