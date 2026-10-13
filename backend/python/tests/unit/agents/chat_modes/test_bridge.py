@@ -876,6 +876,62 @@ class TestRunChatStream:
         # Header must reflect the whole-document framing.
         assert "whole-document content" in constraint_text
 
+    @pytest.mark.parametrize("thorough", [False, True])
+    async def test_prefetch_candidate_list_follows_the_full_read_policy(
+        self, answer_rule_env: SetEnv, thorough: bool,
+    ) -> None:
+        """Under THOROUGH_RETRIEVAL the list beside the prefetched blocks must
+        not offer "one visible fact is enough" while the prompt asks for full
+        reads; off, it is unchanged."""
+        answer_rule_env(THOROUGH_RETRIEVAL="true" if thorough else None)
+        record_obj = {
+            "id": "rec-1", "record_name": "AcmeMSA.pdf",
+            "block_containers": {"blocks": [{"type": "TEXT"} for _ in range(10)]},
+        }
+        prefetch_result = PrefetchResult(
+            formatted_context="[block 2 content]",
+            final_results=[{"virtual_record_id": "vr1", "block_index": 2}],
+            virtual_record_id_to_result={"vr1": record_obj},
+            tool_records=[record_obj],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: str, *, query: str, **_: object,  # noqa: ANN401
+        ) -> tuple[Any, ...]:
+            goal_obj = MagicMock(constraints=[])
+            captured["goal"] = goal_obj
+            agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
+            return agent, MagicMock(), goal_obj, []
+
+        async def _fake_finalizer_run(
+            self: object, *, event_sink: Any, agent_output: Any = None, **_: object,  # noqa: ANN401
+        ) -> None:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "When does the MSA renew?"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        assert events[-1].startswith("event: complete\n")
+        constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
+        assert "1 of 10 blocks" in constraint_text
+        assert ("single specific fact already visible" in constraint_text) is not thorough
+        assert ("A fact seen in one block still needs the rest of the record" in constraint_text) is thorough
+        assert ("read in full the records your answer rests on" in constraint_text) is thorough
+
     async def test_prefetch_candidate_list_appears_even_without_whole_document_bit(self) -> None:
         """The coverage list must be visible regardless of needs_whole_document,
         because a model blind to its own coverage cannot judge a fetch either way.

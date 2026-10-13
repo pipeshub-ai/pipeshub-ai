@@ -209,6 +209,15 @@ def build_candidates(
     )
 
 
+# Under a full-read policy (enterprise search with THOROUGH_RETRIEVAL), every
+# text that tells the model when it may skip a fetch says this instead of
+# "the fact is already visible in a block".
+ONE_BLOCK_IS_NOT_ENOUGH = (
+    "A fact seen in one block still needs the rest of the record when your "
+    "answer rests on it: the rest can revise, qualify or complete it."
+)
+
+
 def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
@@ -232,9 +241,7 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     skip_case = (
         "you already hold the record in full or nearly so, or metadata alone "
-        "(status, assignee) settles the goal. A fact seen in one block still "
-        "needs the rest of the record when your answer rests on it: the rest "
-        "can revise, qualify or complete it."
+        f"(status, assignee) settles the goal. {ONE_BLOCK_IS_NOT_ENOUGH}"
         if read_in_full else
         "the exact fact needed is already visible in a block you hold, or "
         "metadata alone (status, assignee) settles the goal."

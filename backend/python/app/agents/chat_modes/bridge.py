@@ -638,9 +638,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
                 candidate_suffix = ""
                 coverage_note = ""
+                read_in_full = bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY))
                 if plan.has_candidates:
                     candidate_suffix = render_candidate_table(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                     # Leads the constraint: the table lands after the whole
                     # prefetched context, far enough down that the model may
@@ -648,6 +650,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # reads how little of each record it holds.
                     coverage_note = render_coverage_note(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                 log.info(
                     "prefetch: needs_whole_document=%s | candidates=%s",

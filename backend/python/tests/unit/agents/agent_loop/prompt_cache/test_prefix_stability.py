@@ -330,6 +330,13 @@ class TestAnswerRulesKeepThePrefixStable:
         _set_answer_rules(monkeypatch, on=True)
         on_stable, on_sections, on_tools = await _mode_request(mode, _QUESTIONS[0])
 
+        if mode == "internal_search":
+            # The fetch tool's skip case follows THOROUGH_RETRIEVAL's full-read policy.
+            fetch = "knowledgegraph__fetch_record"
+            on_fetch = next(t for t in on_tools if t["name"] == fetch)
+            off_fetch = next(t for t in off_tools if t["name"] == fetch)
+            assert on_fetch["description"] != off_fetch["description"]
+            on_tools = [off_fetch if t["name"] == fetch else t for t in on_tools]
         assert on_tools == off_tools
         for name in _SECTIONS:
             if off_sections.get(name):

@@ -499,6 +499,52 @@ class TestExecuteSearchFullPath:
         assert state["fetch_plan"] is plan
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("read_in_full", [False, True])
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="table")
+    @patch("app.modules.agents.record_escalation.build_candidates")
+    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={"r1": (1, 3)})
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_candidate_list_follows_the_chats_full_read_policy(
+        self, mock_parse, mock_shortener, mock_blob, mock_flatten, mock_enrich, mock_build_content,
+        mock_analyze, mock_build_cands, mock_render_cand, mock_render_note, mock_dedupe, mock_compose,
+        read_in_full: bool,
+    ) -> None:
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+
+        search_result = {"virtual_record_id": "vr1", "block_index": 0}
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [search_result],
+            "virtual_to_record_map": {"vr1": {"id": "r1"}},
+        }
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
+        mock_build_content.return_value = ([[{"type": "text", "text": "Content"}]], MagicMock())
+        plan = MagicMock()
+        plan.has_candidates = True
+        mock_build_cands.return_value = plan
+        state = {
+            "logger": MagicMock(), "retrieval_service": retrieval, "graph_provider": AsyncMock(),
+            "config_service": MagicMock(), "org_id": "o1", "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []}, "final_results": [],
+        }
+        if read_in_full:
+            state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+
+        await execute_search(state, "test query")
+
+        assert mock_render_cand.call_args.kwargs["read_in_full"] is read_in_full
+        assert mock_render_note.call_args.kwargs["read_in_full"] is read_in_full
+
+    @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="")
     @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")

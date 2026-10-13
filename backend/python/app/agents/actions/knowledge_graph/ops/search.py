@@ -32,6 +32,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
     tool_output,
 )
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
@@ -204,10 +205,15 @@ def _result_frame(
     candidate_suffix = coverage_note = ""
     if plan.has_candidates:
         needs_whole_doc = bool(state.get("needs_whole_document", False))
-        candidate_suffix = render_candidate_table(plan, needs_whole_document=needs_whole_doc)
+        read_in_full = bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY))
+        candidate_suffix = render_candidate_table(
+            plan, needs_whole_document=needs_whole_doc, read_in_full=read_in_full,
+        )
         # At the TOP of the result: the table lands at the bottom, possibly
         # thousands of tokens later, where the model may already be answering.
-        coverage_note = render_coverage_note(plan, needs_whole_document=needs_whole_doc)
+        coverage_note = render_coverage_note(
+            plan, needs_whole_document=needs_whole_doc, read_in_full=read_in_full,
+        )
     shown_candidates = candidate_suffix
     if candidate_suffix and selection.record_id_shortener is not None:
         shown_candidates = selection.record_id_shortener.copy().shorten_record_ids_in_text(candidate_suffix)
