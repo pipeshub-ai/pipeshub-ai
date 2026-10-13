@@ -12,6 +12,28 @@ import {
 const FAKE_CODE = '4/0FAKE-auth-code-not-real'
 const FAKE_STATE = 'ZmFrZS1zdGF0ZQ'
 
+// Every percent-decoding of `text`, applied until nothing changes.
+const decodeAll = (text: string): string => {
+  let out = text
+  for (let i = 0; i < 12; i += 1) {
+    let next: string
+    try {
+      next = decodeURIComponent(out)
+    } catch {
+      next = out.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
+        try {
+          return decodeURIComponent(run)
+        } catch {
+          return run
+        }
+      })
+    }
+    if (next === out) break
+    out = next
+  }
+  return out
+}
+
 describe('log-redaction.utils', () => {
   describe('redactSensitiveQueryParams', () => {
     it('redacts an OAuth authorization code', () => {
@@ -331,72 +353,140 @@ describe('log-redaction.utils', () => {
       expect(out).to.not.contain('secret')
     })
 
-    it('keeps a relative path as written', () => {
-      const out = redactSensitiveQueryParams('not a url?code=secret')
-      expect(out).to.not.contain('secret')
-      expect(out.startsWith('not a url?')).to.equal(true)
+    it('keeps the rest of an encoded authority encoded, so a code holding `%26` stays whole', () => {
+      // The code is `4/0Aea&TAILSECRET`: decoding the whole authority at once
+      // turned its `%26` into a separator and logged the tail as a name.
+      const out = redactSensitiveQueryParams(
+        'https://user:hunter2%40host%3Fcode%3D4%2F0Aea%26TAILSECRET',
+      )
+      expect(decodeAll(out)).to.not.contain('TAILSECRET')
+      expect(decodeAll(out)).to.not.contain('hunter2')
+    })
+
+    it('does not read an `@` inside an encoded query as the end of the userinfo', () => {
+      // The `?` is encoded as much as the `@`, so the code's own `%40` lies
+      // past the end of the authority and is not where the password stops.
+      const out = redactSensitiveQueryParams(
+        'https://user:hunter2%40host%3Fcode%3D4%2F0Aea%40TAILSECRET',
+      )
+      expect(decodeAll(out)).to.not.contain('TAILSECRET')
+      expect(decodeAll(out)).to.not.contain('hunter2')
+    })
+
+    for (const [url, password, expected] of [
+      ['postgres://app:sec/ret@pg/db', 'sec/ret', 'postgres://app:REDACTED@pg/db'],
+      ['mongodb://root:ab/cd==@mongo:27017/db', 'ab/cd', 'mongodb://root:REDACTED@mongo:27017/db'],
+      ['redis://:p/ass@redis:6379/0', 'p/ass', 'redis://:REDACTED@redis:6379/0'],
+    ]) {
+      it(`redacts a password holding a \`/\`: ${url.split(':')[0]}`, () => {
+        expect(redactSensitiveQueryParams(url)).to.equal(expected)
+        for (const logged of [
+          `/debug?db=${url}`,
+          `/debug?db=${encodeURIComponent(url)}`,
+          // A path the structural pass cannot read sends the whole URL to
+          // the fallback, which must not keep the password's head as a host.
+          `${url};code=${FAKE_CODE}`,
+        ]) {
+          const out = decodeAll(redactSensitiveQueryParams(logged))
+          expect(out, logged).to.not.contain(password)
+          expect(out, logged).to.not.contain(`${password.split('/')[0]}/`)
+          expect(out, logged).to.not.contain('FAKE-auth-code')
+        }
+      })
+    }
+
+    for (const url of [
+      '/cb;code=4/0AeaSECRETX',
+      '/oauth/callback;code=4/0AeaSECRETX?page=1',
+      '/cb/token=SECRETX',
+      '/cb&code=SECRETX',
+    ]) {
+      it(`does not write a secret in the path back out: ${url}`, () => {
+        const out = redactSensitiveQueryParams(url)
+        expect(decodeAll(out)).to.not.contain('SECRETX')
+      })
+    }
+
+    it('keeps a `?` inside a value in that value', () => {
+      const out = redactSensitiveQueryParams('/cb?code=AB?TAILSECRET&page=1')
+      expect(decodeAll(out)).to.not.contain('TAILSECRET')
+    })
+
+    it('keeps an ordinary path when only the query is replaced', () => {
+      expect(redactSensitiveQueryParams('/oauth/callback;code=4/0AeaSECRETX?page=1')).to.equal(
+        `/oauth/callback?${REDACTED}`,
+      )
     })
   })
 
   describe('redactSensitiveQueryParams under any mix of encodings', () => {
-    const SECRET = 'SECRETX'
-    const decodeAll = (text: string): string => {
-      let out = text
-      for (let i = 0; i < 12; i += 1) {
-        let next: string
-        try {
-          next = decodeURIComponent(out)
-        } catch {
-          next = out.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
-            try {
-              return decodeURIComponent(run)
-            } catch {
-              return run
-            }
-          })
-        }
-        if (next === out) break
-        out = next
-      }
-      return out
-    }
     const encodeChar = (ch: string, level: number): string => {
       let out = ch
       for (let i = 0; i < level; i += 1) out = i === 0 ? encodeURIComponent(out) : out.replace(/%/g, '%25')
       return out
     }
-    const templates = [
-      `/cb?code=${SECRET}&page=1`,
-      `/cb?page=1&code=${SECRET}`,
-      `/login?returnTo=/cb?code=${SECRET}`,
-      `https://app.example.com/cb#access_token=${SECRET}`,
-      `https://user:${SECRET}@host.example/x?page=1`,
+    // A secret is written as its value would be at the level of the pair
+    // around it, so `%26` and `%23` are an `&` and a `#` inside the secret.
+    // Its two halves are checked separately: a parse that splits the secret
+    // at one of those must still not log the tail.
+    const SECRETS = ['HEADX', 'HEADX%26TAILX', 'HEADX%23TAILX', 'HEADX%40TAILX', 'HEADX/TAILX']
+    const MARKERS = ['HEADX', 'TAILX']
+    const QUERY_TEMPLATES = [
+      (s: string) => `/cb?code=${s}&page=1`,
+      (s: string) => `/cb?page=1&code=${s}`,
+      (s: string) => `/login?returnTo=/cb?code=${s}`,
+      (s: string) => `https://app.example.com/cb#access_token=${s}`,
+      (s: string) => `/cb;code=${s}`,
+      (s: string) => `/oauth/callback;code=${s}?page=1`,
     ]
-    const SEPARATORS = ['=', '&', '?', '#', '@', ':']
+    const PASSWORD_TEMPLATES = [
+      (s: string) => `https://user:${s}@host.example/x?page=1`,
+      (s: string) => `https://user:${s}@host.example?code=${s}`,
+      (s: string) => `postgres://app:${s}@pg/db`,
+      (s: string) => `/debug?db=postgres://app:${s}@pg/db`,
+    ]
+    const SEPARATORS = ['=', '&', '?', '#', '@', ':', ';']
+
+    const variants = function* (template: string): Generator<string> {
+      const present = SEPARATORS.filter((ch) => template.includes(ch))
+      const combos = 3 ** present.length
+      for (let combo = 0; combo < combos; combo += 1) {
+        // The leading scheme's own `:` and `//` stay as they are.
+        let variant = template.replace(/^([a-z]+:\/\/)/, '\u0000')
+        const scheme = template.match(/^([a-z]+:\/\/)/)?.[1] ?? ''
+        let rest = combo
+        for (const ch of present) {
+          const level = rest % 3
+          rest = Math.floor(rest / 3)
+          variant = variant.split(ch).join(encodeChar(ch, level))
+        }
+        variant = variant.replace('\u0000', scheme)
+        for (let wrap = 0; wrap < 3; wrap += 1) {
+          yield wrap === 0 ? variant : encodeChar(variant, wrap)
+        }
+      }
+    }
 
     it('never leaves the secret readable at any decoding depth', () => {
       let checked = 0
-      for (const template of templates) {
-        const present = SEPARATORS.filter((ch) => template.includes(ch))
-        const combos = 3 ** present.length
-        for (let combo = 0; combo < combos; combo += 1) {
-          let variant = template.replace(/^(https:\/\/)/, '\u0000')
-          let rest = combo
-          for (const ch of present) {
-            const level = rest % 3
-            rest = Math.floor(rest / 3)
-            variant = variant.split(ch).join(encodeChar(ch, level))
+      // A password holding a `#` is left out: a decoded `#` there ends the
+      // authority, as it does for every URL parser.
+      const cases = [
+        ...QUERY_TEMPLATES.flatMap((t) => SECRETS.map((s) => t(s))),
+        ...PASSWORD_TEMPLATES.flatMap((t) =>
+          SECRETS.filter((s) => !s.includes('%23')).map((s) => t(s)),
+        ),
+      ]
+      for (const template of cases) {
+        for (const input of variants(template)) {
+          const out = decodeAll(redactSensitiveQueryParams(input))
+          for (const marker of MARKERS) {
+            expect(out, `input ${input} -> ${out}`).to.not.contain(marker)
           }
-          variant = variant.replace('\u0000', 'https://')
-          for (let wrap = 0; wrap < 3; wrap += 1) {
-            const input = wrap === 0 ? variant : encodeChar(variant, wrap)
-            const out = redactSensitiveQueryParams(input)
-            expect(decodeAll(out), `input ${input} -> ${out}`).to.not.contain(SECRET)
-            checked += 1
-          }
+          checked += 1
         }
       }
-      expect(checked).to.be.greaterThan(500)
+      expect(checked).to.be.greaterThan(3000)
     })
   })
 

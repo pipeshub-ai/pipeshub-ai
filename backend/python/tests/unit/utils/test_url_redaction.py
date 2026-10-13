@@ -1,6 +1,8 @@
 """Tests for app.utils.url_redaction."""
 
 import itertools
+import re
+from collections.abc import Iterator
 from urllib.parse import quote, unquote
 
 import pytest
@@ -186,6 +188,60 @@ class TestRedactSensitiveQueryParams:
         url = "/login?returnTo=%2Fdocs%3Fpage%3D2"
         assert redact_sensitive_query_params(url) == url
 
+    def test_the_rest_of_an_encoded_authority_stays_encoded(self) -> None:
+        """The code is ``4/0Aea&TAILSECRET``: decoding the whole authority at
+        once turned its ``%26`` into a separator and logged the tail."""
+        out = redact_sensitive_query_params("https://user:hunter2%40host%3Fcode%3D4%2F0Aea%26TAILSECRET")
+        assert "TAILSECRET" not in _decode_all(out)
+        assert "hunter2" not in _decode_all(out)
+
+    def test_an_at_sign_inside_an_encoded_query_does_not_end_the_userinfo(self) -> None:
+        """The ``?`` is encoded as much as the ``@``, so the code's own ``%40``
+        lies past the end of the authority and is not where the password stops."""
+        out = redact_sensitive_query_params("https://user:hunter2%40host%3Fcode%3D4%2F0Aea%40TAILSECRET")
+        assert "TAILSECRET" not in _decode_all(out)
+        assert "hunter2" not in _decode_all(out)
+
+    @pytest.mark.parametrize(
+        ("url", "password", "expected"),
+        [
+            ("postgres://app:sec/ret@pg/db", "sec/ret", "postgres://app:REDACTED@pg/db"),
+            ("mongodb://root:ab/cd==@mongo:27017/db", "ab/cd", "mongodb://root:REDACTED@mongo:27017/db"),
+            ("redis://:p/ass@redis:6379/0", "p/ass", "redis://:REDACTED@redis:6379/0"),
+        ],
+    )
+    def test_a_password_holding_a_slash_is_redacted(self, url: str, password: str, expected: str) -> None:
+        assert redact_sensitive_query_params(url) == expected
+        head = password.split("/")[0] + "/"
+        # The last form sends the whole URL to the fallback, which must not
+        # keep the password's head as if it were the host.
+        for logged in (f"/debug?db={url}", f"/debug?db={quote(url, safe='')}", f"{url};code=4/0FAKE-code"):
+            out = _decode_all(redact_sensitive_query_params(logged))
+            assert password not in out, logged
+            assert head not in out, logged
+            assert "FAKE-code" not in out, logged
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "/cb;code=4/0AeaSECRETX",
+            "/oauth/callback;code=4/0AeaSECRETX?page=1",
+            "/cb/token=SECRETX",
+            "/cb&code=SECRETX",
+        ],
+    )
+    def test_a_secret_in_the_path_is_not_written_back(self, url: str) -> None:
+        assert "SECRETX" not in _decode_all(redact_sensitive_query_params(url))
+
+    def test_a_question_mark_inside_a_value_stays_in_it(self) -> None:
+        """The query runs from the first ``?`` to the ``#``, as the Node
+        helper's URL parser reads it, so ``AB?TAILSECRET`` is all one code."""
+        out = redact_sensitive_query_params("/cb?code=AB?TAILSECRET&page=1")
+        assert "TAILSECRET" not in _decode_all(out)
+
+    def test_the_fallback_keeps_an_ordinary_path(self) -> None:
+        assert redact_sensitive_query_params("/oauth/callback;code=4/0AeaSECRETX?page=1") == "/oauth/callback?[REDACTED]"
+
     def test_nesting_depth_is_bounded(self) -> None:
         value = "code=SECRET"
         for _ in range(10):
@@ -210,31 +266,56 @@ def _encode_char(ch: str, level: int) -> str:
     return out
 
 
-_SECRET = "SECRETX"
-_TEMPLATES = [
-    f"/cb?code={_SECRET}&page=1",
-    f"/cb?page=1&code={_SECRET}",
-    f"/login?returnTo=/cb?code={_SECRET}",
-    f"https://app.example.com/cb#access_token={_SECRET}",
-    f"https://user:{_SECRET}@host.example/x?page=1",
+# A secret is written as its value would be at the level of the pair around
+# it, so `%26` and `%23` are an `&` and a `#` inside the secret. Its two
+# halves are checked separately: a parse that splits the secret at one of
+# those must still not log the tail.
+_SECRETS = ["HEADX", "HEADX%26TAILX", "HEADX%23TAILX", "HEADX%40TAILX", "HEADX/TAILX"]
+_MARKERS = ["HEADX", "TAILX"]
+_QUERY_TEMPLATES = [
+    "/cb?code={s}&page=1",
+    "/cb?page=1&code={s}",
+    "/login?returnTo=/cb?code={s}",
+    "https://app.example.com/cb#access_token={s}",
+    "/cb;code={s}",
+    "/oauth/callback;code={s}?page=1",
 ]
-_SEPARATORS = ["=", "&", "?", "#", "@", ":"]
+_PASSWORD_TEMPLATES = [
+    "https://user:{s}@host.example/x?page=1",
+    "https://user:{s}@host.example?code={s}",
+    "postgres://app:{s}@pg/db",
+    "/debug?db=postgres://app:{s}@pg/db",
+]
+_SEPARATORS = ["=", "&", "?", "#", "@", ":", ";"]
+
+
+def _variants(template: str) -> Iterator[str]:
+    present = [ch for ch in _SEPARATORS if ch in template]
+    scheme = re.match(r"^([a-z]+://)", template)
+    for combo in itertools.product(range(3), repeat=len(present)):
+        # The leading scheme's own `:` and `//` stay as they are.
+        variant = template.replace(scheme.group(1), "\0", 1) if scheme else template
+        for ch, level in zip(present, combo):
+            variant = variant.replace(ch, _encode_char(ch, level))
+        if scheme:
+            variant = variant.replace("\0", scheme.group(1), 1)
+        for wrap in range(3):
+            yield variant if wrap == 0 else _encode_char(variant, wrap)
 
 
 def test_the_secret_is_never_readable_at_any_decoding_depth() -> None:
     """Every separator encoded zero, one or two times, and the whole string up
-    to twice more: no decoding of the output may show the secret."""
+    to twice more: no decoding of the output may show any part of the secret.
+    A password holding a `#` is left out: a decoded `#` there ends the
+    authority, as it does for every URL parser."""
+    cases = [t.format(s=s) for t in _QUERY_TEMPLATES for s in _SECRETS] + [
+        t.format(s=s) for t in _PASSWORD_TEMPLATES for s in _SECRETS if "%23" not in s
+    ]
     checked = 0
-    for template in _TEMPLATES:
-        present = [ch for ch in _SEPARATORS if ch in template]
-        for combo in itertools.product(range(3), repeat=len(present)):
-            variant = template.replace("https://", "\0", 1)
-            for ch, level in zip(present, combo):
-                variant = variant.replace(ch, _encode_char(ch, level))
-            variant = variant.replace("\0", "https://", 1)
-            for wrap in range(3):
-                url = variant if wrap == 0 else _encode_char(variant, wrap)
-                out = redact_sensitive_query_params(url)
-                assert _SECRET not in _decode_all(out), f"{url} -> {out}"
-                checked += 1
-    assert checked > 500
+    for template in cases:
+        for url in _variants(template):
+            out = _decode_all(redact_sensitive_query_params(url))
+            for marker in _MARKERS:
+                assert marker not in out, f"{url} -> {out}"
+            checked += 1
+    assert checked > 3000
