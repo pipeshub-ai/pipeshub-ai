@@ -1439,6 +1439,10 @@ function FilterCategoryBlock({
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
             {t('workspace.connectors.filters.incomplete')}
           </Text>
+        ) : unsetFallbackFields.length > 0 ? (
+          // "No filters yet" reads as "no limit"; the fallback line below says
+          // what the connector syncs instead.
+          null
         ) : (
           <Text size="1" color="gray" style={{ marginBottom: 14 }}>
             {t('workspace.connectors.filters.empty')}

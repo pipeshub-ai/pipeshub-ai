@@ -232,11 +232,14 @@ describe('FiltersSection — a sync filter with a fallback when it is not set', 
     expect(syncValue('sync_window')).toBeNull();
     expect(screen.getByText(fallbackLine)).toBeTruthy();
     expect(screen.getByText('If this filter is not set, only the last 30 days are synced.')).toBeTruthy();
+    // "No filters yet" would read as "no limit", the misreading the fallback line fixes.
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
   });
 
   it('shows the window when the filter was already cleared before the panel opened', () => {
     setup({ sync: [syncWindow], syncValues: { sync_window: null } });
     expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
   });
 
   it('drops the fallback line once the admin sets the filter again', async () => {
@@ -251,6 +254,7 @@ describe('FiltersSection — a sync filter with a fallback when it is not set', 
   it('says nothing extra for a cleared filter that has no fallback', () => {
     setup({ sync: [{ ...spaces, defaultOperator: 'in' }], syncValues: { space_keys: null } });
     expect(screen.queryByText(/\(default\)/)).toBeNull();
+    expect(screen.getByText(/No filters yet/)).toBeTruthy();
   });
 });
 
