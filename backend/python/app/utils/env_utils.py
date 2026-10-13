@@ -16,7 +16,7 @@ from __future__ import annotations
 import os
 
 
-def env_bool(name: str, default: bool) -> bool:
+def env_bool(name: str, default: bool) -> bool:  # noqa: FBT001
     """True iff the env var `name` is `"true"` (case-insensitive).
 
     Absent -> `default`. Any non-`"true"` non-empty value -> False. This is

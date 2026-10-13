@@ -16,8 +16,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-import pytest
-
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.scope import RunScope, ToolScope, TurnScope
