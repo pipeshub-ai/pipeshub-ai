@@ -279,8 +279,8 @@ const contextFieldsSchema = {
 
 /**
  * Opt-in: Python streams CUSTOM `retrieval_context` frames naming the records
- * and blocks that reached the model, plus a `run_usage` frame — the benchmark
- * harness reads both. Must be declared or Zod's unknown-key stripping removes
+ * and blocks that reached the model, plus a `run_usage` frame — evaluation
+ * clients read both. Must be declared or Zod's unknown-key stripping removes
  * it from req.body before the controller sees it. The two stream routes accept
  * it; regenerating an answer is not a measured run.
  */

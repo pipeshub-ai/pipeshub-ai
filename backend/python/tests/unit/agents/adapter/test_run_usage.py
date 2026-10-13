@@ -1,5 +1,4 @@
-"""`run_usage` frame payload, the auto-compact usage callback, and the
-benchmark env knobs on the agent factory."""
+"""`run_usage` frame payload and the auto-compact usage callback."""
 
 from __future__ import annotations
 
