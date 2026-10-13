@@ -407,6 +407,47 @@ describe('log-redaction.utils', () => {
       })
     }
 
+    for (const [url, secrets] of [
+      // A `?` or `#` before the `@`, encoded as much as it, is in the password.
+      ['https://user:hunter2%3Fextra%40host/db', ['hunter2', 'extra']],
+      [encodeURIComponent('https://user:hunter2?extra@host/db'), ['hunter2', 'extra']],
+      ['https://user:hunter2?x=1', ['hunter2']],
+      // A later `@` is counted, and a host after query syntax is not kept.
+      ['https://user:p%40SECRETX%3Frest%40host/db', ['SECRETX', 'rest']],
+      ['postgres://app:sec%2Fret%3Fmore%40pg/db', ['sec', 'more']],
+      ['mongodb://root:ab/cd==%3Fmore%40mongo:27017/db', ['ab/cd', 'more']],
+      ['https://user:hunter2%23tail%40host/x?code=SECRETX', ['hunter2', 'tail', 'SECRETX']],
+      // Protocol-relative, and a scheme with no `//`.
+      ['//user:hunter2@host/db', ['hunter2']],
+      ['//user:hunter2%40host/x?page=1', ['hunter2']],
+      ['/debug?db=//user:hunter2@host/db', ['hunter2']],
+      [
+        `/login?returnTo=${encodeURIComponent('//user:hunter2@host/cb?code=FAKECODE')}`,
+        ['hunter2', 'FAKECODE'],
+      ],
+      ['https:user:hunter2@host/db', ['hunter2']],
+      // A stray byte between a sensitive name and its `=`.
+      ['/cb?code%FF%3DSECRETTOKEN', ['SECRETTOKEN']],
+      ['/cb?code%00%3DSECRETTOKEN', ['SECRETTOKEN']],
+      ['/cb?code%2E%3DSECRETTOKEN', ['SECRETTOKEN']],
+      ['/cb?code%20%3DSECRETTOKEN', ['SECRETTOKEN']],
+      // A raw `#` in a nested password ends the outer URL inside it.
+      ['/debug?a=1&db=redis://:pass#TAILSECRET@redis:6379/0', ['TAILSECRET']],
+      // A sensitive name that carries its own value after an encoded `=`.
+      ['/cb?X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1', ['SECRETSIG']],
+    ] as const) {
+      it(`does not log the secret in ${url}`, () => {
+        const out = decodeAll(redactSensitiveQueryParams(url))
+        for (const secret of secrets) expect(out, out).to.not.contain(secret)
+      })
+    }
+
+    it('still reads a port followed by an `@` later in the URL as a port', () => {
+      expect(redactSensitiveQueryParams('http://localhost:3001/invite?email=a@b.com')).to.equal(
+        'http://localhost:3001/invite?email=a@b.com',
+      )
+    })
+
     it('keeps a `?` inside a value in that value', () => {
       const out = redactSensitiveQueryParams('/cb?code=AB?TAILSECRET&page=1')
       expect(decodeAll(out)).to.not.contain('TAILSECRET')
@@ -430,6 +471,9 @@ describe('log-redaction.utils', () => {
     // Its two halves are checked separately: a parse that splits the secret
     // at one of those must still not log the tail.
     const SECRETS = ['HEADX', 'HEADX%26TAILX', 'HEADX%23TAILX', 'HEADX%40TAILX', 'HEADX/TAILX']
+    // A password may also hold a raw `?`, `#` or `@`: each is then encoded
+    // exactly as much as the separators around it.
+    const PASSWORD_SECRETS = [...SECRETS, 'HEADX?TAILX', 'HEADX#TAILX', 'HEADX@TAILX']
     const MARKERS = ['HEADX', 'TAILX']
     const QUERY_TEMPLATES = [
       (s: string) => `/cb?code=${s}&page=1`,
@@ -438,12 +482,24 @@ describe('log-redaction.utils', () => {
       (s: string) => `https://app.example.com/cb#access_token=${s}`,
       (s: string) => `/cb;code=${s}`,
       (s: string) => `/oauth/callback;code=${s}?page=1`,
+      // A stray byte between the name and its `=`.
+      (s: string) => `/cb?code%FF=${s}&page=1`,
+      (s: string) => `/cb?code%00=${s}`,
+      (s: string) => `/cb?code.=${s}`,
+      (s: string) => `/cb?code%20=${s}`,
     ]
     const PASSWORD_TEMPLATES = [
       (s: string) => `https://user:${s}@host.example/x?page=1`,
       (s: string) => `https://user:${s}@host.example?code=${s}`,
       (s: string) => `postgres://app:${s}@pg/db`,
+      (s: string) => `//user:${s}@host.example/db`,
+      (s: string) => `https:user:${s}@host.example/db`,
+    ]
+    // Nested in a query, where a raw `#` would end the outer URL first.
+    const NESTED_PASSWORD_TEMPLATES = [
       (s: string) => `/debug?db=postgres://app:${s}@pg/db`,
+      (s: string) => `/debug?db=//user:${s}@host/db`,
+      (s: string) => `/login?returnTo=//user:${s}@host/cb?code=${s}`,
     ]
     const SEPARATORS = ['=', '&', '?', '#', '@', ':', ';']
 
@@ -452,8 +508,8 @@ describe('log-redaction.utils', () => {
       const combos = 3 ** present.length
       for (let combo = 0; combo < combos; combo += 1) {
         // The leading scheme's own `:` and `//` stay as they are.
-        let variant = template.replace(/^([a-z]+:\/\/)/, '\u0000')
-        const scheme = template.match(/^([a-z]+:\/\/)/)?.[1] ?? ''
+        let variant = template.replace(/^([a-z]+:(?:\/\/)?)/, '\u0000')
+        const scheme = template.match(/^([a-z]+:(?:\/\/)?)/)?.[1] ?? ''
         let rest = combo
         for (const ch of present) {
           const level = rest % 3
@@ -469,12 +525,11 @@ describe('log-redaction.utils', () => {
 
     it('never leaves the secret readable at any decoding depth', () => {
       let checked = 0
-      // A password holding a `#` is left out: a decoded `#` there ends the
-      // authority, as it does for every URL parser.
       const cases = [
         ...QUERY_TEMPLATES.flatMap((t) => SECRETS.map((s) => t(s))),
-        ...PASSWORD_TEMPLATES.flatMap((t) =>
-          SECRETS.filter((s) => !s.includes('%23')).map((s) => t(s)),
+        ...PASSWORD_TEMPLATES.flatMap((t) => PASSWORD_SECRETS.map((s) => t(s))),
+        ...NESTED_PASSWORD_TEMPLATES.flatMap((t) =>
+          PASSWORD_SECRETS.filter((s) => !s.includes('#')).map((s) => t(s)),
         ),
       ]
       for (const template of cases) {
@@ -486,7 +541,7 @@ describe('log-redaction.utils', () => {
           checked += 1
         }
       }
-      expect(checked).to.be.greaterThan(3000)
+      expect(checked).to.be.greaterThan(10000)
     })
   })
 
@@ -567,6 +622,18 @@ describe('log-redaction.utils', () => {
         redactQueryForLog(querystring.parse('page%3D1%26code%3D4%252F0Aea%2526restOfCode123')),
       )
       expect(logged).to.not.contain('restOfCode123')
+    })
+
+    it('redacts a password or a code that only a looser reading shows', () => {
+      for (const [raw, secret] of [
+        ['code%FF%3DSECRETTOKEN', 'SECRETTOKEN'],
+        ['code%20%3DSECRETTOKEN', 'SECRETTOKEN'],
+        [`db=${encodeURIComponent('//user:hunter2@host/db')}`, 'hunter2'],
+        ['X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1', 'SECRETSIG'],
+      ]) {
+        const logged = JSON.stringify(redactQueryForLog(querystring.parse(raw)))
+        expect(decodeAll(logged), logged).to.not.contain(secret)
+      }
     })
 
     it('keeps an ordinary parameter name as it was', () => {

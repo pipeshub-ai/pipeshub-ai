@@ -100,30 +100,25 @@ const keyWords = (key: string): string[] =>
     .split(/[^a-z0-9]+/)
     .filter((word) => word !== '');
 
-const tryDecode = (value: string): string | null => {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return null;
-  }
-};
+// Decode a run of `%XX` escapes as UTF-8 bytes. A byte that is not valid
+// UTF-8 becomes U+FFFD, as Python's `unquote` does, rather than leaving the
+// whole run encoded: `code%FF%3D<code>` must still show its `=`.
+const decodeRun = (run: string): string =>
+  Buffer.from(run.replace(/%/g, ''), 'hex').toString('utf8');
 
 // Decode each run of escapes on its own, so one malformed `%` elsewhere in
 // the text cannot stop the rest from being read.
 const decodeEscapes = (text: string): string =>
-  text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => tryDecode(run) ?? run);
+  text.replace(/(?:%[0-9a-f]{2})+/gi, decodeRun);
 
 // One layer of decoding that never makes a new `&` or `#`. Once a text has to
 // be decoded to show its `?` and `=`, an `%26` or `%23` at that same layer may
 // sit inside a value (`code%3D4%2F0Aea%26TAIL` is the code `4/0Aea&TAIL`), so
 // it stays encoded and the parse below reads it as part of that value.
 const decodeSyntax = (text: string): string =>
-  text.replace(/(?:%[0-9a-f]{2})+/gi, (run) => {
-    const decoded = tryDecode(run);
-    return decoded === null
-      ? run
-      : decoded.replace(/[&#]/g, (ch) => (ch === '&' ? '%26' : '%23'));
-  });
+  text.replace(/(?:%[0-9a-f]{2})+/gi, (run) =>
+    decodeRun(run).replace(/[&#]/g, (ch) => (ch === '&' ? '%26' : '%23')),
+  );
 
 // Parsers split on a raw `&` or `=` before decoding, so a pair sent as
 // `code%3Dvalue` arrives as the single name "code=value", and one sent as
@@ -151,9 +146,21 @@ const paramName = (key: string): string => {
   return name.split('=')[0] ?? name;
 };
 
-/** Whether a query parameter (or header) name carries a credential. */
+/**
+ * The name a sensitive parameter is logged under: only its leading word
+ * characters, so whatever a decode left after them (`X-Amz-Signature%3D<sig>`
+ * or `code\u0000`) is never written out with it.
+ */
+const loggedName = (key: string): string =>
+  /^[\w.-]+/.exec(paramName(key))?.[0] ?? REDACTED;
+
+/**
+ * Whether a query parameter (or header) name carries a credential. Stray
+ * non-alphanumeric bytes around the name (`code%00`, `code.`, `code `) do not
+ * hide it.
+ */
 export const isSensitiveQueryKey = (key: string): boolean => {
-  const name = paramName(key);
+  const name = paramName(key).replace(/^[^a-z0-9]+|[^a-z0-9]+$/gi, '');
   if (SENSITIVE_QUERY_PARAMS.has(name.toLowerCase())) return true;
   const words = keyWords(name);
   return words.some(
@@ -180,7 +187,7 @@ function redactParamName(key: string, depth: number): string {
     const eq = pair.indexOf('=');
     const pairKey = eq === -1 ? pair : pair.slice(0, eq);
     if (isSensitiveQueryKey(pairKey)) {
-      pairs.push(`${paramName(pairKey)}=${REDACTED}`);
+      pairs.push(`${loggedName(pairKey)}=${REDACTED}`);
       return pairs.join('&');
     }
     const keyOut = redactParamName(pairKey, depth + 1);
@@ -211,7 +218,7 @@ function redactParams(
   const out = new URLSearchParams();
   for (const [key, value] of params) {
     if (isSensitiveQueryKey(key)) {
-      out.append(paramName(key), REDACTED);
+      out.append(loggedName(key), REDACTED);
     } else {
       const name = redactParamName(key, depth);
       const inner = redactEmbedded(value, depth + 1);
@@ -254,69 +261,73 @@ function redactEmbedded(value: string, depth: number, trusted = false): string {
 }
 
 const SCHEME = /^([a-z][a-z0-9+.-]*:\/\/)/i;
-// An `@`, `?` or `#`, raw or percent-encoded once or more (`%40`, `%2540`).
-const AUTHORITY_MARK = /[@?#]|%((?:25)*)(40|3f|23)/gi;
+// Where a URL that can carry `user:password@` starts: `scheme://`, a
+// protocol-relative `//`, or `scheme:` written without the `//`.
+const USERINFO_START = /^(?:[a-z][a-z0-9+.-]*:)?\/\/|^[a-z][a-z0-9+.-]*:/i;
 const USERINFO_COLON = /:|%(?:25)*3a/i;
+// A user name never holds the end of an authority, raw or encoded.
+const NOT_A_USER = /[\s/?#@[\]]|%(?:25)*(?:2f|3f|23|40)/i;
+// `host:8080/…` is a port, not a password: digits, then the authority ends.
+const PORT = /^\d*(?:$|[\s/?#&;,]|%(?:25)*(?:2f|3f|23|26|3b|2c))/i;
+const ANY_AT = /@|%(?:25)*40/gi;
+// Query or fragment syntax, raw or encoded, inside what is read as a password.
+const QUERY_MARK = /[?#;&]|%(?:25)*(?:3f|23|3b|26)/i;
 
 interface PasswordUrl {
-  scheme: string;
+  start: string; // `scheme://`, `//` or `scheme:`
   user: string;
-  host: string; // everything after the userinfo, as written
+  rest: string; // what follows the password, as written: `@host…` or `?…`
 }
 
 /**
- * Split `scheme://user:password@rest`, or return null when `url` has no
- * password. A password may hold `/` (base64 passwords do) and `@`, so the
- * userinfo runs to the last `@` before the query or fragment; the user name
- * runs to the first `:` and holds no `/`. That over-reads `http://h:8080/a@b`
- * as a password, which costs readability and never a secret.
+ * Split a URL that carries a password into the text before it, the user
+ * name, and what follows it, or return null when there is none.
  *
- * A logged URL may carry its `@`, `?` and `#` percent-encoded, so each is
- * read with its level of encoding (`@` is 0, `%40` is 1, `%2540` is 2). An
- * `@` can end the userinfo only if no `?` or `#` at its level or lower comes
- * first: that is what a parser sees once it has decoded just far enough to
- * show that `@`. A value is never encoded less than the syntax around it, so
- * the least encoded of those (the last, on a tie) is the real end. If the
- * last of them all is a different one, or a `?` or `#` at any level comes
- * before it, the text has been encoded in a way that leaves it open: the
- * password then runs to that last `@`, and the host is not kept either,
- * since either reading could put a secret there.
- * Nothing is decoded: the text after the `@` stays exactly as written, so an
- * encoded `?`, `&` or `#` there is not turned into syntax here.
+ * Kept deliberately simple, since every finer rule has missed an encoding:
+ * - The user name runs to the first `:` and holds no `/`, `?`, `#` or `@`.
+ * - If digits and then the end of the authority follow that `:`, it is a
+ *   port (`localhost:3000/…`), not a password.
+ * - Otherwise everything up to the last `@` is the password, whatever it
+ *   holds (`/`, `?`, `#`, a further `@`, raw or encoded). Nothing is
+ *   decoded, so the text after that `@` stays exactly as written.
+ * - The host after it is kept only when that `@` is the only one and no
+ *   query or fragment syntax comes before it. Otherwise either reading could
+ *   put part of a secret there, so the host is replaced too.
+ * - A `//` URL with no `@` at all (`https://user:pw?x=1`) has the text after
+ *   the `:` replaced up to its query.
+ *
+ * This over-reads `http://h:abc/x` or `https://u:p@h/a@b` and loses some of
+ * them to the redaction, which costs readability and never a secret.
  */
 function splitPasswordUrl(url: string): PasswordUrl | null {
-  const scheme = SCHEME.exec(url)?.[1];
-  if (scheme === undefined) return null;
-  const after = url.slice(scheme.length);
-  let endLevel = Infinity;
-  let firstEnd = Infinity;
-  type At = { index: number; length: number; level: number };
-  let last: At | null = null;
-  let leastEncoded: At | null = null;
-  for (const mark of after.matchAll(AUTHORITY_MARK)) {
-    const encoded = mark[2];
-    const level = encoded === undefined ? 0 : 1 + (mark[1] ?? '').length / 2;
-    const isAt = encoded === undefined ? mark[0] === '@' : encoded === '40';
-    if (!isAt) {
-      endLevel = Math.min(endLevel, level);
-      firstEnd = Math.min(firstEnd, mark.index);
-      if (level === 0) break;
-    } else if (level < endLevel) {
-      last = { index: mark.index, length: mark[0].length, level };
-      if (leastEncoded === null || level <= leastEncoded.level) {
-        leastEncoded = last;
-      }
-    }
+  const start = USERINFO_START.exec(url)?.[0];
+  if (start === undefined) return null;
+  const after = url.slice(start.length);
+  const colon = USERINFO_COLON.exec(after);
+  if (!colon) return null;
+  const user = after.slice(0, colon.index);
+  if (NOT_A_USER.test(user)) return null;
+  const rest = after.slice(colon.index + colon[0].length);
+  if (PORT.test(rest)) return null;
+  const end = rest.search(/\s/);
+  const token = end === -1 ? rest : rest.slice(0, end);
+  const ats = [...token.matchAll(ANY_AT)];
+  const last = ats[ats.length - 1];
+  if (last === undefined) {
+    if (!start.endsWith('//')) return null;
+    const query = token.search(/[?#]|%(?:25)*(?:3f|23)/i);
+    return {
+      start,
+      user,
+      rest: rest.slice(query === -1 ? token.length : query),
+    };
   }
-  if (last === null) return null;
-  const userinfo = after.slice(0, last.index);
-  const colon = USERINFO_COLON.exec(userinfo);
-  if (!colon || userinfo.slice(0, colon.index).includes('/')) return null;
-  const settled = last === leastEncoded && last.index < firstEnd;
+  const password = token.slice(0, last.index);
+  const settled = ats.length === 1 && !QUERY_MARK.test(password);
   return {
-    scheme,
-    user: userinfo.slice(0, colon.index),
-    host: settled ? after.slice(last.index + last.length) : REDACTED,
+    start,
+    user,
+    rest: `@${settled ? rest.slice(last.index + last[0].length) : REDACTED}`,
   };
 }
 
@@ -328,7 +339,7 @@ function splitPasswordUrl(url: string): PasswordUrl | null {
  */
 function redactUserinfo(url: string): string {
   const parts = splitPasswordUrl(url);
-  return parts ? `${parts.scheme}${parts.user}:REDACTED@${parts.host}` : url;
+  return parts ? `${parts.start}${parts.user}:REDACTED${parts.rest}` : url;
 }
 
 function redactUrl(rawUrl: string, depth: number, trusted: boolean): string {
@@ -406,9 +417,22 @@ export function redactSensitiveQueryParams(url: string): string {
 // layer by layer, and if any layer still shows one, the text is replaced
 // wholesale instead of trusting the parse that missed it.
 const MAX_SCAN_LAYERS = 10;
-// The same shape `splitPasswordUrl` reads: a password may hold `/`.
-const PASSWORD_URL =
-  /[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:(?!REDACTED@)[^\s?#@]+@/i;
+// The shapes `splitPasswordUrl` reads, anywhere in the text: a user name
+// after `//`, then a `:` followed by neither a port nor the redaction marker
+// (with or without an `@` yet), or a `scheme:user:password@` with no `//`;
+// and a redacted password with its `@` still to come.
+const PASSWORD_URL = new RegExp(
+  [
+    ...[
+      String.raw`(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#@:[\]]*:`,
+      String.raw`(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#@:[\]]+:(?=[^\s@]*@)`,
+    ].map((head) => String.raw`${head}(?!REDACTED)(?!${PORT.source.slice(1)})`),
+    // A password cut short at a `?` or `#` with its `@` still to come: a raw
+    // `#` ended the outer URL inside it, and the rest is in the fragment.
+    String.raw`//[^\s/?#@:[\]]*:REDACTED(?!@)[^\s@]*@`,
+  ].join('|'),
+  'i',
+);
 
 // Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is still clean.
 const isRedactedValue = (value: string): boolean => {
@@ -423,15 +447,22 @@ const isRedactedValue = (value: string): boolean => {
 
 // Every `name=` in a segment counts, not just the first: in
 // `returnTo=code=<code>` or `code=[REDACTED]=<code>` the secret follows a
-// later `=`. A value runs to the next `?`, `&`, `#` or `;`.
+// later `=`. A value runs to the next `?`, `&`, `#` or `;`; whitespace does
+// not end it, so `code =<code>` is still one pair. A name that ends in a
+// redaction marker also counts: the marker may have replaced the sensitive
+// name itself (`//u:p@[REDACTED]=<code>`, where the host held `…?code`).
+const ENDS_IN_MARKER = /(?:^|[^a-z0-9])\[?REDACTED\]?$/;
+const isRedactedName = (name: string): boolean =>
+  isSensitiveQueryKey(name) || ENDS_IN_MARKER.test(name);
+
 function showsSecretPair(layer: string): boolean {
-  for (const segment of layer.split(/[\s?&#;]/)) {
+  for (const segment of layer.split(/[?&#;]/)) {
     const parts = segment.split('=');
     for (let k = 0; k < parts.length - 1; k += 1) {
       const name = parts[k] ?? '';
       if (
         name !== '' &&
-        isSensitiveQueryKey(name) &&
+        isRedactedName(name) &&
         !isRedactedValue(parts.slice(k + 1).join('='))
       ) {
         return true;
@@ -464,13 +495,18 @@ const KEPT_TEXT_END = /[?#%;&=\s]/;
  */
 function redactWholly(url: string): string {
   const scheme = SCHEME.exec(url)?.[1];
+  const parts = splitPasswordUrl(url);
   let kept = REDACTED;
-  if (scheme !== undefined) {
-    // After a password, the host is what follows it; otherwise it is the
-    // authority after any raw `user@`. It ends at the first encoded
+  if (parts) {
+    // The host is what follows the password, if anything was kept there.
+    const host = parts.rest.startsWith('@')
+      ? (parts.rest.slice(1).split(/[/?#%;&=\s]/)[0] ?? '')
+      : '';
+    kept = `${parts.start}${host}/${REDACTED}`;
+  } else if (scheme !== undefined) {
+    // The authority after any raw `user@`. It ends at the first encoded
     // character, so an encoded `@` further on is never read as a boundary.
-    const rest = splitPasswordUrl(url)?.host ?? url.slice(scheme.length);
-    const authority = rest.split(/[/?#%;&=\s]/)[0] ?? '';
+    const authority = url.slice(scheme.length).split(/[/?#%;&=\s]/)[0] ?? '';
     kept = `${scheme}${authority.split('@').pop() ?? ''}/${REDACTED}`;
   } else if (url.startsWith('/')) {
     kept = `${url.split(KEPT_TEXT_END)[0] ?? ''}?${REDACTED}`;
@@ -525,7 +561,7 @@ export function redactQueryForLog(query: unknown, depth = 0): unknown {
     // parameter named "code=<code>"), so a sensitive one is logged trimmed,
     // and one holding several pairs is logged with those pairs redacted.
     if (isSensitiveQueryKey(key)) {
-      out[paramName(key)] = REDACTED;
+      out[loggedName(key)] = REDACTED;
       continue;
     }
     const name = redactParamName(key, 1);

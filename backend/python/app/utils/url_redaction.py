@@ -90,8 +90,18 @@ def _param_name(key: str) -> str:
     return _decode_name(key).split("=", 1)[0]
 
 
+def _logged_name(key: str) -> str:
+    """The name a sensitive parameter is logged under: only its leading word
+    characters, so whatever a decode left after them
+    (``X-Amz-Signature%3D<sig>`` or ``code\\x00``) is never written out with it."""
+    match = re.match(r"[\w.-]+", _param_name(key), re.ASCII)
+    return match.group() if match else REDACTED
+
+
 def is_sensitive_query_key(key: str) -> bool:
-    name = _param_name(key)
+    """Stray non-alphanumeric bytes around the name (``code%00``, ``code.``,
+    ``code ``) do not hide it."""
+    name = re.sub(r"^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$", "", _param_name(key))
     if name.lower() in SENSITIVE_QUERY_PARAMS:
         return True
     words = [w for w in re.split(r"[^a-z0-9]+", re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name).lower()) if w]
@@ -118,63 +128,63 @@ def redact_url(url: str) -> str:
 _ENCODED_URL_SYNTAX = re.compile(r"%(3d|3f|23|26|40|25)|%3a%2f%2f", re.IGNORECASE)
 
 _SCHEME = re.compile(r"^[a-z][a-z0-9+.-]*://", re.IGNORECASE)
-# An `@`, `?` or `#`, raw or percent-encoded once or more (`%40`, `%2540`).
-_AUTHORITY_MARK = re.compile(r"[@?#]|%((?:25)*)(40|3f|23)", re.IGNORECASE)
+# Where a URL that can carry `user:password@` starts: `scheme://`, a
+# protocol-relative `//`, or `scheme:` written without the `//`.
+_USERINFO_START = re.compile(r"^(?:[a-z][a-z0-9+.-]*:)?//|^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _USERINFO_COLON = re.compile(r":|%(?:25)*3a", re.IGNORECASE)
+# A user name never holds the end of an authority, raw or encoded.
+_NOT_A_USER = re.compile(r"[\s/?#@\[\]]|%(?:25)*(?:2f|3f|23|40)", re.IGNORECASE)
+# `host:8080/…` is a port, not a password: digits, then the authority ends.
+_PORT = r"\d*(?:$|[\s/?#&;,]|%(?:25)*(?:2f|3f|23|26|3b|2c))"
+_ANY_AT = re.compile(r"@|%(?:25)*40", re.IGNORECASE)
+# Query or fragment syntax, raw or encoded, inside what is read as a password.
+_QUERY_MARK = re.compile(r"[?#;&]|%(?:25)*(?:3f|23|3b|26)", re.IGNORECASE)
 
 
 def _split_password_url(url: str) -> tuple[str, str, str] | None:
-    """Split ``scheme://user:password@rest`` into (scheme, user, rest), or
-    return None when ``url`` has no password. A password may hold ``/``
-    (base64 passwords do) and ``@``, so the userinfo runs to the last ``@``
-    before the query or fragment; the user name runs to the first ``:`` and
-    holds no ``/``. That over-reads ``http://h:8080/a@b`` as a password, which
-    costs readability and never a secret.
+    """Split a URL that carries a password into (the text before it, the user
+    name, what follows it: ``@host…`` or ``?…``), or return None when there is
+    none. Kept deliberately simple, since every finer rule has missed an
+    encoding; it matches the Node helper:
 
-    A logged URL may carry its ``@``, ``?`` and ``#`` percent-encoded, so each
-    is read with its level of encoding (``@`` is 0, ``%40`` is 1, ``%2540`` is
-    2). An ``@`` can end the userinfo only if no ``?`` or ``#`` at its level
-    or lower comes first: that is what a parser sees once it has decoded just
-    far enough to show that ``@``. A value is never encoded less than the
-    syntax around it, so the least encoded of those (the last, on a tie) is
-    the real end. If the last of them all is a different one, or a ``?`` or
-    ``#`` at any level comes before it, the text has been encoded in a way
-    that leaves it open: the password then runs to that last ``@``, and the
-    host is not kept either, since either reading could put a secret there.
-    Nothing is decoded: the text after the ``@`` stays exactly as written, so
-    an encoded ``?``, ``&`` or ``#`` there is not turned into syntax here."""
-    scheme = _SCHEME.match(url)
-    if not scheme:
+    - The user name runs to the first ``:`` and holds no ``/``, ``?``, ``#``
+      or ``@``.
+    - If digits and then the end of the authority follow that ``:``, it is a
+      port (``localhost:3000/…``), not a password.
+    - Otherwise everything up to the last ``@`` is the password, whatever it
+      holds (``/``, ``?``, ``#``, a further ``@``, raw or encoded). Nothing is
+      decoded, so the text after that ``@`` stays exactly as written.
+    - The host after it is kept only when that ``@`` is the only one and no
+      query or fragment syntax comes before it. Otherwise either reading
+      could put part of a secret there, so the host is replaced too.
+    - A ``//`` URL with no ``@`` at all (``https://user:pw?x=1``) has the text
+      after the ``:`` replaced up to its query.
+
+    This over-reads ``http://h:abc/x`` or ``https://u:p@h/a@b`` and loses some
+    of them to the redaction, which costs readability and never a secret."""
+    start = _USERINFO_START.match(url)
+    if not start:
         return None
-    after = url[scheme.end():]
-    end_level = float("inf")
-    first_end = len(after)
-    # (start, end, level) of the last `@` that can end the userinfo, and of
-    # the least encoded one.
-    last: tuple[int, int, int] | None = None
-    least_encoded: tuple[int, int, int] | None = None
-    for mark in _AUTHORITY_MARK.finditer(after):
-        encoded = mark.group(2)
-        level = 0 if encoded is None else 1 + len(mark.group(1)) // 2
-        is_at = mark.group() == "@" if encoded is None else encoded == "40"
-        if not is_at:
-            end_level = min(end_level, level)
-            first_end = min(first_end, mark.start())
-            if level == 0:
-                break
-        elif level < end_level:
-            last = (mark.start(), mark.end(), level)
-            if least_encoded is None or level <= least_encoded[2]:
-                least_encoded = last
-    if last is None:
+    after = url[start.end():]
+    colon = _USERINFO_COLON.search(after)
+    if not colon:
         return None
-    userinfo = after[: last[0]]
-    colon = _USERINFO_COLON.search(userinfo)
-    if not colon or "/" in userinfo[: colon.start()]:
+    user = after[: colon.start()]
+    if _NOT_A_USER.search(user):
         return None
-    settled = last == least_encoded and last[0] < first_end
-    host = after[last[1] :] if settled else REDACTED
-    return scheme.group(), userinfo[: colon.start()], host
+    rest = after[colon.end():]
+    if re.match(_PORT, rest, re.IGNORECASE):
+        return None
+    token = re.split(r"\s", rest, maxsplit=1)[0]
+    ats = list(_ANY_AT.finditer(token))
+    if not ats:
+        if not start.group().endswith("//"):
+            return None
+        query = re.search(r"[?#]|%(?:25)*(?:3f|23)", token, re.IGNORECASE)
+        return start.group(), user, rest[query.start() if query else len(token) :]
+    last = ats[-1]
+    settled = len(ats) == 1 and not _QUERY_MARK.search(token[: last.start()])
+    return start.group(), user, "@" + (rest[last.end() :] if settled else REDACTED)
 
 
 def _redact_userinfo(url: str) -> str:
@@ -185,8 +195,8 @@ def _redact_userinfo(url: str) -> str:
     parts = _split_password_url(url)
     if parts is None:
         return url
-    scheme, user, rest = parts
-    return f"{scheme}{user}:REDACTED@{rest}"
+    start, user, rest = parts
+    return f"{start}{user}:REDACTED{rest}"
 
 
 def _redact_name(key: str, depth: int) -> str:
@@ -205,7 +215,7 @@ def _redact_name(key: str, depth: int) -> str:
     for pair in name.split("&"):
         pair_key, eq, value = pair.partition("=")
         if is_sensitive_query_key(pair_key):
-            out.append(f"{_param_name(pair_key)}={REDACTED}")
+            out.append(f"{_logged_name(pair_key)}={REDACTED}")
             return "&".join(out)
         key_out = _redact_name(pair_key, depth + 1)
         value_out = _redact_embedded(value, depth + 1) if eq else value
@@ -227,7 +237,7 @@ def _redact_pairs(segment: str, depth: int, *, trusted: bool) -> str:
     out = []
     for key, value in pairs:
         if is_sensitive_query_key(key):
-            out.append((_param_name(key), REDACTED))
+            out.append((_logged_name(key), REDACTED))
         else:
             name = _redact_name(key, depth)
             inner = _redact_embedded(value, depth + 1)
@@ -318,22 +328,50 @@ def redact_sensitive_query_params(url: str) -> str:
 # layer by layer, and if any layer still shows one, the text is replaced
 # wholesale instead of trusting the parse that missed it.
 _MAX_SCAN_LAYERS = 10
-# The same shape `_split_password_url` reads: a password may hold `/`.
-_PASSWORD_URL = re.compile(r"[a-z][a-z0-9+.-]*://[^\s/?#@:]*:(?!REDACTED@)[^\s?#@]+@", re.IGNORECASE)
+# The shapes `_split_password_url` reads, anywhere in the text: a user name
+# after `//`, then a `:` followed by neither a port nor the redaction marker
+# (with or without an `@` yet), or a `scheme:user:password@` with no `//`;
+# and a redacted password with its `@` still to come.
+_PASSWORD_URL = re.compile(
+    "|".join(
+        [
+            *(
+                rf"{head}(?!REDACTED)(?!{_PORT})"
+                for head in (
+                    r"(?:^|[^a-z0-9+.-])(?:[a-z][a-z0-9+.-]*:)?//[^\s/?#@:\[\]]*:",
+                    r"(?:^|[^a-z0-9+.-])[a-z][a-z0-9+.-]*:[^\s/?#@:\[\]]+:(?=[^\s@]*@)",
+                )
+            ),
+            # A password cut short at a `?` or `#` with its `@` still to come:
+            # a raw `#` ended the outer URL inside it, and the rest is in the
+            # fragment.
+            r"//[^\s/?#@:\[\]]*:REDACTED(?!@)[^\s@]*@",
+        ]
+    ),
+    re.IGNORECASE,
+)
 _REDACTED_VALUES = frozenset({"", REDACTED, "REDACTED", "%5BREDACTED%5D", "%5bredacted%5d"})
+
+
+_ENDS_IN_MARKER = re.compile(r"(?:^|[^a-zA-Z0-9])\[?REDACTED\]?$")
 
 
 def _shows_secret_pair(layer: str) -> bool:
     """Every ``name=`` in a segment counts, not just the first: in
     ``returnTo=code=<code>`` or ``code=[REDACTED]=<code>`` the secret follows a
-    later ``=``. A value runs to the next ``?``, ``&``, ``#`` or ``;``."""
-    for segment in re.split(r"[\s?&#;]", layer):
+    later ``=``. A value runs to the next ``?``, ``&``, ``#`` or ``;``;
+    whitespace does not end it, so ``code =<code>`` is still one pair. A name
+    that ends in a redaction marker also counts: the marker may have
+    replaced the sensitive name itself (``//u:p@[REDACTED]=<code>``, where
+    the host held ``…?code``)."""
+    for segment in re.split(r"[?&#;]", layer):
         parts = segment.split("=")
         for k in range(len(parts) - 1):
             name = parts[k]
             # Parsers add a trailing `=` to a bare name, so `[REDACTED]=` is clean.
             value = "=".join(parts[k + 1 :]).rstrip("=")
-            if name and is_sensitive_query_key(name) and value not in _REDACTED_VALUES:
+            sensitive = is_sensitive_query_key(name) or _ENDS_IN_MARKER.search(name)
+            if name and sensitive and value not in _REDACTED_VALUES:
                 return True
     return False
 
@@ -362,14 +400,17 @@ def _redact_wholly(url: str) -> str:
     of an absolute URL, or the path of a relative one, and replace the rest.
     If even that kept part shows a secret, nothing is kept."""
     scheme = _SCHEME.match(url)
+    parts = _split_password_url(url)
     kept = REDACTED
-    if scheme:
-        # After a password, the host is what follows it; otherwise it is the
-        # authority after any raw `user@`. It ends at the first encoded
+    if parts:
+        # The host is what follows the password, if anything was kept there.
+        start, _, rest = parts
+        host = re.split(r"[/?#%;&=\s]", rest[1:], maxsplit=1)[0] if rest.startswith("@") else ""
+        kept = f"{start}{host}/{REDACTED}"
+    elif scheme:
+        # The authority after any raw `user@`. It ends at the first encoded
         # character, so an encoded `@` further on is never read as a boundary.
-        parts = _split_password_url(url)
-        rest = parts[2] if parts else url[scheme.end():]
-        authority = re.split(r"[/?#%;&=\s]", rest, maxsplit=1)[0]
+        authority = re.split(r"[/?#%;&=\s]", url[scheme.end():], maxsplit=1)[0]
         kept = f"{scheme.group()}{authority.split('@')[-1]}/{REDACTED}"
     elif url.startswith("/"):
         kept = f"{_KEPT_TEXT_END.split(url, maxsplit=1)[0]}?{REDACTED}"
