@@ -77,12 +77,7 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
-    # The graph store is a mock here; the stored-access read is covered by the behaviour tests.
-    connector._load_stored_access = AsyncMock()
-    connector._note_stored_access = AsyncMock()
-    connector._note_stored_projects = AsyncMock()
-    return connector
+    return JiraConnector(logger, dep, dsp, cs, "conn-jira-1", "team", "test-user-id")
 
 
 def _resp(status=200, data=None):

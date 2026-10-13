@@ -60,12 +60,7 @@ def _make_connector() -> JiraDataCenterConnector:
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
-    connector = JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
-    # The graph store is a mock here; the stored-access read is covered by the behaviour tests.
-    connector._load_stored_access = AsyncMock()
-    connector._note_stored_access = AsyncMock()
-    connector._note_stored_projects = AsyncMock()
-    return connector
+    return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-cov", "team", "u1")
 
 
 def _list_unavailable_resp() -> MagicMock:

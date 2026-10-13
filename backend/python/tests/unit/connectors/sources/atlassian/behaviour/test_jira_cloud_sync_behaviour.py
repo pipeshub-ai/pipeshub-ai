@@ -35,6 +35,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -884,34 +885,6 @@ def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
 
 
 
-def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the stored-access note fail as the graph stores do: a failed read raises
-    only when the caller asks for that, and otherwise comes back as None (no sync point)."""
-    real = store.get_sync_point
-
-    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        if key.endswith("stored_access"):
-            if raise_on_error:
-                raise RuntimeError("database unavailable")
-            return None
-        return await real(key, raise_on_error)
-
-    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
-
-
-
-def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make writing the stored-access note fail, as a database error would."""
-    real = store.update_sync_point
-
-    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
-        if key.endswith("stored_access"):
-            raise RuntimeError("database unavailable")
-        await real(key, data)
-
-    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
-
-
 class TestUnfinishedUserRead:
     """A user list that stops part-way must not shrink who can see what.
 
@@ -1053,7 +1026,7 @@ class TestUnfinishedUserRead:
         assert access["lead"] == []
         assert ("EntityType.GROUP", "grp-dev") in access["project"], "the grants that were read are saved"
 
-    async def test_a_full_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
+    async def test_a_full_sync_whose_prep_deleted_the_grants_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
         self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
@@ -1089,23 +1062,6 @@ class TestUnfinishedUserRead:
 
         assert saved_members(site_db, "grp-dev") == [], "a refused user list is not kept open by a lookup that failed"
 
-    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
-        self, api, site_db, checkpoints, search, monkeypatch
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        before = self._access(site_db)
-
-        fail_checkpoint_reads(checkpoints, monkeypatch)
-        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert self._access(site_db) == before, "the sync stops before replacing anything"
-
     async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
         self, api, site_db, checkpoints, search
     ) -> None:
@@ -1127,42 +1083,6 @@ class TestUnfinishedUserRead:
         assert len(site_db.user_groups) == groups_saved, "groups the first sync saved are kept"
         assert ("EntityType.GROUP", "grp-dev") in acl(site_db), "a project it never saved is saved with what was read"
 
-    async def test_a_note_that_cannot_be_written_stops_the_sync_before_groups_are_saved(
-        self, api, site_db, checkpoints, search, monkeypatch
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        connector, _ = await ready_connector(site_db, checkpoints)
-        fail_note_writes(checkpoints, monkeypatch)
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert site_db.user_groups == [], "no membership is saved without its note"
-
-    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(
-        self, api, site_db, checkpoints, search
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        before = self._access(site_db)
-        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
-            del checkpoints.sync_points[key]  # as left by a version without the notes
-
-        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        assert self._access(site_db) == before
-        note = checkpoints.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles")), "groups and roles are noted once"
-        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
-            "the every-project flag is turned into the ids of the projects it stood for, held ones included"
-        )
-        assert note.get("leads") is False and note.get("lead_project_keys") == ["ENG"]
-
     async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
         self, api, site_db, checkpoints, search
     ) -> None:
@@ -1172,7 +1092,6 @@ class TestUnfinishedUserRead:
         connector, _ = await ready_connector(site_db, checkpoints)
         await connector.run_sync()
         assert site_db.user_groups == [], "the group list could not be read, so no group is saved"
-        assert not (checkpoints.values_for("stored_access") or {}).get("groups"), "nor noted as stored"
 
         api.on("GET", f"{JIRA}/group/bulk", {"values": [{"groupId": "grp-dev", "name": "devs"}], "isLast": True})
         self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
@@ -1207,20 +1126,6 @@ class TestUnfinishedUserRead:
         assert acl(site_db) == eng_before, "ENG's saved access is kept"
         ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
         assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
-
-    async def test_a_group_save_that_fails_after_its_note_stops_the_sync(
-        self, api, site_db, checkpoints, search, monkeypatch
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        connector, _ = await ready_connector(site_db, checkpoints)
-
-        async def failing_save(groups: list[tuple[Any, list[Any]]]) -> None:
-            raise RuntimeError("write rolled back")
-
-        monkeypatch.setattr(site_db, "on_new_user_groups", failing_save)
-        with pytest.raises(RuntimeError, match="write rolled back"):
-            await connector.run_sync()
 
     async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, api, site_db, checkpoints, search) -> None:
         self._stub_bo_everywhere(api)
@@ -1271,35 +1176,6 @@ class TestUnfinishedUserRead:
             "the access list saved under the old key, whose roles have members, is kept"
         )
 
-    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_from_a_short_read(
-        self, api, site_db, checkpoints, search
-    ) -> None:
-        self._stub_bo_everywhere(api)
-        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
-        connector, _ = await ready_connector(site_db, checkpoints)
-        await connector.run_sync()
-        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
-            del checkpoints.sync_points[key]  # as left by a version without the notes
-        await connector.run_sync()  # the backfill sync, with the whole user list
-        eng_before = acl(site_db)
-
-        api.on("GET", f"{JIRA}/project/search", {"values": [
-            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
-            {"id": "20000", "key": "OPS", "name": "Operations"},
-        ], "isLast": True})
-        api.on("GET", f"{JIRA}/project/OPS/role", {})
-        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 2})
-        api.on("GET", f"{JIRA}/permissionscheme/2/permission", {"permissions": [
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
-            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
-        ]})
-        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        assert acl(site_db) == eng_before, "ENG keeps its saved access"
-        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
-        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS was never saved, so the grants that were read are saved"
-
     async def test_a_renamed_project_granted_through_groups_a_role_and_its_lead_keeps_its_access_on_a_short_read(
         self, api, site_db, checkpoints, search
     ) -> None:
@@ -1328,7 +1204,41 @@ class TestUnfinishedUserRead:
         assert acl(site_db) == before, "the Developers and project-lead grants under the old key stay"
         assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
         assert "NEW_projectLead" not in site_db.app_roles, "no empty lead is saved for a project whose access is stored"
-        assert "NEW" not in ((checkpoints.values_for("stored_access") or {}).get("lead_project_keys") or [])
+
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_them_on_a_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        checkpoints.sync_points.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(site_db) == before, "stored members, roles, lead and project access are kept"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_replacing_anything(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+        groups_saved = len(site_db.user_groups)
+
+        site_db.fail_stored_permission_reads = True
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert self._access(site_db) == before, "a failed read is not taken for 'nothing stored'"
+        assert len(site_db.user_groups) == groups_saved
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.

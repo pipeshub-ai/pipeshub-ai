@@ -19,3 +19,8 @@ def is_inconclusive_status(status: int) -> bool:
     before asking this.
     """
     return status not in _CONFIRMED_ABSENT
+
+
+class StoredAccessReadError(Exception):
+    """The stored access a sync would keep could not be read. Raised so the sync stops
+    before a write that might replace that access with a list it could not read in full."""
