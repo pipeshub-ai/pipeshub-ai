@@ -430,9 +430,13 @@ class JiraConnector(BaseConnector):
         # must not replace from a read that was cut short. Empty on a first sync and after a
         # full sync's prep, which deletes the stored edges along with every sync point.
         self._stored_access_kinds: frozenset[str] = frozenset()
-        # Keys of the projects whose access list, and whose lead role, earlier syncs saved.
-        self._stored_project_keys: set[str] = set()
+        # Projects whose access list earlier syncs saved, by project id (a project key can
+        # change), and projects whose lead role they saved, by key (the lead role's id is
+        # built from the key, so a renamed project gets a new lead role).
+        self._stored_project_ids: set[str] = set()
         self._stored_lead_project_keys: set[str] = set()
+        # Project key -> id for the projects this sync has listed.
+        self._project_id_by_key: dict[str, str] = {}
         # True ONLY when /group/bulk returned 403 (account genuinely lacks Browse users and
         # groups). A 401 is an auth/token failure, not a permission problem, so it stays False.
         self._group_bulk_forbidden: bool = False
@@ -673,7 +677,7 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            await self._note_stored_project_keys("project_keys", [group.short_name for group, _ in readable_projects])
+            await self._note_stored_projects("project_ids", [group.external_group_id for group, _ in readable_projects])
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
@@ -1072,8 +1076,8 @@ class JiraConnector(BaseConnector):
     async def _load_stored_access(self) -> None:
         """Load which access earlier syncs saved, so a short read does not replace it.
 
-        Groups and project roles are noted as a whole; project access lists and lead roles
-        by project key. Each is noted just before it is saved, so a sync cut short after a
+        Groups and project roles are noted as a whole, project access lists by project id
+        and lead roles by project key. Each is noted just before it is saved, so a sync cut short after a
         save still counts it. A full sync's prep deletes every sync point along with the
         stored edges, so after it, and on a first sync, nothing is noted. A connector last
         synced before these notes existed has only its issues checkpoint: everything counts
@@ -1092,11 +1096,14 @@ class JiraConnector(BaseConnector):
         noted = noted or {}
         # "projects" or "leads" set to True is the note for every project (from the checkpoint).
         self._stored_access_kinds = frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind) is True)
-        self._stored_project_keys = set(noted.get("project_keys") or [])
+        self._stored_project_ids = set(noted.get("project_ids") or [])
         self._stored_lead_project_keys = set(noted.get("lead_project_keys") or [])
 
     def _project_access_stored(self, project_key: str) -> bool:
-        return "projects" in self._stored_access_kinds or project_key in self._stored_project_keys
+        return (
+            "projects" in self._stored_access_kinds
+            or self._project_id_by_key.get(project_key) in self._stored_project_ids
+        )
 
     def _project_lead_stored(self, project_key: str) -> bool:
         return "leads" in self._stored_access_kinds or project_key in self._stored_lead_project_keys
@@ -1110,14 +1117,14 @@ class JiraConnector(BaseConnector):
         """
         await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
 
-    async def _note_stored_project_keys(self, field: str, project_keys: list[str]) -> None:
+    async def _note_stored_projects(self, field: str, values: list[str]) -> None:
         """Note, just before saving them, the projects whose access lists or lead roles are stored."""
-        stored = self._stored_project_keys if field == "project_keys" else self._stored_lead_project_keys
-        keys = {key for key in project_keys if key}
-        if keys <= stored:
+        stored = self._stored_project_ids if field == "project_ids" else self._stored_lead_project_keys
+        new = {value for value in values if value}
+        if new <= stored:
             return
-        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | keys)})
-        stored.update(keys)
+        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | new)})
+        stored.update(new)
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """
@@ -2882,7 +2889,7 @@ class JiraConnector(BaseConnector):
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
-            await self._note_stored_project_keys("lead_project_keys", lead_project_keys)
+            await self._note_stored_projects("lead_project_keys", lead_project_keys)
             await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
         else:
             self.logger.info("No project leads to sync")
@@ -3008,6 +3015,8 @@ class JiraConnector(BaseConnector):
                 web_url=project.get("url"),
             )
 
+            if project_key and project_id:
+                self._project_id_by_key[project_key] = str(project_id)
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_account_id
             )

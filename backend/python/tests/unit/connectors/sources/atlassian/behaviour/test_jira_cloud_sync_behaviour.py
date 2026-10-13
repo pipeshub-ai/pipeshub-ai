@@ -1218,6 +1218,23 @@ class TestUnfinishedUserRead:
         with pytest.raises(RuntimeError, match="write rolled back"):
             await connector.run_sync()
 
+    async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert ("EntityType.USER", "bo@acme.com") in before
+
+        # The same project (id 10000) now has the key NEW.
+        api.on("GET", f"{JIRA}/project/search", {"values": [{"id": "10000", "key": "NEW", "name": "Engineering"}], "isLast": True})
+        api.on("GET", f"{JIRA}/project/NEW/permissionscheme", {"id": 1})
+        api.on("GET", f"{JIRA}/project/NEW/role", {})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl(site_db) == before, "the project is known by its id, so its saved access is kept"
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
