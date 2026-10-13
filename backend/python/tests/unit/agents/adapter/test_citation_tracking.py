@@ -381,3 +381,21 @@ class TestFetchToolDescription:
 
     def test_metadata_that_answers_outright_does_not_need_a_read(self) -> None:
         assert "settles the question outright" in self._description()
+
+    def test_full_read_chat_drops_the_visible_fact_skip(self) -> None:
+        """Enterprise search under THOROUGH_RETRIEVAL asks for the records an
+        answer rests on in full; the tool's own skip case must agree."""
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+        from app.agents.agent_loop.hooks.citations import _FetchFullRecordTool
+
+        default = self._description()
+        context = _agent_context()
+        context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+        full = _FetchFullRecordTool(CitationCollector(context), context).description
+
+        assert "is already visible in a block you hold" in default
+        assert "is already visible in a block you hold" not in full
+        assert "(Skip only when you already hold the record in full or nearly so" in full
+        assert "A fact seen in one block still needs the rest of the record" in full
+        assert full.split("(Skip only when", 1)[0] == default.split("(Skip only when", 1)[0]
+        assert full.split(")\nThose are illustrations", 1)[1] == default.split(")\nThose are illustrations", 1)[1]

@@ -39,6 +39,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.hooks._tool_naming import INTERNAL_SEARCH_TOOL_NAMES
 
 if TYPE_CHECKING:
@@ -49,6 +50,7 @@ if TYPE_CHECKING:
 
 from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
+from app.modules.agents.record_escalation.policy import FULL_READ_SKIP, ONE_BLOCK_IS_NOT_ENOUGH
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
@@ -100,6 +102,17 @@ _FETCH_FULL_RECORD_DESCRIPTION = (
     "IDs. Large records return a continuation hint giving the start_block for "
     "the next slice."
 )
+
+# THOROUGH_RETRIEVAL's full-read policy swaps the skip case above; a test fails
+# if the description's wording drifts away from `_SKIP_CASE`.
+_SKIP_CASE = (
+    "(Skip only when the exact fact needed — a date, a name, a number, a "
+    "status, one clause — is already visible in a block you hold, or "
+    "metadata alone settles the question outright, e.g. a ticket's status "
+    "or assignee.)"
+)
+_FULL_READ_SKIP_CASE = f"(Skip only when {FULL_READ_SKIP}. {ONE_BLOCK_IS_NOT_ENOUGH})"
+
 
 class CitationCollector:
     """Read-only view over the citation-related fields of `AgentContext.tool_state`."""
@@ -174,6 +187,10 @@ class _FetchFullRecordTool(Tool):
 
     @property
     def description(self) -> str:
+        # Fixed for the request (set by the chat bridge before the first
+        # turn), so the schema stays inside the cached prefix.
+        if self._context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY):
+            return _FETCH_FULL_RECORD_DESCRIPTION.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
         return _FETCH_FULL_RECORD_DESCRIPTION
 
     @property

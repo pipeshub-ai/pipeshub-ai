@@ -90,6 +90,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -503,6 +504,22 @@ class SlackConnector(BaseConnector):
         FilterOperator.LAST_365_DAYS: 365 * 86400,
     }
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync reads messages from the sync window on, and a thread only
+        when its first message is inside the window. So a message or thread
+        older than the window that it did not see was not read, not deleted.
+
+        Asked after the sync: the window start is computed now, a little later
+        than the one the sync used, so nothing the sync could have read is
+        counted as outside it.
+        """
+        oldest = self._compute_sync_window_oldest()
+        return FullSyncCoverage(
+            complete=not getattr(self, "_full_sync_read_failed", False),
+            window_start_ms=int(float(oldest) * 1000) if oldest else None,
+            windowed_group_types=frozenset({RecordGroupType.SLACK_THREAD.value}),
+        )
+
     def _compute_sync_window_oldest(self) -> Optional[str]:
         """
         Compute the Slack ``oldest`` ts from the sync_window DATETIME filter.
@@ -635,6 +652,10 @@ class SlackConnector(BaseConnector):
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
 
+            # Set when a read fails and the sync carries on without it; see
+            # full_sync_coverage.
+            self._full_sync_read_failed = False
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack_workspace", self.connector_id, self.logger
             )
@@ -664,6 +685,7 @@ class SlackConnector(BaseConnector):
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
                     except Exception as exc:
+                        self._full_sync_read_failed = True
                         self.logger.error(
                             f"Channel message sync failed for "
                             f"{rg.external_group_id}: {exc}",
@@ -702,6 +724,9 @@ class SlackConnector(BaseConnector):
         self.user_id_to_internal_id_cache.clear()
         self.user_id_to_name_cache.clear()
         self._non_guest_app_users: list[AppUser] = []
+        # Set when a page fails: the caches above then miss users, and every
+        # permission list built from them would be short (see _sync_channels).
+        self._users_read_failed = False
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
@@ -712,6 +737,10 @@ class SlackConnector(BaseConnector):
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
             if not resp or not resp.success:
+                # The workspace_member role is written from these pages: with one
+                # missing it is left out or short, and must not be unlinked as unseen.
+                self._full_sync_read_failed = True
+                self._users_read_failed = True
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
@@ -840,6 +869,11 @@ class SlackConnector(BaseConnector):
         users (owners, admins, regular members).  This role is referenced in
         channel permissions so that public channels don't need per-user edges.
         """
+        if getattr(self, "_users_read_failed", False):
+            # Written from a short user list, the role would drop every member
+            # not yet read, and with it their access to every public channel.
+            self.logger.warning("ℹ️ User list was not read in full; workspace role left as it is")
+            return
         non_guests = getattr(self, "_non_guest_app_users", [])
         if not non_guests:
             self.logger.info("ℹ️ No non-guest users to sync workspace role for")
@@ -870,9 +904,14 @@ class SlackConnector(BaseConnector):
             resp = await ds.usergroups_list(include_users=True)
 
             if not resp or not resp.success:
+                error = getattr(resp, "error", "no response")
+                # A missing scope is how this workspace is set up, not a failed read:
+                # its groups can never be read, so they are not kept as if they
+                # might be. Any other error leaves them unread this time.
+                if error != "missing_scope":
+                    self._full_sync_read_failed = True
                 self.logger.warning(
-                    f"⚠️  Could not fetch usergroups (scope missing?): "
-                    f"{getattr(resp, 'error', 'no response')}"
+                    f"⚠️  Could not fetch usergroups (scope missing?): {error}"
                 )
                 return
 
@@ -1023,6 +1062,7 @@ class SlackConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
+                self._full_sync_read_failed = True
                 self.logger.error(
                     f"❌ conversations.list failed: {getattr(resp, 'error', 'no response')}"
                 )
@@ -1047,14 +1087,30 @@ class SlackConnector(BaseConnector):
                     continue
                 if include_ids and cid not in include_ids:
                     continue
+                if (
+                    getattr(self, "_users_read_failed", False)
+                    and (cd.get("is_im") or cd.get("is_private") or cd.get("is_mpim"))
+                ):
+                    # Its permission list is built from the user caches, which
+                    # this sync could not fill: members would be dropped, a DM
+                    # left with nobody. Leave it as it is until a sync reads the
+                    # users in full; the sync is already marked incomplete.
+                    self.logger.warning(
+                        f"User list was not read in full; channel {cd.get('name') or cid} left as it is"
+                    )
+                    continue
                 try:
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
                     page_items.append((rg, cd))
                 except Exception as exc:
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to build RecordGroup for {cd.get('name')}: {exc}"
                     )
@@ -1073,11 +1129,16 @@ class SlackConnector(BaseConnector):
             batch: list[tuple[RecordGroup, list[Permission]]] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
+                    # Written with no permissions, the channel would lose every
+                    # member: on_new_record_groups replaces an existing group's
+                    # grants. Leave it as it is until a sync can read its members,
+                    # and skip its messages this time; their checkpoint stays put.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Permission resolution failed for "
-                        f"{cd.get('name')}: {perms}"
+                        f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
-                    perms = []
+                    continue
                 batch.append((rg, perms))
                 record_groups.append(rg)
                 total += 1
@@ -1150,6 +1211,12 @@ class SlackConnector(BaseConnector):
         """
         Return all member Slack user IDs for a channel via conversations.members
         with full cursor-based pagination.
+
+        An empty list when the first page answers channel_not_found,
+        not_in_channel or missing_scope: the members cannot be read with this
+        token, so nobody is granted the channel (fail closed) until they can be.
+        Those answers repeat on every sync, so they are not a failed read. Any
+        failure after the first page, or any other failure, raises.
         """
         members: list[str] = []
         cursor: Optional[str] = None
@@ -1167,26 +1234,38 @@ class SlackConnector(BaseConnector):
                 if not resp or not resp.success:
                     # Connector may lack membership scope — log and bail
                     error = getattr(resp, "error", "no response")
-                    if error in ("channel_not_found", "not_in_channel", "missing_scope"):
-                        self.logger.debug(
-                            f"Cannot fetch members for {channel_id}: {error}"
-                        )
-                    else:
+                    # On the first page these mean the members cannot be read at
+                    # all, and will not be next time either: fail closed, so a
+                    # member removed from the channel never keeps access unseen.
+                    # After it they cut the list short like any other error.
+                    if cursor is None and error in ("channel_not_found", "not_in_channel", "missing_scope"):
                         self.logger.warning(
-                            f"conversations.members({channel_id}) failed: {error}"
+                            f"Cannot read the members of {channel_id} ({error}); "
+                            f"nobody is given access to it until they can be read"
                         )
-                    break
+                        return []
+                    # Any other failure leaves the member list short. Returned,
+                    # it would replace the channel's grants and lock out every
+                    # member not yet read; raised, the channel is left as it is.
+                    self.logger.warning(
+                        f"conversations.members({channel_id}) failed: {error}"
+                    )
+                    raise RuntimeError(
+                        f"conversations.members({channel_id}) failed part-way: {error}"
+                    )
 
                 members.extend(resp.data.get("members", []))
                 cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
                 if not cursor:
                     break
 
+            except RuntimeError:
+                raise
             except Exception as exc:
                 self.logger.error(
                     f"_fetch_channel_members({channel_id}): {exc}", exc_info=True
                 )
-                break
+                raise RuntimeError(f"conversations.members({channel_id}) failed: {exc}") from exc
 
         return members
 
@@ -1473,6 +1552,9 @@ class SlackConnector(BaseConnector):
                         f"channel={dt.ctx.channel_id}: {exc}",
                         exc_info=True,
                     )
+
+        if history_error or incomplete_threads:
+            self._full_sync_read_failed = True
 
         # Persist checkpoint ONLY after all pages succeed
         if history_error:

@@ -9,7 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -1183,7 +1183,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
@@ -1194,6 +1196,9 @@ class IGraphDBProvider(ABC):
             node_id (str): Full node ID (e.g., "records/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of logging it and
+                returning ``[]``, for callers that must tell "no edges" from
+                "could not look".
 
         Returns:
             List[Dict]: List of edge documents
@@ -4225,7 +4230,11 @@ class IGraphDBProvider(ABC):
         """
         Delete only sync-created edges for a connector (belongsTo, recordRelations,
         permission, inheritPermissions, userAppRelation). Does not delete nodes or
-        isOfType/indexing data. Used for full sync reset.
+        isOfType/indexing data.
+
+        A full sync no longer calls this before it starts: a sync cut off partway
+        left every node it had not reached yet unlinked. It removes what it did
+        not see after it finishes instead (``unlink_nodes_missed_by_full_sync``).
 
         Args:
             connector_id: The connector ID (app _key).
@@ -4233,6 +4242,41 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
+    @abstractmethod
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        """
+        After a full sync ran to the end, remove the sync edges of the connector's
+        records, record groups, groups and roles that it did not see.
+
+        Call this only for a full sync that finished: one cut off partway saw only
+        part of the source, and must unlink nothing.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            seen: Per collection (records, recordGroups, groups, roles), the keys
+                of the nodes the sync wrote. A node not listed is unseen.
+            window_start_ms: When set, the sync read only items created at or
+                after this time. An unseen record created before it, an unseen
+                group of a type in ``windowed_group_types`` created before it, and
+                the unseen records in such a group keep their links: they were
+                not read, not deleted. They lose only their permission edges,
+                which the sync could not check.
+            windowed_group_types: Record group types the window applies to.
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (deleted_edges_count, success_flag).
         """
         pass
 

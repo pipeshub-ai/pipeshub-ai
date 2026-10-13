@@ -149,6 +149,11 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.full_sync_unlink import (
+    FULL_SYNC_EDGE_COLLECTIONS,
+    split_unseen_by_window,
+    unseen_node_keys,
+)
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     aql_live_record,
@@ -243,7 +248,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Collection, Mapping
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -3582,7 +3587,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a node - FULLY ASYNC.
@@ -3610,6 +3617,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node(
@@ -10042,6 +10051,83 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
             return (0, False)
+
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            unseen = unseen_node_keys(collected, seen)
+            record_fields: dict[str, dict] = {}
+            group_fields: dict[str, dict] = {}
+            if window_start_ms is not None:
+                record_fields = await self._node_fields_by_key(
+                    CollectionNames.RECORDS.value,
+                    unseen[CollectionNames.RECORDS.value],
+                    ("sourceCreatedAtTimestamp", "recordGroupId"),
+                    transaction,
+                )
+                group_fields = await self._node_fields_by_key(
+                    CollectionNames.RECORD_GROUPS.value,
+                    unseen[CollectionNames.RECORD_GROUPS.value],
+                    ("sourceCreatedAtTimestamp", "groupType"),
+                    transaction,
+                )
+            unlink, outside_window = split_unseen_by_window(
+                unseen, record_fields, group_fields, window_start_ms, windowed_group_types
+            )
+            unlinked, failed = await self._delete_all_edges_for_nodes(
+                transaction, unlink, list(FULL_SYNC_EDGE_COLLECTIONS)
+            )
+            # Outside the window the source was not read, so who may see these
+            # nodes could not be checked: keep the structure, drop the grants.
+            ungranted, failed_grants = await self._delete_all_edges_for_nodes(
+                transaction, outside_window, [CollectionNames.PERMISSION.value]
+            )
+            if failed or failed_grants:
+                self.logger.warning(
+                    f"Full sync of {connector_id}: could not remove the links of the "
+                    f"{len(unlink)} node(s) it missed from {failed or []}, or the grants "
+                    f"of the {len(outside_window)} outside its window from {failed_grants or []}"
+                )
+            else:
+                self.logger.info(
+                    f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
+                    f"{len(outside_window)} outside its window kept their links"
+                )
+            return (unlinked + ungranted, not failed and not failed_grants)
+        except Exception as e:
+            self.logger.error(
+                f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True
+            )
+            return (0, False)
+
+    async def _node_fields_by_key(
+        self,
+        collection: str,
+        keys: list[str],
+        fields: tuple[str, ...],
+        transaction: str | None = None,
+    ) -> dict[str, dict]:
+        """``{key: {field: value}}`` for the documents of one collection with these keys."""
+        if not keys:
+            return {}
+        rows = await self.http_client.execute_aql(
+            query="""
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                RETURN { key: doc._key, fields: KEEP(doc, @fields) }
+            """,
+            bind_vars={"@collection": collection, "keys": keys, "fields": list(fields)},
+            txn_id=transaction,
+        )
+        return {row["key"]: row["fields"] for row in rows or []}
 
     async def delete_connector_instance(
         self,

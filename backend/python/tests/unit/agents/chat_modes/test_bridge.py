@@ -11,11 +11,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.chat_modes.bridge import (
+    _apply_mode_instructions,
     _apply_policy_to_chat_state,
     _fetch_available_connectors,
     _resolve_custom_instructions,
@@ -27,10 +32,14 @@ from app.agents.chat_modes.policy import (
     AGENT_POLICY,
     INTERNAL_SEARCH_POLICY,
     WEB_SEARCH_POLICY,
+    ChatModePolicy,
 )
 from app.agents.chat_modes.prefetch import PrefetchResult
 from app.config.constants.arangodb import Connectors
 from app.utils.chat_helpers import CitationRefMapper
+from tests.unit.agents.chat_modes.test_internal_search_prompt import (
+    _BEFORE_THE_SWITCHES,
+)
 
 
 def _stream_agent(result: Any) -> MagicMock:
@@ -105,6 +114,131 @@ class TestModeInstructions:
     def test_blank_base_instructions_treated_as_absent(self) -> None:
         result = _with_mode_instructions("   ", AGENT_POLICY)
         assert result == _with_mode_instructions(None, AGENT_POLICY)
+
+
+SetEnv = Callable[..., None]
+
+_ANSWER_RULE_ENV = ("HIGH_ACCURACY_MODE", "ANSWER_COMPOSITION_RULES", "THOROUGH_RETRIEVAL", "MULTI_STEP_ANSWER_RULES")
+_COMPOSITION_MARKER = "Compose the answer so it stands on its own"
+_THOROUGH_MARKER = "read in full the records your answer will rest on"
+_ENTITY_MARKER = "`knowledgegraph__search_entities`"
+# (HIGH_ACCURACY_MODE, the switch, on?) -- unset or blank follows the mode;
+# set, the switch decides alone, and only "true" is on.
+_SWITCH_MATRIX = [
+    (None, None, False),
+    ("false", None, False),
+    ("true", None, True),
+    ("true", "", True),
+    ("true", "  ", True),
+    ("true", "false", False),
+    ("true", "0", False),
+    (None, "true", True),
+    ("false", "TRUE", True),
+    (None, "1", False),
+]
+
+
+@pytest.fixture
+def answer_rule_env(monkeypatch: pytest.MonkeyPatch) -> SetEnv:
+    for name in _ANSWER_RULE_ENV:
+        monkeypatch.delenv(name, raising=False)
+
+    def _set(**values: str | None) -> None:
+        for name, value in values.items():
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+
+    return _set
+
+
+def _mode_state(policy: ChatModePolicy, **state: object) -> dict[str, Any]:
+    chat_state: dict[str, Any] = dict(state)
+    _apply_mode_instructions(chat_state, policy)
+    return chat_state
+
+
+class TestAnswerRuleSwitches:
+    def test_off_is_the_text_from_before_the_switches(self, answer_rule_env: SetEnv) -> None:
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY, entity_vector_store=MagicMock())
+        assert chat_state["instructions"] == _BEFORE_THE_SWITCHES
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), _SWITCH_MATRIX)
+    def test_composition_rules_follow_their_switch_then_the_mode(
+        self, answer_rule_env: SetEnv, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        answer_rule_env(
+            HIGH_ACCURACY_MODE=high_accuracy, ANSWER_COMPOSITION_RULES=switch,
+            THOROUGH_RETRIEVAL="false",
+        )
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY)
+
+        assert (_COMPOSITION_MARKER in chat_state["instructions"]) is expected
+        assert _THOROUGH_MARKER not in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    @pytest.mark.parametrize(("high_accuracy", "switch", "expected"), _SWITCH_MATRIX)
+    def test_thorough_retrieval_follows_its_switch_then_the_mode(
+        self, answer_rule_env: SetEnv, high_accuracy: str | None, switch: str | None, expected: bool,
+    ) -> None:
+        answer_rule_env(
+            HIGH_ACCURACY_MODE=high_accuracy, THOROUGH_RETRIEVAL=switch,
+            ANSWER_COMPOSITION_RULES="false",
+        )
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY)
+
+        assert (_THOROUGH_MARKER in chat_state["instructions"]) is expected
+        assert _COMPOSITION_MARKER not in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is expected
+
+    @pytest.mark.parametrize("policy", [WEB_SEARCH_POLICY, AGENT_POLICY])
+    def test_other_modes_are_untouched_by_every_switch(self, answer_rule_env: SetEnv, policy: ChatModePolicy) -> None:
+        off = _mode_state(policy, instructions="Base.")
+        answer_rule_env(HIGH_ACCURACY_MODE="true", ANSWER_COMPOSITION_RULES="true", THOROUGH_RETRIEVAL="true")
+        on = _mode_state(policy, instructions="Base.", entity_vector_store=MagicMock())
+
+        assert on["instructions"] == off["instructions"] == _with_mode_instructions("Base.", policy)
+        assert on[READ_RECORDS_IN_FULL_STATE_KEY] is False
+
+    def test_entity_tools_are_named_only_with_an_entity_store(self, answer_rule_env: SetEnv) -> None:
+        answer_rule_env(THOROUGH_RETRIEVAL="true")
+
+        assert _ENTITY_MARKER not in _mode_state(INTERNAL_SEARCH_POLICY)["instructions"]
+        assert _ENTITY_MARKER not in _mode_state(INTERNAL_SEARCH_POLICY, entity_vector_store=None)["instructions"]
+        assert _ENTITY_MARKER in _mode_state(
+            INTERNAL_SEARCH_POLICY, entity_vector_store=MagicMock(),
+        )["instructions"]
+
+    @pytest.mark.parametrize("chat_mode", [None, "standard", "analysis", "deep_research", "unknown"])
+    def test_legacy_and_unknown_chat_modes_get_the_enterprise_search_rules(
+        self, answer_rule_env: SetEnv, chat_mode: str | None,
+    ) -> None:
+        from app.agents.chat_modes.policy import resolve_chat_mode_policy
+
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        chat_state = _mode_state(resolve_chat_mode_policy(chat_mode))
+
+        assert _COMPOSITION_MARKER in chat_state["instructions"]
+        assert chat_state[READ_RECORDS_IN_FULL_STATE_KEY] is True
+
+    def test_the_text_is_the_same_for_every_user_and_org(self, answer_rule_env: SetEnv) -> None:
+        """It sits in the cached prefix and carries no request data."""
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        store = MagicMock()
+        first = _mode_state(INTERNAL_SEARCH_POLICY, org_id="org-1", user_id="user-1", entity_vector_store=store)
+        second = _mode_state(INTERNAL_SEARCH_POLICY, org_id="org-2", user_id="user-9", entity_vector_store=store)
+
+        assert first["instructions"] == second["instructions"]
+        assert "org-" not in first["instructions"]
+        assert "user-" not in first["instructions"]
+
+    def test_base_instructions_stay_first(self, answer_rule_env: SetEnv) -> None:
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        chat_state = _mode_state(INTERNAL_SEARCH_POLICY, instructions="  Base prompt.  ")
+
+        assert chat_state["instructions"].startswith("Base prompt.\n\nAnswer ONLY from")
 
 
 class TestApplyPolicyToChatState:
@@ -553,6 +687,63 @@ class TestRunChatStream:
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
 
+    @pytest.mark.parametrize("high_accuracy", [False, True])
+    async def test_internal_search_answer_rules_reach_the_agent_context(
+        self, answer_rule_env: SetEnv, high_accuracy: bool,
+    ) -> None:
+        """The mode text and the full-read flag are on the context the
+        factory builds the prompt from, decided by the deployment's switches
+        and the entity store this request was given."""
+        answer_rule_env(HIGH_ACCURACY_MODE="true" if high_accuracy else None)
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: str, *, query: str, **_: object,  # noqa: ANN401
+        ) -> tuple[Any, ...]:
+            captured["context"] = context
+            captured["chat_mode"] = chat_mode
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(
+            self: object, *, event_sink: Any, agent_output: Any = None, **_: object,  # noqa: ANN401
+        ) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        empty_prefetch = PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        )
+        kwargs = self._base_kwargs(policy=INTERNAL_SEARCH_POLICY)
+        kwargs["entity_vector_store"] = MagicMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                side_effect=lambda *a, **kw: {
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "entity_vector_store": kw.get("entity_vector_store"),
+                },
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=empty_prefetch)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+
+        assert events[-1].startswith("event: complete\n")
+        context = captured["context"]
+        assert captured["chat_mode"] == INTERNAL_SEARCH_POLICY.loop_chat_mode
+        assert context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] is high_accuracy
+        if high_accuracy:
+            for marker in (_COMPOSITION_MARKER, _THOROUGH_MARKER, _ENTITY_MARKER):
+                assert marker in context.instructions
+        else:
+            assert context.instructions == _BEFORE_THE_SWITCHES
+
     async def test_prefetched_records_are_remembered_in_rank_order(self) -> None:
         """An unknown-id fetch lists the 20 most recent records; for a prefetch
         those must be the ones the search ranked highest, not the first by
@@ -684,6 +875,62 @@ class TestRunChatStream:
         assert "2 of 10 blocks" in constraint_text, "coverage counts are the load-bearing part"
         # Header must reflect the whole-document framing.
         assert "whole-document content" in constraint_text
+
+    @pytest.mark.parametrize("thorough", [False, True])
+    async def test_prefetch_candidate_list_follows_the_full_read_policy(
+        self, answer_rule_env: SetEnv, thorough: bool,
+    ) -> None:
+        """Under THOROUGH_RETRIEVAL the list beside the prefetched blocks must
+        not offer "one visible fact is enough" while the prompt asks for full
+        reads; off, it is unchanged."""
+        answer_rule_env(THOROUGH_RETRIEVAL="true" if thorough else None)
+        record_obj = {
+            "id": "rec-1", "record_name": "AcmeMSA.pdf",
+            "block_containers": {"blocks": [{"type": "TEXT"} for _ in range(10)]},
+        }
+        prefetch_result = PrefetchResult(
+            formatted_context="[block 2 content]",
+            final_results=[{"virtual_record_id": "vr1", "block_index": 2}],
+            virtual_record_id_to_result={"vr1": record_obj},
+            tool_records=[record_obj],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(
+            self: object, context: Any, llm: object, chat_mode: str, *, query: str, **_: object,  # noqa: ANN401
+        ) -> tuple[Any, ...]:
+            goal_obj = MagicMock(constraints=[])
+            captured["goal"] = goal_obj
+            agent = _stream_agent(MagicMock(success=True, error=None, output="done"))
+            return agent, MagicMock(), goal_obj, []
+
+        async def _fake_finalizer_run(
+            self: object, *, event_sink: Any, agent_output: Any = None, **_: object,  # noqa: ANN401
+        ) -> None:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "When does the MSA renew?"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        assert events[-1].startswith("event: complete\n")
+        constraint_text = " ".join(str(c) for c in captured["goal"].constraints)
+        assert "1 of 10 blocks" in constraint_text
+        assert ("single specific fact already visible" in constraint_text) is not thorough
+        assert ("A fact seen in one block still needs the rest of the record" in constraint_text) is thorough
+        assert ("read in full the records your answer rests on" in constraint_text) is thorough
 
     async def test_prefetch_candidate_list_appears_even_without_whole_document_bit(self) -> None:
         """The coverage list must be visible regardless of needs_whole_document,
@@ -981,6 +1228,36 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_answer_rules_never_reach_the_no_tools_prompt(self, answer_rule_env: SetEnv) -> None:
+        """Models without tool calls get a fixed system prompt and no fetch or
+        search tools, so neither the rules nor their extra turns apply."""
+        prefetch_result = PrefetchResult(
+            formatted_context="Context.", final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={}, tool_records=[], citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+        )
+        seen: list[list[Any]] = []
+
+        async def _fake_handle_simple_mode(**kwargs: object):  # noqa: ANN202
+            seen.append(list(kwargs["messages"]))  # type: ignore[call-overload]
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        async def _messages() -> str:
+            with (
+                patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+                patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_fake_handle_simple_mode),
+            ):
+                [chunk async for chunk in run_chat_stream(**self._base_kwargs(INTERNAL_SEARCH_POLICY))]
+            return json.dumps(seen[-1], default=str)
+
+        off = await _messages()
+        answer_rule_env(HIGH_ACCURACY_MODE="true")
+        on = await _messages()
+
+        assert on == off
+        for marker in (_COMPOSITION_MARKER, _THOROUGH_MARKER, "Multi-step questions"):
+            assert marker not in on
 
     async def test_internal_search_prefetch_renders_dates_in_the_users_time_zone(self) -> None:
         """The no-tools prefetch renders the record headers the model reads, so
