@@ -330,6 +330,8 @@ config:
   # answers (keyword hits merged by rank fusion, keyword-dense search
   # queries). Off by default. To override one feature, set its switch
   # (GREP_RANK_FUSION, KEYWORD_SEARCH_QUERIES) to "true" or "false" through extraEnv.
+  # It also turns on named-entity extraction while indexing, and the entity
+  # tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
   highAccuracyMode: false
   # Custom (non-catalog) MCP servers with the STDIO transport run the command an
   # org admin enters as a process in this pod, with the app's identity, network

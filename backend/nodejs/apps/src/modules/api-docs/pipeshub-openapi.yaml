@@ -6726,7 +6726,7 @@ components:
           additionalProperties: false
           x-pipeshub-stability: experimental
           description: |
-            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`).
+            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`, or `HIGH_ACCURACY_MODE`).
             Every constraint must hold for the same record: an amount and a date match a record
             that mentions both, not one entity that is both. `name`/`entityIds` match entity nodes;
             `mentionedDate`, `amount`, `quantity` and `percent` match typed values the record
@@ -14080,7 +14080,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
-            - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false)
+            - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -42317,7 +42317,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
-        - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false)
+        - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
