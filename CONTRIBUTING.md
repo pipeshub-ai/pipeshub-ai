@@ -245,9 +245,9 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    ```
 4. **Make your changes** following our code style guidelines. Documentation edits do not need a local stack.
 5. **Test your changes** thoroughly
-6. **Commit your changes** with meaningful commit messages:
+6. **Commit your changes** with meaningful commit messages, signed off (see [Sign your commits](#sign-your-commits)):
    ```bash
-   git commit -m "Add feature: brief description of changes"
+   git commit -s -m "Add feature: brief description of changes"
    ```
 7. **Push your branch** to your GitHub fork:
    ```bash
@@ -263,6 +263,17 @@ CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
 runs the full suite on a reviewed commit using *Run workflow* on
 `integration-tests.yml` with that commit's hash (see
 [integration-tests/README.md](integration-tests/README.md)).
+
+### Sign your commits
+
+Every commit needs a `Signed-off-by` line certifying the [Developer Certificate of Origin](https://developercertificate.org/): you wrote the change, or have the right to submit it under this project's license. `git commit -s` adds it from your `user.name` and `user.email`, and the email must match the commit author. The `dco` check fails a pull request with an unsigned commit. To sign off your own commits on an existing branch:
+
+```bash
+git rebase --signoff origin/main
+git push --force-with-lease
+```
+
+This adds *your* sign-off, so it only fixes commits you authored. A commit by someone else needs that author's own `Signed-off-by`: ask them to sign it off, or drop it and have them open their own pull request.
 
 ## Code Style Guidelines
 
