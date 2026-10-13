@@ -1265,6 +1265,19 @@ def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
 
 
+
+def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make writing the stored-access note fail, as a database error would."""
+    real = store.update_sync_point
+
+    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
+        if key.endswith("stored_access"):
+            raise RuntimeError("database unavailable")
+        await real(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
+
+
 class TestUnfinishedUserRead:
     """A user list that stops part-way must not shrink who can see what.
 
@@ -1507,3 +1520,31 @@ class TestUnfinishedUserRead:
         assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in acl_summary(
             db.record_group_permissions["10000"]
         ), "a project it never saved is saved with the grants that were read"
+
+    async def test_a_note_that_cannot_be_written_stops_the_sync_before_groups_are_saved(
+        self, jira, db, store, search, monkeypatch
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        fail_note_writes(store, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+
+        assert db.groups_saved == {}, "no membership is saved without its note"
+
+    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
+            del store.sync_points[key]  # as left by a version without the notes
+
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(db) == before
+        note = store.values_for("stored_access") or {}
+        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
