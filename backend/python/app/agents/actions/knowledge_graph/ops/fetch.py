@@ -8,6 +8,7 @@ built fresh per call from live ``tool_state`` without duplicating the body.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.agent_loop.context import AgentContext
+    from app.utils.chat_helpers import RecordIdShortener
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +26,26 @@ FETCH_RECORD_TOOL_NAME = "knowledgegraph__fetch_record"
 
 DEFAULT_FETCH_REASON = "Fetching full record content for comprehensive answer"
 
+# Records this request has shown by relevance. An explicit `start_block=0` on
+# one of them is the model following the "read it in order" hint; on any other
+# record it is the default some models send on every call.
+FETCH_SELECTED_RECORDS_KEY = "fetch_selected_records"
+
+_CITATION_RULE = (
+    "\n\nCite facts from the above using each block's `[refN]` id "
+    "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
+)
+
+# Below this, a record's share of a multi-record fetch holds a header and a
+# sliver of text -- too little to read, enough to pass for "read". Such a
+# record is named as unread instead.
+_MIN_RECORD_SHARE_CHARS = 2_000
+
+_MAX_ENTITIES_PER_RECORD = 20
+
 
 async def _named_entity_note(context: "AgentContext", records: list[dict[str, Any]]) -> str:
-    """Entities on records this fetch already showed. Omitted when the flag is off."""
+    """Entities on the records this fetch reads. Omitted when the flag is off."""
     tool_state = getattr(context, "tool_state", None) or {}
     graph = tool_state.get("graph_provider")
     if graph is None or not records:
@@ -38,18 +57,20 @@ async def _named_entity_note(context: "AgentContext", records: list[dict[str, An
             return ""
     except Exception:
         return ""
-    lines: list[str] = []
-    for record in records:
-        record_id = record.get("id")
-        if not record_id:
-            continue
+    record_ids = [str(record["id"]) for record in records if record.get("id")]
+
+    async def _entities(record_id: str) -> list[dict[str, Any]] | None:
         try:
-            entities = await graph.get_named_entities_for_record(str(record_id))
+            return await graph.get_named_entities_for_record(record_id)
         except Exception:
             logger.warning("named entities unavailable for record %s", record_id, exc_info=True)
-            continue
+            return None
+
+    found = await asyncio.gather(*(_entities(record_id) for record_id in record_ids))
+    lines: list[str] = []
+    for record_id, entities in zip(record_ids, found):
         shown = []
-        for entity in (entities or [])[:20]:
+        for entity in (entities or [])[:_MAX_ENTITIES_PER_RECORD]:
             kind = entity.get("kind") or ""
             name = entity.get("name") or ""
             if kind and name:
@@ -59,6 +80,18 @@ async def _named_entity_note(context: "AgentContext", records: list[dict[str, An
     if not lines:
         return ""
     return "\n" + "\n".join(lines) + "\n"
+
+
+def _requested_max_blocks(raw: object) -> int | None:
+    """The model's `max_blocks` as a positive int, or None. It is model input:
+    a numeric string is accepted, anything else means "not set"."""
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 def resolve_block_cap(requested_max: int | None) -> int:
@@ -139,6 +172,21 @@ def _unavailable_note(
     return note + "".join(f"\n\n{block}" for block in described)
 
 
+def _not_read_note(
+    record: dict[str, Any], record_id_shortener: "RecordIdShortener | None" = None,
+) -> str:
+    record_id = str(record.get("id") or record.get("virtual_record_id") or "")
+    label = (
+        record_id_shortener.shorten_if_known(record_id)
+        if record_id_shortener is not None else record_id
+    )
+    return (
+        f"\n[Record {label} was not read: this call named more records than one "
+        f"result can hold. Call knowledgegraph__fetch_record with "
+        f"record_ids=[\"{label}\"] to read it.]\n"
+    )
+
+
 async def execute_fetch_record(
     *,
     context: "AgentContext",
@@ -148,12 +196,16 @@ async def execute_fetch_record(
     reason: str = DEFAULT_FETCH_REASON,
     start_block: int = 0,
     max_blocks: int | None = None,
+    start_block_sent: bool = False,
 ) -> tuple["ToolOutput", Any]:
     """Fetch one or more records end-to-end.
 
     Returns ``(output, ref_mapper)``. The mapper comes back rather than being
     stashed here, and is the SAME object passed in unless a record was actually
     rendered -- that identity is how the caller tells an update from a no-op.
+
+    ``start_block_sent`` says the model named ``start_block`` itself, which is
+    how an explicit 0 after a relevance selection is told from the default.
     """
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
@@ -170,10 +222,15 @@ async def execute_fetch_record(
     from app.utils.image_admission import ImageOrigin, admission_from_state
     from app.utils.record_block_selection import (
         build_selection_query,
-        estimate_record_chars,
+        estimate_frame_chars,
+        estimate_render_chars,
         select_relevant_blocks,
     )
-    from app.utils.render_budget import resolve_render_budget
+    from app.utils.render_budget import (
+        RecordRenderOutcome,
+        fair_shares,
+        resolve_render_budget,
+    )
 
     if isinstance(record_ids, str):
         record_ids = [record_ids]
@@ -197,9 +254,11 @@ async def execute_fetch_record(
     # model to re-call with the same arguments, which such a guard would refuse.
     # After resolve so a short label and its full id collapse to one entry.
     record_ids = list(dict.fromkeys(record_ids))
-    block_cap = resolve_block_cap(max_blocks)
-    # One allowance for the whole call: N records must not each get a full
-    # window's worth. Sized from the model actually answering.
+    requested_max = _requested_max_blocks(max_blocks)
+    block_cap = resolve_block_cap(requested_max)
+    # One allowance for the whole call, split fairly between its records: N
+    # records must not each get a full window's worth. Sized from the model
+    # actually answering.
     budget = resolve_render_budget(context.context_length, max_blocks=block_cap)
 
     structured_tool = create_fetch_full_record_tool(
@@ -229,6 +288,7 @@ async def execute_fetch_record(
     if isinstance(result, dict) and result.get("ok") and result.get("records"):
         parts: list[str] = []
         ref_mapper = citation_ref_mapper
+        records = result["records"]
         # Without `is_multimodal_llm` a record that IS an image (an uploaded
         # PNG whose only block is an IMAGE) renders to an empty string.
         # `collected_images` keeps the images out of the text join so they
@@ -237,24 +297,63 @@ async def execute_fetch_record(
         admission = admission_from_state(context.tool_state)
         collected_images: list[dict[str, Any]] = []
         selection_query = build_selection_query(context.query, reason)
-        for record in result["records"]:
+        selected_before: set[str] = context.tool_state.setdefault(FETCH_SELECTED_RECORDS_KEY, set())
+        # A summary, an overview, "what are the risks", "does it mention X
+        # anywhere" — the answer is a property of the whole document, and
+        # the parts relevance would drop are exactly the ones whose absence
+        # changes the answer. Read it in order instead and let the model
+        # continue; the router already classified the request
+        # (`needs_whole_document`, set in `router.py`).
+        wants_everything = bool(
+            getattr(context, "needs_whole_document", False)
+            or context.tool_state.get("needs_whole_document")
+        )
+
+        # Everything the result carries besides the records is held back
+        # first, so the records cannot push it past the tool-result cap. The
+        # notes are measured with full ids, which shortening only shrinks.
+        entity_note = await _named_entity_note(context, records)
+        budget.charge_framing(entity_note)
+        budget.charge_framing_chars(
+            len(_CITATION_RULE)
+            + len(_unavailable_note(
+                result.get("not_available_ids", []), result.get("unavailable_reasons", {}),
+                None, result.get("not_indexed_records"),
+            ))
+            + len(_recovery_hint())
+        )
+
+        estimates = [estimate_render_chars(record, start_block) for record in records]
+        unread: set[str] = set()
+        for position, record in enumerate(records):
+            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
+            budget.begin_record(record_key)
+            # Fair shares for this record and the ones after it, re-planned
+            # after every render so room a record did not use passes on. A
+            # record may use everything not reserved for the later ones: the
+            # estimate is rough, and a record that fits must not be cut short.
+            remaining = budget.call_chars_remaining
+            shares = fair_shares(estimates[position:], remaining)
+            if shares[0] < min(_MIN_RECORD_SHARE_CHARS, estimates[position]):
+                unread.add(record_key)
+                note = _not_read_note(record, record_id_shortener)
+                budget.charge_framing(note)
+                parts.append(note)
+                continue
+            limit = remaining - sum(shares[1:])
+            budget.allot(record_key, limit)
+            fits = estimates[position] <= limit
+            # A continuation follows the pointer the model was handed, and an
+            # explicit 0 on a record already shown by relevance is the model
+            # asking for the in-order read the hint offered. Ranking either
+            # again would return the blocks it already has.
+            in_order = start_block > 0 or (start_block_sent and record_key in selected_before)
             # A record that does not fit loses something. Losing the tail is
             # the worst choice for the questions this tool answers, so the
             # blocks are ranked against what the model is looking for and the
-            # gaps are announced. Positional reading stays available through
-            # `start_block`.
+            # gaps are announced.
             include_blocks = None
-            # A summary, an overview, "what are the risks", "does it mention X
-            # anywhere" — the answer is a property of the whole document, and
-            # the parts relevance would drop are exactly the ones whose absence
-            # changes the answer. Read it in order instead and let the model
-            # continue; the router already classified the request
-            # (`needs_whole_document`, set in `router.py`).
-            wants_everything = bool(
-                getattr(context, "needs_whole_document", False)
-                or context.tool_state.get("needs_whole_document")
-            )
-            if not wants_everything and estimate_record_chars(record) > budget.chars_remaining:
+            if not (fits or wants_everything or in_order):
                 include_blocks = await select_relevant_blocks(
                     record=record,
                     virtual_record_id=record.get("virtual_record_id"),
@@ -263,7 +362,17 @@ async def execute_fetch_record(
                     user_id=context.user_id,
                     org_id=context.org_id,
                     budget=budget,
+                    reserve=estimate_frame_chars(record),
                 )
+            # The character allowance bounds size. A block count only limits
+            # an in-order read of a record too large for its share, or what
+            # the model asked for; it never cuts a record that fits or a
+            # selection, which was sized by characters already.
+            budget.allot(
+                record_key, limit,
+                max_blocks=requested_max if fits else block_cap,
+                unbounded_blocks=include_blocks is not None or (fits and requested_max is None),
+            )
             # The render is synchronous and this path is not: an image that
             # needs downscaling to the model's per-image limits is a Pillow
             # decode/resize/encode (~600 ms for a 4000x3000 page scan), and
@@ -275,7 +384,6 @@ async def execute_fetch_record(
                 record,
                 ref_mapper=ref_mapper,
                 start_block=start_block,
-                max_blocks=block_cap,
                 is_multimodal_llm=context.is_multimodal_llm,
                 collected_images=collected_images,
                 image_budget=image_budget,
@@ -287,27 +395,30 @@ async def execute_fetch_record(
             rendered = "".join(
                 item["text"] for item in content_list if item.get("type") == "text"
             )
-            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
-            if start_block > 0 and budget.outcome(record_key).blocks_rendered == 0:
-                total = len(_renderable_block_indices(record))
-                rendered += (
-                    f"\n[No blocks at offset {start_block}: this record has {total} "
-                    f"renderable block(s), numbered from 0.]\n"
-                )
+            outcome = budget.outcome(record_key)
+            if include_blocks is not None and outcome.stop_reason == "selection":
+                selected_before.add(record_key)
+            if start_block > 0 and outcome.blocks_rendered == 0:
+                indices = _renderable_block_indices(record)
+                if not any(index >= start_block for index in indices):
+                    last = max(indices) if indices else -1
+                    note = (
+                        f"\n[No blocks at offset {start_block}: this record's last "
+                        f"renderable block is {last}.]\n"
+                    )
+                    budget.charge_framing(note)
+                    rendered += note
             parts.append(rendered)
 
         text = "\n".join(parts)
-        text += await _named_entity_note(context, result.get("records") or [])
+        text += entity_note
         # TEMPORARY token-savings experiment: shorten every "Record ID:"
         # this fetch prints back down to the same "R<n>" label the model
         # already saw — see `RecordIdShortener`. No-op (full ids as-is)
         # when the flag is off.
         if record_id_shortener is not None:
             text = record_id_shortener.shorten_record_ids_in_text(text)
-        text += (
-            "\n\nCite facts from the above using each block's `[refN]` id "
-            "as a markdown link, e.g. [source](ref2). Do NOT use external URLs as citations."
-        )
+        text += _CITATION_RULE
         text += _unavailable_note(
             result.get("not_available_ids", []),
             result.get("unavailable_reasons", {}),
@@ -328,8 +439,12 @@ async def execute_fetch_record(
             # Only a record read end to end counts as fetched: this set is what
             # hides records from candidate lists, and hiding one the model has
             # only partly seen is how a follow-up question loses its source.
-            outcome = budget.outcome(
-                str(record.get("id") or record.get("virtual_record_id") or "")
+            record_key = str(record.get("id") or record.get("virtual_record_id") or "")
+            outcome = (
+                RecordRenderOutcome(
+                    record_id=record_key, stopped_at_block=start_block, stop_reason="not_read",
+                )
+                if record_key in unread else budget.outcome(record_key)
             )
             if outcome.complete:
                 context.full_records_fetched.add(rid)
@@ -345,6 +460,11 @@ async def execute_fetch_record(
                     "startBlock": start_block,
                     "blocksRendered": outcome.blocks_rendered,
                     "complete": outcome.complete,
+                    "truncatedBy": (
+                        None if outcome.complete else (outcome.stop_reason or "chars")
+                    ),
+                    "requestedMaxBlocks": requested_max,
+                    "startBlockSent": start_block_sent,
                     "shownBlocks": sorted(outcome.shown_blocks),
                     "tableTruncation": (
                         {

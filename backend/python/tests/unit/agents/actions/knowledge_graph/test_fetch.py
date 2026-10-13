@@ -13,6 +13,7 @@ from app.agents.actions.knowledge_graph.ops.fetch import (
     execute_fetch_record,
     resolve_block_cap,
 )
+from app.utils.render_budget import MAX_RENDER_CHARS
 
 
 class TestResolveBlockCap:
@@ -507,7 +508,7 @@ class TestWholeDocumentRequests:
         targeted, _ = await self._run(needs_whole_document=False)
 
         for text in (whole, targeted):
-            assert len(text) > 60_000, "the window was left unused"
+            assert len(text) > 0.8 * MAX_RENDER_CHARS, "the allowance was left unused"
 
 
 class TestFetchTraceForTheOptInFrame:

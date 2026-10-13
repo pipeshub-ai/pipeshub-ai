@@ -319,6 +319,7 @@ class _FetchFullRecordTool(Tool):
             reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
             start_block=start_block,
             max_blocks=kwargs.get("max_blocks"),
+            start_block_sent=kwargs.get("start_block") not in (None, ""),
         )
         if ref_mapper is not ref_mapper_in:
             self._context.tool_state["citation_ref_mapper"] = ref_mapper
