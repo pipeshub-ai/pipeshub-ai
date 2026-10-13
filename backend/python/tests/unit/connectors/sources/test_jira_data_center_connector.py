@@ -54,7 +54,10 @@ def _make_deps():
 
 def _make_connector(connector_id: str = "jira-dc-conn-1") -> JiraDataCenterConnector:
     logger, dep, dsp, cs = _make_deps()
-    return JiraDataCenterConnector(logger, dep, dsp, cs, connector_id, "team", "creator-1")
+    connector = JiraDataCenterConnector(logger, dep, dsp, cs, connector_id, "team", "creator-1")
+    # The graph store is a mock here; the stored-access read is covered by the behaviour tests.
+    connector._stored_access_at_start = AsyncMock(return_value=frozenset())
+    return connector
 
 
 def _auth_config_api_token_pat() -> dict:
