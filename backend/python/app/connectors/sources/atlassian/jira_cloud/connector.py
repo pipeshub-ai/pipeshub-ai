@@ -589,7 +589,7 @@ class JiraConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            self._had_sync_checkpoint = await self._get_issues_sync_checkpoint() is not None
+            self._had_sync_checkpoint = await self._sync_started_with_checkpoint()
 
             # 4. Sync Jira users and groups (reuse the active-user list from the guard above)
             jira_users = await self._fetch_users(active_pipeshub_users=users)
@@ -1013,6 +1013,22 @@ class JiraConnector(BaseConnector):
         except Exception as e:
             self.logger.debug("Could not read global issues sync checkpoint (treating as no checkpoint): %s", e)
             return None
+
+    async def _sync_started_with_checkpoint(self) -> bool:
+        """Whether earlier syncs left stored access that a short read should not replace.
+
+        A missing checkpoint means a first sync, or a full sync whose prep deleted it with
+        the stored edges. A read that fails is not proof of that, so it counts as a
+        checkpoint: holding back is the safe side when we cannot tell.
+        """
+        try:
+            point = await self.issues_sync_point.read_sync_point("issues_global")
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Could not read the issues sync checkpoint (%s); keeping stored access if a read is short", e
+            )
+            return True
+        return bool(point) and point.get("last_sync_time") is not None
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """

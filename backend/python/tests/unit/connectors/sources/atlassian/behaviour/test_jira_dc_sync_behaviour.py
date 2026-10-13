@@ -1252,6 +1252,19 @@ class TestReindexEdgeCases:
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
 
 
+
+def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reading the issues checkpoint fail, as a database error would."""
+    real = store.get_sync_point
+
+    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        if key.endswith("issues_global"):
+            raise RuntimeError("database unavailable")
+        return await real(key, raise_on_error)
+
+    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
 
@@ -1314,6 +1327,20 @@ class TestUnreadApplicationRoles:
         # Nothing was stored before, so holding the project back would leave it with no access.
         groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
         assert groups == {"devs"}
+
+    async def test_a_checkpoint_that_cannot_be_read_keeps_the_project_access(
+        self, jira, db, store, search, monkeypatch
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        fail_checkpoint_reads(store, monkeypatch)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "an unreadable checkpoint is not 'nothing stored'"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)

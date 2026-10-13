@@ -876,6 +876,19 @@ class TestDeletedIssuesFoundByComparingIds:
         assert listing.id_bodies == []
 
 
+
+def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reading the issues checkpoint fail, as a database error would."""
+    real = store.get_sync_point
+
+    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        if key.endswith("issues_global"):
+            raise RuntimeError("database unavailable")
+        return await real(key, raise_on_error)
+
+    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme also grants the jira-software application role, which Jira maps to grp-sw."""
 
@@ -943,6 +956,20 @@ class TestUnreadApplicationRoles:
 
         # Nothing was stored before, so holding the project back would leave it with no access.
         assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+
+    async def test_a_checkpoint_that_cannot_be_read_keeps_the_project_access(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        fail_checkpoint_reads(checkpoints, monkeypatch)
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl(site_db) == before, "an unreadable checkpoint is not 'nothing stored'"
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
         self._stub_application_role(api)
