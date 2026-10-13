@@ -1677,3 +1677,18 @@ class TestUnfinishedUserRead:
             await connector.run_sync()
 
         assert self._access(db) == before, "a failed read is not taken for 'nothing stored'"
+
+    async def test_a_full_sync_that_kept_stored_access_reports_it_did_not_read_everything(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
+        assert connector.full_sync_coverage().complete is False
