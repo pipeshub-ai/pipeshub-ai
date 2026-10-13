@@ -260,6 +260,37 @@ class TestLedger:
         assert fetched.shownBlocks == [40, 41, 90]
         assert fetched.tableTruncation.model_dump() == {"blockGroupIndex": 3, "rowsShown": 12, "rowsTotal": 500}
 
+    def test_why_a_fetch_stopped_and_what_the_model_asked_for_are_reported(self) -> None:
+        outcome = {
+            "virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 50, "complete": False,
+            "truncatedBy": "blocks", "requestedMaxBlocks": 50, "startBlockSent": True,
+        }
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        fetched = fetched.model_dump(exclude_none=True)
+        assert fetched["truncatedBy"] == "blocks"
+        assert fetched["requestedMaxBlocks"] == 50
+        assert fetched["startBlockSent"] is True
+
+    def test_an_entry_without_the_newer_fields_keeps_its_old_wire_shape(self) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": True}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        assert set(fetched.model_dump(exclude_none=True)) == {"startBlock", "blocksRendered", "complete"}
+
+    def test_an_unknown_stop_reason_is_dropped_not_fatal(self) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
+                   "truncatedBy": "weather", "requestedMaxBlocks": "50", "startBlockSent": "yes"}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        assert (fetched.truncatedBy, fetched.requestedMaxBlocks, fetched.startBlockSent) == (None, None, None)
+
     def test_two_selections_with_the_same_unit_count_are_both_reported(self) -> None:
         first = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
                  "shownBlocks": [1, 2, 3]}
