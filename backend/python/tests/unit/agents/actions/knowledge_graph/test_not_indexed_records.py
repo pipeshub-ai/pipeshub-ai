@@ -195,13 +195,27 @@ class TestHttpRecordContent:
         assert err.value.status_code == 403
         graph.get_record_by_id.assert_not_awaited()
 
-    async def test_a_record_that_does_not_exist_is_still_not_found(self) -> None:
-        graph = _graph()
+    async def test_a_record_that_does_not_exist_is_still_refused(self) -> None:
+        """The access check finds no document and answers None, as both graph
+        providers do for an unknown id; the route refuses before any fetch."""
+        graph = _graph(access=False)
         graph.get_document = AsyncMock(return_value=None)
 
-        body = await self._content(graph)
+        with pytest.raises(HTTPException) as err:
+            await self._content(graph)
+
+        assert err.value.status_code == 403
+        graph.get_record_by_id.assert_not_awaited()
+
+    async def test_an_indexed_record_whose_content_will_not_load_is_not_found(self) -> None:
+        """The one path to the literal: access passes, the record is indexed,
+        and its stored content does not load."""
+        graph = _graph(status=ProgressStatus.COMPLETED.value)
+        with patch("app.utils.fetch_full_record.get_record", AsyncMock()):
+            body = await self._content(graph)
 
         assert body == {"content": "No record found"}
+        graph.get_record_by_id.assert_not_awaited()
 
 
 # --- The agent's fetch_record ---------------------------------------------------

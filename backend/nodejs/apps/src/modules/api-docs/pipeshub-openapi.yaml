@@ -5033,10 +5033,10 @@ components:
         by a paragraph that starts `Not indexed:` and names the status, e.g.
         `(status: AUTO_INDEX_OFF)`. It is not the record's text.
 
-        `content` is the literal `No record found` when nothing could be
-        loaded for the id: the record is gone from the graph, or an indexed
-        record's stored content is missing. A record the caller may not read
-        answers `403` instead.
+        `content` is the literal `No record found` when the caller may read
+        an indexed record but its stored content could not be loaded. An id
+        that does not exist, a record in the trash, and a record the caller
+        may not read all answer `403` instead.
       required:
         - content
       properties:
@@ -36028,10 +36028,10 @@ paths:
             Successful operation. When the record exists but its content is
             not indexed yet, `content` describes the record (name, link,
             dates) and ends with a `Not indexed:` paragraph naming its
-            indexing status. When nothing could be loaded for the id (the
-            record is gone, or an indexed record's stored content is
-            missing), `content` is the literal `No record found`. Neither is
-            an error status; a record the caller may not read answers `403`.
+            indexing status. When the record is indexed but its stored
+            content could not be loaded, `content` is the literal
+            `No record found`. Neither is an error status. An id that does
+            not exist, or a record the caller may not read, answers `403`.
           content:
             application/json:
               schema:
