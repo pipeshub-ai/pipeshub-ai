@@ -19,6 +19,7 @@ from atlassian_behaviour_fakes import (
     FakeCheckpointStore,
     FakeConfigService,
     json_response,
+    run_full_sync,
 )
 from atlassian_cloud_fakes import (
     CLOUD_ID,
@@ -1254,6 +1255,37 @@ class TestUnfinishedUserRead:
 
         # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
         assert connector.full_sync_coverage().complete is False
+
+    async def test_a_full_sync_with_a_short_read_keeps_what_it_held_after_the_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+        assert "bo@acme.com" in before["devs"] and before["lead"] == ["bo@acme.com"]
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        checkpoints.sync_points.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, site_db)
+
+        assert self._access(site_db) == before, "devs, Developers, the lead and the project keep what they had"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, site_db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
