@@ -608,9 +608,9 @@ def _atan2(y: Value, x: Value) -> float:
 
 
 def _trigonometric(name: str, value: Value) -> float:
-    if isinstance(value, Fraction) and abs(value) > 1:
-        angle = _reduced_angle(value)
-        result = _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos")
+    if isinstance(value, Fraction):
+        # A non-zero rational angle is never a zero of sin, cos or tan.
+        return _bounded(_exact_angle_function(name, value), nonzero=True)
     else:
         # An approximate angle carries at least half an ulp of rounding, and
         # a sine or cosine passes it straight to the result (|sin'| <= 1):
@@ -663,22 +663,37 @@ def _exact_logarithm(value: Fraction, base: Fraction) -> Fraction | None:
     return Fraction(power) if base**power == value else None
 
 
-def _reduced_angle(value: Fraction) -> float:
-    """An exact angle reduced by a whole number of turns in decimal before it
-    is rounded to a double: 10**300 as a double is off by about 10**284
-    radians, and even 100000.1 by 7e-12, which a sine would carry."""
-    integer_digits = len(str(abs(value.numerator) // value.denominator))
-    with localcontext(Context(prec=integer_digits + _LOG_GUARD_DIGITS)):
+def _exact_angle_function(name: str, value: Fraction) -> float:
+    """sin, cos or tan of an exact angle. The angle is reduced by quarter
+    turns in decimal, to a residual within pi/4, before anything is rounded:
+    10**300 as a double is off by about 10**284 radians, and near a zero or
+    pole the residual is tiny (sin(3.14159265358979323846) is 2.6e-21, not
+    the 1.2e-16 of the double nearest pi). The precision covers every digit
+    of the angle."""
+    digits = len(str(value.numerator)) + len(str(value.denominator))
+    with localcontext(Context(prec=digits + _LOG_GUARD_DIGITS)):
         angle = Decimal(value.numerator) / Decimal(value.denominator)
-        turn = 2 * _decimal_pi()
-        return float(angle - turn * (angle / turn).to_integral_value())
+        quarter = _decimal_pi() / 2
+        turns = (angle / quarter).to_integral_value()
+        residual = float(angle - turns * quarter)
+    quadrant = int(turns) % 4
+    if name == "tan":
+        if quadrant % 2 == 0:
+            return math.tan(residual)
+        if residual == 0:
+            raise _OutsideFloatRange("The result is too large.", too_large=True)
+        return -1 / math.tan(residual)
+    # cos(r + k*pi/2) is sin shifted by one quarter turn.
+    quadrant = (quadrant + 1) % 4 if name == "cos" else quadrant
+    return (math.sin, math.cos, lambda r: -math.sin(r), lambda r: -math.cos(r))[quadrant](residual)
 
 
 @functools.cache
 def _decimal_pi() -> Decimal:
     """pi to more digits than any exact value can have (the series from the
     decimal module's documentation), computed once."""
-    with localcontext(Context(prec=MAX_DIGITS + 2 * _LOG_GUARD_DIGITS)):
+    # Enough for an angle of MAX_DIGITS digits over MAX_DIGITS digits.
+    with localcontext(Context(prec=2 * MAX_DIGITS + 2 * _LOG_GUARD_DIGITS)):
         last, term, total, n, n_step, d, d_step = Decimal(0), Decimal(3), Decimal(3), 1, 0, 0, 24
         while total != last:
             last = total

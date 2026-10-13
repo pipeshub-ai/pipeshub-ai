@@ -267,6 +267,14 @@ class TestExactArithmetic:
             ("cos(10**300 / 12.5)", -0.296129482721992),
             ("sin(10**499 + 1/3)", -0.0124529466817837),
             ("tan(10**22)", -1.6287782256069),
+            # Near a zero or pole the residual after reducing by pi/2 is tiny;
+            # it is computed in decimal, not rounded onto pi first.
+            ("sin(3.14159265358979323846)", 2.64338327950288e-21),
+            ("cos(1.570796326794896619)", 2.31321691639751e-19),
+            ("tan(3.14159265358979323846)", -2.64338327950288e-21),
+            ("cos(3.14159265358979323846)", -1),
+            ("sin(4.712388980384689857)", -1),
+            ("tan(1.570796326794896619)", 4.3229841218581e18),
             # Scaled on the exact value: the angle need not fit, the result does.
             ("radians(10**309)", 1.74532925199433e307),
             ("radians(-10**309)", -1.74532925199433e307),
