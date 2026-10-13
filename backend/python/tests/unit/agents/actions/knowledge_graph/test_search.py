@@ -900,7 +900,7 @@ class TestRetrievalLayerProvenance:
         async def merge(**kwargs) -> list[dict]:
             graph_record = {"_key": "rec-2", "virtualRecordId": "vr-2", "recordName": "sow.pdf"}
             kwargs["virtual_record_id_to_result"]["vr-2"] = graph_record
-            return [{"virtual_record_id": "vr-2", "graph_record": graph_record}]
+            return [{"virtual_record_id": "vr-2", "source": "pattern_match"}]
 
         retrieval = AsyncMock()
         retrieval.search_with_filters.return_value = {

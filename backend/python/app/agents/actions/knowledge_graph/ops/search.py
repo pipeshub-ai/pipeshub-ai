@@ -37,6 +37,7 @@ from app.modules.agents.qna.chat_state import remember_shown_results
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
+from app.modules.retrieval.context.units import unit_children
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
@@ -53,6 +54,7 @@ from app.utils.chat_helpers import (
     CitationRefMapper,
     ImageBudget,
     get_record_id_shortener_if_enabled,
+    is_base64_image,
     merge_into_records_map,
 )
 from app.utils.image_admission import admission_from_state
@@ -241,32 +243,28 @@ def _result_frame(
 
 def _note_provenance(
     state: "ChatState",
-    search_results: list[dict[str, Any]],
+    semantic_units: list[dict[str, Any]],
     shown: dict[str, Any],
-    pm_record_entries: list[dict[str, Any]],
     raw_pattern_records: list[dict[str, Any]],
 ) -> None:
-    """Note which layer surfaced each record this search shows (opt-in trace only)."""
-    semantic_vrids = {hit.get("virtual_record_id") for hit in search_results if isinstance(hit, dict)}
+    """Note which layer surfaced each record this search shows (opt-in trace only).
+
+    A record counts as found by the vector search only when its semantic units
+    were shown: one whose hits were cut, listed through the keyword hint, was
+    shown by grep alone.
+    """
+    semantic_vrids = {unit.get("virtual_record_id") for unit in semantic_units}
     grep_vrids = {record.get("virtual_record_id") for record in raw_pattern_records}
     shown_refs = [
-        (vrid, record.get("id"), record.get("record_name"))
+        (
+            vrid,
+            record.get("id") or record.get("_key"),
+            record.get("record_name") or record.get("recordName"),
+        )
         for vrid, record in shown.items() if isinstance(record, dict)
     ]
     note_retrieved_by(state, "vector", [ref for ref in shown_refs if ref[0] in semantic_vrids])
-    pm_refs = [
-        (
-            entry.get("virtual_record_id"),
-            graph_record.get("_key") or graph_record.get("id"),
-            graph_record.get("recordName") or graph_record.get("title"),
-        )
-        for entry in pm_record_entries
-        if isinstance(graph_record := entry.get("graph_record"), dict)
-    ]
-    note_retrieved_by(
-        state, "pattern_match",
-        [*(ref for ref in shown_refs if ref[0] in grep_vrids), *pm_refs],
-    )
+    note_retrieved_by(state, "pattern_match", [ref for ref in shown_refs if ref[0] in grep_vrids])
 
 
 def resolve_entity_filter_groups(
@@ -834,6 +832,16 @@ async def execute_search(
         image_budget = state.get("image_budget")
         if not isinstance(image_budget, ImageBudget):
             image_budget = state["image_budget"] = ImageBudget()
+        image_admission = admission_from_state(state)
+        if is_multimodal_llm:
+            # Downscales are decided off the event loop here, so the sizing
+            # renders below and the real render only hit the cache.
+            await image_admission.warm([
+                content
+                for unit in knowledge.ranked
+                for item in (unit, *unit_children(unit))
+                if is_base64_image(content := item.get("content"))
+            ])
         by_relevance = relevance_ordered_context()
         renderer = KnowledgeRenderer(
             virtual_record_id_to_result,
@@ -842,7 +850,7 @@ async def execute_search(
             by_relevance=by_relevance,
             record_id_shortener=record_id_shortener,
             image_budget=image_budget,
-            image_admission=admission_from_state(state),
+            image_admission=image_admission,
         )
 
         def frame(selection: Selection) -> _ResultFrame:
@@ -860,14 +868,22 @@ async def execute_search(
         # here, least relevant first, rather than mid-record by the generic
         # tool-result cap. No await from here to the render: the selection is
         # measured against the shared ref mapper and image budget as they are now.
-        result_frame = frame(Selection(ranked=knowledge.ranked))
-        for _ in range(_MAX_FIT_PASSES):
+        selection = Selection(ranked=knowledge.ranked)
+        result_frame = frame(selection)
+        for _ in range(_MAX_FIT_PASSES if knowledge.ranked else 0):
             selection = renderer.select(
                 knowledge.ranked, DEFAULT_MAX_RESULT_CHARS - result_frame.chars,
             )
             result_frame = frame(selection)
             if (selection.chars or 0) <= DEFAULT_MAX_RESULT_CHARS - result_frame.chars:
                 break
+        else:
+            if knowledge.ranked:
+                logger_instance.warning(
+                    "knowledgegraph__search: result still over %d chars after %d fits; "
+                    "the tool-result cap will cut it",
+                    DEFAULT_MAX_RESULT_CHARS, _MAX_FIT_PASSES,
+                )
         rendered = renderer.render(selection)
         state["citation_ref_mapper"] = ref_mapper
         candidate_suffix = result_frame.candidate_suffix
@@ -896,7 +912,7 @@ async def execute_search(
         state["fetch_coverage"] = result_frame.coverage
         state["fetch_plan"] = result_frame.plan
 
-        _note_provenance(state, search_results, shown_records, pm_shown, raw_pattern_records)
+        _note_provenance(state, final_results, shown_records, raw_pattern_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
         text = (
             result_frame.summary

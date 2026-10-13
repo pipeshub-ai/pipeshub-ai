@@ -136,7 +136,7 @@ class TestFitsTheToolResultCap:
 
         async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
             kwargs["virtual_record_id_to_result"]["g1"] = {"_key": "rec-g1", "recordName": "Grep doc"}
-            return [{"virtual_record_id": "g1", "graph_record": {"_key": "rec-g1"}}]
+            return [{"virtual_record_id": "g1", "source": "pattern_match"}]
 
         with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "g1"}])), \
                 patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge), \
@@ -157,6 +157,76 @@ class TestFitsTheToolResultCap:
         # Five hits, and the text either side of each in the slots they left.
         assert result.startswith("Top 15 blocks from 5 records (ranked sample — other records may match).")
         assert "left out" not in result
+
+
+class TestVectorAndGrepHits:
+    @pytest.mark.asyncio
+    async def test_both_are_shown_and_both_are_recorded_as_shown(self) -> None:
+        records = {"v0": _record("v0")}
+        state = _state(config_service=MagicMock(), include_retrieval_context=True)
+        graph_record = {"_key": "rec-g1", "virtualRecordId": "g1", "recordName": "Grep doc"}
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            kwargs["virtual_record_id_to_result"]["g1"] = graph_record
+            return [{"virtual_record_id": "g1", "source": "pattern_match"}]
+
+        grep_hits = [{"virtual_record_id": "v0"}, {"virtual_record_id": "g1"}]
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep_hits)), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge):
+            result = await _search(state, records, [_unit("v0", 1, "vector hit", 0.8)])
+
+        assert "vector hit" in result
+        assert "Grep doc" in result
+        assert set(state["virtual_record_id_to_result"]) == {"v0", "g1"}
+        assert state["retrieved_by"]["v0"].layers == ["vector", "pattern_match"]
+        assert state["retrieved_by"]["g1"].layers == ["pattern_match"]
+        assert (state["retrieved_by"]["g1"].record_id, state["retrieved_by"]["g1"].record_name) == (
+            "rec-g1", "Grep doc",
+        )
+        delta = RetrievalContextLedger().take_delta(state)
+        assert {r.virtualRecordId for r in delta.records} == {"v0", "g1"}
+
+
+class TestGrepOnly:
+    @pytest.mark.asyncio
+    async def test_a_keyword_hint_over_the_cap_still_answers(self) -> None:
+        """No semantic units to cut: the hint goes out and the generic cap trims it."""
+        state = _state(config_service=MagicMock())
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            kwargs["virtual_record_id_to_result"]["g1"] = {"_key": "rec-g1", "recordName": "Grep doc"}
+            return [{"virtual_record_id": "g1", "source": "pattern_match"}]
+
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "g1"}])), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge), \
+                patch(f"{_SEARCH}.render_pattern_match_hint", return_value="h" * 5_000):
+            result = await _search(state, {}, [], cap=1_000)
+
+        assert result.startswith("No content blocks from semantic search, but 1 record")
+        assert result.endswith("h" * 5_000)
+
+    @pytest.mark.asyncio
+    async def test_a_record_cut_by_rank_and_listed_by_grep_is_traced_to_grep_only(self) -> None:
+        records = {"v0": _record("v0"), "v1": _record("v1")}
+        units = [_unit("v0", 1, "kept hit", 0.9), _unit("v1", 1, "cut hit", 0.1)]
+        state = _state(
+            config_service=MagicMock(), include_retrieval_context=True,
+            filters={"apps": ["a1", "a2", "a3", "a4", "a5"], "kb": []},
+        )
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            assert "v1" not in kwargs["virtual_record_id_to_result"]
+            kwargs["virtual_record_id_to_result"]["v1"] = {"_key": "rec-v1", "recordName": "Doc v1"}
+            return [{"virtual_record_id": "v1", "source": "pattern_match"}]
+
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "v1"}])), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge), \
+                patch(f"{_BUILDER}.rank_units", side_effect=lambda units, limit=None: units[:1]):
+            result = await _search(state, records, units)
+
+        assert "cut hit" not in result
+        assert state["retrieved_by"]["v0"].layers == ["vector"]
+        assert state["retrieved_by"]["v1"].layers == ["pattern_match"]
 
 
 class TestReadingOrder:
@@ -226,6 +296,14 @@ def _image_units() -> tuple[dict[str, Any], list[dict[str, Any]]]:
 
 
 class TestImages:
+    @pytest.mark.asyncio
+    async def test_downscales_are_decided_off_the_event_loop_first(self) -> None:
+        records, units = _image_units()
+        state = _state(is_multimodal_llm=True)
+        with patch("app.utils.image_admission.ImageAdmission.warm", new_callable=AsyncMock) as warm:
+            await _search(state, records, units)
+        warm.assert_awaited_once_with([_PNG])
+
     @pytest.mark.asyncio
     async def test_a_multimodal_model_gets_the_image_with_the_text(self) -> None:
         records, units = _image_units()

@@ -20,7 +20,7 @@ class RenderedKnowledge:
     units: list[Unit]
     """The units shown, in reading order: what the model can cite."""
     ranked: list[Unit]
-    """The same units, most relevant first."""
+    """The same units, records in rank order, each record's best units first."""
     parts: list[list[dict[str, Any]]]
     """Content parts of each record shown, in reading order."""
     images: list[dict[str, Any]] = field(default_factory=list)
@@ -192,6 +192,8 @@ class _Renderer:
     def fit(self, ranked: list[Unit], state: _RenderState, max_chars: int) -> Selection:
         """Sizing renders on copies of ``state`` carried forward record by
         record, so refs, short ids and image slots are those of the real render."""
+        if not ranked:
+            return Selection(ranked=[], chars=0)
         whole, after = self.measure(ranked, state)
         if whole - 1 <= max_chars:
             return Selection(
@@ -208,6 +210,9 @@ class _Renderer:
         probe = state
         for record_units in by_record.values():
             room = max_chars + 1 - used
+            if kept and room <= 0:
+                omitted += 1
+                continue
             shown = record_units
             size, after = self.measure(shown, probe)
             if size > room:
@@ -240,6 +245,10 @@ class _Renderer:
         chosen: list[Unit] = []
         size, after = 0, probe
         for unit in rank_units(units):
+            # A unit too big on its own is too big beside others: skip the
+            # costlier render with them. The final check catches any slack.
+            if chosen and self.measure([unit], probe)[0] > room:
+                continue
             trial_size, trial_after = self.measure([*chosen, unit], probe)
             if trial_size <= room or (keep_one and not chosen):
                 chosen.append(unit)
