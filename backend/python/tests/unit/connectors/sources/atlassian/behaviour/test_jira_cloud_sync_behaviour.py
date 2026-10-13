@@ -1235,6 +1235,38 @@ class TestUnfinishedUserRead:
 
         assert acl(site_db) == before, "the project is known by its id, so its saved access is kept"
 
+    @pytest.mark.parametrize(
+        ("holder", "grant"),
+        [
+            pytest.param({"type": "projectRole", "parameter": "10002"}, "ENG_10002", id="role"),
+            pytest.param({"type": "projectLead"}, "ENG_projectLead", id="lead"),
+        ],
+    )
+    async def test_a_renamed_project_granted_through_a_role_or_its_lead_keeps_its_access_on_a_short_read(
+        self, api, site_db, checkpoints, search, holder, grant
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": holder},
+        ]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert [p.external_id for p in site_db.record_group_permissions["10000"]] == [grant]
+
+        # The same project (id 10000) now has the key NEW; its roles under NEW are not synced on a short read.
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"accountId": "acc-ana", "displayName": "Ana"}},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/NEW/permissionscheme", {"id": 1})
+        api.on("GET", f"{JIRA}/project/NEW/role", {})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert [p.external_id for p in site_db.record_group_permissions["10000"]] == [grant], (
+            "the access list saved under the old key, whose roles have members, is kept"
+        )
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
