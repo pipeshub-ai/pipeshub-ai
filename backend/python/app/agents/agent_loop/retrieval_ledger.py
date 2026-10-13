@@ -24,6 +24,7 @@ from app.agents.agent_loop.protocol.retrieval_context import (
     RetrievalSource,
     RetrievalStatus,
     RetrievedRecordPayload,
+    TableTruncationPayload,
 )
 from app.modules.retrieval.provenance import (
     RETRIEVED_BY_KEY,
@@ -47,7 +48,7 @@ MAX_FRAMES_PER_RUN = 500
 logger = logging.getLogger(__name__)
 
 BlockKey = tuple[str, int | None]
-FetchKey = tuple[str, int, int]
+FetchKey = tuple[str, int, int, tuple[int, ...]]
 
 
 @dataclass
@@ -219,12 +220,27 @@ class RetrievalContextLedger:
     ) -> None:
         for record_id, entries in outcomes.items():
             for entry in entries or ():
+                if not isinstance(entry, Mapping):
+                    continue
+                shown = entry.get("shownBlocks")
+                table = entry.get("tableTruncation")
                 fetched = FetchedRangePayload(
                     startBlock=int(entry.get("startBlock") or 0),
                     blocksRendered=int(entry.get("blocksRendered") or 0),
                     complete=bool(entry.get("complete")),
+                    shownBlocks=(
+                        [i for i in shown if _block_index(i) is not None]
+                        if isinstance(shown, list) else None
+                    ),
+                    tableTruncation=(
+                        TableTruncationPayload.model_validate(table)
+                        if isinstance(table, Mapping) else None
+                    ),
                 )
-                key: FetchKey = (str(record_id), fetched.startBlock, fetched.blocksRendered)
+                key: FetchKey = (
+                    str(record_id), fetched.startBlock, fetched.blocksRendered,
+                    tuple(fetched.shownBlocks or ()),
+                )
                 if key in self._seen_fetches:
                     continue
                 self._seen_fetches.add(key)
@@ -337,6 +353,10 @@ def _bounded_records(
         if len(record.blockIndices) > MAX_BLOCK_INDICES_PER_RECORD:
             record.blockIndices = record.blockIndices[:MAX_BLOCK_INDICES_PER_RECORD]
             truncated = True
+        for fetched in record.fetched:
+            if fetched.shownBlocks and len(fetched.shownBlocks) > MAX_BLOCK_INDICES_PER_RECORD:
+                fetched.shownBlocks = fetched.shownBlocks[:MAX_BLOCK_INDICES_PER_RECORD]
+                truncated = True
     return kept, truncated
 
 

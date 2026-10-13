@@ -24,6 +24,16 @@ RetrievalSource = Literal["prefetch", "tool"]
 RetrievalStatus = Literal["ok", "empty", "skipped", "error"]
 
 
+class TableTruncationPayload(BaseModel):
+    """A table a fetch cut short: which group, and how many of its rows fit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    blockGroupIndex: int
+    rowsShown: int
+    rowsTotal: int
+
+
 class FetchedRangePayload(BaseModel):
     """One `fetch_record` render of a record: where it started and how much
     of the record actually fit the model's budget."""
@@ -31,8 +41,14 @@ class FetchedRangePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     startBlock: int
+    # Rendered units: a table or group counts once however many blocks it holds.
     blocksRendered: int
     complete: bool
+    # The block indices the model read in full (table rows included). A fetch
+    # that selected the most relevant blocks shows a non-contiguous set, so
+    # `startBlock` + `blocksRendered` alone cannot say which blocks were read.
+    shownBlocks: list[int] | None = None
+    tableTruncation: TableTruncationPayload | None = None
 
 
 class RetrievedRecordPayload(BaseModel):

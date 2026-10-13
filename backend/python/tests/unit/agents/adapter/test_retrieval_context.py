@@ -247,6 +247,43 @@ class TestLedger:
         assert record.blockIndices == [] and record.fetched == []
         assert record.retrievedBy == ["pattern_match"]
 
+    def test_a_fetch_reports_the_exact_blocks_it_showed(self) -> None:
+        outcome = {
+            "virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 2, "complete": False,
+            "shownBlocks": [40, 41, 90],
+            "tableTruncation": {"blockGroupIndex": 3, "rowsShown": 12, "rowsTotal": 500},
+        }
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        assert fetched.shownBlocks == [40, 41, 90]
+        assert fetched.tableTruncation.model_dump() == {"blockGroupIndex": 3, "rowsShown": 12, "rowsTotal": 500}
+
+    def test_two_selections_with_the_same_unit_count_are_both_reported(self) -> None:
+        first = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
+                 "shownBlocks": [1, 2, 3]}
+        second = {**first, "shownBlocks": [7, 8, 9]}
+        ledger = RetrievalContextLedger()
+
+        ledger.take_delta(_state(fetch_render_outcomes={"rec-7": [first]}))
+        delta = ledger.take_delta(_state(fetch_render_outcomes={"rec-7": [first, second]}))
+
+        assert [f.shownBlocks for f in delta.records[0].fetched] == [[7, 8, 9]]
+
+    def test_a_malformed_fetch_entry_costs_only_itself(self) -> None:
+        good = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": True}
+        state = _state(
+            final_results=[_block("vr-1", 0)],
+            fetch_render_outcomes={"rec-7": ["not an outcome", None, good]},
+        )
+
+        delta = RetrievalContextLedger().take_delta(state)
+
+        by_id = {r.virtualRecordId: r for r in delta.records}
+        assert by_id["vr-1"].blockIndices == [0]
+        assert [f.blocksRendered for f in by_id["vr-7"].fetched] == [3]
+
     def test_a_fetch_is_reported_as_a_layer(self) -> None:
         outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": True}
         delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
@@ -386,6 +423,19 @@ class TestFrameBounds:
 
         [value] = self._values(context)
         assert len(value["records"][0]["blockIndices"]) == MAX_BLOCK_INDICES_PER_RECORD
+        assert value["truncated"] is True
+
+    async def test_a_huge_fetched_table_is_cut_to_the_block_cap(self) -> None:
+        context = self._context()
+        context.tool_state["fetch_render_outcomes"] = {"rec-t": [{
+            "virtualRecordId": "vr-t", "startBlock": 0, "blocksRendered": 1, "complete": True,
+            "shownBlocks": list(range(MAX_BLOCK_INDICES_PER_RECORD + 10)),
+        }]}
+
+        await emit_retrieval_context(context, source="tool")
+
+        [value] = self._values(context)
+        assert len(value["records"][0]["fetched"][0]["shownBlocks"]) == MAX_BLOCK_INDICES_PER_RECORD
         assert value["truncated"] is True
 
     async def test_known_ids_past_the_cap_are_left_out_and_flagged(self) -> None:

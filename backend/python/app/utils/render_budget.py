@@ -23,8 +23,12 @@ record stopped so the model can continue it. `ImageAdmission` composes
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.utils.env_utils import env_int
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 # Share of the model's context window one fetch may spend. The rest has to
 # hold the system prompt, the conversation so far, the other tool results and
@@ -69,6 +73,11 @@ class RecordRenderOutcome:
     blocks_rendered: int = 0
     chars_rendered: int = 0
     table_truncation: TableTruncation | None = None
+    # Indices of the blocks the model can read in full: top-level blocks,
+    # table rows and group children. A unit counts once however many blocks
+    # it holds, and a selection renders a non-contiguous set, so only these
+    # say which blocks were read. A clipped block is not among them.
+    shown_blocks: frozenset[int] = frozenset()
 
     @property
     def complete(self) -> bool:
@@ -81,6 +90,8 @@ class _RecordState:
     chars_rendered: int = 0
     stopped_at_block: int | None = None
     table_truncation: TableTruncation | None = None
+    shown: set[int] = field(default_factory=set)
+    clipped: bool = False
 
 
 @dataclass
@@ -116,6 +127,7 @@ class RenderBudget:
             blocks_rendered=state.blocks_rendered,
             chars_rendered=state.chars_rendered,
             table_truncation=state.table_truncation,
+            shown_blocks=frozenset(state.shown),
         )
 
     # -- spending -----------------------------------------------------------
@@ -160,8 +172,20 @@ class RenderBudget:
             room = max(0, self.max_chars - len(TRUNCATION_MARKER))
             clipped = text[:room] + TRUNCATION_MARKER
             self.charge(clipped)
+            if self._current is not None:
+                self._records[self._current].clipped = True
             return clipped
         return None
+
+    def note_shown(self, block_indices: Iterable[int]) -> None:
+        """Record blocks of the current record the model can now read in
+        full. A clip leaves only a prefix and uses up the budget, so nothing
+        is recorded for the record after one."""
+        if self._current is None:
+            return
+        state = self._records[self._current]
+        if not state.clipped:
+            state.shown.update(block_indices)
 
     def count_block(self) -> None:
         """One renderable unit was emitted -- a top-level block, or a whole

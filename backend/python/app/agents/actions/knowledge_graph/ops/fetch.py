@@ -326,6 +326,15 @@ async def execute_fetch_record(
                     "startBlock": start_block,
                     "blocksRendered": outcome.blocks_rendered,
                     "complete": outcome.complete,
+                    "shownBlocks": sorted(outcome.shown_blocks),
+                    "tableTruncation": (
+                        {
+                            "blockGroupIndex": outcome.table_truncation.group_index,
+                            "rowsShown": outcome.table_truncation.rows_shown,
+                            "rowsTotal": outcome.table_truncation.rows_total,
+                        }
+                        if outcome.table_truncation is not None else None
+                    ),
                 })
 
         if collected_images and context.is_multimodal_llm:
