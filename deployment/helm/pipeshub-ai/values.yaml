@@ -201,6 +201,10 @@ tolerations: []
 
 affinity: {}
 
+# Prefer one app replica per node, matching this release's own pods. Ignored
+# when affinity is set.
+spreadAcrossNodes: false
+
 # Pod Disruption Budget for High Availability
 podDisruptionBudget:
   enabled: true
@@ -869,6 +873,8 @@ qdrant:
   securityContext: {}
   nodeSelector: {}
   tolerations: []
+  # soft prefers one replica per node; hard requires it. Ignored when affinity is set.
+  antiAffinity: soft
   affinity: {}
   topologySpreadConstraints: []
   apiKey: "api_key"

@@ -88,7 +88,7 @@ This creates:
 - the IAM role `PipesHub-<cluster>-S3`, limited to that bucket, with a Pod Identity association for the app's service account.
 - the ACM certificate, the Route 53 record when the zone is in this account, and the Helm release.
 - a Secrets Manager copy of `secret-key` as `<cluster>/secret-key`.
-- the daily EBS backup plan, if the storage class tags volumes `pipeshub-backup=true`. Otherwise the script skips it and says so.
+- the daily EBS backup plan, if the storage class tags volumes `pipeshub-backup=true` through a `tagSpecification_*` parameter and the EBS CSI driver tags them `kubernetes.io/cluster/<cluster>=owned`. Otherwise the script skips it and says so. Put the tag only on a class PipesHub alone uses, or other workloads in the cluster are backed up too.
 
 It does not create or change the cluster, its nodes, add-ons, storage classes, or the AWS Load Balancer Controller. It stops before installing anything if the cluster or the EKS Pod Identity Agent is missing. Remove only PipesHub with the same command plus `--destroy`. That keeps the cluster, the volume claims, the bucket and the saved `secret-key`. `--purge` is refused here.
 
@@ -518,7 +518,7 @@ The ACM certificate must cover `connect.example.com` too. Request one for both n
 
 ## 10. Backups and restore
 
-AWS Backup takes daily snapshots of every volume tagged `pipeshub-backup=true`. The `gp3` class adds that tag.
+AWS Backup takes daily snapshots of every volume tagged both `pipeshub-backup=true` and `kubernetes.io/cluster/${CLUSTER}=owned`. The `gp3` class adds the first tag and the EBS CSI driver adds the second, so another cluster's volumes stay out of this vault.
 
 ```bash
 aws backup create-backup-vault --region "$AWS_REGION" --backup-vault-name pipeshub
@@ -534,7 +534,7 @@ PLAN_ID="$(aws backup create-backup-plan --region "$AWS_REGION" --query BackupPl
   '{"BackupPlanName":"pipeshub-daily","Rules":[{"RuleName":"daily","TargetBackupVaultName":"pipeshub","ScheduleExpression":"cron(0 3 * * ? *)","StartWindowMinutes":60,"CompletionWindowMinutes":240,"Lifecycle":{"DeleteAfterDays":30}}]}')"
 
 aws backup create-backup-selection --region "$AWS_REGION" --backup-plan-id "$PLAN_ID" --backup-selection \
-  "{\"SelectionName\":\"pipeshub-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/PipesHubBackup\",\"ListOfTags\":[{\"ConditionType\":\"STRINGEQUALS\",\"ConditionKey\":\"pipeshub-backup\",\"ConditionValue\":\"true\"}]}"
+  "{\"SelectionName\":\"pipeshub-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/PipesHubBackup\",\"Resources\":[\"arn:aws:ec2:*:*:volume/*\"],\"Conditions\":{\"StringEquals\":[{\"ConditionKey\":\"aws:ResourceTag/pipeshub-backup\",\"ConditionValue\":\"true\"},{\"ConditionKey\":\"aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}\",\"ConditionValue\":\"owned\"}]}}"
 ```
 
 Verify the next morning:

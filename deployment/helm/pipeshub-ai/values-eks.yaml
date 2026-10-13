@@ -198,15 +198,7 @@ qdrant:
     QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE: "1000"
     QDRANT__STORAGE__COLLECTION__REPLICATION_FACTOR: "2"
     QDRANT__STORAGE__COLLECTION__WRITE_CONSISTENCY_FACTOR: "1"
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: pipeshub-ai
-              app.kubernetes.io/instance: pipeshub-ai
-              app.kubernetes.io/component: qdrant
-          topologyKey: kubernetes.io/hostname
+  antiAffinity: hard
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone

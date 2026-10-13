@@ -10,17 +10,7 @@
 nodeSelector:
   pipeshub/role: null
 tolerations: []
-affinity:
-  podAntiAffinity:
-    preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: pipeshub-ai
-              app.kubernetes.io/instance: pipeshub-ai
-              app.kubernetes.io/component: main
-          topologyKey: kubernetes.io/hostname
+spreadAcrossNodes: true
 
 ingress:
   annotations:

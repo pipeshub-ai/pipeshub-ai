@@ -144,6 +144,7 @@ if [[ -f "$OUT/eks.yaml" ]]; then
   # Neo4j is one pod. Qdrant is three. Count the StatefulSet replica lines by name.
   expect eks 'replicas: 3' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'whenUnsatisfiable: ScheduleAnyway' present 'name: ci-pipeshub-ai-qdrant'
+  expect eks 'requiredDuringSchedulingIgnoredDuringExecution' present 'name: ci-pipeshub-ai-qdrant'
   expect eks 'replicas: 1' present 'name: ci-pipeshub-ai-neo4j'
 fi
 if [[ -f "$OUT/eks-single-az.yaml" ]]; then
@@ -154,6 +155,9 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'topologyKey: topology.kubernetes.io/zone' absent
   expect eks-single-az 'app.kubernetes.io/component: redis' absent
   expect eks-single-az 'internet-facing' absent
+  # The release here is "ci"; a selector naming another release matches no pods.
+  expect eks-single-az 'topologyKey: kubernetes.io/hostname' present 'kind: Deployment'
+  expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
 fi
 
 # The DinD daemon must be reachable only through the policy proxy: no TCP

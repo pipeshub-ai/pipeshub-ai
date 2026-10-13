@@ -944,12 +944,22 @@ else
   note "  CNAME  ${DOMAIN}  ->  ${ALB_HOST}"
 fi
 
-if $BACKUPS && $EXISTING_CLUSTER \
-  && [[ "$(kubectl get storageclass "$STORAGE_CLASS" -o jsonpath='{.parameters}')" != *pipeshub-backup=true* ]]; then
-  step "Daily EBS backups"
-  note "skipped: the backup plan selects volumes tagged pipeshub-backup=true, and ${STORAGE_CLASS} does not add that tag."
-  note "Add tagSpecification_1: \"pipeshub-backup=true\" to a storage class (see storageclass-gp3.yaml), or back up the volumes your own way."
-  BACKUPS=false
+if $BACKUPS && $EXISTING_CLUSTER; then
+  if ! kubectl get storageclass "$STORAGE_CLASS" \
+    -o go-template='{{range $k, $v := .parameters}}{{$k}}={{$v}}{{"\n"}}{{end}}' \
+    | grep -qE '^tagSpecification_[0-9]+=pipeshub-backup=true$'; then
+    step "Daily EBS backups"
+    note "skipped: the backup plan selects volumes tagged pipeshub-backup=true, and ${STORAGE_CLASS} does not add that tag."
+    note "Add tagSpecification_1: \"pipeshub-backup=true\" to a storage class only PipesHub uses (see storageclass-gp3.yaml), or back up the volumes your own way."
+    BACKUPS=false
+  elif [[ "$(aws ec2 describe-volumes \
+    --filters "Name=tag:kubernetes.io/cluster/${CLUSTER},Values=owned" "Name=tag:pipeshub-backup,Values=true" \
+    --query 'length(Volumes)' --output text)" == 0 ]]; then
+    step "Daily EBS backups"
+    note "skipped: no volume carries both pipeshub-backup=true and kubernetes.io/cluster/${CLUSTER}=owned, and the backup plan needs both."
+    note "The EBS CSI driver adds the cluster tag when it runs with --k8s-tag-cluster-id=${CLUSTER}."
+    BACKUPS=false
+  fi
 fi
 
 if $BACKUPS; then
@@ -972,9 +982,11 @@ if $BACKUPS; then
   fi
   if [[ "$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" --query 'length(BackupSelectionsList)' --output text)" == 0 ]]; then
     # A new IAM role takes a few seconds to become usable by AWS Backup.
+    # ListOfTags entries are ORed; Conditions are ANDed, which keeps other
+    # clusters' pipeshub-backup volumes out of this vault.
     for attempt in $(seq 1 12); do
       if aws backup create-backup-selection --backup-plan-id "$PLAN_ID" --backup-selection \
-        "{\"SelectionName\":\"${CLUSTER}-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/${BACKUP_ROLE}\",\"ListOfTags\":[{\"ConditionType\":\"STRINGEQUALS\",\"ConditionKey\":\"pipeshub-backup\",\"ConditionValue\":\"true\"}]}" \
+        "{\"SelectionName\":\"${CLUSTER}-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/${BACKUP_ROLE}\",\"Resources\":[\"arn:aws:ec2:*:*:volume/*\"],\"Conditions\":{\"StringEquals\":[{\"ConditionKey\":\"aws:ResourceTag/pipeshub-backup\",\"ConditionValue\":\"true\"},{\"ConditionKey\":\"aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}\",\"ConditionValue\":\"owned\"}]}}" \
         >/dev/null 2>&1; then
         break
       fi
