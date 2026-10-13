@@ -59,10 +59,12 @@ _READERS = {
 }
 
 
-def _points() -> list[SearchResult]:
+def _points(
+    corpus: list[tuple[str, int]] = _CORPUS, docs: dict[str, _Doc] = _DOCS
+) -> list[SearchResult]:
     points = []
-    for vrid, hits in _CORPUS:
-        doc = _DOCS[vrid]
+    for vrid, hits in corpus:
+        doc = docs[vrid]
         for block in range(hits):
             points.append(SearchResult(
                 id=f"{vrid}#{block}",
@@ -112,26 +114,26 @@ class _FakeStore:
         ]
 
 
-def _record(vrid: str) -> dict[str, Any]:
+def _record(vrid: str, org_id: str) -> dict[str, Any]:
     return {
         "_key": f"rec-{vrid}", "virtualRecordId": vrid, "origin": "CONNECTOR",
         "recordName": f"{vrid}.txt", "mimeType": "text/plain", "connectorName": "X",
-        "webUrl": f"https://example.test/{vrid}", "orgId": _DOCS[vrid].org_id,
+        "webUrl": f"https://example.test/{vrid}", "orgId": org_id,
     }
 
 
-def _graph() -> AsyncMock:
+def _graph(readers: dict[tuple[str, str], set[str]] = _READERS) -> AsyncMock:
     graph = AsyncMock()
 
     async def accessible(user_id: str, org_id: str, **_: object) -> dict[str, str]:
-        return {vrid: f"rec-{vrid}" for vrid in _READERS.get((user_id, org_id), set())}
+        return {vrid: f"rec-{vrid}" for vrid in readers.get((user_id, org_id), set())}
 
     async def verify(vrids: list[str], user_id: str, org_id: str, **_: object) -> dict[str, str]:
-        readable = _READERS.get((user_id, org_id), set())
+        readable = readers.get((user_id, org_id), set())
         return {vrid: f"rec-{vrid}" for vrid in vrids if vrid in readable}
 
     async def records(record_ids: list[str], org_id: str) -> list[dict[str, Any]]:
-        return [_record(rid.removeprefix("rec-")) for rid in record_ids]
+        return [_record(rid.removeprefix("rec-"), org_id) for rid in record_ids]
 
     graph.get_accessible_virtual_record_ids = AsyncMock(side_effect=accessible)
     graph.filter_accessible_virtual_record_ids = AsyncMock(side_effect=verify)
@@ -384,7 +386,47 @@ class TestTheContainerPath:
         assert [h["metadata"]["virtualRecordId"] for h in plain] == ["v0"] * 10
         assert len(spread) == 10
         assert "v1" in {h["metadata"]["virtualRecordId"] for h in spread}
-        assert service._execute_parallel_searches.await_args_list[1].kwargs["record_cut"] == RecordCut()
+        assert service._execute_parallel_searches.await_args_list[1].args[2] == 60
+        assert "record_cut" not in service._execute_parallel_searches.await_args_list[1].kwargs
+
+    @pytest.mark.parametrize("enabled", ["false", "true"])
+    async def test_unreadable_records_ranked_after_a_readable_one_cost_it_nothing(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: str
+    ) -> None:
+        """One trusted and one untrusted app: a readable record's 20 chunks
+        rank first and 60 unreadable records follow. Cut before verification,
+        the reserve went to the unreadable records and the readable chunks
+        were lost; the cut now runs on what was admitted."""
+        _switches(monkeypatch, None, enabled)
+        docs = {"mine": _Doc("mine", ORG_1, "app-1"), **{f"u{i}": _Doc(f"u{i}", ORG_1, "app-x") for i in range(60)}}
+        corpus = [("mine", 20), *((f"u{i}", 1) for i in range(60))]
+        store = _FakeStore(points=_points(corpus, docs))
+        service = _service(store, _graph({("alice", ORG_1): {"mine"}}))
+        service._container_filter_enabled = AsyncMock(return_value=True)
+        service.graph_provider.get_accessible_containers = AsyncMock(return_value=AccessibleContainers(
+            app_ids=frozenset({"app-1", "app-x"}), app_ids_trusted=frozenset({"app-1"}),
+        ))
+
+        response = await _search(service, limit=20)
+
+        assert _shown(response) == [f"mine#{i}" for i in range(20)]
+        assert [req.limit for req in store.requests] == ([81] if enabled == "true" else [27])
+
+    async def test_a_retry_cannot_ask_past_the_cap(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """At the fused depth the first fetch is already at the cap, so a
+        shortfall does not trigger a second fetch of the same points."""
+        _switches(monkeypatch, None, "true")
+        docs = {f"u{i}": _Doc(f"u{i}", ORG_1, "app-x") for i in range(400)}
+        store = _FakeStore(points=_points([(f"u{i}", 1) for i in range(400)], docs))
+        service = _service(store, _graph({("alice", ORG_1): {"u399"}}))
+        service._container_filter_enabled = AsyncMock(return_value=True)
+        service.graph_provider.get_accessible_containers = AsyncMock(
+            return_value=AccessibleContainers(app_ids=frozenset({"app-x"}))
+        )
+
+        await _search(service, limit=100)
+
+        assert [req.limit for req in store.requests] == [300]
 
 
 def _store_points(*vrids: str) -> list[SearchResult]:

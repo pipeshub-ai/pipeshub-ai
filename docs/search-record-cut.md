@@ -18,8 +18,9 @@ With the record cut on, each search:
 4. fills anything left in rank order, so a search that only one record matches
    still returns the full limit.
 
-The kept passages stay in rank order. The same cut applies when a
-container-scoped search trims its over-fetch back to the requested size.
+The kept passages stay in rank order. A container-scoped search, which checks
+permissions after the vector search, fetches each query at the fused depth and
+cuts once, after the check, so records the user cannot read never take a slot.
 Searches confined to a single record, such as picking passages inside a
 fetched record, keep the plain depth. Permissions are unchanged: the vector
 filter and the per-record checks run exactly as before.

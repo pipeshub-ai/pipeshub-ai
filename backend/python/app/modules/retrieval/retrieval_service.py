@@ -1324,8 +1324,17 @@ class RetrievalService:
             # Per attempt, not per loop: a later attempt that fails verification
             # must not condemn an earlier one that succeeded.
             attempt_degraded = False
+            # Under the record cut each query is fetched at the fused depth and
+            # left uncut: cut before verification, its reserve would go to
+            # records this user cannot read and drop readable hits for good.
+            # The cut runs once, on what was admitted.
+            asked = (
+                record_cut.fused_limit(fetch_limit, _OVERFETCH_ABSOLUTE_CAP)
+                if record_cut is not None
+                else fetch_limit
+            )
             search_results = await self._execute_parallel_searches(
-                queries, filter, fetch_limit, org_id, user_id, plan=plan, record_cut=record_cut
+                queries, filter, asked, org_id, user_id, plan=plan
             )
             returned_vids = {
                 result["metadata"]["virtualRecordId"]
@@ -1388,7 +1397,7 @@ class RetrievalService:
                 surviving=surviving,
                 limit=budget,
                 raw=len(search_results),
-                fetch_limit=fetch_limit,
+                fetch_limit=asked,
                 max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
                 denied=denied,
                 allow_requery=allow_requery,
@@ -1401,8 +1410,7 @@ class RetrievalService:
             )
 
         # Over-fetching is a means, not a promise: drop the headroom this path
-        # added, best-scoring first (by record under the record cut, so the
-        # headroom does not hand back what each search's cut spread out).
+        # added, best-scoring first, or by record under the record cut.
         # `budget` is the record-id path's *ceiling*, not its typical output —
         # expanded queries overlap, so its deduped union usually lands under
         # it. Matching the ceiling can therefore return somewhat more than the
