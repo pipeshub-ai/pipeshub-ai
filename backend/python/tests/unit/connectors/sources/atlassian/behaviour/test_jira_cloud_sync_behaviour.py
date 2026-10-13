@@ -874,3 +874,84 @@ class TestDeletedIssuesFoundByComparingIds:
         assert set(tickets(keyed_db)) == {"1", "3"}
         assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
         assert listing.id_bodies == []
+
+
+class TestUnreadApplicationRoles:
+    """ENG's scheme also grants the jira-software application role, which Jira maps to grp-sw."""
+
+    @staticmethod
+    def _stub_application_role(api: AtlassianApiStub) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [{"groupId": "grp-sw", "name": "jira-software-users"}]}]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(httpx.ConnectError("reset"), id="network"),
+            pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+        ],
+    )
+    async def test_an_unread_application_role_list_keeps_the_project_access(self, api, site_db, checkpoints, search, answer) -> None:
+        self._stub_application_role(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert ("EntityType.GROUP", "grp-sw") in before
+
+        def roles(request: httpx.Request) -> httpx.Response:
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        api.on("GET", f"{JIRA}/applicationrole", roles)
+        await connector.run_sync()
+
+        assert acl(site_db) == before
+        assert "1" in tickets(site_db), "the project's issues are still synced"
+
+    async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "qa", "value": "grp-qa"}},
+        ]})
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-qa")]
+
+    async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [{"groupId": "grp-new", "name": "new-licensees"}]}]))
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.GROUP", "grp-new")]
+
+    async def test_a_forbidden_application_role_list_still_falls_back_to_the_jira_account(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["no"]}, status=403))
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.USER", "sync@acme.com")]
+
+    def test_the_connector_class_keeps_its_registration(self) -> None:
+        # The helper exception lives in the same module; the builder decorator must still land on the connector.
+        assert "_connector_metadata" in JiraConnector.__dict__

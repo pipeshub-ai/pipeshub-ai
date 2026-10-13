@@ -407,6 +407,10 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
+        # True when /applicationrole could not be read for a reason that may pass (401, 429,
+        # 5xx, a network error, an unparseable body). Projects granted through an application
+        # role then keep their stored access this sync instead of losing those groups.
+        self._app_roles_unread: bool = False
         self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
         # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
         # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
@@ -1565,6 +1569,7 @@ class JiraDataCenterConnector(BaseConnector):
         """
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
+        self._app_roles_unread = False
 
         try:
             datasource = await self._get_fresh_datasource()
@@ -1589,6 +1594,11 @@ class JiraDataCenterConnector(BaseConnector):
                         ),
                     )
                 else:
+                    # 400/404 answer the same way on every sync, so they map to nothing as before.
+                    self._app_roles_unread = response.status in (
+                        HttpStatusCode.UNAUTHORIZED.value,
+                        HttpStatusCode.TOO_MANY_REQUESTS.value,
+                    ) or response.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
                     )
@@ -1616,6 +1626,9 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
+            # A network error or an unparseable body: the mapping is unknown, not empty.
+            self._app_roles_unread = True
+            return {}
 
         return mapping
 
@@ -1846,6 +1859,14 @@ class JiraDataCenterConnector(BaseConnector):
                                 "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
                                 role_key, self.creator_email, project_key
                             )
+                    elif self._app_roles_unread:
+                        # Saving the project now would drop the role's groups from its access.
+                        self.logger.warning(
+                            "Keeping the stored access of project %s: it grants applicationRole '%s', "
+                            "and the application roles could not be read",
+                            project_key, role_key,
+                        )
+                        return None
                     else:
                         self.logger.warning(
                             "Cannot resolve applicationRole '%s' for project %s — skipping",

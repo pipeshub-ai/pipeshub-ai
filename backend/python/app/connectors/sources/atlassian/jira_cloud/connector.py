@@ -223,6 +223,10 @@ ANCESTOR_STUB_FIELDS: list[str] = [
 ]
 
 
+class _ApplicationRolesUnread(Exception):
+    """A permission grant names an application role, and the roles could not be read this sync."""
+
+
 @ConnectorBuilder("Jira")\
     .in_group(AppGroups.ATLASSIAN.value)\
     .with_description("Sync issues from Jira Cloud")\
@@ -389,6 +393,10 @@ class JiraConnector(BaseConnector):
         self.value_mapper = ValueMapper()
         # True when /applicationrole returned 403 (sync user is not a Jira admin)
         self._app_roles_forbidden: bool = False
+        # True when /applicationrole could not be read for a reason that may pass (401, 429,
+        # 5xx, a network error, an unparseable body). Projects granted through an application
+        # role then keep their stored access this sync instead of losing those groups.
+        self._app_roles_unread: bool = False
         # True when /users/search returned 401/403 — bulk user listing is unavailable, so user
         # resolution degrades to the PipesHub-directory reverse lookup.
         self._user_bulk_forbidden: bool = False
@@ -1740,6 +1748,7 @@ class JiraConnector(BaseConnector):
         """
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
+        self._app_roles_unread = False
 
         try:
             datasource = await self._get_fresh_datasource()
@@ -1767,6 +1776,11 @@ class JiraConnector(BaseConnector):
                         }
                     )
                 else:
+                    # 400/404 answer the same way on every sync, so they map to nothing as before.
+                    self._app_roles_unread = response.status in (
+                        HttpStatusCode.UNAUTHORIZED.value,
+                        HttpStatusCode.TOO_MANY_REQUESTS.value,
+                    ) or response.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
                     )
@@ -1790,6 +1804,9 @@ class JiraConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
+            # A network error or an unparseable body: the mapping is unknown, not empty.
+            self._app_roles_unread = True
+            return {}
 
         return mapping
 
@@ -1944,6 +1961,13 @@ class JiraConnector(BaseConnector):
                             grant, project_key, app_roles_mapping or {}, user_by_account_id or {}, seen_holders
                         )
                     )
+                except _ApplicationRolesUnread as unread:
+                    self.logger.warning(
+                        "Keeping the stored access of project %s: it grants applicationRole '%s', "
+                        "and the application roles could not be read",
+                        project_key, unread,
+                    )
+                    return None
                 except Exception as e:
                     self.logger.warning(
                         f"⚠️ {project_key}: skipping a malformed permission grant: {e}", exc_info=True
@@ -2033,6 +2057,9 @@ class JiraConnector(BaseConnector):
                         "applicationRole '%s' unresolvable (403) — granting Jira account '%s' direct access on %s",
                         role_key, jira_email, project_key
                     )
+            elif self._app_roles_unread:
+                # Saving the project now would drop the role's groups from its access.
+                raise _ApplicationRolesUnread(role_key)
             else:
                 self.logger.warning(
                     "Cannot resolve applicationRole '%s' for project %s — skipping",

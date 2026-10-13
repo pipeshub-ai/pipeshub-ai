@@ -1250,3 +1250,64 @@ class TestReindexEdgeCases:
 
         assert db.record_batches == []
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
+
+
+class TestUnreadApplicationRoles:
+    """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(httpx.ConnectError("reset"), id="network"),
+            pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+        ],
+    )
+    async def test_an_unread_application_role_list_keeps_the_project_access(self, jira, db, store, search, answer) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert any(external_id == "jira-software-users" for _, _, external_id, _ in before)
+
+        def roles(request: httpx.Request) -> httpx.Response:
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        jira.on("GET", f"{API}/applicationrole", roles)
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before
+        assert "1001" in db.records, "the project's issues are still synced"
+
+    async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "jira-software-users"}},
+        ]})
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == ["jira-software-users"]
+
+    async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": ["new-licensees"]}]))
+        await connector.run_sync()
+
+        groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
+        assert "jira-software-users" not in groups
+        assert "new-licensees" in groups
