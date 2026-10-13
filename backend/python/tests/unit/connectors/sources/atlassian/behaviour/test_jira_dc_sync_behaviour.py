@@ -1551,7 +1551,11 @@ class TestUnfinishedUserRead:
 
         assert self._access(db) == before
         note = store.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+        assert all(note.get(kind) for kind in ("groups", "roles")), "groups and roles are noted once"
+        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
+            "the every-project flag is turned into the ids of the projects it stood for, held ones included"
+        )
+        assert note.get("leads") is False and note.get("lead_project_keys") == ["ENG"]
 
     @pytest.mark.parametrize("payload", ["not json", 5, {"other": 1}, {"values": "x"}, {"users": None}])
     def test_a_user_list_answer_that_is_not_a_page_is_not_read_as_the_last_page(self, payload) -> None:
@@ -1699,3 +1703,33 @@ class TestUnfinishedUserRead:
 
         assert [p.external_id for p in db.record_group_permissions["10000"]] == ["NEW_10002"]
         assert (store.values_for("stored_access") or {}).get("project_key_by_id") == ["10000:NEW"]
+
+    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_from_a_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
+            del store.sync_points[key]  # as left by a version without the notes
+        await connector.run_sync()  # the backfill sync, with the whole user list
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "carol-key"}},
+        ]})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG keeps its saved access"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS was never saved, so the grants that were read are saved"
