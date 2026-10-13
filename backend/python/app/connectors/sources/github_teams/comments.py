@@ -582,9 +582,10 @@ class CommentsHelper:
 
         A file's group holds its diff, not the whole file (with "Index Code
         Files" on, the default branch's copy is its own code-file record). Only a file
-        GitHub returns without a diff (too large, or binary) and that still
-        exists has its text at the PR head inlined, within
-        ``PR_FILE_INLINE_CONTENT_MAX_BYTES``.
+        that changed but that GitHub returns without a diff (too large, or
+        binary) and that still exists has its text at the PR head inlined,
+        within ``PR_FILE_INLINE_CONTENT_MAX_BYTES``. A rename with no line
+        changes is recorded as a rename only.
 
         Review comments are grouped by real GitHub review thread
         (``in_reply_to_id`` chain), matching ``BlockGroup.comments``'s documented
@@ -749,9 +750,13 @@ class CommentsHelper:
             oversized = False
             content_bytes: int | None = None
             # The diff and review comments describe a change; the whole file
-            # at the PR head is fetched only when GitHub gives no diff (too
-            # large to show, or binary), since it is then the only view of it.
-            if not diff and status != "removed" and head_sha:
+            # at the PR head is fetched only when the file changed but GitHub
+            # gives no diff (too large to show, or binary: GitHub counts a
+            # binary file's lines as 0/0), since it is then the only view of it.
+            # A rename with no line changes has no diff because nothing changed.
+            line_changes = (getattr(file, "additions", 0) or 0) + (getattr(file, "deletions", 0) or 0)
+            changed = line_changes > 0 or status in ("added", "modified")
+            if not diff and changed and status != "removed" and head_sha:
                 content_res = await c.runtime.ds_call(
                     c.data_source.get_file_contents, owner, repo, filename, head_sha,
                 )
@@ -768,7 +773,14 @@ class CommentsHelper:
                 )
             elif file_content:
                 data_parts.append(f"Full File Content:\n{file_content}")
-            data_parts.append(f"Diff:\n{patch}")
+            if not diff and status == "renamed" and not line_changes:
+                previous = getattr(file, "previous_filename", None)
+                data_parts.append(
+                    f"Renamed from {previous}; no line changes." if previous
+                    else "Renamed; no line changes."
+                )
+            else:
+                data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
             if sections:
                 data_parts.append("Review comments on this file:")

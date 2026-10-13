@@ -950,6 +950,56 @@ class TestCommentBlockFailures:
         group = next(bg for bg in block_groups if bg.name == "File change: gone.bin")
         assert "Full File Content" not in group.data
 
+    async def test_pure_rename_is_not_fetched_or_inlined(self) -> None:
+        # A rename with no line changes has no diff because nothing changed;
+        # its whole text would be the same file indexed once more.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(
+                    filename="src/new_name.py", previous_filename="src/old_name.py",
+                    status="renamed", patch=None, additions=0, deletions=0,
+                ),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: src/new_name.py")
+        assert group.data == "[renamed file]\n\nRenamed from src/old_name.py; no line changes."
+
+    async def test_renamed_file_with_changes_but_no_diff_is_inlined(self) -> None:
+        # Renamed and edited, with a diff too large for GitHub to show.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(
+                    filename="gen/new.py", previous_filename="gen/old.py",
+                    status="renamed", patch=None, additions=4000, deletions=3000,
+                ),
+            ]),
+            "get_file_contents": ok_response(SimpleNamespace(decoded_content=b"print(2)", content=None)),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: gen/new.py")
+        assert "Full File Content:\nprint(2)" in group.data
+
     async def test_binary_file_without_diff_is_not_inlined(self) -> None:
         # A binary file has no diff either; decoding it as text would index
         # a page of replacement characters.
