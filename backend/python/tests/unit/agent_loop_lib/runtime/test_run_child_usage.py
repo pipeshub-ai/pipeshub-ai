@@ -1,6 +1,7 @@
-"""`AgentRuntime.run_child()` reports a child's model calls to `usage_sink`:
-a child is a separate `Agent` whose `usage` no caller of `run_child()` sees,
-so without it a request's sub-agent calls were missing from its usage."""
+"""`AgentRuntime.run_child()` and `run_single_shot()` report the model calls of
+the agent they build to `usage_sink`: each is a separate `Agent` whose
+`usage` their callers never see, so without it a request's sub-agent and
+single-shot calls were missing from its usage."""
 
 from __future__ import annotations
 
@@ -67,3 +68,33 @@ class TestRunChildReportsUsage:
             await runtime.run_child(_child_spec(), Goal(description="research X"), None)
 
         assert seen == ["sub_agent:researcher"]
+
+
+class TestRunSingleShotReportsUsage:
+    async def test_each_call_reaches_the_sink_with_the_spec_name(self) -> None:
+        from app.agent_loop_lib.agent.single_shot_runner import run_single_shot
+
+        runtime = _build_runtime(_transport())
+        seen: list[str] = []
+        runtime.usage_sink = lambda source, _usage: seen.append(source)
+
+        await run_single_shot(_child_spec(), runtime, Goal(description="classify X"))
+
+        assert seen == ["single_shot:researcher"]
+
+    async def test_a_run_that_raises_still_reports_what_it_spent(self) -> None:
+        from app.agent_loop_lib.agent.single_shot_runner import run_single_shot
+
+        runtime = _build_runtime(_transport())
+        seen: list[str] = []
+        runtime.usage_sink = lambda source, _usage: seen.append(source)
+        original_run = Agent.run
+
+        async def _run_then_fail(self: Agent, goal: Goal, **kwargs: object) -> object:
+            await original_run(self, goal, **kwargs)
+            raise RuntimeError("crashed after its model call")
+
+        with patch.object(Agent, "run", _run_then_fail), pytest.raises(RuntimeError):
+            await run_single_shot(_child_spec(), runtime, Goal(description="classify X"))
+
+        assert seen == ["single_shot:researcher"]

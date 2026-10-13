@@ -260,3 +260,30 @@ class TestParseIntentAndRouteTransportRegistryReuse:
             intent_module.TransportRegistry = original_registry_cls
 
         assert decision.rewritten_query == "built its own transport"
+
+
+class TestIntentCallUsage:
+    """The intent call runs on its own one-turn agent before the request's
+    runtime exists, so its tokens reach the request's usage only through
+    `usage_sink`."""
+
+    async def test_the_intent_call_reaches_the_usage_sink(self) -> None:
+        from app.agent_loop_lib.core.responses import TokenUsage
+
+        usage = TokenUsage(input_tokens=900, output_tokens=40, cache_read_tokens=800)
+        transport = ScriptedTransport().add_tool_call(
+            ToolCall(id="tc1", name="task_complete", arguments={"output": "find the onboarding doc"}),
+            usage=usage,
+        )
+        registry = TransportRegistry()
+        registry.register("langchain", lambda: transport)
+        seen: list[tuple[str, TokenUsage]] = []
+
+        decision = await parse_intent_and_route(
+            _query_info("onboarding?"), _LOGGER, _FakeLangChainLLM(),
+            include_routing=False, transport_registry=registry,
+            usage_sink=lambda source, call_usage: seen.append((source, call_usage)),
+        )
+
+        assert decision.rewritten_query == "find the onboarding doc"
+        assert seen == [("single_shot:intent.parse_intent_and_route", usage)]

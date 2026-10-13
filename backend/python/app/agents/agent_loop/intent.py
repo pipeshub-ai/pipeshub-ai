@@ -53,7 +53,11 @@ from app.modules.agents.qna.router import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agent_loop_lib.core.responses import TokenUsage
 
 logger = logging.getLogger(__name__)
 
@@ -314,9 +318,11 @@ async def parse_intent_and_route(
     transport_registry: TransportRegistry | None = None,
     opik_active: bool | None = None,
     opik_project_name: str | None = None,
+    usage_sink: Callable[[str, TokenUsage], None] | None = None,
 ) -> IntentRouteDecision:
     """Single agent run that understands/reorganizes the query and, when
-    `include_routing=True`, also picks the execution tier.
+    `include_routing=True`, also picks the execution tier. Its model call
+    reaches `usage_sink` (see `AgentRuntime.usage_sink`).
 
     The model's full output is used as the rewritten query (no structured
     parsing). Falls back to the raw query (route='react' when routing was
@@ -397,6 +403,7 @@ async def parse_intent_and_route(
         transport_registry,
         opik_enabled=opik_active,
         opik_project_name=opik_project_name,
+        usage_sink=usage_sink,
     )
 
     try:

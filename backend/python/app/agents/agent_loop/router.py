@@ -311,6 +311,7 @@ async def select_loop_and_goal(
             transport_registry=transport_registry,
             opik_active=opik_active,
             opik_project_name=opik_project_name,
+            usage_sink=context.usage_ledger.add if context.include_retrieval_context else None,
         )
         goal = _build_goal(query, decision, attachments=attachments)
         clarifying_questions = list(decision.clarifying_questions)

@@ -97,11 +97,11 @@ class AgentRuntime:
     # "no summaries" — every downstream consumer already tolerates that.
     summarizer: "ToolSummarizer | None" = None
 
-    # Receives `(source, usage)` for every LLM call a child agent made,
-    # `source` being `"sub_agent:<spec name>"`. A child is a separate `Agent`
-    # with its own `usage`, which `run_child()` callers never see, so a
-    # caller accounting for a whole request's model calls needs this. `None`
-    # (the default) costs nothing.
+    # Receives `(source, usage)` for every LLM call of an agent the caller
+    # never holds: `"sub_agent:<spec name>"` from `run_child()`,
+    # `"single_shot:<spec name>"` from `run_single_shot()`. Each is a separate
+    # `Agent` with its own `usage`, so a caller accounting for a whole
+    # request's model calls needs this. `None` (the default) costs nothing.
     usage_sink: "Callable[[str, TokenUsage], None] | None" = None
 
     def __post_init__(self) -> None:
@@ -256,16 +256,19 @@ class AgentRuntime:
             try:
                 result = await child.run(goal)
             finally:
-                self._report_child_usage(spec.name, child.usage)
+                self.report_usage(f"sub_agent:{spec.name}", child.usage)
             record_agent_span_result(span, result=result)
             return result
 
-    def _report_child_usage(self, name: str, usage: "RunUsage") -> None:
+    def report_usage(self, source: str, usage: "RunUsage") -> None:
+        """Send every call in `usage` to `usage_sink` under `source`. For an
+        agent other than the caller's own (a child, a single-shot helper),
+        whose usage the caller never sees."""
         if self.usage_sink is None:
             return
         try:
             for request_usage in usage.per_request:
-                self.usage_sink(f"sub_agent:{name}", request_usage)
+                self.usage_sink(source, request_usage)
         except Exception:
-            # Accounting must never cost the child's result.
-            logger.warning("run_child: usage sink failed for %s", name, exc_info=True)
+            # Accounting must never cost the result it accounts for.
+            logger.warning("usage sink failed for %s", source, exc_info=True)

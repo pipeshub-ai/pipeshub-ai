@@ -1,6 +1,7 @@
 """`PipesHubAgentFactory.create()` wires the request's `UsageLedger` into the
-runtime only when the request opted into telemetry: sub-agent calls then
-reach the `run_usage` frame, and a normal request records nothing."""
+intent call and the runtime only when the request opted into telemetry:
+those calls then reach the `run_usage` frame, and a normal request records
+nothing."""
 
 from __future__ import annotations
 
@@ -33,9 +34,9 @@ class TestUsageLedgerWiring:
 
         runtime.usage_sink("sub_agent:researcher", TokenUsage(input_tokens=5, output_tokens=1))
 
-        assert context.usage_ledger.entries == [
-            ("sub_agent:researcher", TokenUsage(input_tokens=5, output_tokens=1)),
-        ]
+        sources = [source for source, _usage in context.usage_ledger.entries]
+        # The intent call ran inside create(), before the runtime existed.
+        assert sources == ["single_shot:intent.parse_intent_and_route", "sub_agent:researcher"]
         assert context.tool_state["usage_ledger"] is context.usage_ledger
 
     async def test_nothing_is_wired_for_a_normal_request(self) -> None:
