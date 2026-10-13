@@ -1254,11 +1254,11 @@ class TestReindexEdgeCases:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the issues checkpoint fail, as a database error would."""
+    """Make reading the stored-access note fail, as a database error would."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        if key.endswith("issues_global"):
+        if key.endswith("stored_access"):
             raise RuntimeError("database unavailable")
         return await real(key, raise_on_error)
 
@@ -1328,7 +1328,7 @@ class TestUnreadApplicationRoles:
         groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
         assert groups == {"devs"}
 
-    async def test_a_checkpoint_that_cannot_be_read_keeps_the_project_access(
+    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
         self, jira, db, store, search, monkeypatch
     ) -> None:
         stub_site(jira, search)
@@ -1338,9 +1338,10 @@ class TestUnreadApplicationRoles:
 
         fail_checkpoint_reads(store, monkeypatch)
         jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
 
-        assert acl_summary(db.record_group_permissions["10000"]) == before, "an unreadable checkpoint is not 'nothing stored'"
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the sync stops before replacing anything"
 
     async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
         self, jira, db, store, search, monkeypatch

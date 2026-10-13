@@ -1029,17 +1029,14 @@ class JiraConnector(BaseConnector):
         so a sync cut short after saving groups still counts its groups. A full sync's prep
         deletes every sync point along with the stored edges, so after it, and on a first
         sync, nothing is noted. A connector last synced before these notes existed has only
-        its issues checkpoint, which counts for every kind. A read that fails counts for
-        every kind too: holding back is the safe side when we cannot tell.
+        its issues checkpoint, which counts for every kind.
+
+        A read that fails is raised, so the sync stops before any write that replaces
+        stored access. Carrying on could save nothing now and then write the checkpoint,
+        which would make an empty store look like a kept one on the next sync.
         """
-        try:
-            noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
-            checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
-        except Exception as e:
-            self.logger.warning(
-                "⚠️ Could not read which access earlier syncs saved (%s); keeping stored access if a read is short", e
-            )
-            return STORED_ACCESS_KINDS
+        noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
+        checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
         if checkpoint and checkpoint.get("last_sync_time") is not None:
             return STORED_ACCESS_KINDS
         return frozenset(kind for kind in STORED_ACCESS_KINDS if (noted or {}).get(kind))

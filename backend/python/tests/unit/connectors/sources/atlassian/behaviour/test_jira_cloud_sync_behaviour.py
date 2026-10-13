@@ -878,11 +878,11 @@ class TestDeletedIssuesFoundByComparingIds:
 
 
 def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the issues checkpoint fail, as a database error would."""
+    """Make reading the stored-access note fail, as a database error would."""
     real = store.get_sync_point
 
     async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        if key.endswith("issues_global"):
+        if key.endswith("stored_access"):
             raise RuntimeError("database unavailable")
         return await real(key, raise_on_error)
 
@@ -957,7 +957,7 @@ class TestUnreadApplicationRoles:
         # Nothing was stored before, so holding the project back would leave it with no access.
         assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
 
-    async def test_a_checkpoint_that_cannot_be_read_keeps_the_project_access(
+    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
         self, api, site_db, checkpoints, search, monkeypatch
     ) -> None:
         self._stub_application_role(api)
@@ -967,9 +967,10 @@ class TestUnreadApplicationRoles:
 
         fail_checkpoint_reads(checkpoints, monkeypatch)
         api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
 
-        assert acl(site_db) == before, "an unreadable checkpoint is not 'nothing stored'"
+        assert acl(site_db) == before, "the sync stops before replacing anything"
 
     async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
         self, api, site_db, checkpoints, search, monkeypatch
