@@ -1240,6 +1240,21 @@ class TestUnfinishedUserRead:
         assert self._access(site_db) == before, "a failed read is not taken for 'nothing stored'"
         assert len(site_db.user_groups) == groups_saved
 
+    async def test_a_full_sync_that_kept_stored_access_reports_it_did_not_read_everything(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
+        assert connector.full_sync_coverage().complete is False
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__

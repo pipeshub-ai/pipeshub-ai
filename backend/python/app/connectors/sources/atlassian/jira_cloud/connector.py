@@ -71,6 +71,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.html_utils import (
     extract_attachment_ids,
@@ -538,6 +539,11 @@ class JiraConnector(BaseConnector):
     def _notification_title(self, event: str) -> str:
         """Title like '{instance or Jira} connector {event}' for multi-instance clarity."""
         return f"{self.connector_instance_name or 'Jira'} connector {event}"
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that kept stored access because the user list was not read in full did not re-read what it
+        kept, so nothing is unlinked after it: unlinking would delete the edges it kept."""
+        return FullSyncCoverage(complete=not self._user_read_unfinished)
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
