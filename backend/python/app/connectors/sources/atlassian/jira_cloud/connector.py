@@ -633,6 +633,8 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
+            if "projects" in self._stored_access_kinds:
+                await self._settle_project_backfill([group.external_group_id for group, _ in projects])
             await self._note_stored_projects("project_ids", [group.external_group_id for group, _ in readable_projects])
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
@@ -1059,6 +1061,22 @@ class JiraConnector(BaseConnector):
             "projects" in self._stored_access_kinds
             or self._project_id_by_key.get(project_key) in self._stored_project_ids
         )
+
+    async def _settle_project_backfill(self, project_ids: list[str]) -> None:
+        """Turn the checkpoint backfill's "every project" flag into the ids it stands for.
+
+        ``projects: True`` (written by ``_load_stored_access`` for a connector synced before
+        these notes) means every project counts as stored, and the stores merge fields, so
+        it would never clear on its own: a project created later would be held with nothing
+        stored. It stands for the projects that exist now, so they are recorded by id,
+        held ones included, and the flag is cleared in the same write.
+        """
+        ids = self._stored_project_ids | {project_id for project_id in project_ids if project_id}
+        await self.issues_sync_point.update_sync_point(
+            STORED_ACCESS_SYNC_POINT, {"projects": False, "project_ids": sorted(ids)}
+        )
+        self._stored_project_ids = ids
+        self._stored_access_kinds = self._stored_access_kinds - {"projects"}
 
     async def _note_stored_projects(self, field: str, values: list[str]) -> None:
         """Note, just before saving them, the projects whose access lists or lead roles are stored.

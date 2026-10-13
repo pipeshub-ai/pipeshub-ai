@@ -1407,7 +1407,10 @@ class TestUnreadApplicationRoles:
 
         assert acl_summary(db.record_group_permissions["10000"]) == before
         note = store.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
+        assert all(note.get(kind) for kind in ("groups", "roles", "leads")), "every kind is noted once"
+        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
+            "the every-project flag is turned into the ids of the projects it stood for"
+        )
 
     async def test_a_project_whose_access_was_never_saved_is_saved_with_what_was_read(
         self, jira, db, store, search
@@ -1436,6 +1439,52 @@ class TestUnreadApplicationRoles:
         assert acl_summary(db.record_group_permissions["20000"]) == [
             ("EntityType.GROUP", "PermissionType.READ", "devs", None),
         ], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_after_the_checkpoint_backfill_a_new_project_is_saved_with_what_was_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
+            del store.sync_points[key]  # as left by a version without the notes
+        await connector.run_sync()  # the backfill sync, with a readable role list
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG keeps its role's group"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS was never saved, so the grants that were read are saved"
+
+    async def test_a_backfill_sync_with_an_unread_role_list_records_the_projects_it_holds(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
+            del store.sync_points[key]  # as left by a version without the notes
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "ENG is held"
+        note = store.values_for("stored_access") or {}
+        assert note.get("projects") is False and note.get("project_ids") == ["10000"]
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)
