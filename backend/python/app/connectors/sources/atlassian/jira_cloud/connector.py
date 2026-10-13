@@ -1054,13 +1054,15 @@ class JiraConnector(BaseConnector):
         ``external_id`` already has permission edges stored.
 
         Asked only when a write may be partial this sync: stored edges are access worth
-        keeping, and with none there is nothing to keep, so what was read is saved. A read
-        that fails raises ``StoredAccessReadError``, which stops the sync before the write:
-        a failed read is never taken for "nothing stored".
+        keeping, and with none there is nothing to keep, so what was read is saved. A node
+        found stored is held back, so it is noted as seen by a full sync in progress and the
+        unlink after that sync leaves its edges alone. A read that fails raises
+        ``StoredAccessReadError``, which stops the sync before the write: a failed read is
+        never taken for "nothing stored".
         """
         try:
             return await self.data_entities_processor.has_stored_permissions(
-                entity, self.connector_id, external_id
+                entity, self.connector_id, external_id, keep=True
             )
         except Exception as e:
             raise StoredAccessReadError(

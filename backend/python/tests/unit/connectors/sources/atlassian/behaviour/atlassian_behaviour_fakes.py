@@ -195,18 +195,28 @@ class FakeRecordsDb:
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.user_groups.extend(groups)
 
-    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str) -> bool:
-        """Answers from what this fake stored: a non-empty member or grant list is stored edges."""
+    async def has_stored_permissions(
+        self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
+    ) -> bool:
+        """Answers from what this fake stored: a non-empty member or grant list is stored
+        edges. With ``keep``, a stored node is noted as seen by the full sync in progress."""
+        from app.config.constants.arangodb import CollectionNames
+
         if self.fail_stored_permission_reads:
             raise RuntimeError("database unavailable")
         if entity == "record_group":
-            return bool(self.record_group_permissions.get(external_id))
-        if entity == "user_group":
+            stored, collection = bool(self.record_group_permissions.get(external_id)), CollectionNames.RECORD_GROUPS.value
+        elif entity == "user_group":
             saved = [members for group, members in self.user_groups if group.source_user_group_id == external_id]
-            return bool(saved and saved[-1])
-        if entity == "role":
-            return bool(getattr(self, "app_roles", {}).get(external_id))
-        raise ValueError(entity)
+            stored, collection = bool(saved and saved[-1]), CollectionNames.GROUPS.value
+        elif entity == "role":
+            stored, collection = bool(getattr(self, "app_roles", {}).get(external_id)), CollectionNames.ROLES.value
+        else:
+            raise ValueError(entity)
+        seen = getattr(self, "full_sync_seen", None)
+        if stored and keep and seen is not None:
+            seen.add(collection, external_id)
+        return stored
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         if record_id in self.fail_delete_for:
@@ -329,6 +339,7 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
         setattr(db, name, tracking(name))
     db.begin_full_sync_run = lambda connector_id: seen
     db.end_full_sync_run = lambda connector_id, run: None
+    db.full_sync_seen = seen
     try:
         await run_sync_task(
             connector, connector.connector_id, graph, logging.getLogger("test.full_sync"),
@@ -337,5 +348,5 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
     finally:
         for name, original in originals.items():
             setattr(db, name, original)
-        del db.begin_full_sync_run, db.end_full_sync_run
+        del db.begin_full_sync_run, db.end_full_sync_run, db.full_sync_seen
     return graph

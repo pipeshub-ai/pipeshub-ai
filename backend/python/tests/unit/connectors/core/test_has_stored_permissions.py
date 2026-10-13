@@ -78,6 +78,18 @@ async def test_no_edges_or_no_node_is_nothing_stored() -> None:
     assert await processor_over(FakeStore([], node=None)).has_stored_permissions("role", "c1", "ext-1") is False
 
 
+async def test_a_kept_node_is_noted_as_seen_by_the_full_sync_in_progress() -> None:
+    processor = processor_over(FakeStore([{"_from": "users/u1"}]))
+    run = processor.begin_full_sync_run("c1")
+    assert await processor.has_stored_permissions("record_group", "c1", "ext-1", keep=True) is True
+    assert run.has(CollectionNames.RECORD_GROUPS.value, "n1")
+
+    empty = processor_over(FakeStore([]))
+    run = empty.begin_full_sync_run("c1")
+    assert await empty.has_stored_permissions("record_group", "c1", "ext-1", keep=True) is False
+    assert not run.has(CollectionNames.RECORD_GROUPS.value, "n1"), "nothing stored, nothing kept"
+
+
 async def test_an_edge_read_that_fails_raises_instead_of_reading_as_nothing_stored() -> None:
     store = FakeStore([], edge_read_fails=True)
     with pytest.raises(RuntimeError, match="edge read failed"):
