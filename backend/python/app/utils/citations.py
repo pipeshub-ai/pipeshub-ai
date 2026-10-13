@@ -62,12 +62,17 @@ _MULTI_REF_IN_LINK_RE = re.compile(
     r')\)'
 )
 
+# Any markdown link, whatever its target. Matched first by the bare-ref passes
+# so a ref inside an existing link's text or URL is never rewritten into a
+# nested link.
+_ANY_MD_LINK = r'\[[^\]]*?\]\([^)\n]*\)'
+
 # Matches [refN] — a bracketed bare ref without a link target — which LLMs
 # commonly emit instead of proper [source](refN).  Must run BEFORE
 # _BARE_CITATION_NORMALIZE_RE to prevent double-bracket malformation
 # (e.g. [ref3] → [[source](ref3)] when _wrap_bare_refs acts on the inner token).
 _BRACKET_REF_RE = re.compile(
-    r'(\[[^\]]*?\]\((?:ref\d+|https?://[^)]+)\))'  # Grp 1: valid md link — skip
+    rf'({_ANY_MD_LINK})'                            # Grp 1: existing md link — skip
     r'|\[(ref\d+)\](?!\()'                          # Grp 2: [refN] not followed by (
 )
 
@@ -81,15 +86,35 @@ _ANY_REF_TARGET = r'ref(?=[0-9A-Fa-f-]*\d)[0-9A-Fa-f-]+'
 
 # Single-pass pattern used to wrap bare refN tokens and bare https://refN.xyz
 # URLs that the LLM emitted outside proper markdown link syntax.
-# Alternative 1 (Grp 1) matches an already-valid markdown link so the cursor
-# skips over it — preventing double-processing of refs inside `[text](refN)`.
+# Alternative 1 (Grp 1) matches any existing markdown link so the cursor skips
+# over it — preventing double-processing of refs inside `[text](refN)`.
 # Alternative 2 (Grp 2) matches a bare tiny web-ref URL.
 # Alternative 3 (Grp 3) matches a bare refN word token.
 _BARE_CITATION_NORMALIZE_RE = re.compile(
-    r'(\[[^\]]*?\]\((?:' + _ANY_REF_TARGET + r'|https?://[^)]+)\))'  # Grp 1: existing md link — skip
+    rf'({_ANY_MD_LINK})'                            # Grp 1: existing md link — skip
     r'|(https?://ref\d+\.xyz/?)'                    # Grp 2: bare tiny URL
     r'|\b(ref\d+)\b'                               # Grp 3: bare refN token
 )
+
+# Includes dead ids like ref444d5fad-… so a wrapped one is unwrapped and then
+# removed by _strip_unresolved_ref_citations instead of left half-stripped.
+_REF_TOKEN = rf'(?:https?://ref\d+\.xyz/?|{_ANY_REF_TARGET})'
+
+# A citation link written with extra wrapping: brackets/quotes around the
+# ref, a link (or list of links) as the target, or brackets around the link,
+# e.g. [source]([ref2]], [source](<ref2>), [source](ref1, [source](ref2)),
+# [[source](ref2)]. Parsed by _parse_cited_link, not one regex, because the
+# wrapping nests to any depth and a sentence paren after it must be kept.
+_CITED_LINK_START_RE = re.compile(r'(\[*)\[[^\[\]\n]*\]\(')
+_CITED_LINK_HEAD_RE = re.compile(r'\[([^\[\]\n]*)\]\(')
+_TARGET_GAP_RE = re.compile(r'[ \t.,;:]*')
+_TARGET_SEP_RE = re.compile(r'[ \t]*[,;]?[ \t]*')
+# LLMs mismatch ( and [, so either closes the other; quotes and <> only close
+# their own opener, so [notes](ref2's-page) is not taken for a citation.
+_LINK_TARGET_CLOSERS = ')]'
+_WRAPPER_CLOSERS = {'[': '])', '(': ')]', '<': '>', '`': '`', '"': '"', "'": "'"}
+_MAX_CITED_LINK_DEPTH = 8
+_REF_TOKEN_RE = re.compile(_REF_TOKEN)
 
 
 def extract_tiny_ref(target: str) -> str | None:
@@ -119,6 +144,86 @@ def _expand_multi_ref_links(text: str) -> str:
         return ' '.join(f'[{link_text}]({t})' for t in targets)
 
     return _MULTI_REF_IN_LINK_RE.sub(_replacer, text)
+
+
+def _parse_target_close(text: str, i: int, closers: str) -> int | None:
+    j = _TARGET_GAP_RE.match(text, i).end()
+    if j < len(text) and text[j] in closers:
+        return j + 1
+    # A truncated answer can end before the wrapper is closed.
+    if j == len(text) or text[j] == '\n':
+        return i
+    return None
+
+
+def _parse_ref_list(text: str, i: int, closers: str, depth: int) -> tuple[list[str], int] | None:
+    """Parse ``item (sep item)* closer``; return the refs and the end past the closer."""
+    refs: list[str] = []
+    while True:
+        item = _parse_ref_item(text, i, depth)
+        if item is None:
+            return None
+        refs.extend(item[0])
+        i = item[1]
+        end = _parse_target_close(text, i, closers)
+        if end is not None:
+            return refs, end
+        sep_end = _TARGET_SEP_RE.match(text, i).end()
+        if sep_end == i and not text.startswith('[', i):
+            return None
+        i = sep_end
+
+
+def _parse_ref_item(text: str, i: int, depth: int) -> tuple[list[str], int] | None:
+    while i < len(text) and text[i] in ' \t':
+        i += 1
+    token = _REF_TOKEN_RE.match(text, i)
+    if token:
+        return [token.group(0)], token.end()
+    if depth >= _MAX_CITED_LINK_DEPTH or i >= len(text) or text[i] not in _WRAPPER_CLOSERS:
+        return None
+    if text[i] == '[':
+        link = _parse_cited_link(text, i, depth + 1)
+        if link is not None:
+            return link[1], link[2]
+    return _parse_ref_list(text, i + 1, _WRAPPER_CLOSERS[text[i]], depth + 1)
+
+
+def _parse_cited_link(text: str, i: int, depth: int) -> tuple[str, list[str], int] | None:
+    """Parse ``[label](target)`` whose target holds only (wrapped) refs."""
+    head = _CITED_LINK_HEAD_RE.match(text, i)
+    if head is None:
+        return None
+    parsed = _parse_ref_list(text, head.end(), _LINK_TARGET_CLOSERS, depth)
+    if parsed is None:
+        return None
+    return head.group(1), parsed[0], parsed[1]
+
+
+def _unwrap_ref_link_targets(text: str) -> str:
+    """Rewrite citation links with wrapped targets into plain ``[label](refN)`` links.
+
+    Without this the bare-ref passes would turn the ref inside the target into
+    its own link, leaving ``[source]([2](url))`` in the final answer.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _CITED_LINK_START_RE.finditer(text):
+        if m.start() < pos:
+            continue
+        parsed = _parse_cited_link(text, m.end(1), 0)
+        if parsed is None:
+            continue
+        label, refs, end = parsed
+        outer = len(m.group(1))
+        while outer and end < len(text) and text[end] == ']':
+            outer -= 1
+            end += 1
+        links = ' '.join(f'[{label}]({ref})' for ref in refs)
+        out.append(text[pos:m.start()] + '[' * outer + links)
+        pos = end
+    out.append(text[pos:])
+    return ''.join(out)
 
 
 def _normalize_bracket_refs(text: str) -> str:
@@ -166,11 +271,13 @@ def normalize_malformed_citations(text: str) -> str:
 
     Handled patterns (non-exhaustive):
 
+    * Wrapped ref in a link      ``[source]([ref3])``       →  ``[source](ref3)``
     * Bracketed bare ref         ``[ref3]``                 →  ``[source](ref3)``
     * Multiple refs in one link  ``[source](ref1, ref2)``  →  ``[source](ref1) [source](ref2)``
     * Bare refN token            ``ref5``                   →  ``[source](ref5)``
     * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
+    text = _unwrap_ref_link_targets(text)
     text = _expand_multi_ref_links(text)
     text = _normalize_bracket_refs(text)
     text = _wrap_bare_refs(text)

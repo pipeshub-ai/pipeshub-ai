@@ -295,7 +295,7 @@ class PullRequestsSync:
         repo_id = int(external_group_id.split("-")[0])
         pr_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
@@ -379,7 +379,7 @@ class PullRequestsSync:
             self.logger.warning("Cannot reindex-check GitHub PR %s: malformed external ids", record.id)
             return None
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             self.logger.error("Failed to resolve repo id=%s for reindex %s: %s", repo_id, record.id, repo_res.error)
             return None

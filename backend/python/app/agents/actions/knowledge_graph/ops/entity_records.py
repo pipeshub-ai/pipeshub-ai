@@ -12,6 +12,7 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from app.agents.actions.knowledge_graph.ops.entity_discovery import _named_entities_enabled
 from app.agents.actions.knowledge_graph.ops.entity_filters import (
     ENTITY_INDEX_CACHE_KEY,
     load_entity_access_context,
@@ -95,6 +96,8 @@ async def execute_find_records_by_entity(
         )
     if resolved_type not in SEARCHABLE_ENTITY_TYPES:
         return False, f"Unsupported entity_type {resolved_type!r} — pass one of: {supported}."
+    if resolved_type == "named_entity" and not await _named_entities_enabled(state):
+        return False, "Named-entity lookup is not enabled."
 
     wanted_types = [str(t).strip().upper() for t in (record_types or []) if str(t).strip()] or None
     bounded_limit = min(max(1, limit or _DEFAULT_LIMIT), _MAX_LIMIT)

@@ -26,8 +26,8 @@ every adapter-layer piece built in Phases 2-6:
     residual instead of the raw flat tool list.
   - `compose_domain_agents` (react/planExecute; off for quick): for every
     OTHER loop kind, the top-level `spec.tool_names` is narrowed to a
-    handful of `AgentTool` delegates (coding/web/internal-search/
-    calculator/calendar) plus whatever tools no domain claimed —
+    handful of `AgentTool` delegates (coding/web/internal-search) plus
+    whatever tools no domain claimed —
     `plan_domain_agents()` runs BEFORE `select_loop_and_goal()` so the
     `planExecute` mode's planner is steered with the same composed names
     the executing agent ends up with, and `register_domain_agents()` runs

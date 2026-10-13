@@ -522,6 +522,10 @@ class FakeEntitiesProcessor:
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True
     ) -> dict[str, Any]:
         deleted: list[str] = []
+        for record_id in record_ids:
+            record = self.by_id(record_id)
+            if record is not None:
+                self._check_write(record.external_record_id)
         pending = list(record_ids)
         while pending:
             record = self.by_id(pending.pop())

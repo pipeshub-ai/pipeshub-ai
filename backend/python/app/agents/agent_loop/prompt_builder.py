@@ -45,6 +45,7 @@ from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
 from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
+from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
@@ -405,6 +406,10 @@ def _build_finding_information(
             "returns nothing useful, reformulate the query rather than "
             "repeating it or giving up."
         )
+
+    query_rule = keyword_search_query_rule(surfaces.search_tool) if surfaces.search_tool else None
+    if query_rule:
+        parts.append(query_rule)
 
     if surfaces.retrieval is not None:
         parts.append(
@@ -844,9 +849,10 @@ class PipesHubPromptBuilder:
                 "**How to load and use them:**\n"
                 "- If you know which toolset you need, call "
                 "`fetch_tools(\"<toolset_name>\")`.\n"
-                "- If you're unsure which toolset has the tool you need, "
-                "call `search_tools(\"<description of what you need>\")` to find it.\n"
-                "- Whenever you suspect a tool might exist for the task, search for it — "
+                "- If you're unsure which toolset has the tool you need, call "
+                "`search_tools(\"<capability keywords, e.g. 'search indexed knowledge'>\")` "
+                "to find it — name the capability, never the user's question.\n"
+                "- Whenever you suspect a tool might exist for a capability you need, search for it — "
                 "call `search_tools` and then `fetch_tools` on anything relevant it finds — "
                 "before concluding you cannot do it or falling back to a manual/text-only answer.\n"
                 "- Only load toolsets relevant to the current task — "

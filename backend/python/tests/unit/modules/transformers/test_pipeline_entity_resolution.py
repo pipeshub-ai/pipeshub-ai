@@ -24,6 +24,8 @@ def _pipeline(order, metadata) -> tuple:
     sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
     sink.vector_store.index_record_summary = AsyncMock(side_effect=lambda *a, **k: order.append("summary"))
     sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
+    sink.extract_named_entities = AsyncMock(return_value=MagicMock())
+    sink.persist_named_entities = AsyncMock()
     return IndexingPipeline(doc_extraction, sink), sink
 
 

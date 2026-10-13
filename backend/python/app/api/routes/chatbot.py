@@ -1239,6 +1239,24 @@ async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None: 
         return None
 
 
+async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
+    """Load the entity store's embedding models at startup. Loaded lazily,
+    they used up the first entity search's deadline, which then dropped every
+    match unchecked. Skipped without an entities collection: initialising
+    would create one, and chat hides the tools until there is one. Never
+    raises; a failed load is retried after the store's back-off, as a failed
+    first search would be."""
+    store = await load_entity_vector_store(container, logger_)
+    if store is None:
+        return
+    try:
+        logger_.info("🔥 Warming up entity vector store in background")
+        await store.embedding_fingerprint()
+        logger_.info("✅ Entity vector store warmup complete")
+    except Exception as exc:
+        logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
+
+
 async def load_system_prompts(
     config_service: ConfigurationService, logger_: Any,
 ) -> dict[str, Any]:

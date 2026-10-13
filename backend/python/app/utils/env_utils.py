@@ -27,6 +27,30 @@ def env_bool(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() == "true"
 
 
+HIGH_ACCURACY_MODE_ENV_VAR = "HIGH_ACCURACY_MODE"
+
+
+def high_accuracy_mode() -> bool:
+    """``HIGH_ACCURACY_MODE=true``: features that may cost more compute,
+    tokens or latency per question for better answers. Off by default; each
+    feature reads it through `accuracy_feature_enabled`."""
+    return env_bool(HIGH_ACCURACY_MODE_ENV_VAR, False)
+
+
+def accuracy_feature_enabled(name: str) -> bool:
+    """Whether the high-accuracy feature switched by env var `name` is on.
+
+    Unset or blank follows `HIGH_ACCURACY_MODE`, so one setting turns on every
+    such feature; set, it decides for that feature alone (`"true"` on, any
+    other value off), so one feature can be measured or turned off by itself.
+    Blank counts as unset because Compose passes `${NAME:-}` through as "".
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return high_accuracy_mode()
+    return raw.strip().lower() == "true"
+
+
 def env_int(
     name: str,
     default: int | None = None,

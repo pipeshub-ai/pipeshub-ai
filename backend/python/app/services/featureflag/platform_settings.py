@@ -113,6 +113,11 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
 
 
+async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Labs gate for typed named-entity extraction. Read live. Defaults to off."""
+    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+
+
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
     """Whether a record delete moves the record to the trash instead of removing it.
 

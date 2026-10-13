@@ -5,11 +5,12 @@ import logging
 from typing import Any, List, Optional
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
+from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
@@ -168,7 +169,7 @@ class DocumentClassification(BaseModel):
         description="Nested subcategories for the document"
     )
     languages: List[str] = Field(
-        description="List of languages detected in the document"
+        description="Natural languages the document is written in"
     )
     topics: List[str] = Field(
         description="List of key topics/themes extracted from the document"
@@ -186,6 +187,26 @@ class DocumentClassification(BaseModel):
             "recommendations, or unsupported claims."
         )
     )
+
+    @field_validator("languages", mode="after")
+    @classmethod
+    def _only_natural_languages(cls, values: list[str]) -> list[str]:
+        names = (canonical_language(v) for v in values if isinstance(v, str))
+        return list(dict.fromkeys(n for n in names if n))
+
+
+def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
+    return SemanticMetadata(
+        departments=classification.departments,
+        languages=classification.languages,
+        topics=classification.topics,
+        summary=classification.summary,
+        categories=[classification.category],
+        sub_category_level_1=classification.subcategories.level1,
+        sub_category_level_2=classification.subcategories.level2,
+        sub_category_level_3=classification.subcategories.level3,
+    )
+
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
@@ -207,16 +228,7 @@ class DocumentExtraction(Transformer):
         if document_classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
-        )
+        record.semantic_metadata = semantic_metadata_from_classification(document_classification)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 

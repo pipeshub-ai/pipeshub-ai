@@ -42,7 +42,7 @@ from app.agent_loop_lib.agent.spec import ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput, asked_questions
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.modules.agents.qna.router import (
@@ -166,7 +166,7 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         questions = payload.get("questions") if isinstance(payload, dict) else None
         if not questions:
             return None
-        return [AskUserQuestionItemInput.model_validate(q) for q in questions]
+        return asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions]) or None
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
         logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
         return None

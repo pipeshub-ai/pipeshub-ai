@@ -86,6 +86,9 @@ class RecordsStore:
         self.copied_relationships.append((source, target))
         return True
 
+    async def copy_named_entity_mentions(self, source: str, target: str) -> int:
+        return 0
+
     def promote_queued_duplicates(self, record_id: str, new_status: str, reason: str | None = None) -> int:
         primary = self.records[record_id]
         extraction = promoted_duplicate_extraction_status(new_status, primary)

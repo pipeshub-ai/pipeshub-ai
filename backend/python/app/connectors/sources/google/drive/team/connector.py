@@ -2498,31 +2498,58 @@ class GoogleDriveTeamConnector(BaseConnector):
         whether its group is a shared drive. Only the drives this user just synced are
         considered: a stub in someone else's My Drive is unreadable here and is picked
         up by the sweep of a user who can reach it.
+
+        On a full sync under the folder filter, ancestors an earlier sweep already made
+        real are walked too: the listing skips them, so unless they are rewritten here
+        the stale-record cleanup deletes them and the selected folders lose their path.
         """
         if not synced_drive_ids:
             return
 
-        stubs = await self.data_entities_processor.get_placeholder_records(self.connector_id)
-        if not stubs:
+        rewrite_real_ancestors = bool(self._folder_seed_ids) and not self._sync_ledger.incremental
+        seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        if rewrite_real_ancestors:
+            seeds = [*seeds, *await self._out_of_scope_seed_parents(synced_drive_ids)]
+        if not seeds:
             return
 
         # get_placeholder_records scopes by the internal record group key, but a
         # connector only knows external Drive ids, hence the client-side narrowing.
-        stubs_by_drive: Dict[str, List[Record]] = {}
-        for stub in stubs:
-            group_id = stub.external_record_group_id
+        seeds_by_drive: Dict[str, List[Record]] = {}
+        for seed in seeds:
+            group_id = seed.external_record_group_id
             if group_id in synced_drive_ids:
-                stubs_by_drive.setdefault(group_id, []).append(stub)
+                seeds_by_drive.setdefault(group_id, []).append(seed)
 
-        for group_id, group_stubs in stubs_by_drive.items():
+        for group_id, group_seeds in seeds_by_drive.items():
             await self._sweep_placeholders_for_drive(
                 user_id=user_id,
                 user_email=user_email,
                 drive_data_source=drive_data_source,
                 drive_id=group_id,
                 is_shared_drive=group_id != personal_drive_id,
-                seeds=group_stubs,
+                seeds=group_seeds,
+                rewrite_real_ancestors=rewrite_real_ancestors,
             )
+
+    async def _out_of_scope_seed_parents(self, synced_drive_ids: set) -> List[Record]:
+        """Real records directly above a selected folder in these drives that this run did not list."""
+        parents: List[Record] = []
+        for seed_id in sorted(self._folder_seed_ids):
+            seed = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=seed_id
+            )
+            if seed is None or seed.external_record_group_id not in synced_drive_ids:
+                continue
+            parent_ext_id = seed.parent_external_record_id
+            if not parent_ext_id or parent_ext_id in self._sync_ledger.seen:
+                continue
+            parent = await self.data_entities_processor.get_record_by_external_id(
+                connector_id=self.connector_id, external_record_id=parent_ext_id
+            )
+            if parent is not None and not parent.is_placeholder:
+                parents.append(parent)
+        return parents
 
     async def _sweep_placeholders_for_drive(
         self,
@@ -2533,6 +2560,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         seeds: List[Record],
         *,
         is_shared_drive: bool,
+        rewrite_real_ancestors: bool = False,
     ) -> None:
         """Walk one record group's stubs up to their real ancestors.
 
@@ -2547,8 +2575,14 @@ class GoogleDriveTeamConnector(BaseConnector):
             already real in the graph, until the frontier drains.
 
         Reconciliation is keyed by external id and idempotent, so an interrupted sweep
-        is completed by the next sync's sweep.
+        is completed by the next sync's sweep. With ``rewrite_real_ancestors``, real
+        ancestors this run has not listed are walked as well.
         """
+        def needs_backfill(record: Record) -> bool:
+            if record.is_placeholder:
+                return True
+            return rewrite_real_ancestors and record.external_record_id not in self._sync_ledger.seen
+
         visited: set = set()
         frontier: List[Record] = []
         for stub in seeds:
@@ -2583,7 +2617,7 @@ class GoogleDriveTeamConnector(BaseConnector):
                 backfills.append((record, permissions))
 
             for stub in frontier:
-                if stub.external_record_id in metadata_by_id:
+                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
                     continue
                 # Source fetch failed (inaccessible/deleted). Re-submit the persisted
                 # stub anyway so its structural edges — record group (BELONGS_TO) and
@@ -2610,8 +2644,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 )
                 if parent_record is None:
                     continue  # stub should exist after on_new_records; skip defensively
-                if not parent_record.is_placeholder:
-                    continue  # boundary: parent already synced in scope — nothing to backfill
+                if not needs_backfill(parent_record):
+                    continue  # boundary: parent already synced this run — nothing to backfill
                 next_frontier.append(parent_record)
 
             total += len(frontier)

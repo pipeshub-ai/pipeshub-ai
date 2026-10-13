@@ -66,6 +66,13 @@ def make_mock_connector() -> MagicMock:
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
     runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+
+    # The real one caches; the mock goes straight through ds_call so a test
+    # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.
+    async def _get_repo_by_id(repo_id: int) -> object:
+        return await runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+
+    runtime.get_repo_by_id = AsyncMock(side_effect=_get_repo_by_id)
     c.runtime = runtime
 
     rsp = MagicMock()

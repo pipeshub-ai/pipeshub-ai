@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -258,6 +259,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        app.state.entity_store_warmup_task = asyncio.create_task(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
         # Collections created before keyword scoring was fixed (Qdrant IDF,
         # OpenSearch stemming) are updated in place. A deployment that only
         # serves search never reaches the indexing write path that would
@@ -357,7 +362,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "entity_store_warmup_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

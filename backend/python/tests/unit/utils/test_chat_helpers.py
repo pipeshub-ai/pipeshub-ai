@@ -2707,6 +2707,44 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
+        """Each list-item hit expands to its whole list; a second hit on the same
+        list must not add a duplicate unit that takes another ranked slot."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.9), (1, "ItemB", 0.8))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert [r.get("block_group_index") for r in results] == [0]
+
+    @pytest.mark.asyncio
+    async def test_a_list_hit_twice_keeps_its_best_score(self) -> None:
+        """/search flattens before it sorts, and its query batches are not in score order."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.4), (1, "ItemB", 0.9))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+
+    @pytest.mark.asyncio
     async def test_one_unreadable_record_does_not_fail_the_rest(self):
         """A storage 404 for one hit must drop that record, not the whole search."""
         good = _make_record_blob()
@@ -6360,7 +6398,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6371,7 +6409,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]

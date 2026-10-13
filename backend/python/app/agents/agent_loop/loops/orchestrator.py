@@ -215,7 +215,7 @@ def domain_spec_factory(
         model = overrides.get("model") or model_name
         return AgentSpec(
             name=f"pipeshub-subagent-{role_name}",
-            system_prompt=build_sub_agent_prompt(role_name, context),
+            system_prompt=build_sub_agent_prompt(role_name, context, tool_names=tool_names),
             tool_names=list(tool_names),
             model=ModelSpec(
                 provider=provider, model=model, context_window=context_window if model == model_name else None,
@@ -268,7 +268,7 @@ def _domain_overview(agent: "Agent") -> str:
         if isinstance(tool, AgentTool):
             agent_lines.append(f"- **{name}** (domain agent): {tool.short_description}")
             continue
-        domain = getattr(tool, "app_name", None)
+        domain = tool.app_name
         if not domain:
             domain = name.split("__", 1)[0] if "__" in name else name
         groups.setdefault(domain, []).append(name)
