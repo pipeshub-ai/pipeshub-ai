@@ -486,3 +486,23 @@ class TestServiceNowProviderUrls:
 
         assert store.values.get(SERVICENOW_APPS_PATH) is None
         assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
+
+    async def test_placeholder_urls_sent_with_the_credentials_create_no_app(self) -> None:
+        defaults = router_module._registry_oauth_urls("ServiceNow")
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "team"}}})
+
+        await _save(
+            store,
+            {
+                "auth": {
+                    "instanceUrl": SN_URLS["instanceUrl"],
+                    **defaults,
+                    "clientId": "sn-client",
+                    "clientSecret": "sn-secret",
+                }
+            },
+            connector_type="ServiceNow",
+        )
+
+        assert store.values.get(SERVICENOW_APPS_PATH) is None
+        assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]

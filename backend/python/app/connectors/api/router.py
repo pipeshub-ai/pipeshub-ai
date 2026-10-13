@@ -3937,6 +3937,19 @@ async def _full_save_oauth_app(
     connectors, which would all switch credentials while only this one is signed out.
     """
     auth_type = instance.get("authType", "").upper()
+    # A provider URL equal to the registry's default is never the admin's own value:
+    # ServiceNow's is a placeholder host, and sign-in would send the client secret there.
+    # Such values neither count as sent credentials nor go into an app.
+    registry_urls = _registry_oauth_urls(connector_type)
+
+    def _without_registry_urls(auth: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: value
+            for key, value in auth.items()
+            if not (value and registry_urls.get(key) == value)
+        }
+
+    incoming_auth = _without_registry_urls(incoming_auth)
     named_app_id = incoming_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
     current_app_id = named_app_id or stored_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
 
@@ -3970,17 +3983,11 @@ async def _full_save_oauth_app(
         # the name sent in this request, or the connector's name.
         app_auth = {
             key: value
-            for key, value in merged_auth.items()
+            for key, value in _without_registry_urls(merged_auth).items()
             if key not in (OAuthConfigKeys.OAUTH_CONFIG_ID, OAUTH_INSTANCE_NAME)
         }
         if incoming_auth.get(OAUTH_INSTANCE_NAME):
             app_auth[OAUTH_INSTANCE_NAME] = incoming_auth[OAUTH_INSTANCE_NAME]
-        # A provider URL an earlier save filled in from the registry is not the admin's
-        # (ServiceNow's is a placeholder host, and sign-in would send the client secret
-        # there): it counts only when this request sends it.
-        for url_field, registry_default in _registry_oauth_urls(connector_type).items():
-            if url_field not in incoming_auth and registry_default and app_auth.get(url_field) == registry_default:
-                app_auth.pop(url_field)
         if not _has_required_oauth_credentials(app_auth, connector_type):
             if not current_app_id:
                 # Part of a new app's values: they wait on the connector for the rest.
