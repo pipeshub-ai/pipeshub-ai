@@ -56,6 +56,11 @@ def git(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git", *args], capture_output=True, check=False)
 
 
+def is_symlink_at(commit: str, path: str) -> bool:
+    entry = git("ls-tree", commit, "--", path)
+    return entry.returncode == 0 and entry.stdout.startswith(b"120000 ")
+
+
 def main() -> None:
     tool, base, files = sys.argv[1], sys.argv[2], sys.argv[3:]
     if tool not in CWD or not files:
@@ -79,9 +84,12 @@ def main() -> None:
 
     # Put each file that exists on main back to its main version, lint it, then restore the pull request's version.
     # A symlink is never put back: writing through it would overwrite its target, which the restore does not undo.
+    # A path that was a symlink on main is skipped too: git show gives the link text, not source to compare.
     on_main = [
         f for f in files
-        if not os.path.islink(f) and git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0
+        if not os.path.islink(f)
+        and not is_symlink_at(base, main_path[f])
+        and git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0
     ]
     try:
         for f in on_main:
