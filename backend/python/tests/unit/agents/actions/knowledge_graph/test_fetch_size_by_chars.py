@@ -40,6 +40,7 @@ from tests.unit.agents.actions.knowledge_graph.fetch_scenarios import (
 from tests.unit.agents.actions.knowledge_graph.test_fetch_sizing import (
     _context,
     _fetch,
+    _hits,
     _outcome,
     _records_part,
     _shown,
@@ -143,6 +144,20 @@ class TestAFirstReadIgnoresMaxBlocks:
         text = await _fetch(context, [_text_record("a", 100, 150)], max_blocks=20)
 
         assert _shown(text, "a") == set(range(20))
+
+    @pytest.mark.asyncio
+    async def test_an_in_order_read_of_a_selected_record_honours_it(self, switch) -> None:
+        """`start_block=0` on a record already shown by relevance is the in-order
+        read its hint offered: a real request, so its `max_blocks` applies."""
+        context = _context(retrieval_service=_hits("b", [350, 360, 370]))
+        first = await _fetch(context, [_text_record("b", 400, 400)])
+        assert "start_block=0" in first
+
+        second = await _fetch(context, [_text_record("b", 400, 400)], start_block=0, max_blocks=20,
+                              start_block_sent=True)
+
+        assert _shown(second, "b") == set(range(20))
+        assert "start_block=20" in second
 
     @pytest.mark.asyncio
     async def test_a_continuation_honours_it_per_record(self, switch) -> None:

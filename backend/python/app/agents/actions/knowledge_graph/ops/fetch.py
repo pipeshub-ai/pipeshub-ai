@@ -387,8 +387,15 @@ async def execute_fetch_record(
             # the model asked for; it never cuts a record that fits or a
             # selection, which was sized by characters already.
             if by_chars:
+                # An in-order read the model asked for (a continuation, or the
+                # in-order read a selected record's hint offered) is a real
+                # request for a slice, so its `max_blocks` applies.
+                record_cap = (
+                    min(FETCH_SAFETY_MAX_BLOCKS, requested_max)
+                    if in_order and requested_max is not None else block_cap
+                )
                 budget.allot(
-                    record_key, limit, max_blocks=block_cap,
+                    record_key, limit, max_blocks=record_cap,
                     unbounded_blocks=include_blocks is not None,
                 )
             else:
