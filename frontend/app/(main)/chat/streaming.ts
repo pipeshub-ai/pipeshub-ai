@@ -1623,7 +1623,7 @@ export async function streamRegenerateForSlot(
  * click). If `convId`/`runId` aren't known yet (stopped before
  * `conversation_created` on the very first turn of a brand-new
  * conversation), there's nothing to target server-side — fall straight to a
- * hard abort; Node's passive disconnect path still saves the partial.
+ * hard abort; Node lets that run finish and saves the whole answer.
  *
  * Exported as `cancelStreamForSlot` — the name `runtime.ts`'s `onCancel`
  * and the chat-input Stop button both already call.

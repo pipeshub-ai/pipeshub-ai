@@ -6669,7 +6669,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    it('should handle client disconnect by destroying stream', async () => {
+    it('should keep the upstream stream alive when the client disconnects', async () => {
       const handler = streamAgentConversation(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -6699,7 +6699,7 @@ describe('Enterprise Search Controller', () => {
       const closeCallback = res.on.args.find((a: any) => a[0] === 'close')
       expect(closeCallback).to.exist
       closeCallback[1]()
-      expect(mockStream.destroy.called).to.be.true
+      expect(mockStream.destroy.called).to.be.false
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -8759,12 +8759,16 @@ describe('Enterprise Search Controller', () => {
   // streamChat - client disconnect
   // -----------------------------------------------------------------------
   describe('streamChat - client disconnect handling', () => {
-    it('should destroy stream when client disconnects', async () => {
+    it('keeps the run going after the client disconnects and saves the finished answer', async () => {
       const handler = streamChat(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
+        save: sinon.stub(),
       })
+      mockDoc.save.resolves(mockDoc)
       sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -8785,23 +8789,82 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      // Simulate client disconnect (response never finished)
-      if (closeCallback) closeCallback()
+      // A refresh: the response closes without having finished.
+      closeCallback()
+      expect(mockStream.destroy.called).to.be.false
 
-      expect(mockStream.destroy.calledOnce).to.be.true
-
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"Hello world","citations":[],"followUpQuestions":[]}}\n\n',
+        ),
+      )
       mockStream.emit('end')
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    })
-  })
+      await new Promise((resolve) => setTimeout(resolve, 100))
 
-  // -----------------------------------------------------------------------
-  // streamChat - disconnect races the AI backend request itself (not yet a
-  // stream) — regression coverage for the FAILED/STOPPED race described in
-  // the review comment on `startAIStream`'s disconnect handling.
-  // -----------------------------------------------------------------------
-  describe('streamChat - disconnect while AI stream is still opening', () => {
-    it('saves STOPPED, not FAILED, when the client disconnects before executeStream resolves', async () => {
+      expect(saveComplete.calledOnce).to.be.true
+      expect(saveComplete.firstCall.args[1]).to.include({ answer: 'Hello world' })
+      expect(savePartial.called).to.be.false
+    })
+
+    it('still persists the ask_user_question card and saves the waiting_input turn after the client left', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
+      const insertMany = ChatSessionMessage.insertMany as sinon.SinonStub
+      insertMany.resetHistory()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+      let closeCallback: any = null
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      res.on = sinon.stub().callsFake((event: string, cb: any) => {
+        if (event === 'close') closeCallback = cb
+      })
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      closeCallback()
+
+      const askPayload = JSON.stringify({
+        type: 'CUSTOM',
+        name: 'ask_user_question',
+        value: { toolData: { question: 'Pick one' } },
+      })
+      mockStream.emit('data', Buffer.from(`event: CUSTOM\ndata: ${askPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"","status":"waiting_input","citations":[]}}\n\n',
+        ),
+      )
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const persistedCard = insertMany.args.some((c: any) =>
+        c[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
+      )
+      expect(persistedCard).to.be.true
+      expect(mockStream.destroy.called).to.be.false
+      expect(saveComplete.calledOnce).to.be.true
+      expect(saveComplete.firstCall.args[1]).to.include({ status: 'waiting_input' })
+      expect(savePartial.called).to.be.false
+    })
+
+    it('records a failure, not a stop, when the upstream errors after the client left', async () => {
       const handler = streamChat(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -8809,11 +8872,55 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(searchUtils, 'markConversationFailed').resolves()
 
-      let rejectExecuteStream: (err: unknown) => void = () => {}
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+      let closeCallback: any = null
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      res.on = sinon.stub().callsFake((event: string, cb: any) => {
+        if (event === 'close') closeCallback = cb
+      })
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      closeCallback()
+      mockStream.emit('error', new Error('upstream exploded'))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect((searchUtils.markConversationFailed as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockDoc.status).to.not.equal('Stopped')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // streamChat - the client leaves while the AI backend request is still
+  // opening: the run is not stopped, the stream opens and finishes normally.
+  // -----------------------------------------------------------------------
+  describe('streamChat - disconnect while AI stream is still opening', () => {
+    it('does not stop the run when the client disconnects before executeStream resolves', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+        save: sinon.stub(),
+      })
+      mockDoc.save.resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
+
+      const mockStream = createMockStream()
+      let resolveExecuteStream: (stream: unknown) => void = () => {}
       sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(
         () =>
-          new Promise((_resolve, reject) => {
-            rejectExecuteStream = reject
+          new Promise((resolve) => {
+            resolveExecuteStream = resolve
           }),
       )
 
@@ -8833,20 +8940,23 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 20))
 
-      // Client disconnects while `executeStream` is still pending — mirrors
-      // `attachUpstreamAbort`'s `controller.abort()` propagating into a
-      // rejected upstream fetch before the `Readable` ever exists.
       closeCallback()
-      const abortError: any = new Error('The operation was aborted')
-      abortError.name = 'AbortError'
-      rejectExecuteStream(abortError)
-
+      resolveExecuteStream(mockStream)
       await promise
       await new Promise((resolve) => setTimeout(resolve, 20))
 
-      expect((searchUtils.markConversationFailed as sinon.SinonStub).called).to.be
-        .false
-      expect(mockDoc.status).to.equal('Stopped')
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"Hello world","citations":[],"followUpQuestions":[]}}\n\n',
+        ),
+      )
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      expect(mockStream.destroy.called).to.be.false
+      expect(saveComplete.calledOnce).to.be.true
+      expect(savePartial.called).to.be.false
     })
   })
 
@@ -10192,7 +10302,7 @@ describe('Enterprise Search Controller', () => {
   // addMessageStream: client disconnect handler
   // -----------------------------------------------------------------------
   describe('addMessageStream - client disconnect handling', () => {
-    it('should destroy stream when client disconnects', async () => {
+    it('should keep the upstream stream alive when client disconnects', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
       const mockDoc = createMockConversationDoc({
@@ -10228,7 +10338,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       if (closeCallback) closeCallback()
-      expect(mockStream.destroy.calledOnce).to.be.true
+      expect(mockStream.destroy.called).to.be.false
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))

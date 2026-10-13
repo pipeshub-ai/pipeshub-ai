@@ -1672,13 +1672,12 @@ export const markConversationFailed = async (
 };
 
 /**
- * Persists whatever the user had already seen when the connection dropped
- * before Python could send a terminal `RUN_FINISHED` — the passive-disconnect
- * counterpart to `saveCompleteConversation`/`saveCompleteAgentConversation`.
- * Must be called from the stream's `close`/`onDisconnect` path, never `end`
- * (which does not fire once `attachUpstreamAbort` has destroyed the
- * Readable). `replaceMessageId` is set for the regenerate path, which
- * replaces the original message instead of appending a new one.
+ * Persists the partial answer of a run Node gave up on: its browser went away
+ * and it outlived the detached-run cap (see `attachUpstreamAbort`), so Python
+ * never sent a terminal `RUN_FINISHED`. Must be called from the `onAbandon`
+ * path, never `end` (which does not fire once the Readable is destroyed).
+ * `replaceMessageId` is set for the regenerate path, which replaces the
+ * original message instead of appending a new one.
  */
 export const savePartialConversation = async (
   conversation: IChatSessionDocument,

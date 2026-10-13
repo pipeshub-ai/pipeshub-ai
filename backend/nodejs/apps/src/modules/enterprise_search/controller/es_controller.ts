@@ -85,7 +85,6 @@ import {
 } from '../utils/utils';
 import {
   attachUpstreamAbort,
-  isUpstreamAbortError,
   StreamedContentAccumulator,
 } from '../utils/stream-lifecycle';
 import {
@@ -772,22 +771,15 @@ export const streamChat =
       let firstAiChunkSeen = false;
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !savedConversation) return;
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
         ).catch((err: any) => {
@@ -797,28 +789,12 @@ export const streamChat =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Chat Stream',
-          { requestId },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Chat Stream',
+        { requestId },
+        upstreamAbort.signal,
+      );
       timer.mark('ai_stream_open');
 
       if (!stream) {
@@ -1191,8 +1167,8 @@ export const streamChat =
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', { requestId });
           return;
         }
         streamSettled = true;
@@ -1474,22 +1450,15 @@ export const addMessageStream =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !existingConversation) return;
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
         ).catch((err: any) => {
@@ -1499,28 +1468,12 @@ export const addMessageStream =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Add Message Stream',
-          { requestId },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Add Message Stream',
+        { requestId },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -1935,8 +1888,8 @@ export const addMessageStream =
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', { requestId });
           return;
         }
         streamSettled = true;
@@ -3374,22 +3327,15 @@ async function regenerateAnswersInternal(
     let buffer = '';
     /** True when the AI backend already sent a terminal error we forwarded and saved */
     let upstreamAiErrorEventForwarded = false;
-    /** Guards `onDisconnect` against also running after the normal
+    /** Guards `onAbandon` against also running after the normal
      * `stream.on('end')`/`'error'` path already finalized this run. */
     let streamSettled = false;
     const contentAccumulator = new StreamedContentAccumulator();
 
-    // Plain `let` would appear permanently `null` to the type checker's
-    // narrowing (it never sees the reassignment inside the closure below),
-    // so `no-unnecessary-condition` would flag the read as dead code even
-    // though it's live at runtime — a mutable holder sidesteps that.
-    const disconnectSave: { pending: Promise<void> | null } = {
-      pending: null,
-    };
     const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
       if (streamSettled || completeData || !existingConversation) return;
       streamSettled = true;
-      disconnectSave.pending = savePartialConversation(
+      void savePartialConversation(
         existingConversation,
         contentAccumulator.getText(),
         null,
@@ -3401,28 +3347,12 @@ async function regenerateAnswersInternal(
         });
       });
     });
-    let stream: Awaited<ReturnType<typeof startAIStream>>;
-    try {
-      stream = await startAIStream(
-        aiCommandOptions,
-        'Regenerate Answers Stream',
-        { requestId },
-        upstreamAbort.signal,
-      );
-    } catch (streamOpenError) {
-      // Client disconnected while the AI backend request was still in
-      // flight — the disconnect callback above already started the STOPPED
-      // save; await it and bail out before the outer `catch` can race it
-      // with a FAILED save.
-      if (upstreamAbort.isClientDisconnected()) {
-        logger.debug('Client disconnected before AI stream opened', {
-          requestId,
-        });
-        if (disconnectSave.pending) await disconnectSave.pending;
-        return;
-      }
-      throw streamOpenError;
-    }
+    const stream = await startAIStream(
+      aiCommandOptions,
+      'Regenerate Answers Stream',
+      { requestId },
+      upstreamAbort.signal,
+    );
 
     if (!stream) {
       throw new Error('Failed to get stream from AI service');
@@ -3626,8 +3556,8 @@ async function regenerateAnswersInternal(
     });
 
     stream.on('error', async (error: Error) => {
-      if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-        logger.debug('Stream aborted due to client disconnect', { requestId });
+      if (upstreamAbort.isAborted()) {
+        logger.debug('Stream abandoned after the detached-run cap', { requestId });
         return;
       }
       streamSettled = true;
@@ -5743,22 +5673,15 @@ export const deleteAgent =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !savedConversation) return;
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
         ).catch((err: any) => {
@@ -5768,28 +5691,12 @@ export const deleteAgent =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Agent Chat Stream',
-          { requestId, agentKey },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Agent Chat Stream',
+        { requestId, agentKey },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -6162,8 +6069,8 @@ export const deleteAgent =
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', { requestId });
           return;
         }
         streamSettled = true;
@@ -6457,22 +6364,15 @@ export const addMessageStreamToAgentConversation =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
         if (streamSettled || completeData || !existingConversation) return;
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
         ).catch((err: any) => {
@@ -6482,28 +6382,12 @@ export const addMessageStreamToAgentConversation =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Add Message Agent Stream',
-          { requestId, agentKey },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Add Message Agent Stream',
+        { requestId, agentKey },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
         throw new Error('Failed to get stream from AI service');
@@ -6916,8 +6800,8 @@ export const addMessageStreamToAgentConversation =
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', { requestId });
           return;
         }
         streamSettled = true;
