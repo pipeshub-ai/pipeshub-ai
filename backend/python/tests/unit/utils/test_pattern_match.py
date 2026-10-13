@@ -3026,6 +3026,31 @@ class TestRunPatternMatchWithLlmGrep:
         assert started.is_set() and cancelled.is_set()
 
     @pytest.mark.asyncio
+    async def test_budget_keeps_what_finished_commands_found(self) -> None:
+        # Slow searches used to return nothing at all once one command overran.
+        slow_cancelled = asyncio.Event()
+
+        async def _pipeline(**kwargs: object) -> list[dict[str, str]]:
+            if "fast" in kwargs["grep_command"]:
+                return [{"virtual_record_id": "vr-fast"}]
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+
+        with patch("app.utils.pattern_match._PATTERN_MATCH_TOTAL_BUDGET", 0.1), \
+                patch("app.utils.pattern_match.generate_grep_command_via_llm", new_callable=AsyncMock,
+                      return_value=['grep -rci "fast" .', 'grep -rci "slow" .']), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=_pipeline):
+            result = await asyncio.wait_for(
+                run_pattern_match_with_llm_grep(**self._base_kwargs(), llm=MagicMock()), timeout=5,
+            )
+
+        assert result == [{"virtual_record_id": "vr-fast"}]
+        assert slow_cancelled.is_set()
+
+    @pytest.mark.asyncio
     async def test_keyword_fallback_runs_inside_the_same_budget(self):
         # The fallback must not get a fresh per-connector timeout of its own.
         fallback_cancelled = asyncio.Event()

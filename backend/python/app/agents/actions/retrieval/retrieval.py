@@ -530,7 +530,10 @@ class Retrieval:
             # Fail-soft: any exception here falls back to semantic-only results.
             raw_pattern_records: list[dict[str, Any]] = []
             if pattern_match_task is not None:
-                raw_pattern_records = await await_pattern_match(pattern_match_task, logger_instance)
+                raw_pattern_records = await await_pattern_match(
+                    pattern_match_task, logger_instance,
+                    run_timer=self.state.get("_run_timer"),
+                )
                 if raw_pattern_records:
                     logger_instance.info(
                         "Pattern match: %d raw record(s)", len(raw_pattern_records),

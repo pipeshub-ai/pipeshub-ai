@@ -22,7 +22,11 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -335,8 +339,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
-                self.logger.error("Google Drive oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "Google Drive has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -402,6 +409,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
             self.logger.info("✅ Google Drive connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Drive connector: {ex}", exc_info=True)
             raise

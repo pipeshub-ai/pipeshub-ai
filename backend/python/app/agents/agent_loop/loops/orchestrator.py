@@ -199,6 +199,7 @@ def domain_spec_factory(
     default_tool_names: list[str],
     context: "AgentContext | None" = None,
     max_turns: int = _SUB_AGENT_MAX_TURNS,
+    context_window: int | None = None,
 ) -> "Callable[..., AgentSpec]":
     """Builds the `AgentRuntime.spec_factory` callable `spawn_agent` needs
     to resolve a domain "role" string into a concrete `AgentSpec` (see
@@ -216,7 +217,9 @@ def domain_spec_factory(
             name=f"pipeshub-subagent-{role_name}",
             system_prompt=build_sub_agent_prompt(role_name, context),
             tool_names=list(tool_names),
-            model=ModelSpec(provider=provider, model=model),
+            model=ModelSpec(
+                provider=provider, model=model, context_window=context_window if model == model_name else None,
+            ),
             loop=ReActLoop(),
             max_turns=max_turns,
         )

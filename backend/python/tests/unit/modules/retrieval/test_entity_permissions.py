@@ -7,6 +7,7 @@ calls, and any failure raises ``EntityAccessError`` instead of looking like
 """
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -541,6 +542,7 @@ class TestReadPathRoundTrips:
         import asyncio
 
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
         store = _store([_hit("t1", "topic", 0.9)])
 
         async def _slow(*args: object, **kwargs: object) -> dict:
@@ -551,9 +553,9 @@ class TestReadPathRoundTrips:
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
         started = asyncio.get_running_loop().time()
 
-        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
@@ -571,10 +573,27 @@ class TestReadPathRoundTrips:
         store = _store([_hit("t1", "topic", 0.9)])
         graph = _graph(candidates=_slow_round)
 
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert graph.get_permitted_entity_records.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_vector_search_that_uses_the_deadline_still_leaves_time_to_probe(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        store = _store([_hit("t1", "topic", 0.9)])
+
+        async def _slow_vectors(*args: object, **kwargs: object) -> list:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + 0.5
+            return [[_hit("t1", "topic", 0.9)]]
+
+        store.search_entities_passes = AsyncMock(side_effect=_slow_vectors)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r", "kb-1")]})
+
         hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
-        assert graph.get_permitted_entity_records.await_count == 1
+        assert [h.entity_id for h in hits] == ["t1"]
 
 
 class TestListingDeadline:
@@ -839,6 +858,75 @@ class TestNamesWalkPastRecordsWithoutASpelling:
         assert await search_entities_for_user(store, graph, _context(), "launch", top_k=5) == []
         walked = {k for call in graph.get_record_taxonomy_links.await_args_list for k in call.args[0]}
         assert walked == {r["_key"] for r in rows}
+
+    @pytest.mark.asyncio
+    async def test_a_naming_walk_stopped_by_the_deadline_is_a_timeout(self, monkeypatch) -> None:
+        """The probes confirm access in time, but the walk for a spelling
+        does not finish: that is not an empty result."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+
+        async def _slow_links(keys: list[str], transaction: str | None = None) -> list[dict]:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return [
+                {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+                 "canonical": True, "migrated": False, "extractedName": None}
+                for key in keys
+            ]
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_slow_links)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_name_lookup_is_a_timeout(self, monkeypatch) -> None:
+        import asyncio
+
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "NAME_LOOKUP_MIN_SECONDS", 0.2)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "conf-1")]}, permitted={"r1"})
+
+        async def _stalled(keys: list[str], transaction: str | None = None) -> list[dict]:
+            await asyncio.sleep(3)
+            return []
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_stalled)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        started = asyncio.get_running_loop().time()
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert asyncio.get_running_loop().time() - started < 2
+
+    @pytest.mark.asyncio
+    async def test_probes_that_use_the_deadline_still_leave_time_to_name(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row("r1", "conf-1")]
+
+        def _slow_probe(refs: list, org: str, **k: object) -> dict:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return {"t1": rows}
+
+        graph = _graph(candidates=_slow_probe, permitted={"r1"})
+        graph.get_record_taxonomy_links = AsyncMock(return_value=[
+            {"recordId": "r1", "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False, "extractedName": "Launch plan"},
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
 
     @pytest.mark.asyncio
     async def test_the_walk_goes_on_past_the_probe_windows(self) -> None:

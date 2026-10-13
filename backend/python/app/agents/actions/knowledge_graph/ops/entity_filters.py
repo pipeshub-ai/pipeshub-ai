@@ -107,9 +107,9 @@ def merge_filter_groups(
     extra: dict[str, list[str]] | None,
 ) -> dict[str, list[str]]:
     """Union *extra*'s lists into *base* (new dict; *base* not mutated)."""
-    if not extra:
-        return base
     merged = {k: list(v) for k, v in base.items()}
+    if not extra:
+        return merged
     for key, values in extra.items():
         if not values:
             continue

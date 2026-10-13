@@ -65,7 +65,9 @@ def get_pricing(model: str | None) -> ModelPricing:
 # hardcoded flat number — the single source of truth other model metadata
 # tables in this file already establish the pattern for.
 MODEL_CONTEXT_WINDOW: dict[str, int] = {
-    "claude-opus-5": 300_000, 
+    "claude-opus-5-5": 300_000,
+    "claude-opus-5": 300_000,
+    "claude-sonnet-5-5": 200_000,
     "claude-sonnet-5": 200_000,
     "claude-sonnet-4-6": 200_000,
     "claude-opus-4-8": 200_000,

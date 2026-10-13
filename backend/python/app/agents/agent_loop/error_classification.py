@@ -40,6 +40,11 @@ from http import HTTPStatus
 # would be actively wrong.
 _CONTENT_FILTER_HINTS = (
     "content_filter",
+    # The SDKs' wording for a filtered finish (langchain-openai's Azure model,
+    # openai's ContentFilterFinishReasonError); anchored, so a bare mention of
+    # "content filter" elsewhere in an error is not a refusal.
+    "due to a content filter",
+    "rejected by the content filter",
     "content management policy",
     "content policy",
     "content_policy",
@@ -125,6 +130,15 @@ _USER_MESSAGES: dict[str, str] = {
         "happening, contact your workspace admin."
     ),
 }
+
+# An unclassified failure of the model call itself still tells the user more
+# than "something went wrong": the model call, not the search, failed.
+_MODEL_CALL_FAILURE_MARKERS = ("llm call failed", "transport error")
+_MODEL_CALL_FAILED_MESSAGE = (
+    "The call to the AI model failed while answering. Please try "
+    "again, and if it keeps happening, ask a workspace admin to check the "
+    "model in Workspace → AI Models."
+)
 
 _ERROR_PAYLOAD_RE = re.compile(
     r"Error code:\s*\d+\s*-\s*(\{.*\})\s*$",
@@ -221,7 +235,21 @@ def classify_error(error_msg: str) -> tuple[str, str]:
             prefix = _USER_MESSAGES[error_code].split(".")[0]
             return error_code, f"{prefix}: {provider_msg}"
 
+    if error_code == "unknown" and any(marker in lower for marker in _MODEL_CALL_FAILURE_MARKERS):
+        return error_code, _MODEL_CALL_FAILED_MESSAGE
+
     return error_code, _USER_MESSAGES[error_code]
+
+
+def redact_error_for_log(error_msg: str, max_len: int = 1000) -> str:
+    """The raw error with URLs and account ids masked, capped at `max_len`.
+
+    A provider's error can echo the request URL, whose query string may carry
+    a credential (Google's REST endpoints accept `?key=`).
+    """
+    text = _URL_RE.sub("[url]", error_msg)
+    text = _PROVIDER_ACCOUNT_ID_RE.sub("[redacted]", text)
+    return text[:max_len]
 
 
 def _status_phrase(status_code: int) -> str | None:
@@ -256,4 +284,4 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
-__all__ = ["classify_error", "classify_exception"]
+__all__ = ["classify_error", "classify_exception", "redact_error_for_log"]

@@ -16,6 +16,7 @@ from app.connectors.sources.microsoft.outlook_individual.connector import (
 )
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.models.entities import RecordType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 @pytest.fixture
 def mock_data_entities_processor():
@@ -118,6 +119,29 @@ class TestInit:
         result = await connector.init()
 
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_init_says_the_oauth_app_is_missing_when_signed_in_without_one(
+        self,
+        connector: OutlookIndividualConnector,
+        mock_data_entities_processor: MagicMock,
+        mock_config_service: AsyncMock,
+    ) -> None:
+        # Signed in with client credentials saved on the connector, but no linked
+        # OAuth app: the reason must reach the caller, not collapse into False.
+        mock_config_service.get_config = AsyncMock(
+            return_value={
+                "scope": "PERSONAL",
+                "auth": {"clientId": "client", "clientSecret": "secret"},
+                "credentials": {"access_token": "access-token"},
+            }
+        )
+        mock_data_entities_processor.get_app_creator_user = AsyncMock(
+            return_value=MagicMock(user_id="u-1", email="user@test.com")
+        )
+
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
 
 class TestConnectionAndAccess:
@@ -920,7 +944,7 @@ class TestReindexInternalsAndCredentials:
     async def test_get_credentials_raises_when_oauth_config_id_missing(self, connector, mock_config_service):
         config = {"auth": {}}
         mock_config_service.get_config = AsyncMock(return_value=config)
-        with pytest.raises(ValueError, match="oauthConfigId"):
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
             await connector._get_credentials("conn-outlook-individual-1", config)
 
     @pytest.mark.asyncio

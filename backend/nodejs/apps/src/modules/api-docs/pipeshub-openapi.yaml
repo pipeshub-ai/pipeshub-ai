@@ -13967,6 +13967,15 @@ components:
           type: string
           description: Unique identifier for this model configuration
           readOnly: true
+        configuredFields:
+          type: array
+          items:
+            type: string
+          readOnly: true
+          description: |
+            Sorted names of the stored configuration keys that have a value
+            (for example `apiKey`, `endpoint`), so the UI can show which fields
+            are already set. Never the values.
 
     AIModelsConfig:
       type: object
@@ -41348,11 +41357,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AIModelProviderSimpleError'
         '500':
-          description: |
-            Internal server error. The current implementation can return 500 for
-            unknown modelKey updates when the persisted aiModels blob contains
-            non-array top-level keys (for example modelRoles or custom system
-            prompt fields), causing lookup to fail before the not-found path.
+          description: Internal server error.
           content:
             application/json:
               schema:

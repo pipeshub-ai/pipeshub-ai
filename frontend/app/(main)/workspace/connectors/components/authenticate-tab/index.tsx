@@ -418,6 +418,10 @@ export function AuthenticateTab() {
           </Text>
         </Flex>
 
+        {connectorSchema.supportsConnectionCheck && (
+          <EgressIpNotice connectorName={connectorTypeName} />
+        )}
+
         <Flex direction="column" gap="5">
           {visibleAuthFields.map((field) => (
             <SchemaFormField
@@ -587,10 +591,6 @@ export function AuthenticateTab() {
             </Flex>
           )}
         </>
-      )}
-
-      {connectorSchema.supportsConnectionCheck && (
-        <EgressIpNotice connectorName={connectorTypeName} />
       )}
 
       {connectionCheck.status === 'failed' && connectionCheck.message && (

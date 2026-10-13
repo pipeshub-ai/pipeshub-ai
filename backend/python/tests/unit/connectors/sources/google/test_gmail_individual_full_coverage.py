@@ -29,6 +29,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 def _make_logger():
@@ -216,13 +217,15 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_no_oauth_config_id(self, connector):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, connector, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {},
+            "auth": auth,
             "credentials": {},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector):

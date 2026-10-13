@@ -17307,7 +17307,7 @@ class Neo4jProvider(IGraphDBProvider):
             self.logger.error(f"Error in get_knowledge_hub_search: {str(e)}")
             self.logger.error(f"Query execution time: {elapsed * 1000:.2f} ms")
             self.logger.error(traceback.format_exc())
-            return {"nodes": [], "total": 0}
+            raise
 
     async def get_knowledge_hub_breadcrumbs(
         self,
@@ -18938,7 +18938,7 @@ class Neo4jProvider(IGraphDBProvider):
             return [r["app_id"] for r in results if r.get("app_id")] if results else []
         except Exception as e:
             self.logger.error(f"❌ Get user app IDs failed: {str(e)}")
-            return []
+            raise
 
     async def get_user_permission_app_ids(
         self,
@@ -18974,7 +18974,7 @@ class Neo4jProvider(IGraphDBProvider):
             return [r["app_id"] for r in results if r.get("app_id")] if results else []
         except Exception as e:
             self.logger.error(f"❌ Get user permission app IDs failed: {str(e)}")
-            return []
+            raise
 
     async def get_knowledge_hub_context_permissions(
         self,

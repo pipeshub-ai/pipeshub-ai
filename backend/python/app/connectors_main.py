@@ -171,6 +171,13 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     second one begin.
 
     Never touches DELETING — that doc is mid-deletion, not mid-sync.
+
+    A stale FULL_SYNCING also gets pendingFullSync. That sync's prep deleted the
+    connector's sync points and permission edges before it was cut off, so the
+    records it had not reached yet are unreadable. Reset to a bare IDLE, the
+    connector looked healthy and its next sync was incremental, which does not
+    revisit them. With the flag, the boot resume below runs it again in full,
+    and for a MANUAL connector the next sync anyone starts is a full one.
     """
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
@@ -180,7 +187,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
             CollectionNames.APPS.value,
             "status",
             [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
-            ["id"],
+            ["id", "status"],
         )
         locked = await graph_provider.get_nodes_by_field_in(
             CollectionNames.APPS.value,
@@ -190,6 +197,11 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         )
 
         stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
+        full_sync_keys = {
+            doc["id"]
+            for doc in (stuck or [])
+            if doc.get("id") and doc.get("status") == AppStatus.FULL_SYNCING.value
+        }
         # A locked doc mid-deletion keeps its DELETING status; only the stuck
         # lock is released for it.
         locked_only = {
@@ -240,6 +252,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
                 "updatedAtTimestamp": now,
+                **({ConnectorStateKeys.PENDING_FULL_SYNC: True} if key in full_sync_keys else {}),
             }
             for key in stuck_keys
         ]
@@ -254,6 +267,12 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         logger.warning(
             f"Startup sweep reset stale sync state on {len(reset_keys)} connector(s): {reset_keys}"
         )
+        owed = sorted(stuck_keys & full_sync_keys)
+        if owed:
+            logger.warning(
+                f"Startup sweep: full sync did not finish on {len(owed)} connector(s); "
+                f"their next sync runs in full: {owed}"
+            )
     except Exception as e:
         logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
 

@@ -204,7 +204,7 @@ def register_skill_preloading(hooks: "HookRegistry", manager: SkillManager) -> N
 
 def register_skill_learning(
     hooks: "HookRegistry", manager: SkillManager, runtime: "AgentRuntime",
-    *, provider: str, model_name: str,
+    *, provider: str, model_name: str, context_window: int | None = None,
 ) -> None:
     """POST_AGENT — outcome tracking always runs; candidate extraction
     only actually does anything when `SkillManagerConfig.learning_enabled`
@@ -225,7 +225,7 @@ def register_skill_learning(
             description="Distills a candidate skill from a finished run and persists it via skill_manage.",
             system_prompt=_SKILL_WRITER_SYSTEM_PROMPT,
             tool_names=[n for n in ("skill_search", "skill_manage") if n in registered],
-            model=ModelSpec(provider=provider, model=model_name),
+            model=ModelSpec(provider=provider, model=model_name, context_window=context_window),
             loop=ReActLoop(),
             max_turns=_SKILL_WRITER_MAX_TURNS,
         )

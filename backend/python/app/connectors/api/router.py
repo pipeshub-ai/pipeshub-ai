@@ -4733,7 +4733,10 @@ async def stop_connector_sync(
 
         repair_status = AppStatus.IDLE.value
         repaired = await write_app_status(
-            graph_provider, logger, connector_id, repair_status, is_locked=False
+            graph_provider, logger, connector_id, repair_status, is_locked=False,
+            # A full sync that died this way never finished: its prep had already
+            # removed the permission edges it was going to rebuild.
+            full_sync_owed=app_doc.get("status") == AppStatus.FULL_SYNCING.value,
         )
         logger.warning(
             f"Repaired stale sync status for connector {connector_id} via stop request"

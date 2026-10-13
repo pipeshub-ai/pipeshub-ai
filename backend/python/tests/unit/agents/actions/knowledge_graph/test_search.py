@@ -790,6 +790,20 @@ class TestStrictScope:
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_strict_scope_reaches_the_grep_layer(self, mock_parse) -> None:
+        """Grep read an empty strict scope as unscoped and searched every app in the org."""
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(retrieval)
+        state["filters"] = {"apps": [], "kb": [], "strictScope": True}
+        grep = AsyncMock(return_value=[])
+
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(state, "roadmap")
+
+        assert grep.await_args.kwargs["filters"]["strictScope"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
     async def test_no_strict_scope_adds_no_flag(self, mock_parse) -> None:
         retrieval = _empty_retrieval()
         await execute_search(_entity_search_state(retrieval), "roadmap")

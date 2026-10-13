@@ -20,6 +20,7 @@ from app.agent_loop_lib.agent.tool_loop import (
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
+from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ImagePart,
@@ -669,16 +670,6 @@ class Agent:
 
         messages = await context.messages()
 
-        # --- Context shaping (pre_model hooks): the Phase-1 context-
-        # engineering pipeline (budget reduction -> tool-result clearing ->
-        # offload -> sliding window -> auto-compact) over what's about to be
-        # sent, plus the deterministic deadline-warning guard. Stored
-        # history in `context` is untouched — shaping is per-call.
-        budget = ContextBudget.for_model(spec.model.model)
-        messages = await hooks.dispatch_pre_model(
-            self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
-        )
-
         tool_schemas = tool_schemas_for_turn(self, spec, runtime)
         # Stable and volatile blocks when the builder splits them, so the
         # transport can end a cache breakpoint on the stable one; `system` is
@@ -689,6 +680,21 @@ class Agent:
         system_prompt = (
             "\n\n".join(block for block in system_blocks if block) if system_blocks
             else build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
+        )
+
+        # --- Context shaping (pre_model hooks): the Phase-1 context-
+        # engineering pipeline (budget reduction -> tool-result clearing ->
+        # offload -> sliding window -> auto-compact) over what's about to be
+        # sent, plus the deterministic deadline-warning guard. Stored
+        # history in `context` is untouched — shaping is per-call. The
+        # system prompt and tool schemas go on the same call, so the messages
+        # get only what they leave of the window; no shaper changes either.
+        budget = ContextBudget.for_model(
+            spec.model.model, context_window=spec.model.context_window,
+            reserved_prompt_tokens=count_text_tokens(system_prompt or "") + count_schema_tokens(tool_schemas),
+        )
+        messages = await hooks.dispatch_pre_model(
+            self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )
 
         cut_off_parts = self._cut_off_reply_parts()

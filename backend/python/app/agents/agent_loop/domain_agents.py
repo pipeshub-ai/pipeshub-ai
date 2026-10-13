@@ -491,6 +491,13 @@ def _combine_instructions(static: str | None, from_factory: str | None) -> str |
     return "\n\n".join(parts) if parts else None
 
 
+def _model_spec(provider: str, model: str | None, model_name: str, context_window: int | None) -> ModelSpec:
+    """`context_window` is configured for `model_name`; a domain on another
+    model falls back to that model's table entry."""
+    name = model or model_name
+    return ModelSpec(provider=provider, model=name, context_window=context_window if name == model_name else None)
+
+
 def register_domain_agents(
     plan: DomainAgentPlan,
     tool_registry: "ToolRegistry",
@@ -499,6 +506,7 @@ def register_domain_agents(
     *,
     provider: str,
     model_name: str,
+    context_window: int | None = None,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
 ) -> list[str]:
@@ -568,7 +576,7 @@ def register_domain_agents(
             ),
             tool_names=child_tool_names,
             tool_disclosure=tool_disclosure,
-            model=ModelSpec(provider=provider, model=definition.model or model_name),
+            model=_model_spec(provider, definition.model, model_name, context_window),
             loop=ReActLoop(),
             max_turns=definition.max_turns,
         )
@@ -609,6 +617,7 @@ def compose_domain_agents(
     *,
     provider: str,
     model_name: str,
+    context_window: int | None = None,
     definitions: tuple[DomainAgentDefinition, ...] = DOMAIN_AGENT_DEFINITIONS,
     lazy_tools: "Callable[[ToolRegistry, list[str]], tuple[list[str], str]] | None" = None,
     shared_tool_names: frozenset[str] = frozenset(),
@@ -619,7 +628,7 @@ def compose_domain_agents(
     plan = plan_domain_agents(tool_registry, definitions)
     return register_domain_agents(
         plan, tool_registry, runtime, context,
-        provider=provider, model_name=model_name, lazy_tools=lazy_tools,
+        provider=provider, model_name=model_name, context_window=context_window, lazy_tools=lazy_tools,
         shared_tool_names=shared_tool_names,
     )
 
