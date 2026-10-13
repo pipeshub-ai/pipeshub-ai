@@ -421,24 +421,29 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
 
 async def _current_app(
-    graph_provider, logger: logging.Logger, connector_id: str
+    graph_provider, logger: logging.Logger, connector_id: str, snapshot: dict | None
 ) -> dict | None:
     """The app doc as it is now, not as the boot traversal read it.
 
     That read came before the connector's init (OAuth, a live connection test),
-    which can take seconds while the API already serves requests. A stop in
-    that window clears pendingResync in the database, not in the snapshot, and
-    the start path does not look at pendingResync, so only a fresh read keeps
-    the stop in force. A failed read resumes nothing: the connector keeps its
-    marks, and the next sync anyone starts still runs in full.
+    which can take seconds while the API already serves requests, and a stop in
+    that window clears pendingResync in the database, not in the snapshot.
+
+    If the read fails, the snapshot is used. Not resuming would leave the marks
+    set with nothing published until the next boot. Publishing is safe: the
+    event is marked bootResume, and the start handler reads the doc again
+    before it queues or deletes anything (``event_service._handle_start_sync``).
     """
     if graph_provider is None:
-        return None
+        return snapshot
     try:
         return await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
     except Exception as e:
-        logger.warning(f"Could not re-read {connector_id} before resuming it: {e}")
-        return None
+        logger.warning(
+            f"Could not re-read {connector_id} before resuming it; publishing the "
+            f"resume anyway, the start handler checks it again: {e}"
+        )
+        return snapshot
 
 
 async def _publish_startup_resync(
@@ -467,7 +472,7 @@ async def _publish_startup_resync(
         manual = await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id)
         if manual:
             if not resumes_interrupted_full_sync(app) or not resumes_interrupted_full_sync(
-                await _current_app(graph_provider, logger, connector_id)
+                await _current_app(graph_provider, logger, connector_id, app)
             ):
                 logger.info(
                     f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"

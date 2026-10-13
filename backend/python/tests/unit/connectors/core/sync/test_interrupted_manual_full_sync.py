@@ -342,16 +342,28 @@ async def _published_payload(*, boot_resume: bool) -> dict:
     return producer.send_message.await_args.kwargs["message"]["payload"]
 
 
-async def _consume(payload: dict, doc: dict) -> tuple[AsyncMock, MagicMock]:
+async def _consume(
+    payload: dict,
+    doc: dict,
+    *,
+    admission: Admission = Admission.GRANTED,
+    reads: list[object] | None = None,
+    acked: bool = True,
+) -> tuple[AsyncMock, MagicMock]:
     """Run the real start handler on one event, against the app doc as it is now.
 
-    Returns the graph (whose sync-point and edge deletes are the full-sync
-    prep) and the coordinator (whose spawn is the sync starting).
+    ``reads`` scripts successive app-doc reads (an exception raises); by default
+    every read returns ``doc``. ``acked`` is what the handler must return: False
+    asks the consumer to redeliver. Returns the graph (whose sync-point and edge
+    deletes are the full-sync prep, and whose update_node holds the queue
+    write) and the coordinator (whose spawn is the sync starting).
     """
     from app.connectors.services.event_service import EventService
 
     graph = AsyncMock()
-    graph.get_document = AsyncMock(return_value=doc)
+    graph.get_document = AsyncMock(
+        side_effect=list(reads) if reads is not None else None, return_value=doc
+    )
     graph.update_node = AsyncMock()
     graph.batch_upsert_nodes = AsyncMock()
     graph.delete_sync_points_by_connector_id = AsyncMock(return_value=(1, True))
@@ -366,14 +378,24 @@ async def _consume(payload: dict, doc: dict) -> tuple[AsyncMock, MagicMock]:
 
     lease = SyncLease("c1", "tok", 1)
     coordinator = MagicMock()
-    coordinator.begin = AsyncMock(return_value=(Admission.GRANTED, lease))
+    coordinator.begin = AsyncMock(
+        return_value=(admission, lease if admission is Admission.GRANTED else None)
+    )
     coordinator.spawn = AsyncMock(side_effect=_spawn)
     coordinator.end = AsyncMock()
     with patch(
         "app.connectors.services.event_service.get_coordinator", return_value=coordinator
     ), patch.object(svc, "_ensure_connector", AsyncMock(return_value=MagicMock())):
-        assert await svc._handle_start_sync("slack", payload) is True
+        assert await svc._handle_start_sync("slack", payload) is acked
     return graph, coordinator
+
+
+def _queue_writes(graph: AsyncMock) -> list[dict]:
+    return [
+        c.args[2]
+        for c in graph.update_node.await_args_list
+        if c.args[2].get(_OWED) is True or c.args[2].get("status") == AppStatus.QUEUED.value
+    ]
 
 
 # The app doc after someone pressed stop while the boot event waited for the
@@ -395,6 +417,22 @@ class TestTheBootResumeIsCheckedAgainWhenConsumed:
         graph.delete_sync_points_by_connector_id.assert_not_awaited()
         graph.delete_connector_sync_edges.assert_not_awaited()
         coordinator.spawn.assert_not_awaited()
+        # Dropped before admission, so it never took a slot.
+        coordinator.begin.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stop_during_connector_init_holds(self) -> None:
+        """Admitted while still owed, stopped while _ensure_connector ran (OAuth
+        and HTTP, seconds): the prep must still not run."""
+        owed = _app(**_INTERRUPTED)
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            owed,
+            # before admission, at the top of the start, then after init
+            reads=[owed, owed, _STOPPED_SINCE_BOOT],
+        )
+        graph.delete_sync_points_by_connector_id.assert_not_awaited()
+        coordinator.spawn.assert_not_awaited()
         coordinator.end.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -414,3 +452,113 @@ class TestTheBootResumeIsCheckedAgainWhenConsumed:
         graph, coordinator = await _consume(payload, _STOPPED_SINCE_BOOT)
         graph.delete_sync_points_by_connector_id.assert_awaited_once()
         coordinator.spawn.assert_awaited_once()
+
+
+class TestAQueuedBootResumeIsCheckedFirst:
+    """At the concurrency limit the event is parked instead of started, and
+    parking writes pendingResync back. Checked before admission, a stop that
+    landed while the event waited cannot be undone by the queue."""
+
+    @pytest.mark.asyncio
+    async def test_a_stopped_resume_at_capacity_is_not_queued(self) -> None:
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            _STOPPED_SINCE_BOOT,
+            admission=Admission.AT_CAPACITY,
+        )
+        assert _queue_writes(graph) == []
+        graph.delete_sync_points_by_connector_id.assert_not_awaited()
+        coordinator.spawn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_resume_still_owed_at_capacity_is_queued(self) -> None:
+        graph, _ = await _consume(
+            await _published_payload(boot_resume=True),
+            _app(**_INTERRUPTED),
+            admission=Admission.AT_CAPACITY,
+        )
+        assert any(
+            w.get("status") == AppStatus.QUEUED.value and w.get(_OWED) is True
+            for w in _queue_writes(graph)
+        )
+
+
+class TestAFailedReadNeitherDropsNorStartsTheResume:
+    """A read error is not an answer. Dropping the event would lose a resume
+    that is owed, and running it could start one someone stopped, so the
+    handler asks for the event again."""
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_before_admission_redelivers(self) -> None:
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            _app(**_INTERRUPTED),
+            reads=[RuntimeError("db blip")],
+            acked=False,
+        )
+        coordinator.begin.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_after_init_redelivers_and_deletes_nothing(self) -> None:
+        owed = _app(**_INTERRUPTED)
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            owed,
+            # before admission, at the top of the start, then after init
+            reads=[owed, owed, RuntimeError("db blip")],
+            acked=False,
+        )
+        graph.delete_sync_points_by_connector_id.assert_not_awaited()
+        coordinator.spawn.assert_not_awaited()
+        coordinator.end.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_at_capacity_redelivers_without_queueing(self) -> None:
+        owed = _app(**_INTERRUPTED)
+        graph, _ = await _consume(
+            await _published_payload(boot_resume=True),
+            owed,
+            admission=Admission.AT_CAPACITY,
+            reads=[owed, RuntimeError("db blip")],
+            acked=False,
+        )
+        assert _queue_writes(graph) == []
+
+
+class TestAFailedReadAtBootStillPublishes:
+    @pytest.mark.asyncio
+    async def test_the_resume_is_published_marked_for_the_handler_to_check(self) -> None:
+        """Not publishing would leave both marks set and nothing to act on them
+        until the next boot. The event is marked, so the start handler reads
+        the doc again before it queues or deletes anything."""
+        from app.connectors_main import resume_sync_services
+
+        app = _app(**_INTERRUPTED)
+        graph = AsyncMock()
+        graph.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
+        graph.get_org_apps = AsyncMock(return_value=[app])
+        graph.get_users = AsyncMock(return_value=[{"id": "u1"}])
+        graph.get_document = AsyncMock(side_effect=RuntimeError("db blip"))
+        data_store = MagicMock()
+        data_store.graph_provider = graph
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={"sync": {"selectedStrategy": "MANUAL"}})
+        container = MagicMock()
+        container.logger = MagicMock(return_value=_LOG)
+        container.connectors_map = {}
+        dispatcher = AsyncMock()
+        dispatcher.submit = AsyncMock(return_value=SubmitResult.ACCEPTED)
+
+        with patch(
+            "app.connectors_main.scope_org_resources",
+            AsyncMock(return_value=(config_service, data_store)),
+        ), patch.object(
+            ConnectorFactory, "initialize_connector", AsyncMock(return_value=MagicMock())
+        ), patch("app.connectors_main.get_dispatcher", return_value=dispatcher), patch(
+            "app.connectors_main.sync_executor_enabled", return_value=False
+        ):
+            await resume_sync_services(container, data_store)
+
+        dispatcher.submit.assert_awaited_once()
+        assert dispatcher.submit.await_args.args[0].boot_resume is True
