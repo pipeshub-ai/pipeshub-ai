@@ -155,7 +155,7 @@ async def test_a_dense_timeout_is_reported_once_and_drops_only_dense() -> None:
 
 
 @pytest.mark.asyncio
-async def test_at_most_five_candidates_exact_first() -> None:
+async def test_at_most_five_candidates_besides_the_exact_one_exact_first() -> None:
     acme = _node("organization", "name:organization:acme", "Acme")
 
     async def dense(name: str, kinds: list[str]) -> list[EntityHit]:
@@ -163,7 +163,7 @@ async def test_at_most_five_candidates_exact_first() -> None:
 
     _, found = await _find([acme], {acme["id"]}, [{"name": "Acme", "kind": "organization"}], dense=dense)
     candidates = found.per_mention[0].candidates
-    assert len(candidates) == MAX_CANDIDATES and candidates[0].source is CandidateSource.EXACT
+    assert len(candidates) == MAX_CANDIDATES + 1 and candidates[0].source is CandidateSource.EXACT
 
 
 @pytest.mark.asyncio
@@ -192,3 +192,14 @@ async def test_unreadable_prefix_matches_past_the_row_limit_hide_nothing_and_dec
     _, found = await _find([*hidden, readable], {readable["id"]}, [{"name": "Sam", "kind": "person"}])
     (entry,) = found.per_mention
     assert entry.candidates == [] and entry.ambiguous is False
+
+
+@pytest.mark.asyncio
+async def test_an_exact_node_does_not_push_a_longer_name_out_of_the_cap() -> None:
+    sam = _node("person", "name:person:sam", "Sam")
+    longer = [_node("person", f"name:person:sam {c}", f"Sam {c}") for c in "abcde"]
+    _, found = await _find([sam, *longer], {n["id"] for n in [sam, *longer]}, [{"name": "Sam", "kind": "person"}])
+    (entry,) = found.per_mention
+    assert entry.candidates[0].source is CandidateSource.EXACT
+    assert [c.name for c in entry.candidates[1:]] == [f"Sam {c}" for c in "abcde"]
+    assert entry.ambiguous is False

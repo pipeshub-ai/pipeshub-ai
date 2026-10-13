@@ -160,7 +160,11 @@ class CandidateFinder:
 
         for index, entry in enumerate(per_mention):
             ordered = sorted(found[index].values(), key=lambda c: _RANK[c.source])
-            entry.candidates = ordered[:MAX_CANDIDATES]
+            # Exact nodes are kept outside the cap: they are taken, not offered,
+            # so they must not push a longer name out of the check.
+            exact = [c for c in ordered if c.source is CandidateSource.EXACT]
+            others = [c for c in ordered if c.source is not CandidateSource.EXACT]
+            entry.candidates = [*exact, *others[:MAX_CANDIDATES]]
         return CandidateSet(per_mention=per_mention, timed_out=timed_out)
 
     async def _dense_for(self, mention: Mention) -> tuple[list[EntityHit], bool]:
