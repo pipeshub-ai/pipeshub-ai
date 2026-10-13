@@ -1999,7 +1999,7 @@ components:
           items:
             type: string
           description: Supported grant types
-          example: ["authorization_code", "client_credentials", "refresh_token"]
+          example: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
         token_endpoint_auth_methods_supported:
           type: array
           items:
@@ -17253,12 +17253,22 @@ paths:
       description: |
         OAuth 2.0 Token Endpoint (RFC 6749 Section 4.1.3).
 
-        Exchanges an authorization code, client credentials, or refresh token for access tokens.
+        Exchanges an authorization code, client credentials, refresh token, or
+        service token for access tokens.
 
         **Grant Types:**
         - `authorization_code`: Exchange auth code for tokens (user-based)
         - `client_credentials`: Get tokens for machine-to-machine auth
         - `refresh_token`: Get new access token using refresh token. The refresh token must have been issued to the presenting `client_id`; one issued to another client is rejected with `400 invalid_grant` and is left untouched (not rotated, not revoked).
+        - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
+          delegation (RFC 8693). A service account exchanges its own token for
+          a five-minute token that acts as one named person from its
+          allow-list. **This grant sends no `client_id` or `client_secret`** —
+          the `subject_token` is the authentication, since it already carries
+          a verified identity and the scopes that bound it. Refusals about the
+          person asked for all return `400 invalid_target` with one wording;
+          the cause is recorded in the delegation log, which only an
+          administrator can read.
 
         For **`client_credentials`**, access tokens represent the **OAuth app creator** (the user who registered the client). The JWT may encode **`userId === client_id`**; the **Node API gateway** resolves the creator (**`createdBy`** claim or OAuth app lookup) — see **OAuth Provider** tag.
 
@@ -17516,7 +17526,7 @@ paths:
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
-                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
                 code_challenge_methods_supported: ["S256"]
 
@@ -17555,7 +17565,7 @@ paths:
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
-                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
                 code_challenge_methods_supported: ["S256"]
 

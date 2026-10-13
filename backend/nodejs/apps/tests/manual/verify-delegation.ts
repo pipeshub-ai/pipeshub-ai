@@ -489,8 +489,37 @@ async function main(): Promise<void> {
   );
 
   // Someone the account may not act as.
+  //
+  // An active member who was never granted, deliberately. A disabled person
+  // would be refused by `resolveSubject` before the allow-list is consulted
+  // at all, so the check would pass while never reaching the path it names.
+  await mk({
+    email: 'ungranted@example.com',
+    fullName: 'Not Granted',
+    kind: 'human',
+    role: 'member',
+  });
   await expectThrows(
     'acting as someone not on the list is refused',
+    () =>
+      exchangeService.exchange({
+        subjectToken: serviceToken.accessToken,
+        requestedSubject: 'ungranted@example.com',
+      }),
+    'may not act as',
+  );
+  check(
+    'and the log records that exact cause, for that exact person',
+    (await DelegationEvent.countDocuments({
+      outcome: 'refused',
+      refusedReason: 'not_on_allow_list',
+      requestedSubject: 'ungranted@example.com',
+    })) === 1,
+  );
+
+  // And the other shape, separately, so neither can stand in for the other.
+  await expectThrows(
+    'acting as a disabled person is refused before the list is consulted',
     () =>
       exchangeService.exchange({
         subjectToken: serviceToken.accessToken,
@@ -499,16 +528,12 @@ async function main(): Promise<void> {
     'may not act as',
   );
   check(
-    'and that refusal reaches the log with its real cause',
+    'and is recorded as a disabled subject, not as a missing permission',
     (await DelegationEvent.countDocuments({
       outcome: 'refused',
-      refusedReason: 'not_on_allow_list',
-    })) +
-      (await DelegationEvent.countDocuments({
-        outcome: 'refused',
-        refusedReason: 'subject_disabled',
-      })) >
-      0,
+      refusedReason: 'subject_disabled',
+      requestedSubject: 'away@example.com',
+    })) === 1,
   );
 
   console.log('\nattempts by an account that is no longer usable');
