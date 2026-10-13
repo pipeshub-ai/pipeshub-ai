@@ -206,6 +206,16 @@ class TestFetchCallerRole:
         default = DefaultEndpoints.NODEJS_ENDPOINT.value.rstrip("/")
         assert str(seen[0].url) == f"{default}{CALLER_ROLE_PATH}"
 
+    async def test_uses_nodes_iam_endpoint_when_nodejs_is_not_configured(self) -> None:
+        """Helm runs Node on 3001; only the endpoints Node itself writes know that."""
+        seen: list = []
+        with _node(_seen_by_node(seen)):
+            await fetch_caller_role(
+                _request(_BEARER),
+                _config_service({"iam": {"endpoint": "http://localhost:3001"}}),
+            )
+        assert str(seen[0].url) == f"http://localhost:3001{CALLER_ROLE_PATH}"
+
     async def test_trailing_slash_in_configured_endpoint(self):
         seen = []
 

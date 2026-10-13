@@ -1112,3 +1112,87 @@ async def test_records_this_release_writes_stay_updatable_under_the_previous_sch
             await provider.update_node(stamped, RECORDS, {"recordName": "renamed"})
     finally:
         assert await client.update_collection_schema(RECORDS, record_schema)
+
+
+def _named(org_id: str, kind: EntityKind, key: str, display: str, block: int = 0) -> ResolvedEntity:
+    mention = Mention(block_index=block, char_start=0, char_end=len(display), surface=display, extractor="agent")
+    entity = NamedEntity(kind=kind, display_name=display, norm_key=key, mentions=[mention])
+    return ResolvedEntity(entity=entity, graph_key=named_entity_key(org_id, kind.value, key))
+
+
+async def test_entities_are_read_by_id_within_their_org_only(graph) -> None:
+    provider, org_id, _ = graph
+    (record,) = await _records(provider, org_id, 1)
+    acme = _named(org_id, EntityKind.ORGANIZATION, "name:organization:acme", "Acme")
+    sam = _named(org_id, EntityKind.PERSON, "name:person:sam lee", "Sam Lee")
+    await _writer(provider).write(org_id, record, [acme, sam])
+
+    rows = await provider.get_named_entities_by_ids(org_id, [acme.graph_key, sam.graph_key, "missing"])
+    assert sorted((row["id"], row["kind"], row["name"], row["normKey"]) for row in rows) == sorted([
+        (acme.graph_key, "organization", "Acme", "name:organization:acme"),
+        (sam.graph_key, "person", "Sam Lee", "name:person:sam lee"),
+    ])
+    assert await provider.get_named_entities_by_ids(f"{org_id}-other", [acme.graph_key]) == []
+    assert await provider.get_named_entities_by_ids(org_id, []) == []
+
+
+async def test_a_key_prefix_matches_whole_words_of_one_kind_and_is_bounded(graph) -> None:
+    provider, org_id, _ = graph
+    (record,) = await _records(provider, org_id, 1)
+    await _writer(provider).write(org_id, record, [
+        _named(org_id, EntityKind.PERSON, "name:person:sam", "Sam"),
+        _named(org_id, EntityKind.PERSON, "name:person:sam lee", "Sam Lee"),
+        _named(org_id, EntityKind.PERSON, "name:person:sam park", "Sam Park"),
+        _named(org_id, EntityKind.PERSON, "name:person:samantha", "Samantha"),
+        _named(org_id, EntityKind.ORGANIZATION, "name:organization:sam co", "Sam Co"),
+    ])
+
+    rows = await provider.find_named_entities_by_key_prefix(org_id, [("person", "name:person:sam")], limit=10)
+    assert sorted(row["normKey"] for row in rows) == ["name:person:sam lee", "name:person:sam park"]
+    assert {row["key"] for row in rows} == {"name:person:sam"}
+    bounded = await provider.find_named_entities_by_key_prefix(org_id, [("person", "name:person:sam")], limit=1)
+    assert len(bounded) == 1
+    both = await provider.find_named_entities_by_key_prefix(
+        org_id, [("person", "name:person:sam"), ("organization", "name:organization:sam")], limit=1,
+    )
+    assert sorted(row["kind"] for row in both) == ["organization", "person"]
+    assert await provider.find_named_entities_by_key_prefix(f"{org_id}-other", [("person", "name:person:sam")]) == []
+
+
+async def test_a_key_prefix_reads_through_the_kind_and_key_index(graph) -> None:
+    provider, org_id, backend = graph
+    if backend != "arango":
+        pytest.skip("ArangoDB query plans only")
+    from app.modules.named_entities.graph_ops import _AQL_BIND, KEY_PREFIX_AQL
+
+    client = provider.http_client
+    session = await client._get_session()
+    binds = {"orgId": org_id, "limit": 21, "prefixes": [
+        {"kind": "person", "key": "name:person:sam", "low": "name:person:sam ", "high": "name:person:sam ￿"},
+    ]}
+    binds = {name: value for name, value in binds.items() if name in set(_AQL_BIND.findall(KEY_PREFIX_AQL))}
+    async with session.post(
+        f"{client.base_url}/_db/{client.database}/_api/explain", json={"query": KEY_PREFIX_AQL, "bindVars": binds},
+    ) as resp:
+        nodes = (await resp.json())["plan"]["nodes"]
+    assert [node["type"] for node in nodes if node.get("collection") == NODES] == ["IndexNode"]
+
+
+async def test_mentions_in_records_are_the_named_records_edges_only(graph) -> None:
+    provider, org_id, _ = graph
+    first, second = await _records(provider, org_id, 2)
+    acme = _named(org_id, EntityKind.ORGANIZATION, "name:organization:acme", "Acme", block=3)
+    globex = _named(org_id, EntityKind.ORGANIZATION, "name:organization:globex", "Globex", block=4)
+    initech = _named(org_id, EntityKind.ORGANIZATION, "name:organization:initech", "Initech", block=9)
+    writer = _writer(provider)
+    await writer.write(org_id, first, [acme, globex, initech])
+    await writer.write(org_id, second, [acme, globex])
+
+    rows = await provider.get_named_entity_mentions_in_records(org_id, [acme.graph_key, globex.graph_key], [first])
+    assert sorted((row["recordId"], row["entityId"], tuple(row["blockIndexes"])) for row in rows) == sorted([
+        (first, acme.graph_key, (3,)),
+        (first, globex.graph_key, (4,)),
+    ])
+    assert all(row["extractedNames"] and row["mentionCount"] == 1 for row in rows)
+    assert await provider.get_named_entity_mentions_in_records(f"{org_id}-other", [acme.graph_key], [first]) == []
+    assert await provider.get_named_entity_mentions_in_records(org_id, [], [first]) == []

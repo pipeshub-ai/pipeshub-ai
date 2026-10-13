@@ -169,6 +169,7 @@ def _result_frame(
     entity_notes: str,
     pm_hint: str,
     by_relevance: bool,
+    preamble: str = "",
 ) -> _ResultFrame:
     """The summary, fetch plan and tail a result showing ``selection`` gets.
 
@@ -230,10 +231,11 @@ def _result_frame(
             selection.omitted_records,
             by_relevance=by_relevance,
         )
-        summary = f"{header}\n\n{entity_notes}{coverage_note}"
+        summary = f"{preamble}{header}\n\n{entity_notes}{coverage_note}"
     else:
         n_pm = len(pm_shown)
         summary = (
+            f"{preamble}"
             f"No content blocks from semantic search, but {n_pm} "
             f"record{'s' if n_pm != 1 else ''} found via keyword matching. "
             "Review the record names below and fetch the most relevant "
@@ -390,6 +392,53 @@ async def execute_search(
     modified_after: str | None = None,
     modified_before: str | None = None,
     entity_ids: list[str] | None = None,
+    scope_virtual_record_ids: list[str] | None = None,
+    preamble: str = "",
+) -> str | list[Part]:
+    """Run semantic search over the agent's knowledge scope (see
+    `_execute_search`).
+
+    ``scope_virtual_record_ids`` is a scope the caller already resolved and
+    permission-checked (``search_by_entities``): the search runs inside it, an
+    empty one searches nothing, and grep, which knows no such scope, stays off.
+    ``preamble`` opens the result: the rendered text, where it counts toward
+    the result size, or the ``entities`` field of a JSON result.
+    """
+    result = await _execute_search(
+        state, query, source_ids,
+        created_after=created_after, created_before=created_before,
+        modified_after=modified_after, modified_before=modified_before,
+        entity_ids=entity_ids, scope_virtual_record_ids=scope_virtual_record_ids, preamble=preamble,
+    )
+    return with_json_preamble(result, preamble)
+
+
+def with_json_preamble(result: str | list[Part], preamble: str) -> str | list[Part]:
+    """A JSON result (an empty or failed search) with ``preamble`` as its
+    ``entities`` field; a rendered result already opens with it."""
+    if not preamble or not isinstance(result, str) or not result.startswith("{"):
+        return result
+    try:
+        payload = json.loads(result)
+    except ValueError:
+        return result
+    if not isinstance(payload, dict):
+        return result
+    return json.dumps({"entities": preamble.strip(), **payload})
+
+
+async def _execute_search(
+    state: "ChatState",
+    query: str | None,
+    source_ids: list[str] | None = None,
+    *,
+    created_after: str | None = None,
+    created_before: str | None = None,
+    modified_after: str | None = None,
+    modified_before: str | None = None,
+    entity_ids: list[str] | None = None,
+    scope_virtual_record_ids: list[str] | None = None,
+    preamble: str = "",
 ) -> str | list[Part]:
     """Run semantic search over the agent's knowledge scope.
 
@@ -538,6 +587,21 @@ async def execute_search(
                     "result_count": 0,
                 })
 
+        if scope_virtual_record_ids is not None:
+            scoped = list(dict.fromkeys(vrid for vrid in scope_virtual_record_ids if vrid))
+            if virtual_record_ids_from_tool is not None:
+                within = set(virtual_record_ids_from_tool)
+                scoped = [vrid for vrid in scoped if vrid in within]
+            if not scoped:
+                # Retrieval reads an empty id list as no restriction at all.
+                return json.dumps({
+                    "status": "success",
+                    "message": "No readable records in this search's scope.",
+                    "results": [],
+                    "result_count": 0,
+                })
+            virtual_record_ids_from_tool = scoped
+
         def _empty_result() -> str:
             if failed_sources:
                 # Nothing found where the search ran, but some sources were never searched.
@@ -586,7 +650,10 @@ async def execute_search(
         request_entity_filters = agent_filters.get("entityFilters")
         # Grep knows nothing of entity scope, so an entity-scoped search would
         # be widened by its hits; it runs only for unscoped-by-entity searches.
-        entity_scoped = bool(entity_filter_groups or record_scoped_entities or request_entity_filters)
+        entity_scoped = bool(
+            entity_filter_groups or record_scoped_entities or request_entity_filters
+            or scope_virtual_record_ids is not None
+        )
         if config_service is not None and not entity_scoped:
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
@@ -895,6 +962,7 @@ async def execute_search(
                 entity_notes=entity_notes,
                 pm_hint=pm_hint,
                 by_relevance=by_relevance,
+                preamble=preamble,
             )
 
         # Everything else in the result is sized first, so the records are cut

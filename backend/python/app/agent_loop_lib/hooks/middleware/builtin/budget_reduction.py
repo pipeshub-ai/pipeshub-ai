@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from app.agent_loop_lib.core.types import MessageRole
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _MARKER = "\n[…truncated"
 _OWN_SUFFIX = "by budget_reduction]"
@@ -48,9 +53,15 @@ def _cap_parts(msg, max_result_chars: int, truncate):
     return msg.model_copy(update={"content": capped})
 
 
-def shape_budget_reduction(max_result_chars: int = DEFAULT_MAX_RESULT_CHARS):
+def shape_budget_reduction(
+    max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+    tool_caps: Mapping[str, int] | None = None,
+):
     """Layer 1 (cheapest) context shaper: caps every individual TOOL message's
     content at `max_result_chars`.
+
+    `tool_caps` gives a named tool its own cap: a tool that sizes its output
+    for the model's window (fetch_record) is capped at that size instead.
 
     Registered on `HookRegistry.on(HookEvent.PRE_MODEL)` — a pure reducer,
     runs unconditionally regardless of total context size, because a single
@@ -83,16 +94,28 @@ def shape_budget_reduction(max_result_chars: int = DEFAULT_MAX_RESULT_CHARS):
             + text[len(text) - keep_tail:]
         )
 
+    def _caps_by_call_id(messages) -> dict[str, int]:
+        caps: dict[str, int] = {}
+        for msg in messages:
+            if msg.role == MessageRole.ASSISTANT:
+                for call in getattr(msg, "tool_calls", None) or ():
+                    cap = tool_caps.get(getattr(call, "name", ""))
+                    if cap is not None:
+                        caps[call.id] = cap
+        return caps
+
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
+        caps = _caps_by_call_id(ctx.messages) if tool_caps else {}
         shaped = []
         for msg in ctx.messages:
             if msg.role != MessageRole.TOOL:
                 shaped.append(msg)
                 continue
+            limit = caps.get(getattr(msg, "tool_call_id", None) or "", max_result_chars)
             # Multipart content (a tool that returned images) used to skip this
             # cap entirely -- the one result shape most likely to be oversized.
             if isinstance(msg.content, list):
-                shaped.append(_cap_parts(msg, max_result_chars, _truncate))
+                shaped.append(_cap_parts(msg, limit, _truncate))
                 continue
             if not isinstance(msg.content, str):
                 shaped.append(msg)
@@ -102,7 +125,7 @@ def shape_budget_reduction(max_result_chars: int = DEFAULT_MAX_RESULT_CHARS):
             # result.  L2 artifact_compaction handles turn-aware replacement
             # with compact references on later turns; the model can call
             # retrieve_artifact_content for the full data.
-            if len(msg.content) <= max_result_chars:
+            if len(msg.content) <= limit:
                 shaped.append(msg)
                 continue
             # Skip only messages already truncated by THIS shaper (avoid
@@ -112,7 +135,7 @@ def shape_budget_reduction(max_result_chars: int = DEFAULT_MAX_RESULT_CHARS):
             if _OWN_SUFFIX in msg.content:
                 shaped.append(msg)
                 continue
-            shaped.append(msg.model_copy(update={"content": _truncate(msg.content)}))
+            shaped.append(msg.model_copy(update={"content": _truncate(msg.content, limit)}))
         ctx.messages = shaped
         await next_fn()
 

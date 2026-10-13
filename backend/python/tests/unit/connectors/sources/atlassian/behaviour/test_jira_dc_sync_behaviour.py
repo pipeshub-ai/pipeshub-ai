@@ -20,9 +20,11 @@ from atlassian_behaviour_fakes import (
     json_response,
     logged,
     record_logs,
+    run_full_sync,
 )
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
     JiraDataCenterConnector,
@@ -1250,3 +1252,202 @@ class TestReindexEdgeCases:
 
         assert db.record_batches == []
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
+
+
+
+class TestUnreadApplicationRoles:
+    """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(json_response({"errorMessages": ["timeout"]}, status=408), id="408"),
+            pytest.param(httpx.ConnectError("reset"), id="network"),
+            pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(json_response({"roles": []}), id="wrong-shape"),
+            pytest.param(json_response(["jira-software"]), id="malformed-entry"),
+            pytest.param(json_response([{"groups": ["jira-software-users"]}]), id="role-without-key"),
+        ],
+    )
+    async def test_an_unread_application_role_list_keeps_the_project_access(self, jira, db, store, search, answer) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert any(external_id == "jira-software-users" for _, _, external_id, _ in before)
+
+        def roles(request: httpx.Request) -> httpx.Response:
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        jira.on("GET", f"{API}/applicationrole", roles)
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before
+        assert "1001" in db.records, "the project's issues are still synced"
+
+    async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "jira-software-users"}},
+        ]})
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == ["jira-software-users"]
+
+    async def test_a_first_sync_with_unread_application_roles_saves_the_grants_that_were_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding the project back would leave it with no access.
+        groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
+        assert groups == {"devs"}
+
+    async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
+        self, jira, db, store, search, monkeypatch
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+
+        async def stopped(*_: object) -> None:
+            raise RuntimeError("sync stopped")
+
+        monkeypatch.setattr(connector, "_update_issues_sync_checkpoint", stopped)
+        with pytest.raises(RuntimeError, match="sync stopped"):
+            await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert store.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+        monkeypatch.undo()
+
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_with_what_was_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+        assert "20000" not in db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG's saved access is kept"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_the_roles_groups(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the role's group stays"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_the_project_is_saved(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        db.fail_stored_permission_reads = True
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "a failed read is not taken for 'nothing stored'"
+
+    async def test_a_full_sync_with_unread_roles_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)  # ENG has no issues, so nothing but the held project marks it seen
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert any(external_id == "jira-software-users" for _, _, external_id, _ in before)
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the role's group stays"
+        assert connector.full_sync_coverage().complete is True, "the unlink still runs for what is really gone"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the stored grants survive the unlink"
+
+    async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/applicationrole", json_response([{"key": "jira-software", "groups": ["new-licensees"]}]))
+        await connector.run_sync()
+
+        groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
+        assert "jira-software-users" not in groups
+        assert "new-licensees" in groups

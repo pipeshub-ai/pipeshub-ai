@@ -6,10 +6,13 @@ from app.modules.named_entities.graph_writer import edge_payload
 from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.merge import (
     _PRIORITY,
+    MAX_SURFACE_CHARS,
+    entity_identity,
     mentions_to_entities,
     resolve_overlaps,
 )
 from app.modules.named_entities.normalizers.dates import NormalizationContext
+from tests.unit.modules.named_entities.test_identity_golden import CTX, GOLDEN
 
 _EXTRACTORS = ["pattern", "value", "agent", "single_call"]
 
@@ -114,3 +117,20 @@ def test_a_link_that_cannot_be_made_canonical_is_not_stored_as_raw_text() -> Non
     surface = "https://[tenant].sharepoint.com/sites?token=abc"
     raw = RawMention(EntityKind.URL, surface, 0, "b0", 0, len(surface), "pattern")
     assert mentions_to_entities([raw], NormalizationContext(tz="UTC")) == []
+
+
+def test_a_name_looked_up_at_query_time_gets_the_key_indexing_wrote() -> None:
+    for kind, surface, key, _node in GOLDEN:
+        identity = entity_identity(kind, surface, CTX)
+        assert identity is not None and identity.norm_key == key, surface
+        (entity,) = mentions_to_entities([RawMention(kind, surface, 0, "b", 0, len(surface), "agent")], CTX)  # type: ignore[arg-type]
+        assert (entity.norm_key, entity.display_name) == (identity.norm_key, identity.display[:256]), surface
+
+
+def test_no_identity_for_what_indexing_does_not_store() -> None:
+    ctx = NormalizationContext(tz="UTC")
+    assert entity_identity(EntityKind.CURRENCY, "a lot of money", ctx) is None
+    assert entity_identity(EntityKind.ORGANIZATION, "x" * (MAX_SURFACE_CHARS + 1), ctx) is None
+    assert entity_identity(EntityKind.ORGANIZATION, "4111111111111111", ctx) is None
+    # Indexing never stores a link it cannot make canonical, so a lookup builds no key for one.
+    assert entity_identity(EntityKind.URL, "https://[tenant].sharepoint.com/sites?token=abc", ctx) is None

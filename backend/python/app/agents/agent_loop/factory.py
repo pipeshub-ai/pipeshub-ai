@@ -103,12 +103,18 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
+)
+from app.agents.agent_loop.entity_search_tool import (
+    ENTITY_SEARCH_OFFERED_STATE_KEY,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    entity_search_tool_offered,
 )
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -190,9 +196,10 @@ from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
+from app.utils.render_budget import fetch_result_cap
 
 
-def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
+def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
     """Register FinalAnswerTool when PIPESHUB_ENABLE_FINAL_ANSWER is set."""
     from app.agent_loop_lib.tools.builtin.planning.final_answer import (
         FinalAnswerTool,
@@ -200,7 +207,7 @@ def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
     )
     if final_answer_enabled():
         tool_registry.register_tool(FinalAnswerTool())
-from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.agents.qna.tool_system import code_execution_enabled  # noqa: E402
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -218,6 +225,11 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__navigate",
     "knowledgegraph__lookup_record",
 })
+
+# Tools a deployment switch adds to the knowledge tools. Not counted toward
+# the lazy-disclosure threshold, so turning one on never hides web search or
+# connector tools behind fetch_tools for a request that was eager without it.
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
@@ -447,6 +459,7 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
+        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = await entity_search_tool_offered(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
@@ -762,6 +775,7 @@ class PipesHubAgentFactory:
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
                 essential_names=frozenset(essential_toolset_names),
                 context=context,
+                uncounted_names=_SWITCHED_TOOL_NAMES,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
@@ -852,6 +866,7 @@ class PipesHubAgentFactory:
             ),
             essential_names=frozenset(essential_toolset_names),
             context=context,
+            uncounted_names=_SWITCHED_TOOL_NAMES,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above
@@ -938,7 +953,7 @@ class PipesHubAgentFactory:
         return agent, runtime, goal, clarifying_questions
 
     @staticmethod
-    def _build_event_emitter(context: "AgentContext") -> Any:
+    def _build_event_emitter(context: "AgentContext") -> Any:  # noqa: ANN401
         """`AGUIEventEmitter` composed with a `TranscriptCollector` (see
         that module's docstring for why it has to be wired at this same
         `EventEmitter` layer rather than downstream of it) when this
@@ -958,9 +973,9 @@ class PipesHubAgentFactory:
 
     @staticmethod
     def _build_hooks(
-        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
-        artifact_store: Any = None, tool_registry: Any = None,
-        transport_registry: Any = None, model_name: str = "",
+        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,  # noqa: ANN401
+        artifact_store: Any = None, tool_registry: Any = None,  # noqa: ANN401
+        transport_registry: Any = None, model_name: str = "",  # noqa: ANN401
         supports_multipart_tool_result: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
@@ -983,7 +998,7 @@ class PipesHubAgentFactory:
         # and annotated with ToolMessageMeta.  Full content stays for the
         # current turn; PRE_MODEL shapers below compact it on later turns.
         if artifact_store is not None:
-            def _resolve_schema(tool_name: str):
+            def _resolve_schema(tool_name: str):  # noqa: ANN202
                 if tool_registry is None:
                     return None
                 try:
@@ -1021,7 +1036,12 @@ class PipesHubAgentFactory:
             # Only registered for providers that actually need it so
             # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
+        # Fetch sized by characters gets a cap equal to its own budget, so
+        # the shared 64K cap never cuts a fetch in the middle.
+        fetch_cap = fetch_result_cap(context.context_length)
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(             # L1
+            tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else None,
+        ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
         ))
@@ -1131,7 +1151,7 @@ class PipesHubAgentFactory:
         state = context.tool_state
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            from app.utils.chat_helpers import CitationRefMapper
             ref_mapper = CitationRefMapper()
             state["citation_ref_mapper"] = ref_mapper
 
@@ -1141,8 +1161,8 @@ class PipesHubAgentFactory:
         state["virtual_record_id_to_result"] = vrmap
 
         is_multimodal = context.is_multimodal_llm
-        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
-        from app.utils.image_admission import admission_from_state  # noqa: PLC0415
+        from app.utils.chat_helpers import ImageBudget
+        from app.utils.image_admission import admission_from_state
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
@@ -1197,8 +1217,8 @@ def _inject_images_into_message(
     image_blocks: list[dict[str, Any]],
 ) -> None:
     """Convert ``image_url`` dicts to ``ImagePart`` and set multipart content."""
-    from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
-    from app.agents.agent_loop.hooks.attachment_resolver import (  # noqa: PLC0415
+    from app.agent_loop_lib.core.messages import TextPart
+    from app.agents.agent_loop.hooks.attachment_resolver import (
         _langchain_image_to_part,
     )
 

@@ -16,10 +16,11 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 from app.agents.agent_loop.protocol.retrieval_context import (
     FetchedRangePayload,
+    FetchTruncatedBy,
     RetrievalContextPayload,
     RetrievalSource,
     RetrievalStatus,
@@ -98,8 +99,12 @@ def _str_or_none(value: object) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
-def _block_index(value: object) -> int | None:
+def _int_or_none(value: object) -> int | None:
+    """An int that is not a bool, else None: entries come from tool state."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+_block_index = _int_or_none
 
 
 class RetrievalContextLedger:
@@ -222,6 +227,15 @@ class RetrievalContextLedger:
                     tableTruncation=(
                         TableTruncationPayload.model_validate(table)
                         if isinstance(table, Mapping) else None
+                    ),
+                    truncatedBy=(
+                        entry.get("truncatedBy")
+                        if entry.get("truncatedBy") in get_args(FetchTruncatedBy) else None
+                    ),
+                    requestedMaxBlocks=_int_or_none(entry.get("requestedMaxBlocks")),
+                    startBlockSent=(
+                        entry.get("startBlockSent")
+                        if isinstance(entry.get("startBlockSent"), bool) else None
                     ),
                 )
                 key: FetchKey = (

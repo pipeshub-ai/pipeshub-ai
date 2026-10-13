@@ -13,6 +13,7 @@ from app.agents.actions.knowledge_graph.ops.fetch import (
     execute_fetch_record,
     resolve_block_cap,
 )
+from app.utils.render_budget import MAX_RENDER_CHARS
 
 
 class TestResolveBlockCap:
@@ -58,7 +59,7 @@ class TestResolveBlockCap:
             assert resolve_block_cap(-1) == 100
 
 
-def _make_context(**overrides: Any) -> SimpleNamespace:
+def _make_context(**overrides: Any) -> SimpleNamespace:  # noqa: ANN401
     defaults: dict[str, Any] = {
         "model_name": "gpt-4",
         "org_id": "org-1",
@@ -507,7 +508,7 @@ class TestWholeDocumentRequests:
         targeted, _ = await self._run(needs_whole_document=False)
 
         for text in (whole, targeted):
-            assert len(text) > 60_000, "the window was left unused"
+            assert len(text) > 0.8 * MAX_RENDER_CHARS, "the allowance was left unused"
 
 
 class TestFetchTraceForTheOptInFrame:

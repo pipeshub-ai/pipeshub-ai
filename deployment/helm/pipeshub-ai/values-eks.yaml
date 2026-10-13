@@ -11,7 +11,7 @@
 
 image:
   repository: pipeshubai/pipeshub-ai
-  tag: "0.9.1-slim"
+  tag: "0.10.0-slim"
   pullPolicy: IfNotPresent
 
 s3SignatureV4Preload: false
@@ -44,30 +44,6 @@ resources:
 # App pods share nothing. Local disk would not be visible across replicas.
 persistence:
   enabled: false
-
-# The pinned 0.9.1 image runs as root. process_monitor.sh tees to
-# /app/process_monitor.log, which is not writable by uid 1000, and the
-# container-level securityContext overrides the pod one. Both must be root
-# or the app container exits before it listens.
-# Images built after #3782 own /app as uid 1000 and drop to it themselves; with
-# those, root here crash-loops ("setpriv: setresuid failed"), so remove both
-# overrides when moving the tag past 0.9.1 (as values-local.yaml does).
-podSecurityContext:
-  runAsNonRoot: false
-  runAsUser: 0
-  runAsGroup: 0
-  fsGroup: 0
-  fsGroupChangePolicy: OnRootMismatch
-  seccompProfile:
-    type: RuntimeDefault
-securityContext:
-  runAsNonRoot: false
-  runAsUser: 0
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
-  capabilities:
-    drop:
-      - ALL
 
 # Privileged DinD only on the app node group. See deployment/helm/aws/cluster.yaml.
 nodeSelector:
@@ -222,15 +198,7 @@ qdrant:
     QDRANT__CLUSTER__CONSENSUS__MAX_MESSAGE_QUEUE_SIZE: "1000"
     QDRANT__STORAGE__COLLECTION__REPLICATION_FACTOR: "2"
     QDRANT__STORAGE__COLLECTION__WRITE_CONSISTENCY_FACTOR: "1"
-  affinity:
-    podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: pipeshub-ai
-              app.kubernetes.io/instance: pipeshub-ai
-              app.kubernetes.io/component: qdrant
-          topologyKey: kubernetes.io/hostname
+  antiAffinity: hard
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: topology.kubernetes.io/zone
