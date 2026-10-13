@@ -294,6 +294,8 @@ services:
       # better answers (keyword hits merged by rank fusion, keyword-dense
       # search queries). Off by default. A feature's own switch below, when
       # set to true or false, overrides it for that feature; blank follows it.
+      # It also turns on named-entity extraction while indexing, and the
+      # entity tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
       - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
