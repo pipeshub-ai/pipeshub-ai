@@ -896,6 +896,19 @@ def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(store, "get_sync_point", get_sync_point)
 
 
+
+def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make writing the stored-access note fail, as a database error would."""
+    real = store.update_sync_point
+
+    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
+        if key.endswith("stored_access"):
+            raise RuntimeError("database unavailable")
+        await real(key, data)
+
+    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
+
+
 class TestUnfinishedUserRead:
     """A user list that stops part-way must not shrink who can see what.
 
@@ -1109,6 +1122,38 @@ class TestUnfinishedUserRead:
 
         assert len(site_db.user_groups) == groups_saved, "groups the first sync saved are kept"
         assert ("EntityType.GROUP", "grp-dev") in acl(site_db), "a project it never saved is saved with what was read"
+
+    async def test_a_note_that_cannot_be_written_stops_the_sync_before_groups_are_saved(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        fail_note_writes(checkpoints, monkeypatch)
+
+        with pytest.raises(RuntimeError, match="database unavailable"):
+            await connector.run_sync()
+
+        assert site_db.user_groups == [], "no membership is saved without its note"
+
+    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+        for key in [k for k in checkpoints.sync_points if k.endswith("stored_access")]:
+            del checkpoints.sync_points[key]  # as left by a version without the notes
+
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(site_db) == before
+        note = checkpoints.values_for("stored_access") or {}
+        assert all(note.get(kind) for kind in ("groups", "roles", "leads", "projects")), "every kind is noted once"
 
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
