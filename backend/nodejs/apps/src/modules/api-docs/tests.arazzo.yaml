@@ -9,9 +9,6 @@
 # SDK makes it a constant with no struct field, and the generated Go test does not compile.
 # Compare only strings and booleans in a response-body condition: the generated Go test compares
 # a number as an int, so an int64 field never equals it.
-# shortcut: the cases that wait for an LLM answer are not generated for Python
-# (x-speakeasy-test-targets-exclude): the Python SDK stops a call after httpx's default 5 s, and these
-# calls often take longer. Generate them for Python again once the Python SDK sets a longer default.
 arazzo: 1.0.1
 info:
   title: Test Suite
@@ -128,8 +125,6 @@ workflows:
     x-speakeasy-test-group: Agents
 
   - workflowId: agentConversationRead
-    x-speakeasy-test-targets-exclude:
-      - python
     steps:
       - stepId: createAgent
         operationId: createAgent
@@ -203,8 +198,6 @@ workflows:
     x-speakeasy-test-group: Agents
 
   - workflowId: agentConversationTitle
-    x-speakeasy-test-targets-exclude:
-      - python
     steps:
       - stepId: createAgent
         operationId: createAgent
@@ -273,8 +266,6 @@ workflows:
     x-speakeasy-test-group: Agents
 
   - workflowId: agentConversationArchive
-    x-speakeasy-test-targets-exclude:
-      - python
     steps:
       - stepId: createAgent
         operationId: createAgent
@@ -560,8 +551,6 @@ workflows:
 
   # Needs one indexed document; provision_sdk_test_env.py seeds it. Search answers 404 without one.
   - workflowId: searchLifecycle
-    x-speakeasy-test-targets-exclude:
-      - python
     steps:
       - stepId: search
         operationId: search

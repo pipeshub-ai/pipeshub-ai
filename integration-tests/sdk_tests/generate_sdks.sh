@@ -57,6 +57,15 @@ generate() {
       's#clientID: "<YOUR_CLIENT_ID_HERE>",#clientID: process.env["PIPESHUB_CLIENT_ID"] ?? "value",#g' {} + || return 1
   fi
 
+  # The generated Python tests build their client without a timeout, so httpx's default 5 s
+  # per read applies, and a case that waits for an LLM answer times out. Fail if the patch
+  # stops matching, so the timeout cannot silently go away.
+  local test_client="$sdk_dir/tests/test_client.py"
+  if [ "$lang" = python ] && [ -f "$test_client" ]; then
+    sed -i 's/return httpx.Client(/return httpx.Client(timeout=300,/' "$test_client" || return 1
+    grep -q 'httpx.Client(timeout=300,' "$test_client" || return 1
+  fi
+
   "$SDK_TESTS_DIR/handwritten/install.sh" "$lang" "$WORK_DIR/$sdk_dir"
 }
 
