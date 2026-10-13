@@ -42,6 +42,13 @@ generate() {
   mkdir -p "$sdk_dir/.speakeasy" || return 1
   cp .speakeasy/tests.arazzo.yaml "$sdk_dir/.speakeasy/tests.arazzo.yaml" || return 1
 
+  # shortcut: Speakeasy 1.801.0 stops on an examples/package.json with no "scripts" key, which
+  # pipeshub-sdk-typescript has since 9 Oct. Remove this once that repo adds "scripts": {}.
+  local examples="$sdk_dir/examples/package.json"
+  if [ "$lang" = typescript ] && [ -f "$examples" ] && ! jq -e 'has("scripts")' "$examples" > /dev/null; then
+    jq '. + {scripts: {}}' "$examples" > "$examples.tmp" && mv "$examples.tmp" "$examples" || return 1
+  fi
+
   speakeasy run -t "$lang" --skip-upload-spec --skip-versioning --skip-testing -o console || return 1
 
   # Same patch generate-sdks.yml applies before it opens the SDK pull request.
