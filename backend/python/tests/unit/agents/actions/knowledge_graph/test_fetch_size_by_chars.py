@@ -346,3 +346,36 @@ class TestThePromptPrefixPerMode:
 
         assert first == second
         assert FETCH_RECORD_TOOL_NAME in first[0]
+
+
+class TestSmallWindowsAdvance:
+    """A 1k- or 2k-token window gives a call under 2,000 characters. The only
+    record of the call must still be read, or every retry repeats."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("window", [1_024, 2_048])
+    async def test_one_oversized_record_is_read_on_hint_by_hint(self, switch, window: int) -> None:
+        record = _text_record("sw", 12, 300)
+        context = _context(context_length=window, query="")
+        seen: set[int] = set()
+        start = 0
+        for _ in range(60):
+            text = await _fetch(context, [record], start_block=start, start_block_sent=start > 0)
+            assert "was not read" not in text
+            assert len(text) <= resolve_render_budget(window).max_chars
+            seen |= set(_outcome(context, "rec-sw")["shownBlocks"])
+            match = re.search(r"start_block=(\d+)", text)
+            if match is None:
+                break
+            assert int(match.group(1)) > start
+            start = int(match.group(1))
+        assert seen == set(range(12)), "the hints walk the whole record"
+
+    @pytest.mark.asyncio
+    async def test_the_floor_still_applies_to_a_share_cut_for_another_record(self, switch) -> None:
+        context = _context(context_length=2_048, query="")
+
+        text = await _fetch(context, [_text_record("fa", 12, 300), _text_record("fb", 12, 300)])
+
+        assert "Record rec-fa was not read" in text
+        assert _shown(text, "fb")
