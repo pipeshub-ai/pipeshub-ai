@@ -5,18 +5,20 @@ import mongoose from 'mongoose'
 import {
   allocateSeq,
   appendMessages,
-  assertNoActiveRun,
   attachSharedBy,
   attachSharedByIfRecipient,
   formatPreviousConversations,
   markAgentConversationFailed,
   markConversationFailed,
+  releaseRun,
+  reserveRun,
   replaceMessageWithError,
   saveCompleteAgentConversation,
   saveCompleteConversation,
   savePartialConversation,
   staleAskUserQuestionToolCallIds,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import { InMemoryChatStore } from '../controller/chat-test-harness'
 import { ConflictError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -259,68 +261,142 @@ describe('Saving chat answers (enterprise search utils)', () => {
     })
   })
 
-  describe('assertNoActiveRun', () => {
-    type RunState = { status?: string; lastActivityAt?: number } | null
+  describe('reserveRun / releaseRun', () => {
+    const ORG = new mongoose.Types.ObjectId()
+    const USER = new mongoose.Types.ObjectId()
+    const mine = (id: unknown): Record<string, unknown> => ({ _id: id, orgId: ORG, userId: USER, isDeleted: false })
 
-    /** `ChatSession.findOne(...).select(...).lean()` returning each state in turn (the last one repeats). */
-    const stubSessionStates = (...states: RunState[]): sinon.SinonStub => {
-      let call = 0
-      return sinon.stub(ChatSession, 'findOne').callsFake((() => ({
-        select: () => ({
-          lean: () => Promise.resolve(states[Math.min(call++, states.length - 1)]),
-        }),
-      })) as never)
-    }
+    let store: InMemoryChatStore
+    const addThread = (fields: Record<string, unknown> = {}): ReturnType<InMemoryChatStore['addSession']> =>
+      store.addSession({ orgId: ORG, userId: USER, isDeleted: false, ...fields })
+    const fakeClock = (): sinon.SinonFakeTimers => sinon.useFakeTimers({ now: Date.now() })
 
-    const filter = { _id: new mongoose.Types.ObjectId(), isDeleted: false }
-    const running = (): RunState => ({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
-
-    it('lets a message through when the previous run has finished', async () => {
-      stubSessionStates({ status: CONVERSATION_STATUS.COMPLETE, lastActivityAt: Date.now() })
-
-      await assertNoActiveRun(filter)
+    beforeEach(() => {
+      store = new InMemoryChatStore()
+      store.install()
     })
 
-    it('reads the status for the caller\'s own filter, outside any transaction', async () => {
-      const findOne = stubSessionStates(null)
+    it('marks an idle thread in progress and remembers what it was', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
 
-      await assertNoActiveRun(filter)
+      const reservation = await reserveRun(mine(thread._id))
 
-      expect(findOne.calledOnceWithExactly(filter)).to.equal(true)
+      expect(reservation?.previousStatus).to.equal(CONVERSATION_STATUS.COMPLETE)
+      expect(String(reservation?.sessionId)).to.equal(String(thread._id))
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
     })
 
-    it('refuses with a conflict when a run is still going after the settle window', async () => {
-      const clock = sinon.useFakeTimers({ now: Date.now() })
-      stubSessionStates(running())
+    it('returns null for a thread the caller does not own, and leaves it alone', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
 
-      const outcome = rejection(assertNoActiveRun(filter, 1000))
+      const reservation = await reserveRun({ ...mine(thread._id), userId: new mongoose.Types.ObjectId() })
+
+      expect(reservation).to.equal(null)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+    })
+
+    it('lets exactly one of two simultaneous messages through', async () => {
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+
+      const first = reserveRun(mine(thread._id), 1000)
+      const second = reserveRun(mine(thread._id), 1000)
+      const outcomes = Promise.allSettled([first, second])
+      await clock.tickAsync(1500)
+      const results = await outcomes
+
+      expect(results.filter((r) => r.status === 'fulfilled')).to.have.length(1)
+      const refused = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
+      expect(refused.reason).to.be.instanceOf(ConflictError)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
+    })
+
+    it('refuses with a conflict when a run is still going after the settle window, without changing the thread', async () => {
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
+
+      const outcome = rejection(reserveRun(mine(thread._id), 1000))
       await clock.tickAsync(1500)
 
       expect(await outcome).to.be.instanceOf(ConflictError)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
     })
 
     it('waits out a run that is being cancelled instead of refusing a quick Stop-then-send', async () => {
-      const clock = sinon.useFakeTimers({ now: Date.now() })
-      const findOne = stubSessionStates(running(), running(), { status: CONVERSATION_STATUS.STOPPED, lastActivityAt: Date.now() })
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
 
-      const settled = assertNoActiveRun(filter, 5000)
-      await clock.tickAsync(1000)
-      await settled
+      const reserved = reserveRun(mine(thread._id), 5000)
+      await clock.tickAsync(500)
+      thread.set('status', CONVERSATION_STATUS.STOPPED)
+      await clock.tickAsync(500)
+      const reservation = await reserved
 
-      expect(findOne.callCount).to.equal(3)
+      expect(reservation?.previousStatus).to.equal(CONVERSATION_STATUS.STOPPED)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
     })
 
     it('does not treat a stale in-progress status as a live run (a crashed server must not lock the thread)', async () => {
-      const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000
-      stubSessionStates({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: twoHoursAgo })
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() - 2 * 60 * 60 * 1000 })
 
-      await assertNoActiveRun(filter)
+      const reservation = await reserveRun(mine(thread._id))
+
+      expect(reservation?.previousStatus, 'the abandoned run is recorded as failed, not as in progress').to.equal(
+        CONVERSATION_STATUS.FAILED,
+      )
     })
 
-    it('does not block a session that has no activity timestamp', async () => {
-      stubSessionStates({ status: CONVERSATION_STATUS.INPROGRESS })
+    it('does not block a thread that has no activity timestamp', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: null })
 
-      await assertNoActiveRun(filter)
+      expect(await reserveRun(mine(thread._id))).to.not.equal(null)
+    })
+
+    it('does not read the thread inside a transaction, which would never see a status change', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+      const update = ChatSession.findOneAndUpdate as unknown as sinon.SinonStub
+
+      await reserveRun(mine(thread._id))
+
+      expect(update.firstCall.args[2]).to.not.have.property('session')
+    })
+
+    describe('releaseRun', () => {
+      it('puts the thread back to what it was when the run never took it over', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+
+        await releaseRun(reservation)
+
+        expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+      })
+
+      it('does not overwrite the outcome a run has already saved', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.STOPPED)
+
+        await releaseRun(reservation)
+
+        expect(thread.status).to.equal(CONVERSATION_STATUS.STOPPED)
+      })
+
+      it('does nothing without a reservation', async () => {
+        const update = ChatSession.findOneAndUpdate as unknown as sinon.SinonStub
+
+        await releaseRun(null)
+
+        expect(update.called).to.equal(false)
+      })
+
+      it('never throws if the database is unreachable, so it cannot mask the original error', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        sinon.restore()
+        sinon.stub(ChatSession, 'findOneAndUpdate').throws(new Error('connection lost'))
+
+        await releaseRun(reservation)
+      })
     })
   })
 

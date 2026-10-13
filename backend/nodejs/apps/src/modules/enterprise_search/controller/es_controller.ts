@@ -82,7 +82,9 @@ import {
   withoutErrorStacks,
   recordClassifiedFailureOnSession,
   savePartialConversation,
-  assertNoActiveRun,
+  releaseRun,
+  reserveRun,
+  type RunReservation,
 } from '../utils/utils';
 import {
   attachUpstreamAbort,
@@ -298,6 +300,11 @@ export {
     try {
       return await aiServiceCommand.executeStream(signal);
     } catch (error: any) {
+      // The caller's own cap abandoned the open (see `attachUpstreamAbort`): it already finalized the run.
+      if (signal?.aborted) {
+        logger.info('AI service stream open abandoned', logContext);
+        return undefined;
+      }
       const mappedError = handleBackendError(error, operation);
       logger.error('AI service stream start failed', {
         ...logContext,
@@ -799,6 +806,7 @@ export const streamChat =
       timer.mark('ai_stream_open');
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
@@ -1279,6 +1287,7 @@ export const addMessageStream =
 
     let session: ClientSession | null = null;
     let existingConversation: IChatSessionDocument | null = null;
+    let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -1394,7 +1403,7 @@ export const addMessageStream =
         timestamp: new Date().toISOString(),
       });
 
-      await assertNoActiveRun({
+      reservation = await reserveRun({
         _id: conversationId,
         orgId,
         userId,
@@ -1485,6 +1494,7 @@ export const addMessageStream =
       );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
@@ -1949,6 +1959,8 @@ export const addMessageStream =
             'internal_error',
             error.stack,
           );
+        } else {
+          await releaseRun(reservation);
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -3132,6 +3144,7 @@ async function regenerateAnswersInternal(
   const orgId = req.user?.orgId;
 
   let existingConversation: IChatSessionDocument | null = null;
+  let reservation: RunReservation | null = null;
 
   const modelInfo = extractModelInfo(req.body);
   const protocol = resolveProtocol(
@@ -3232,7 +3245,7 @@ async function regenerateAnswersInternal(
     if (!conversationId) {
       throw new BadRequestError('Conversation ID is required');
     }
-    await assertNoActiveRun(
+    reservation = await reserveRun(
       config.buildQueryFilter(conversationId, orgId, userId, agentKey),
     );
 
@@ -3356,12 +3369,14 @@ async function regenerateAnswersInternal(
         contentAccumulator.getText(),
         null,
         { replaceMessageId: messageId || undefined },
-      ).catch((err: any) => {
-        logger.error('Failed to save partial conversation on disconnect', {
-          requestId,
-          error: err?.message,
-        });
-      });
+      )
+        .catch((err: any) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err?.message,
+          });
+        })
+        .finally(() => releaseRun(reservation));
     });
     const stream = await startAIStream(
       aiCommandOptions,
@@ -3371,6 +3386,7 @@ async function regenerateAnswersInternal(
     );
 
     if (!stream) {
+      if (upstreamAbort.isAborted()) return;
       throw new Error('Failed to get stream from AI service');
     }
     upstreamAbort.bindStream(stream);
@@ -3568,6 +3584,7 @@ async function regenerateAnswersInternal(
         }
       }
 
+      await releaseRun(reservation);
       res.end();
     });
 
@@ -3607,6 +3624,7 @@ async function regenerateAnswersInternal(
           protocol,
         );
       }
+      await releaseRun(reservation);
       res.end();
     });
   } catch (error: any) {
@@ -3648,6 +3666,7 @@ async function regenerateAnswersInternal(
         protocol,
       );
     }
+    await releaseRun(reservation);
     res.end();
   } finally {
     if (session) {
@@ -5715,6 +5734,7 @@ export const deleteAgent =
       );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
@@ -6206,6 +6226,7 @@ export const addMessageStreamToAgentConversation =
 
     let session: ClientSession | null = null;
     let existingConversation: IChatSessionDocument | null = null;
+    let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -6323,7 +6344,7 @@ export const addMessageStreamToAgentConversation =
         timestamp: new Date().toISOString(),
       });
 
-      await assertNoActiveRun({
+      reservation = await reserveRun({
         _id: conversationId,
         agentKey,
         orgId,
@@ -6415,6 +6436,7 @@ export const addMessageStreamToAgentConversation =
       );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
@@ -6877,6 +6899,8 @@ export const addMessageStreamToAgentConversation =
             'internal_error',
             error.stack,
           );
+        } else {
+          await releaseRun(reservation);
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {

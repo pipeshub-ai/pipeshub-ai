@@ -101,7 +101,7 @@ describe('stream-lifecycle', () => {
       expect(onAbandon.called).to.be.false
     })
 
-    it('aborts the signal at the cap when no stream is bound yet, without running onAbandon', () => {
+    it('finalizes as abandoned at the cap even when no stream is bound yet, so the run is not recorded as failed', () => {
       const clock = sinon.useFakeTimers()
       const res = createMockRes()
       const onAbandon = sinon.stub()
@@ -111,7 +111,7 @@ describe('stream-lifecycle', () => {
       clock.tick(CAP_MS * 2)
 
       expect(handle.isAborted()).to.be.true
-      expect(onAbandon.called).to.be.false
+      expect(onAbandon.calledOnce).to.be.true
     })
 
     it('arms the cap only once even if close fires more than once', () => {

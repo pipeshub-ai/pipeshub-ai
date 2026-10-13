@@ -385,9 +385,10 @@ describe('Enterprise Search Controller', () => {
     if (!(ChatSessionMessage.aggregate as any).restore) {
       sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
     }
-    // The in-progress-run guard reads the session itself; streaming tests don't care.
-    if (!(searchUtils.assertNoActiveRun as any).restore) {
-      sinon.stub(searchUtils, 'assertNoActiveRun').resolves()
+    // The run reservation writes the session itself; these tests don't care. The real
+    // reservation is covered in utils.persistence.test.ts and es_controller.streaming.test.ts.
+    if (!(searchUtils.reserveRun as any).restore) {
+      sinon.stub(searchUtils, 'reserveRun').resolves(null)
     }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
@@ -8778,7 +8779,7 @@ describe('Enterprise Search Controller', () => {
     }
 
     it('addMessageStream refuses the message and never starts a second run', async () => {
-      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
       const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
       const markFailed = sinon.stub(searchUtils, 'markConversationFailed').resolves()
 
@@ -8794,14 +8795,14 @@ describe('Enterprise Search Controller', () => {
 
       expectRefusedWithoutStartingARun(res, executeStream)
       expect(markFailed.called).to.be.false
-      const filter = (searchUtils.assertNoActiveRun as sinon.SinonStub).firstCall.args[0]
+      const filter = (searchUtils.reserveRun as sinon.SinonStub).firstCall.args[0]
       expect(String(filter._id)).to.equal(VALID_OID)
       expect(String(filter.orgId)).to.equal(VALID_OID2)
       expect(String(filter.userId)).to.equal(VALID_OID)
     })
 
     it('addMessageStreamToAgentConversation refuses the message and never starts a second run', async () => {
-      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
       const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
       sinon.stub(searchUtils, 'markConversationFailed').resolves()
 
@@ -8816,12 +8817,12 @@ describe('Enterprise Search Controller', () => {
       await addMessageStreamToAgentConversation(createMockAppConfig())(req, res)
 
       expectRefusedWithoutStartingARun(res, executeStream)
-      const filter = (searchUtils.assertNoActiveRun as sinon.SinonStub).firstCall.args[0]
+      const filter = (searchUtils.reserveRun as sinon.SinonStub).firstCall.args[0]
       expect(filter.agentKey).to.equal('agent-1')
     })
 
     it('regenerateAnswers refuses and never starts a second run', async () => {
-      ;(searchUtils.assertNoActiveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
       const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
       sinon.stub(searchUtils, 'markConversationFailed').resolves()
 

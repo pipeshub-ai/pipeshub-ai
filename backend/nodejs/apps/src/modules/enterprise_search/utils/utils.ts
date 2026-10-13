@@ -1624,39 +1624,92 @@ const ACTIVE_RUN_WINDOW_MS = DETACHED_RUN_MAX_MS + 5 * 60 * 1000;
 const ACTIVE_RUN_SETTLE_MS = 15_000;
 const ACTIVE_RUN_POLL_MS = 250;
 
-const isRunActive = (
-  session: { status?: unknown; lastActivityAt?: unknown } | null,
-): boolean => {
-  if (session?.status !== CONVERSATION_STATUS.INPROGRESS) return false;
-  const lastActivity = Number(session.lastActivityAt ?? 0);
-  if (!(lastActivity > 0)) return false;
-  return Date.now() - lastActivity < ACTIVE_RUN_WINDOW_MS;
-};
+export interface RunReservation {
+  sessionId: mongoose.Types.ObjectId;
+  /** What the thread was before the run, for `releaseRun` to put back. */
+  previousStatus: string;
+}
 
 /**
- * Refuses a new run on a thread whose previous run is still going (it outlives
- * a refresh): both would write the same session and the older one could
- * overwrite the newer one's status. Waits briefly first so a quick
- * Stop-then-send isn't rejected while the cancelled run finishes saving.
- * Reads without a session on purpose: inside a transaction snapshot the status
- * would never change.
+ * Claims the thread for a new run in one atomic update, so two requests that
+ * arrive together cannot both start one: a leftover run from before a refresh
+ * would otherwise be joined by a second writer of the same session, and the
+ * older one could overwrite the newer one's status.
+ *
+ * Waits briefly when a run is going so a quick Stop-then-send isn't refused
+ * while the cancelled run finishes saving, then refuses with a conflict.
+ * Returns null when no session matches `filter`, leaving the caller's own
+ * lookup to report that. A status older than the run cap counts as idle, so a
+ * crashed server can't lock a thread. Reads and writes without a session on
+ * purpose: inside a transaction snapshot the status would never change.
  */
-export const assertNoActiveRun = async (
+export const reserveRun = async (
   filter: FilterQuery<IChatSessionDocument>,
   settleMs: number = ACTIVE_RUN_SETTLE_MS,
-): Promise<void> => {
+): Promise<RunReservation | null> => {
   const deadline = Date.now() + settleMs;
   for (;;) {
-    const current = await ChatSession.findOne(filter)
-      .select('status lastActivityAt')
+    const now = Date.now();
+    const previous = await ChatSession.findOneAndUpdate(
+      {
+        $and: [
+          filter,
+          {
+            $or: [
+              { status: { $ne: CONVERSATION_STATUS.INPROGRESS } },
+              { lastActivityAt: null },
+              { lastActivityAt: { $lte: now - ACTIVE_RUN_WINDOW_MS } },
+            ],
+          },
+        ],
+      },
+      { $set: { status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: now } },
+      { new: false },
+    )
+      .select('status')
       .lean();
-    if (!isRunActive(current)) return;
+    if (previous) {
+      const was = String(previous.status ?? CONVERSATION_STATUS.COMPLETE);
+      return {
+        sessionId: previous._id as mongoose.Types.ObjectId,
+        previousStatus:
+          was === CONVERSATION_STATUS.INPROGRESS
+            ? CONVERSATION_STATUS.FAILED
+            : was,
+      };
+    }
+    const exists = await ChatSession.findOne(filter).select('_id').lean();
+    if (!exists) return null;
     if (Date.now() >= deadline) {
       throw new ConflictError(
         'A response is still being generated for this conversation. Wait for it to finish, or stop it, then send your message again.',
       );
     }
     await new Promise((resolve) => setTimeout(resolve, ACTIVE_RUN_POLL_MS));
+  }
+};
+
+/**
+ * Gives the thread back when a run that was reserved never got going, or as a
+ * safety net once one has finished. Only touches a session still marked in
+ * progress, so a status the run itself saved is never overwritten. Best
+ * effort: it must not mask the error being handled, and the activity window
+ * frees a thread this misses.
+ */
+export const releaseRun = async (
+  reservation: RunReservation | null,
+): Promise<void> => {
+  if (!reservation) return;
+  try {
+    await ChatSession.findOneAndUpdate(
+      { _id: reservation.sessionId, status: CONVERSATION_STATUS.INPROGRESS },
+      { $set: { status: reservation.previousStatus } },
+    ).lean();
+  } catch (error: any) {
+    logger.warn('Failed to release the run reservation', {
+      sessionId: String(reservation.sessionId),
+      error: error?.message,
+    });
   }
 };
 

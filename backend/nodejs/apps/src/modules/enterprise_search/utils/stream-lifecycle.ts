@@ -102,10 +102,7 @@ export function attachUpstreamAbort(
         maxDetachedMs,
       });
       controller.abort();
-      // Still awaiting the upstream response: aborting the signal is all there
-      // is to tear down, and the caller's own error path records the failure.
-      if (!boundStream) return;
-      boundStream.destroy();
+      boundStream?.destroy();
       onAbandon?.();
     }, maxDetachedMs);
     abandonTimer.unref();

@@ -124,41 +124,70 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * Stops that were pressed before the run's conversation id was known, by runId.
+ * `onConnected` fills the id in even after the slot has moved on, so the cancel
+ * can still be addressed once `conversation_created` arrives.
+ */
+const pendingStopConvIds = new Map<string, string | null>();
+
+interface CancelHandle {
+  isAcknowledged(): boolean;
+  /** Resolves once the cancel was acknowledged or the retry window closed. */
+  readonly done: Promise<void>;
+}
+
+/**
  * Posts the cancel until the backend reports `cancelled: true` or the retry
  * window closes. Deliberately independent of the slot's lifecycle: it keeps
  * going after the grace timer settles the UI, and after a Stop-then-send has
  * moved the slot on to a new run. `knownConvId` is null on the very first
- * turn of a new chat, so the id is read from the slot once it arrives.
+ * turn of a new chat; the id then comes from `pendingStopConvIds`.
  */
 function postCancelUntilAcknowledged(
   slotId: string,
   runId: string,
   agentId: string | null,
   knownConvId: string | null,
-): void {
+): CancelHandle {
   const deadline = Date.now() + STOP_CANCEL_RETRY_WINDOW_MS;
   let delay = STOP_CANCEL_RETRY_BASE_MS;
+  let acknowledged = false;
+  if (!knownConvId) pendingStopConvIds.set(runId, null);
 
-  const attempt = async (): Promise<void> => {
-    const convId = knownConvId ?? useChatStore.getState().slots[slotId]?.convId ?? null;
-    if (convId) {
-      try {
-        const result = await withTimeout(
-          ChatApi.cancelStream(convId, runId, agentId ?? undefined),
-          STOP_CANCEL_ATTEMPT_TIMEOUT_MS,
-        );
-        if (result?.cancelled) return;
-      } catch (err) {
-        console.warn('[streaming] cancelStream request failed for slot', slotId, err);
+  const done = new Promise<void>((resolve) => {
+    const finish = (): void => {
+      pendingStopConvIds.delete(runId);
+      resolve();
+    };
+    const attempt = async (): Promise<void> => {
+      const convId = knownConvId ?? pendingStopConvIds.get(runId) ?? null;
+      if (convId) {
+        try {
+          const result = await withTimeout(
+            ChatApi.cancelStream(convId, runId, agentId ?? undefined),
+            STOP_CANCEL_ATTEMPT_TIMEOUT_MS,
+          );
+          if (result?.cancelled) {
+            acknowledged = true;
+            finish();
+            return;
+          }
+        } catch (err) {
+          console.warn('[streaming] cancelStream request failed for slot', slotId, err);
+        }
       }
-    }
-    if (Date.now() >= deadline) return;
-    const wait = convId ? delay : STOP_CANCEL_CONV_ID_POLL_MS;
-    if (convId) delay = Math.min(delay * 2, STOP_CANCEL_RETRY_MAX_MS);
-    setTimeout(() => void attempt(), wait);
-  };
+      if (Date.now() >= deadline) {
+        finish();
+        return;
+      }
+      const wait = convId ? delay : STOP_CANCEL_CONV_ID_POLL_MS;
+      if (convId) delay = Math.min(delay * 2, STOP_CANCEL_RETRY_MAX_MS);
+      setTimeout(() => void attempt(), wait);
+    };
+    void attempt();
+  });
 
-  void attempt();
+  return { isAcknowledged: () => acknowledged, done };
 }
 
 /**
@@ -798,6 +827,12 @@ export async function streamMessageForSlot(
   try {
     await ChatApi.streamMessage(request, {
       onConnected: (data) => {
+        // Before the slot guard: a Stop already settled the slot but still needs this id to cancel.
+        if (streamRunId && pendingStopConvIds.has(streamRunId)) {
+          const stopRaw = (data as SSEConnectedEvent | undefined)?.conversationId;
+          const stopId = typeof stopRaw === 'string' ? stopRaw.trim() : '';
+          if (stopId) pendingStopConvIds.set(streamRunId, stopId);
+        }
         if (!slotIsOnRun(slotId, streamRunId)) return;
         if (isNewConversation) {
           const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
@@ -1701,7 +1736,9 @@ export async function streamRegenerateForSlot(
  * then (backend unreachable, stuck request), it drops the connection and
  * commits whatever text streamed so far as a locally-synthesized stopped
  * message — never leaves the composer stuck showing "Stopping…" forever.
- * The cancel retries carry on in the background after that.
+ * The cancel retries carry on in the background after that, and if none has
+ * been acknowledged yet the thread is flagged `remoteRunInProgress` so sends
+ * wait for the server to report the run settled.
  *
  * No-ops if the slot isn't streaming or is already `stopping` (second Stop
  * click). Only a run with no `runId` (no Web Crypto) has nothing to target,
@@ -1741,7 +1778,7 @@ export function cancelStreamForSlot(slotId: string): void {
   store.updateSlot(slotId, { stopping: true });
   debugLog.flush('stream-stop-requested', { slotId, runId });
 
-  postCancelUntilAcknowledged(slotId, runId, threadAgentId ?? null, convId ?? null);
+  const cancel = postCancelUntilAcknowledged(slotId, runId, threadAgentId ?? null, convId ?? null);
 
   setTimeout(() => {
     const cur = useChatStore.getState().slots[slotId];
@@ -1749,9 +1786,19 @@ export function cancelStreamForSlot(slotId: string): void {
     // stream started on this slot in the meantime) — nothing to do.
     if (!cur || !cur.isStreaming || cur.runId !== runId) return;
 
-    cur.abortController?.abort();
+    // The open connection is the only way a brand-new chat learns its
+    // conversation id, so without one it stays open until the cancel is done.
+    const knownConvId = convId ?? pendingStopConvIds.get(runId) ?? null;
+    if (knownConvId) {
+      cur.abortController?.abort();
+    } else {
+      void cancel.done.then(() => cur.abortController?.abort());
+    }
     const messages = buildStoppedMessages(cur.messages, cur.regenerateMessageId, cur.streamingContent);
     useChatStore.getState().updateSlot(slotId, {
+      // A cancel the backend hasn't acknowledged may not have stopped the run:
+      // treat the thread like a leftover run until the server says it settled.
+      remoteRunInProgress: Boolean(knownConvId) && !cancel.isAcknowledged(),
       isStreaming: false,
       streamingContent: '',
       streamingQuestion: '',

@@ -174,20 +174,28 @@ describe('cancelStreamForSlot — Stop before the conversation id is known (firs
     expect(useChatStore.getState().slots[SLOT_ID]?.stopping).toBe(true);
   });
 
-  it('posts the cancel as soon as conversation_created gives the slot its id', async () => {
-    seedSlot({ convId: null, isTemp: true });
+  it('posts the cancel as soon as conversation_created reveals the id, while the slot is still waiting', async () => {
+    let callbacks: { onConnected?: (data: unknown) => void } = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: typeof callbacks) => {
+      callbacks = cb;
+      return new Promise(() => {});
+    }) as never);
+    seedSlot({ convId: null, isTemp: true, isStreaming: false, runId: null, messages: [] });
+    void streamMessageForSlot(SLOT_ID, 'first question', { query: 'first question' } as never);
+    const runId = useChatStore.getState().slots[SLOT_ID]?.runId;
 
     cancelStreamForSlot(SLOT_ID);
     await vi.advanceTimersByTimeAsync(1000);
     expect(mockedCancelStream).not.toHaveBeenCalled();
 
-    useChatStore.getState().updateSlot(SLOT_ID, { convId: 'conv-new' });
+    callbacks.onConnected?.({ conversationId: 'conv-new' });
     await vi.advanceTimersByTimeAsync(300);
 
-    expect(mockedCancelStream).toHaveBeenCalledWith('conv-new', 'run-123', undefined);
+    expect(mockedCancelStream).toHaveBeenCalledWith('conv-new', runId, undefined);
+    streamSpy.mockRestore();
   });
 
-  it('still settles the UI after the grace period if the id never arrives', async () => {
+  it('settles the UI after the grace period but keeps the connection open, since it is the only source of the id', async () => {
     const abortController = new AbortController();
     const abortSpy = vi.spyOn(abortController, 'abort');
     seedSlot({ convId: null, isTemp: true, abortController });
@@ -195,9 +203,66 @@ describe('cancelStreamForSlot — Stop before the conversation id is known (firs
     cancelStreamForSlot(SLOT_ID);
     await vi.advanceTimersByTimeAsync(5000);
 
-    expect(abortSpy).toHaveBeenCalledTimes(1);
     expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
+    expect(abortSpy).not.toHaveBeenCalled();
     expect(mockedCancelStream).not.toHaveBeenCalled();
+  });
+
+  it('drops the connection once the retry window closes without ever learning the id', async () => {
+    const abortController = new AbortController();
+    const abortSpy = vi.spyOn(abortController, 'abort');
+    seedSlot({ convId: null, isTemp: true, abortController });
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(25_000);
+
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('still cancels when conversation_created arrives after the grace timer has settled the UI', async () => {
+    let callbacks: { onConnected?: (data: unknown) => void } = {};
+    const streamSpy = vi.spyOn(ChatApi, 'streamMessage').mockImplementation(((_req: unknown, cb: typeof callbacks) => {
+      callbacks = cb;
+      return new Promise(() => {});
+    }) as never);
+    seedSlot({ convId: null, isTemp: true, isStreaming: false, runId: null, messages: [] });
+    void streamMessageForSlot(SLOT_ID, 'first question', { query: 'first question' } as never);
+    const runId = useChatStore.getState().slots[SLOT_ID]?.runId;
+    expect(runId).toBeTruthy();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(useChatStore.getState().slots[SLOT_ID]?.runId).toBeNull();
+    expect(mockedCancelStream).not.toHaveBeenCalled();
+
+    callbacks.onConnected?.({ conversationId: 'conv-late' });
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(mockedCancelStream).toHaveBeenCalledWith('conv-late', runId, undefined);
+    streamSpy.mockRestore();
+  });
+});
+
+describe('cancelStreamForSlot — a cancel the backend has not acknowledged by the grace timeout', () => {
+  it('holds the thread as a leftover run, so sends wait for the server to report it settled', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: false });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(useChatStore.getState().slots[SLOT_ID]?.isStreaming).toBe(false);
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteRunInProgress).toBe(true);
+  });
+
+  it('does not hold the thread when the backend already acknowledged the cancel', async () => {
+    mockedCancelStream.mockResolvedValue({ cancelled: true });
+    seedSlot();
+
+    cancelStreamForSlot(SLOT_ID);
+    await vi.advanceTimersByTimeAsync(5000);
+
+    expect(useChatStore.getState().slots[SLOT_ID]?.remoteRunInProgress).toBe(false);
   });
 });
 
