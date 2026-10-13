@@ -51,7 +51,9 @@ async def _named_entity_note(context: "AgentContext", records: list[dict[str, An
     if graph is None or not records:
         return ""
     try:
-        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.services.featureflag.platform_settings import (
+            is_named_entity_extraction_enabled,
+        )
 
         if not await is_named_entity_extraction_enabled(tool_state.get("config_service")):
             return ""
@@ -130,7 +132,7 @@ _UNAVAILABLE_PHRASING = {
 def _unavailable_note(
     not_available: list[str],
     reasons: dict[str, str],
-    record_id_shortener: Any = None,
+    record_id_shortener: Any = None,  # noqa: ANN401
     not_indexed: dict[str, dict[str, str]] | None = None,
 ) -> str:
     """A per-id explanation, or an empty string when every id resolved.
@@ -193,7 +195,7 @@ async def execute_fetch_record(
     *,
     context: "AgentContext",
     virtual_records: dict[str, Any],
-    citation_ref_mapper: Any,
+    citation_ref_mapper: Any,  # noqa: ANN401
     record_ids: list[str] | str,
     reason: str = DEFAULT_FETCH_REASON,
     start_block: int = 0,

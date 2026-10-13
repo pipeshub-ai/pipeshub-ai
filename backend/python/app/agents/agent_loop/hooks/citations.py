@@ -48,9 +48,16 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
 
-from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
-from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
-from app.modules.agents.record_escalation.policy import FULL_READ_SKIP, ONE_BLOCK_IS_NOT_ENOUGH
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON,
+)
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME,
+)
+from app.modules.agents.record_escalation.policy import (
+    FULL_READ_SKIP,
+    ONE_BLOCK_IS_NOT_ENOUGH,
+)
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in

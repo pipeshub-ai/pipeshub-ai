@@ -188,7 +188,7 @@ async def select_relevant_blocks(
     record: dict[str, Any],
     virtual_record_id: str | None,
     query: str,
-    retrieval_service: Any,
+    retrieval_service: Any,  # noqa: ANN401
     user_id: str,
     org_id: str,
     budget: "RenderBudget",

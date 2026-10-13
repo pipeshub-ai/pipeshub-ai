@@ -8,7 +8,7 @@ from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import groupby
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
 from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
@@ -102,7 +102,7 @@ def _renderable_block_indices(record: dict[str, Any]) -> list[int]:
 
 # Re-exported from `image_admission`, which owns the image-selection rules;
 # this module is where the codebase has always imported them from.
-from app.utils.image_admission import (
+from app.utils.image_admission import (  # noqa: E402
     MAX_IMAGES_IN_CONVERSATION,
     DegradeReason,
     ImageAdmission,
@@ -112,7 +112,7 @@ from app.utils.image_admission import (
 )
 
 
-def image_dict_to_part(image: dict[str, Any]) -> Any | None:
+def image_dict_to_part(image: dict[str, Any]) -> Any | None:  # noqa: ANN401
     """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
     into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
     every tool (`retrieval.py`, `citations.py`) and hook
@@ -170,7 +170,7 @@ def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
         return children if isinstance(children, list) else []
     return None
 
-def _safe_stringify_content(value: Any) -> str:
+def _safe_stringify_content(value: Any) -> str:  # noqa: ANN401
     """Convert citation content to string without raising.
 
     A code block's ``data`` is a dict; stringifying it whole would put the
@@ -237,7 +237,7 @@ def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
 def is_base64_image(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
-    
+
     Accepts both:
     - Data URLs: "data:image/png;base64,iVBORw0KGgo..."
     - Raw base64 strings: "iVBORw0KGgo..."
@@ -249,7 +249,7 @@ def is_base64_image(s: str) -> bool:
     data_url_pattern = r'^data:image/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|tiff);base64,(.+)$'
     match = re.match(data_url_pattern, s.strip(), re.IGNORECASE)
 
-    if match:
+    if match:  # noqa: SIM108
         b64_data = match.group(2)
     else:
         b64_data = s.strip()
@@ -281,7 +281,7 @@ def is_base64_image(s: str) -> bool:
         b'MM\x00*': 'TIFF',
     }
 
-    for signature, fmt in image_signatures.items():
+    for signature, fmt in image_signatures.items():  # noqa: B007, PERF102
         if decoded.startswith(signature):
             return True
 
@@ -596,7 +596,7 @@ async def build_multimodal_user_content(
         if vrid:
             fetch_tasks.append((vrid, att))
 
-    for vrid, att in fetch_tasks:
+    for vrid, att in fetch_tasks:  # noqa: B007
         try:
             record = await blob_store.get_record_from_storage(vrid, org_id)
             if not record:
@@ -629,7 +629,7 @@ async def build_multimodal_user_content(
 
     content_parts: list[dict] = [{"type": "text", "text": text_content}]
     for url in image_urls:
-        content_parts.append({"type": "image_url", "image_url": {"url": url}})
+        content_parts.append({"type": "image_url", "image_url": {"url": url}})  # noqa: PERF401
     return content_parts
 
 
@@ -641,7 +641,7 @@ class CitationRefMapper:
     retrieval tool calls, respond nodes, and tool execution hops.
     """
 
-    def __init__(self):
+    def __init__(self):  # noqa: ANN204
         self._counter: int = 0
         self._url_to_ref: dict[str, str] = {}
         self._ref_to_url: dict[str, str] = {}
@@ -779,7 +779,7 @@ class RecordIdShortener:
         text = self.shorten_record_ids_in_text(text)
         text = self.shorten_record_id_assigns_in_text(text)
         text = self.shorten_node_id_assigns_in_text(text)
-        return text
+        return text  # noqa: RET504
 
 
 def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShortener | None":
@@ -1334,7 +1334,7 @@ async def _build_linked_record_context_metadata(
     frontend_url: str | None,
     *,
     vrid: str | None = None,
-    blob_store: Any = None,
+    blob_store: Any = None,  # noqa: ANN401
     org_id: str = "",
     lookup_result: dict[str, Any] | None = None,
     type_doc: dict[str, Any] | None = None,
@@ -1387,7 +1387,7 @@ async def _build_linked_record_context_metadata(
 
 # Graph context enrichment (dependent parents + record relations)
 
-def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
+def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:  # noqa: FBT001
     if relation == RecordRelations.ATTACHMENT:
         return "ATTACHMENT" if outgoing else "PARENT"
     if relation == RecordRelations.PARENT_CHILD:
@@ -1567,7 +1567,7 @@ async def _resolve_target_metadata(
     graph_provider: IGraphDBProvider,
     in_context_ids: set[str],
     frontend_url: str | None,
-    blob_store: Any,
+    blob_store: Any,  # noqa: ANN401
     org_id: str,
     *,
     full_metadata_ids: set[str] | None = None,
@@ -1640,7 +1640,7 @@ async def _resolve_target_metadata(
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in doc_results.items():
             if doc and isinstance(doc, dict):
-                doc_index[rid] = doc
+                doc_index[rid] = doc  # noqa: PERF403
 
     # Build id -> vrid mapping
     id_to_vrid: dict[str, str] = {}
@@ -1698,7 +1698,7 @@ async def _resolve_target_metadata(
         )
         for rid, ctx in zip(out_of_context_ids, ctx_results):
             if not isinstance(ctx, Exception) and ctx:
-                context_map[rid] = ctx
+                context_map[rid] = ctx  # noqa: PERF403
 
     return context_map
 
@@ -1792,7 +1792,7 @@ async def enrich_records_with_graph_context(
     flattened_results: list[dict[str, Any]] | None = None,
     virtual_to_record_map: dict[str, dict[str, Any]] | None = None,
     doc_index: dict[str, dict[str, Any]] | None = None,
-    blob_store: Any = None,
+    blob_store: Any = None,  # noqa: ANN401
     org_id: str = "",
     config_service: "ConfigurationService | None" = None,
     *,
@@ -1932,7 +1932,7 @@ def build_parent_info(result: dict[str, Any]) -> str:
         lines.append(f"  Record ID: {record_id} | Name: {record_name}")
 
     parent_info = "\n".join(lines) + "\n"
-    return parent_info
+    return parent_info  # noqa: RET504
 
 def build_record_relations_info(record: dict[str, Any]) -> str:
     """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
@@ -2002,18 +2002,18 @@ async def live_record_ids(
 
 
 async def enrich_virtual_record_id_to_result_with_fk_children(
-    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
     blob_store: BlobStorage,
     org_id: str,
     graph_provider: IGraphDBProvider | None = None,
-    flattened_results: List[Dict[str, Any]] | None = None,
+    flattened_results: list[dict[str, Any]] | None = None,
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
-    (FK-related tables) or parent tables (via FK edges), fetch their full blob and add 
+    (FK-related tables) or parent tables (via FK edges), fetch their full blob and add
     to virtual_record_id_to_result. Also adds DDL block_group to flattened_results
     so the agent context includes DDL for FK-related tables.
-    
+
     Additionally, enriches flattened_results with fk_parent_relations and fk_child_relations
     (each containing record_id, table name, source column, and target column metadata)
     so the agent knows which related tables it can fetch via tools.
@@ -2027,13 +2027,13 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     if not graph_provider:
         logger.debug("FK enrichment skipped: no graph_provider provided")
         return
-    
+
     from app.config.constants.arangodb import RecordRelations
-    
+
     related_record_ids = set()
     sql_table_record_ids = []
-    record_id_to_fk_relations: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    
+    record_id_to_fk_relations: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
     flattened_len_before = len(flattened_results) if flattened_results is not None else 0
     logger.debug(
         "FK enrichment: checking %d records; flattened_results=%d items",
@@ -2045,7 +2045,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     # Build mapping of vrid -> record_id for existing SQL_TABLE records
     # Records come from get_record() which normalizes to snake_case via graphDb_record merge
-    vrid_to_record_id: Dict[str, str] = {}
+    vrid_to_record_id: dict[str, str] = {}
     for vrid, record in virtual_record_id_to_result.items():
         if not record or not isinstance(record, dict):
             continue
@@ -2055,16 +2055,16 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         if record_id:
             sql_table_record_ids.append(record_id)
             vrid_to_record_id[vrid] = record_id
-            logger.debug("FK enrichment: found SQL_TABLE record_id=%s, vrid=%s, name=%s", 
+            logger.debug("FK enrichment: found SQL_TABLE record_id=%s, vrid=%s, name=%s",
                         record_id, vrid, record.get("record_name"))
-    
+
     logger.debug("FK enrichment: found %d SQL_TABLE records to check for FK relations", len(sql_table_record_ids))
-    
+
     # Query both child and parent tables via FK edges
     for record_id in sql_table_record_ids:
         child_relations = []
         parent_relations = []
-        
+
         try:
             child_relations = await graph_provider.get_child_record_ids_by_relation_type(
                 record_id, RecordRelations.FOREIGN_KEY.value
@@ -2075,7 +2075,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     related_record_ids.add(rel["record_id"])
         except Exception as e:
             logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
-        
+
         try:
             parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
                 record_id, RecordRelations.FOREIGN_KEY.value
@@ -2086,7 +2086,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     related_record_ids.add(rel["record_id"])
         except Exception as e:
             logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-        
+
         record_id_to_fk_relations[record_id] = {
             "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
             "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
@@ -2106,9 +2106,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     for fk_relations in record_id_to_fk_relations.values():
         fk_relations["children"] = await live_relations_only(fk_relations["children"])
         fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
-    
+
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
-    
+
     # Enrich existing flattened_results with FK relations
     if flattened_results is not None:
         for result in flattened_results:
@@ -2121,21 +2121,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_relations = record_id_to_fk_relations[record_id]
             result["fk_parent_relations"] = fk_relations["parents"]
             result["fk_child_relations"] = fk_relations["children"]
-    
+
     if not related_record_ids:
         return
-    
+
     record_id_to_vrid = await graph_provider.get_virtual_record_ids_for_record_ids(list(related_record_ids))
     logger.debug("FK enrichment: resolved %d record_ids to virtual_record_ids", len(record_id_to_vrid))
-    
+
     # Build set of vrids already in flattened_results
     vrids_in_flattened = set()
     if flattened_results is not None:
         vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
-    
+
     for record_id, vrid in record_id_to_vrid.items():
         already_in_flattened = vrid in vrids_in_flattened
-        
+
         if vrid in virtual_record_id_to_result:
             rec = virtual_record_id_to_result[vrid]
             if already_in_flattened:
@@ -2156,7 +2156,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     if graph_rec and isinstance(graph_rec, dict):
                         rec["id"] = record_id
                         rec["org_id"] = graph_rec.get("orgId")
-                        rec["record_name"] = graph_rec.get("recordName") 
+                        rec["record_name"] = graph_rec.get("recordName")
                         rec["record_type"] = graph_rec.get("recordType")
                         rec["version"] = graph_rec.get("version")
                         rec["origin"] = graph_rec.get("origin")
@@ -2177,10 +2177,10 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                 logger.debug("Could not fetch blob for FK related vrid %s: %s", vrid, str(e))
                 virtual_record_id_to_result[vrid] = None
                 continue
-        
+
         if not rec:
             continue
-        
+
         # Add DDL block_group to flattened_results so it appears in agent context.
         # After graph_rec merge above, all rec keys are snake_case.
         # Blob uses: block_containers -> block_groups, blocks (snake_case).
@@ -2203,7 +2203,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
                 else:
                     table_summary = str(data or "")
-                
+
                 # Extract first 2 sample rows
                 blocks = block_containers.get("blocks", [])
                 sample_rows = []
@@ -2214,10 +2214,10 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                             row_text = block_data.get("row_natural_language_text", "")
                             if row_text:
                                 sample_rows.append(row_text)
-                
+
                 if sample_rows:
                     table_summary = f"{table_summary}\n\nSample Rows:\n" + "\n".join(sample_rows)
-                
+
                 # Get FK relations for this record if available, otherwise fetch them
                 fk_parent_relations = []
                 fk_child_relations = []
@@ -2245,8 +2245,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         "children": fk_child_relations,
                         "parents": fk_parent_relations,
                     }
-                    
-                
+
+
                 # Build flattened result entry
                 # rec keys are snake_case; metadata dict uses camelCase for frontend
                 enhanced_metadata = get_enhanced_metadata(rec, bg, {})
@@ -2281,9 +2281,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     if flattened_results is not None:
         fk_count = sum(1 for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT")
-        logger.info(f"FK enrichment:complete for SQL tables")
+        logger.info("FK enrichment:complete for SQL tables")
         logger.debug(
-            f"FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
+            "FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
             flattened_len_before,
             len(flattened_results),
             fk_count,
@@ -2302,7 +2302,7 @@ def _point_position(meta: dict[str, Any]) -> int | None:
     return index
 
 
-def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
+def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:  # noqa: FBT001
     containers = record.get("block_containers") or {}
     items = containers.get("block_groups" if group else "blocks") or []
     if 0 <= index < len(items) and isinstance(items[index], dict):
@@ -2311,7 +2311,7 @@ def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
 
 
 def _slot_check(
-    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,
+    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,  # noqa: FBT001
 ) -> tuple[bool, bool] | None:
     """Check that ``index`` holds ``block_id``: ``(is_group, confirmed)``, or ``None`` if it holds another id.
 
@@ -2359,7 +2359,7 @@ def _raise_group_score(unit: dict[str, Any], score: float) -> None:
                 child["score"] = score
 
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     """Resolve search hits into renderable units: blocks, list and section groups, tables.
 
     Neighbouring context blocks are not added here: they are added after
@@ -2373,9 +2373,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
-    virtual_record_id_to_recon_metadata: Dict[str, Dict[str, Any] | None] = {}
+    virtual_record_id_to_recon_metadata: dict[str, dict[str, Any] | None] = {}
     # Cache for fragment maps per virtual_record_id (container_index → fragment children)
-    fragment_maps: Dict[str, Dict[int, list]] = {}
+    fragment_maps: dict[str, dict[int, list]] = {}
     if from_retrieval_service:
         new_type_results = result_set
     else:
@@ -2466,7 +2466,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         ):
             vrids_needing_recon.add(vrid)
 
-    async def _prefetch_recon(vrid: str):
+    async def _prefetch_recon(vrid: str):  # noqa: ANN202
         try:
             recon = await blob_store.get_reconciliation_metadata(vrid, org_id)
             virtual_record_id_to_recon_metadata[vrid] = recon
@@ -2540,7 +2540,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 f"full metadata: {meta}"
             )
             continue
-            
+
         if is_block_group:
             chunk_id = f"{virtual_record_id}-{index}-block_group"
         else:
@@ -3156,7 +3156,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
         except Exception as e:
             raise e
 
-def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
+def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa: ANN001
         """Safely extract bounding box data from citation metadata"""
         if not citation_metadata or not citation_metadata.get("bounding_boxes"):
             return None
@@ -3670,10 +3670,10 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
-    is_multimodal_llm: bool,
+    is_multimodal_llm: bool,  # noqa: FBT001
     image_budget: "ImageBudget | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
-    allow_inline_images: bool = True,
+    allow_inline_images: bool = True,  # noqa: FBT001, FBT002
     image_admission: "ImageAdmission | None" = None,
     image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
 ) -> list[dict[str, Any]]:
@@ -3799,7 +3799,7 @@ def _render_blocks_with_images(
     return content
 
 
-def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -4171,7 +4171,7 @@ def _fk_lines_text(record: dict[str, Any]) -> str:
 def record_to_message_content(
     record: dict[str, Any],
     ref_mapper: CitationRefMapper | None = None,
-    is_multimodal_llm: bool = False,
+    is_multimodal_llm: bool = False,  # noqa: FBT001, FBT002
     *,
     start_block: int = 0,
     max_blocks: int | None = None,
@@ -4923,7 +4923,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                         child_results = []
                         for row_index in rows_to_be_included_list:
                             if row_index < len(blocks):
-                                block = blocks[row_index]
+                                block = blocks[row_index]  # noqa: PLW2901
                                 block_data = block.get("data", {})
                                 if isinstance(block_data, dict):
                                     row_text = block_data.get("row_natural_language_text", "")
@@ -5078,9 +5078,9 @@ def get_message_content(
 def build_message_content_array(
     flattened_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, Any],
-    is_multimodal_llm: bool = False,
+    is_multimodal_llm: bool = False,  # noqa: FBT001, FBT002
     ref_mapper: CitationRefMapper | None = None,
-    from_tool: bool = True,
+    from_tool: bool = True,  # noqa: FBT001, FBT002
     record_id_shortener: "RecordIdShortener | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
     image_budget: "ImageBudget | None" = None,
@@ -5427,7 +5427,7 @@ def build_fk_info(result: dict[str, Any]) -> str:
 
 
 
-def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
+def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:  # noqa: ANN001
     total_tokens = 0
     for item in content:
         if item.get("type") == "text":
@@ -5440,7 +5440,7 @@ def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
 _DEFAULT_VISION_IMAGE_TOKEN_ESTIMATE = 1700
 
 
-def count_tokens_in_messages(messages: list[Any],enc) -> int:
+def count_tokens_in_messages(messages: list[Any],enc) -> int:  # noqa: ANN001
     """
     Count the total number of tokens in a messages array.
     Supports both dict messages and LangChain message objects.
@@ -5490,7 +5490,7 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
     return total_tokens
 
 
-def count_tokens_text(text: str,enc) -> int:
+def count_tokens_text(text: str,enc) -> int:  # noqa: ANN001
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
         return 0

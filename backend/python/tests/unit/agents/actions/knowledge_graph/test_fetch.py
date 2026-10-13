@@ -59,7 +59,7 @@ class TestResolveBlockCap:
             assert resolve_block_cap(-1) == 100
 
 
-def _make_context(**overrides: Any) -> SimpleNamespace:
+def _make_context(**overrides: Any) -> SimpleNamespace:  # noqa: ANN401
     defaults: dict[str, Any] = {
         "model_name": "gpt-4",
         "org_id": "org-1",
