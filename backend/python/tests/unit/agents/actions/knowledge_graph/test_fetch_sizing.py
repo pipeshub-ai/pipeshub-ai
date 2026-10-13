@@ -487,3 +487,77 @@ class TestAFirstUnitThatDoesNotFitStillMakesProgress:
         assert context.tool_state.get("pending_tool_images", []) == []
         second = await _fetch(context, [record], start_block=1, start_block_sent=True)
         assert _shown(second, "im") == {1}
+
+
+class TestEdgesOfACall:
+    @pytest.mark.asyncio
+    async def test_records_without_room_are_named_as_not_read(self) -> None:
+        context = _context(query="")
+        records = [_text_record(f"u{i}", 300, 400) for i in range(60)]
+
+        text = await _fetch(context, records)
+
+        unread = [r["id"] for r in records if f"Record {r['id']} was not read" in text]
+        assert unread, "sixty large records cannot all fit one result"
+        for record_id in unread:
+            entry = _outcome(context, record_id)
+            assert (entry["complete"], entry["blocksRendered"], entry["truncatedBy"]) == (False, 0, "not_read")
+            assert record_id not in context.full_records_fetched
+        assert all(_outcome(context, r["id"])["blocksRendered"] > 0 for r in records if r["id"] not in unread)
+        assert len(text) <= DEFAULT_MAX_RESULT_CHARS
+
+    @pytest.mark.asyncio
+    async def test_the_order_of_the_ids_does_not_decide_who_is_read(self) -> None:
+        records = [_text_record("tiny", 5, 100), *(_text_record(f"o{i}", 300, 400) for i in range(2))]
+        forward, backward = _context(query=""), _context(query="")
+
+        await _fetch(forward, records)
+        await _fetch(backward, list(reversed(records)))
+
+        for record in records:
+            ahead = _outcome(forward, record["id"])["blocksRendered"]
+            behind = _outcome(backward, record["id"])["blocksRendered"]
+            assert abs(ahead - behind) <= 2, (record["id"], ahead, behind)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("raw", "expected"), [("10", 10), (10.0, 10), ("lots", None), (True, None), (0, None)])
+    async def test_max_blocks_from_the_model_is_coerced_not_trusted(self, raw: object, expected: int | None) -> None:
+        context = _context(query="")
+
+        await _fetch(context, [_text_record("c", 40, 150)], max_blocks=raw)
+
+        entry = _outcome(context, "rec-c")
+        assert entry["requestedMaxBlocks"] == expected
+        assert entry["blocksRendered"] == (expected or 40)
+
+    @pytest.mark.asyncio
+    async def test_one_failed_entity_read_costs_only_its_record(self) -> None:
+        async def entities(record_id: str) -> list[dict[str, str]]:
+            if record_id == "rec-f0":
+                raise RuntimeError("graph unavailable")
+            return [{"kind": "ORG", "name": "Harbor Bank"}]
+
+        graph = AsyncMock()
+        graph.get_named_entities_for_record = AsyncMock(side_effect=entities)
+        context = _context(query="")
+        context.tool_state.update({"graph_provider": graph, "config_service": MagicMock()})
+        with patch(
+            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+            AsyncMock(return_value=True),
+        ):
+            text = await _fetch(context, [_text_record(f"f{i}", 5, 100) for i in range(2)])
+
+        assert "Named entities on rec-f1: ORG:Harbor Bank" in text
+        assert "Named entities on rec-f0" not in text
+        assert _shown(text, "f0") == set(range(5))
+
+    @pytest.mark.asyncio
+    async def test_with_short_record_ids_the_result_still_fits(self) -> None:
+        context = _context(query="")
+        context.tool_state["enable_record_id_shortening"] = True
+        records = [_text_record(f"s{i}", 300, 400) for i in range(3)]
+
+        text = await _fetch(context, records)
+
+        assert len(text) <= DEFAULT_MAX_RESULT_CHARS
+        assert all(_shown(text, f"s{i}") for i in range(3))
