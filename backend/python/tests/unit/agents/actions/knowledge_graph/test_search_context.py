@@ -290,6 +290,29 @@ class TestGrepHitOnARecordTheFitDrops:
         assert dropped.blockIndices == []
 
     @pytest.mark.asyncio
+    async def test_naming_many_dropped_records_still_fits_the_result(self) -> None:
+        """Every record the fit drops could add a hint entry; unbounded, the
+        hint alone outgrew the result and the generic cap cut it."""
+        records = {f"v{i:02d}": _record(f"v{i:02d}") for i in range(40)}
+        for record in records.values():
+            record["context_metadata"] += "\nSummary: " + "s" * 1_500
+        units = [_unit(vrid, 1, f"{vrid} " + "x" * 900, 0.9 - i / 100) for i, vrid in enumerate(records)]
+        state = _state(config_service=MagicMock())
+        grep = [{"virtual_record_id": vrid, "match_count": 2} for vrid in reversed(list(records))]
+
+        result = await self._search_with_grep(state, grep, records, units, cap=20_000)
+
+        assert len(result) <= 20_000
+        hint = result[result.index("Additional records found via pattern matching"):]
+        dropped = [vrid for vrid in reversed(list(records)) if f"{vrid} xxx" not in result]
+        named = [vrid for vrid in dropped if f"Name: Doc {vrid}" in hint]
+        assert named == dropped[: len(named)]
+        assert 0 < len(named) < len(dropped)
+        assert {f"rec-{vrid}" for vrid in named} <= state["known_record_ids"]
+        assert all(f"rec-{vrid}" not in state["known_record_ids"] for vrid in records
+                   if vrid not in named and f"{vrid} xxx" not in result)
+
+    @pytest.mark.asyncio
     async def test_a_shown_record_is_not_named_again(self) -> None:
         state = _state(config_service=MagicMock())
 
@@ -608,6 +631,40 @@ class TestSearchLeavesImageRoomForAFetch:
         assert self._images(searched) == 4
         assert self._images(fetched) == 3
         assert "not shown" not in self._text(fetched)
+
+    @pytest.mark.asyncio
+    async def test_prefetch_takes_only_its_share(self) -> None:
+        uris = [_png((i * 30, 10, 10)) for i in range(8)]
+        records = {f"i{i}": _figure_record(f"i{i}", [uris[i]]) for i in range(8)}
+        units = [
+            {"virtual_record_id": f"i{i}", "block_index": 1, "block_type": BlockType.IMAGE.value,
+             "content": uris[i], "metadata": {}, "score": 0.9 - i / 100}
+            for i in range(8)
+        ]
+        state = self._multimodal_state()
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [{"virtual_record_id": v} for v in records],
+            "virtual_to_record_map": {},
+        }
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update(records)
+            return [dict(unit) for unit in units]
+
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_virtual_record_id_to_result_with_fk_children", new_callable=AsyncMock), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", new_callable=AsyncMock):
+            prefetched = await prefetch_retrieval(
+                query="q", org_id="o1", user_id="u1", retrieval_service=retrieval,
+                graph_provider=object(), blob_store=object(), filters={}, limit=10,
+                is_multimodal_llm=True, previous_conversations=None, logger=MagicMock(),
+                image_budget=state["image_budget"], image_admission=state["image_admission"],
+            )
+        fetched = await self._fetch(state, _figure_record("f1", [_png((10, 200 + i * 10, 40)) for i in range(3)]))
+
+        assert len(prefetched.collected_images) == 4
+        assert self._images(fetched) == 3
 
     @pytest.mark.asyncio
     async def test_a_one_image_model_gives_its_slot_to_the_fetch(self) -> None:

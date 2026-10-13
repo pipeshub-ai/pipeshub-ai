@@ -62,6 +62,7 @@ from app.utils.pattern_match import (
     await_pattern_match,
     cancel_task_if_running,
     grep_hits_on_loaded_records,
+    grep_hits_within,
     merge_pattern_match_results,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
@@ -120,6 +121,9 @@ def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
 # shown, so the records are cut again, at most this many times in all, when a
 # cut changed it.
 _MAX_FIT_PASSES = 3
+# Naming grep hits on records the fit dropped may take 1/8 of the result:
+# bounded, so dropping more records cannot grow the hint past what they freed.
+_DROPPED_GREP_HINT_SHARE = 8
 
 
 def _ranked_header(blocks: int, records: int, omitted: int, *, by_relevance: bool) -> str:
@@ -811,9 +815,13 @@ async def execute_search(
             in the result would point at it.
             """
             shown = {unit.get("virtual_record_id") for unit in selection.ranked}
+            dropped = [hit for hit in loaded_grep_hits if hit["virtual_record_id"] not in shown]
             entries = [
                 *pm_record_entries,
-                *(hit for hit in loaded_grep_hits if hit["virtual_record_id"] not in shown),
+                *grep_hits_within(
+                    dropped, virtual_record_id_to_result,
+                    DEFAULT_MAX_RESULT_CHARS // _DROPPED_GREP_HINT_SHARE,
+                ),
             ]
             try:
                 hint = render_pattern_match_hint(

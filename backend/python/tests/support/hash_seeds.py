@@ -27,9 +27,16 @@ def outputs_across_hash_seeds(script: str, *, timeout: float = 150) -> set[str]:
         )
         for seed in _SEEDS
     ]
+    try:
+        results = [proc.communicate(timeout=timeout) for proc in procs]
+    finally:
+        # A timeout or an early failure must not leave the other seeds running.
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.communicate()
     outputs: set[str] = set()
-    for proc in procs:
-        stdout, stderr = proc.communicate(timeout=timeout)
+    for proc, (stdout, stderr) in zip(procs, results):
         assert proc.returncode == 0, stderr[-2000:]
         outputs.add(stdout.strip().splitlines()[-1])
     return outputs

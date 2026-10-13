@@ -1690,18 +1690,7 @@ async def merge_pattern_match_results(
         if not accessible_records:
             return []
 
-    rank_by_vrid: dict[str, tuple[int, int]] = {}
-    snippet_by_vrid: dict[str, str] = {}
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if not vrid:
-            continue
-        rank = _record_rank(r)
-        if vrid not in rank_by_vrid or rank > rank_by_vrid[vrid]:
-            rank_by_vrid[vrid] = rank
-            if r.get("match_preview"):
-                snippet_by_vrid[vrid] = r["match_preview"]
-    match_count_by_vrid = {vrid: rank[1] for vrid, rank in rank_by_vrid.items()}
+    matches = _best_match_by_vrid(raw_records)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -1710,11 +1699,11 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
-        mc = match_count_by_vrid.get(vrid, 0)
+        mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
-        if vrid in snippet_by_vrid:
-            graph_rec["_match_snippet"] = snippet_by_vrid[vrid]
+        if snippet:
+            graph_rec["_match_snippet"] = snippet
         virtual_record_id_to_result[vrid] = graph_rec
         results.append({
             "virtual_record_id": vrid,
@@ -1733,6 +1722,30 @@ async def merge_pattern_match_results(
     return results
 
 
+def _best_match_by_vrid(raw_records: list[dict]) -> dict[str, tuple[int, str | None]]:
+    """Per record: the match count of its best-ranked hit, and the preview of
+    its best-ranked hit that has one.
+
+    Taken apart because the best hit need not carry a preview; tying the two
+    lost a preview another hit had, depending on the order hits arrived in.
+    """
+    best_rank: dict[str, tuple[int, int]] = {}
+    preview_rank: dict[str, tuple[int, int]] = {}
+    previews: dict[str, str] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if not vrid:
+            continue
+        rank = _record_rank(raw)
+        if vrid not in best_rank or rank > best_rank[vrid]:
+            best_rank[vrid] = rank
+        preview = raw.get("match_preview")
+        if preview and (vrid not in preview_rank or rank > preview_rank[vrid]):
+            preview_rank[vrid] = rank
+            previews[vrid] = preview
+    return {vrid: (rank[1], previews.get(vrid)) for vrid, rank in best_rank.items()}
+
+
 def grep_hits_on_loaded_records(
     raw_records: list[dict],
     virtual_record_id_to_result: Mapping[str, Any],
@@ -1747,25 +1760,43 @@ def grep_hits_on_loaded_records(
     passed the semantic search's own permission check.
     """
     first: dict[str, dict] = {}
-    best: dict[str, dict] = {}
     for raw in raw_records:
         vrid = raw.get("virtual_record_id")
-        if not vrid or not isinstance(virtual_record_id_to_result.get(vrid), dict):
-            continue
-        first.setdefault(vrid, raw)
-        if vrid not in best or _record_rank(raw) > _record_rank(best[vrid]):
-            best[vrid] = raw
+        if vrid and isinstance(virtual_record_id_to_result.get(vrid), dict):
+            first.setdefault(vrid, raw)
+    matches = _best_match_by_vrid(raw_records)
     entries: list[dict] = []
     for raw in sorted(first.values(), key=keyword_match_rank, reverse=True):
         vrid = raw["virtual_record_id"]
         entry: dict[str, Any] = {"virtual_record_id": vrid, "score": 0.0, "source": "pattern_match"}
-        match_count = _record_rank(best[vrid])[1]
+        match_count, snippet = matches[vrid]
         if match_count > 0:
             entry["_match_count"] = match_count
-        if best[vrid].get("match_preview"):
-            entry["_match_snippet"] = best[vrid]["match_preview"]
+        if snippet:
+            entry["_match_snippet"] = snippet
         entries.append(entry)
     return entries
+
+
+def grep_hits_within(
+    entries: list[dict], virtual_record_id_to_result: Mapping[str, Any], max_chars: int,
+) -> list[dict]:
+    """The leading ``entries`` whose hint sections fit in ``max_chars``.
+
+    Bounds what naming records adds to a result, so leaving more records out
+    can never grow the hint past the room it frees.
+    """
+    kept: list[dict] = []
+    used = 0
+    for entry in entries:
+        section = _hint_section(entry, virtual_record_id_to_result)
+        if section is None:
+            continue
+        used += len(section) + 1
+        if used > max_chars:
+            break
+        kept.append(entry)
+    return kept
 
 
 def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
@@ -1819,6 +1850,25 @@ def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _hint_section(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record's ``<record>`` block in the keyword hint, or None when the
+    record is not in the map."""
+    graph_rec = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not graph_rec:
+        return None
+    # A record semantic search loaded holds its blocks; a grep-only one holds
+    # the graph document.
+    if "block_containers" in graph_rec:
+        metadata_block = _render_loaded_record_metadata(graph_rec)
+    else:
+        metadata_block = _render_graph_record_metadata(graph_rec)
+    mc = graph_rec.get("_match_count") or entry.get("_match_count") or 0
+    mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
+    snippet = graph_rec.get("_match_snippet") or entry.get("_match_snippet")
+    snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
+    return f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>"
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
@@ -1846,23 +1896,10 @@ def render_pattern_match_hint(
 
     capped = pm_records[:max_records]
 
-    sections: list[str] = []
-    for entry in capped:
-        vrid = entry.get("virtual_record_id", "")
-        graph_rec = virtual_record_id_to_result.get(vrid)
-        if not graph_rec:
-            continue
-        # A record semantic search loaded holds its blocks; a grep-only one
-        # holds the graph document.
-        if "block_containers" in graph_rec:
-            metadata_block = _render_loaded_record_metadata(graph_rec)
-        else:
-            metadata_block = _render_graph_record_metadata(graph_rec)
-        mc = graph_rec.get("_match_count") or entry.get("_match_count") or 0
-        mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
-        snippet = graph_rec.get("_match_snippet") or entry.get("_match_snippet")
-        snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
-        sections.append(f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>")
+    sections = [
+        section for entry in capped
+        if (section := _hint_section(entry, virtual_record_id_to_result)) is not None
+    ]
 
     if not sections:
         return ""
