@@ -67,7 +67,10 @@ def main() -> None:
         sys.exit(__doc__)
 
     # The baseline run overwrites these files and restores them from HEAD, which would drop uncommitted edits.
-    dirty = git("status", "--porcelain", "--", *files).stdout.decode().strip()
+    status = git("status", "--porcelain", "--", *files)
+    if status.returncode:
+        sys.exit(f"git status failed (exit {status.returncode}), so nothing was changed: {status.stderr.decode().strip()}")
+    dirty = status.stdout.decode().strip()
     if dirty:
         sys.exit(f"Commit or stash these files first; the check restores them from HEAD:\n{dirty}")
 
