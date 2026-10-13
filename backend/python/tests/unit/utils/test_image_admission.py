@@ -197,110 +197,26 @@ class TestRetrievedImagesLeaveRoomForRequestedOnes:
         assert admission.remaining == 4
 
 
-class TestAFetchReattachesWhatOnlySearchShowed:
-    """Search results are not protected from tool-result clearing, so a
-    fetch that only pointed at a search hit's copy could point at nothing."""
-
-    def test_a_fetched_record_gets_its_own_copy_and_pays_for_it(self) -> None:
+class TestAFetchOfASearchImage:
+    def test_is_a_duplicate_and_costs_no_slot(self) -> None:
+        """A fetch points at the copy search already attached; it does not
+        spend a second slot on it."""
         admission = _model_admission("openai")
         admission.admit([_candidate(0)])
 
         fetched = admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
 
-        assert len(fetched.admitted) == 1
-        assert admission.remaining == 6
-        assert admission.budget.used == 2
-
-    def test_a_second_fetch_of_it_is_a_duplicate(self) -> None:
-        admission = _model_admission("openai")
-        admission.admit([_candidate(0)])
-        admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
-
-        again = admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
-
-        assert [d.reason for d in again.degraded] == [DegradeReason.DUPLICATE]
-        assert admission.remaining == 6
-
-    def test_without_a_free_slot_it_still_points_at_the_search_copy(self) -> None:
-        admission = _model_admission("openai")
-        admission.admit([_candidate(0)])
-        admission.admit([_candidate(10 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(7)])
-
-        fetched = admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
-
-        assert fetched.admitted == []
         assert [d.reason for d in fetched.degraded] == [DegradeReason.DUPLICATE]
+        assert admission.remaining == 7
 
-    def test_a_fetch_attaches_unseen_figures_before_second_copies(self) -> None:
-        """New figures take the free slots first; a copy of a search hit only
-        gets a slot they left."""
-        admission = _model_admission("openai")
-        searched = admission.admit([_candidate(i) for i in (0, 1, 50, 51)])
-        assert len(searched.admitted) == 4
-
-        fetched = admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in (0, 1, 2, 3, 4)])
-
-        assert sorted(c.ref for c in fetched.admitted) == ["ref0", "ref2", "ref3", "ref4"]
-        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref1", DegradeReason.DUPLICATE)]
-        assert admission.remaining == 0
-
-    def test_a_copy_does_not_crowd_out_a_small_new_figure(self) -> None:
-        """Seven new figures fit the seven free slots, so nothing is crowded:
-        the 40x40 diagram must not be prefiltered because a copy was in the batch."""
-        admission = _model_admission("openai")
-        admission.admit([_candidate(100)])
-
-        fetched = admission.admit([
-            *[_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(6)],
-            _candidate(6, origin=ImageOrigin.FETCHED_RECORD, width=40, height=40),
-            _candidate(100, origin=ImageOrigin.FETCHED_RECORD),
-        ])
-
-        assert sorted(c.ref for c in fetched.admitted) == [f"ref{i}" for i in range(7)]
-        assert [(d.candidate.ref, d.reason) for d in fetched.degraded] == [("ref100", DegradeReason.DUPLICATE)]
-
-    def test_crowding_among_new_figures_still_prefilters_and_the_copy_waits(self) -> None:
-        admission = _model_admission("openai")
-        admission.admit([_candidate(i) for i in (100, 101, 102, 103)])
-
-        fetched = admission.admit([
-            *[_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)],
-            _candidate(4, origin=ImageOrigin.FETCHED_RECORD, width=40, height=40),
-            _candidate(100, origin=ImageOrigin.FETCHED_RECORD),
-        ])
-
-        assert sorted(c.ref for c in fetched.admitted) == [f"ref{i}" for i in range(4)]
-        assert sorted((d.candidate.ref, d.reason) for d in fetched.degraded) == [
-            ("ref100", DegradeReason.DUPLICATE), ("ref4", DegradeReason.TOO_SMALL),
-        ]
-
-    def test_copies_alone_use_the_room_the_request_has_left(self) -> None:
-        """Search's share is spent, but the request is not: a fetch of only
-        those images re-attaches them rather than pointing at copies that
-        tool-result clearing can drop."""
+    def test_does_not_count_against_search_s_share(self) -> None:
         admission = _model_admission("openai")
         admission.admit([_candidate(i) for i in range(4)])
+        admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
 
-        fetched = admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
+        new = admission.admit([_candidate(10 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
 
-        assert len(fetched.admitted) == 4
-        assert admission.remaining == 0
-
-    def test_a_replayed_history_image_is_not_reattached(self) -> None:
-        admission = _model_admission("openai")
-        admission.admit([_candidate(0, origin=ImageOrigin.HISTORY)])
-
-        fetched = admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
-
-        assert [d.reason for d in fetched.degraded] == [DegradeReason.DUPLICATE]
-
-    def test_a_search_hit_after_the_fetch_is_a_duplicate(self) -> None:
-        admission = _model_admission("openai")
-        admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
-
-        searched = admission.admit([_candidate(0)])
-
-        assert [d.reason for d in searched.degraded] == [DegradeReason.DUPLICATE]
+        assert len(new.admitted) == 4
 
 
 class TestPrefilter:

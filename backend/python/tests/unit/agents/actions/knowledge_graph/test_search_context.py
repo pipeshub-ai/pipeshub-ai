@@ -680,9 +680,7 @@ class TestSearchLeavesImageRoomForAFetch:
         assert self._images(fetched) == 1
 
     @pytest.mark.asyncio
-    async def test_a_fetch_attaches_its_own_copy_of_an_image_search_showed(self) -> None:
-        """Search results can be cleared from the context later; the fetched
-        record must not depend on that copy."""
+    async def test_a_fetch_points_at_the_copy_search_attached(self) -> None:
         uri = _png((200, 30, 30))
         record = _figure_record("p1", [uri])
         unit = {"virtual_record_id": "p1", "block_index": 1, "block_type": BlockType.IMAGE.value,
@@ -693,8 +691,8 @@ class TestSearchLeavesImageRoomForAFetch:
         fetched = await self._fetch(state, record)
 
         assert self._images(searched) == 1
-        assert self._images(fetched) == 1
-        assert "shown above" not in self._text(fetched)
+        assert self._images(fetched) == 0
+        assert "shown above" in self._text(fetched)
 
 
 class TestEmpty:

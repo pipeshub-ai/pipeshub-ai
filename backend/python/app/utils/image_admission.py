@@ -38,11 +38,6 @@ Two properties the callers depend on:
   overflow, evicting pictures the model had not seen to keep repeats of one
   it had (`agents/agent_loop/image_guard.py`).
 
-  The one exception is a fetched record's image whose only copy so far was a
-  search hit. Search results are not protected from tool-result clearing, so
-  that copy can vanish while the fetch still points at it; the fetch attaches
-  its own copy instead, with whatever slots the record's unseen images left.
-
 Retrieval also gets only part of the per-request cap
 (`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
 otherwise leave nothing for a record the model fetches for its figures.
@@ -254,12 +249,9 @@ class ImageAdmission:
         # Hashes already sent this request. Gives idempotent re-renders and a
         # stable image set across turns (see the module docstring).
         self._admitted_hashes: set[str] = set()
-        # Copies attached, which exceeds the distinct hashes once a fetch
-        # re-attaches a search hit's image.
-        self._slots_used = 0
+        # How many of `_admitted_hashes` came from search hits or history,
+        # which may use only `policy.max_retrieved_images` of the cap.
         self._retrieved_slots_used = 0
-        # Admitted hashes whose only copy is in a search result.
-        self._search_only_hashes: set[str] = set()
         # Original hash -> the bytes actually admitted for it, whenever
         # `_normalize` had to rewrite them. Kept because the renderers hold a
         # decision, not a candidate, and re-read the source block's own URI:
@@ -283,9 +275,7 @@ class ImageAdmission:
         budget.used = self.budget.used
         clone = ImageAdmission(self.policy, budget=budget)
         clone._admitted_hashes = set(self._admitted_hashes)
-        clone._slots_used = self._slots_used
         clone._retrieved_slots_used = self._retrieved_slots_used
-        clone._search_only_hashes = set(self._search_only_hashes)
         clone._normalized_by_hash = self._normalized_by_hash
         clone._normalization_checked = self._normalization_checked
         return clone
@@ -299,7 +289,7 @@ class ImageAdmission:
         """Slots left for *new* images -- the tighter of the two ceilings."""
         if not self.policy.allows_images:
             return 0
-        per_request = self.policy.max_images_per_request - self._slots_used
+        per_request = self.policy.max_images_per_request - len(self._admitted_hashes)
         return max(0, min(per_request, self.budget.remaining))
 
     def _remaining_for(self, candidates: list[ImageCandidate]) -> int:
@@ -332,7 +322,6 @@ class ImageAdmission:
         admitted: list[ImageCandidate] = []
         degraded: list[DegradedImage] = []
         fresh: list[ImageCandidate] = []
-        reattaches: list[ImageCandidate] = []
         seen_in_batch: set[str] = set()
 
         for candidate in candidates:
@@ -342,14 +331,11 @@ class ImageAdmission:
             # earlier one this request. Deduplication is right whether or not
             # slots are scarce; the pixels are already in the request, and the
             # caller renders this one's text either way.
-            reattach = (
-                digest in self._search_only_hashes and not candidate.origin.is_retrieved
-            )
-            if (digest in self._admitted_hashes and not reattach) or digest in seen_in_batch:
+            if digest in self._admitted_hashes or digest in seen_in_batch:
                 degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
                 continue
             seen_in_batch.add(digest)
-            (reattaches if reattach else fresh).append(candidate)
+            fresh.append(candidate)
 
         # The prefilter exists to stop page furniture from crowding out real
         # figures, so it only runs when there is crowding. A record whose one
@@ -371,46 +357,26 @@ class ImageAdmission:
             eligible = fresh
 
         for candidate in sorted(eligible, key=_rank_key):
-            reason = self._take_slot(candidate)
-            if reason is None:
-                admitted.append(self._normalize(candidate))
-            else:
-                degraded.append(DegradedImage(candidate, reason))
-
-        # Second copies of search hits get only what the new images left: the
-        # pixels are already in the request, just not where clearing spares
-        # them. One that gets no slot still points at the search copy.
-        for candidate in sorted(reattaches, key=_rank_key):
-            if self._take_slot(candidate) is None:
-                admitted.append(self._normalize(candidate))
-            else:
-                degraded.append(DegradedImage(candidate, DegradeReason.DUPLICATE))
+            retrieved = candidate.origin.is_retrieved
+            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0 or (
+                retrieved and self._retrieved_slots_used >= self.policy.max_retrieved_images
+            ):
+                degraded.append(DegradedImage(candidate, DegradeReason.OVER_REQUEST_CAP))
+                continue
+            if not self.budget.can_add():
+                degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
+                continue
+            _ = self.budget.try_consume(1)
+            if retrieved:
+                self._retrieved_slots_used += 1
+            self._admitted_hashes.add(candidate.hash)
+            admitted.append(self._normalize(candidate))
 
         # Ranking decided membership; document order decides presentation, so
         # what the model reads still matches the record it came from.
         #
         admitted.sort(key=lambda c: (c.turn_index, c.block_index))
         return AdmissionResult(admitted=admitted, degraded=degraded)
-
-    def _take_slot(self, candidate: ImageCandidate) -> DegradeReason | None:
-        """Spend a slot on ``candidate``, or say why there is none."""
-        retrieved = candidate.origin.is_retrieved
-        if self.policy.max_images_per_request - self._slots_used <= 0 or (
-            retrieved and self._retrieved_slots_used >= self.policy.max_retrieved_images
-        ):
-            return DegradeReason.OVER_REQUEST_CAP
-        if not self.budget.can_add():
-            return DegradeReason.OVER_CONVERSATION_CAP
-        _ = self.budget.try_consume(1)
-        self._slots_used += 1
-        if retrieved:
-            self._retrieved_slots_used += 1
-        if candidate.origin is ImageOrigin.SEARCH_HIT:
-            self._search_only_hashes.add(candidate.hash)
-        else:
-            self._search_only_hashes.discard(candidate.hash)
-        self._admitted_hashes.add(candidate.hash)
-        return None
 
     def _normalize(self, candidate: ImageCandidate) -> ImageCandidate:
         """Fit an admitted image to the model's per-image limits.
