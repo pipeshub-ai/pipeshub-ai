@@ -584,8 +584,8 @@ class CommentsHelper:
         Files" on, the default branch's copy is its own code-file record). Only a file
         that changed but that GitHub returns without a diff (too large, or
         binary) and that still exists has its text at the PR head inlined,
-        within ``PR_FILE_INLINE_CONTENT_MAX_BYTES``. A rename with no line
-        changes is recorded as a rename only.
+        within ``PR_FILE_INLINE_CONTENT_MAX_BYTES``. A rename or copy names
+        its source path.
 
         Review comments are grouped by real GitHub review thread
         (``in_reply_to_id`` chain), matching ``BlockGroup.comments``'s documented
@@ -753,7 +753,8 @@ class CommentsHelper:
             # at the PR head is fetched only when the file changed but GitHub
             # gives no diff (too large to show, or binary: GitHub counts a
             # binary file's lines as 0/0), since it is then the only view of it.
-            # A rename with no line changes has no diff because nothing changed.
+            # A rename, copy or mode change with no line changes is not
+            # fetched: any text it has is the same file indexed once more.
             line_changes = (getattr(file, "additions", 0) or 0) + (getattr(file, "deletions", 0) or 0)
             changed = line_changes > 0 or status in ("added", "modified")
             if not diff and changed and status != "removed" and head_sha:
@@ -766,6 +767,11 @@ class CommentsHelper:
                     )
 
             data_parts = [f"[{status} file]"]
+            # Name the old path whenever GitHub gives one, so a search for it
+            # still finds the pull request that moved the file.
+            previous = getattr(file, "previous_filename", None)
+            if previous and status in ("renamed", "copied"):
+                data_parts.append(f"{status.capitalize()} from {previous}.")
             if oversized:
                 data_parts.append(
                     f"Full File Content: omitted ({content_bytes} bytes exceeds the "
@@ -773,13 +779,12 @@ class CommentsHelper:
                 )
             elif file_content:
                 data_parts.append(f"Full File Content:\n{file_content}")
-            if not diff and status == "renamed" and not line_changes:
-                previous = getattr(file, "previous_filename", None)
-                data_parts.append(
-                    f"Renamed from {previous}; no line changes." if previous
-                    else "Renamed; no line changes."
-                )
-            else:
+            # No diff and nothing fetched: say only what the listing shows.
+            # GitHub counts a binary's lines as 0/0 even when its bytes
+            # changed, so "no changes" is never claimed for a rename or copy.
+            if not diff and not changed and status == "changed":
+                data_parts.append("File mode or type changed.")
+            elif diff or changed or status not in ("renamed", "copied"):
                 data_parts.append(f"Diff:\n{patch}")
             sections = review_comment_sections.get(filename)
             if sections:

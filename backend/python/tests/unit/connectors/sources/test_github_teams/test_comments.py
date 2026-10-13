@@ -973,7 +973,31 @@ class TestCommentBlockFailures:
             "acme", "widgets", 1, pull_request, parent_index=0, record=record,
         )
         group = next(bg for bg in block_groups if bg.name == "File change: src/new_name.py")
-        assert group.data == "[renamed file]\n\nRenamed from src/old_name.py; no line changes."
+        # GitHub counts a binary's lines as 0/0 even when it changed, so the
+        # record names the old path and claims nothing about the content.
+        assert group.data == "[renamed file]\n\nRenamed from src/old_name.py."
+
+    async def test_pure_copy_names_its_source_and_is_not_fetched(self) -> None:
+        group = await _single_file_group(SimpleNamespace(
+            filename="src/copy.py", previous_filename="src/original.py",
+            status="copied", patch=None, additions=0, deletions=0,
+        ))
+        assert group.data == "[copied file]\n\nCopied from src/original.py."
+        assert "no textual diff available" not in group.data
+
+    async def test_renamed_file_with_diff_records_its_old_path(self) -> None:
+        # A search for the old path should still find the PR that moved it.
+        group = await _single_file_group(SimpleNamespace(
+            filename="src/new.py", previous_filename="src/old.py",
+            status="renamed", patch="@@ -1 +1 @@\n-a\n+b", additions=1, deletions=1,
+        ))
+        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+
+    async def test_mode_change_without_diff_says_so(self) -> None:
+        group = await _single_file_group(SimpleNamespace(
+            filename="bin/run.sh", status="changed", patch=None, additions=0, deletions=0,
+        ))
+        assert group.data == "[changed file]\n\nFile mode or type changed."
 
     async def test_renamed_file_with_changes_but_no_diff_is_inlined(self) -> None:
         # Renamed and edited, with a diff too large for GitHub to show.
@@ -1058,6 +1082,25 @@ class TestCommentBlockFailures:
 
         assert blocks == []
         assert bg is None
+
+
+async def _single_file_group(file: SimpleNamespace) -> object:
+    """The file-change group for a PR with one changed file; any contents
+    request fails the test, since ``get_file_contents`` is not mocked."""
+    c = make_mock_connector()
+    helper = CommentsHelper(c)
+    c.runtime.ds_call.side_effect = _dispatch(c, {
+        "list_issue_comments": ok_response([]),
+        "get_pull_reviews": ok_response([]),
+        "get_pull_review_comments": ok_response([]),
+        "get_pull_file_changes": ok_response([file]),
+    })
+    record, pull_request = _pr_blocks_fixture()
+    pull_request.head = SimpleNamespace(sha="abc")
+    block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+        "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+    )
+    return next(bg for bg in block_groups if bg.name == f"File change: {file.filename}")
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:
