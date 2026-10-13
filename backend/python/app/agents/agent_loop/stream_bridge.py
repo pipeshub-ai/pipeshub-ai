@@ -51,6 +51,7 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.utils.stage_timer import RunTimer
+from app.utils.time_conversion import set_llm_time_zone
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -417,6 +418,10 @@ async def run_agent_loop_stream(
     )
 
     async def _produce() -> None:
+        # Record headers rendered by tools show dates in the user's zone,
+        # weekday included. Set inside this task so it reaches every tool
+        # call of the run and nothing outside it.
+        set_llm_time_zone(context.timezone)
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False

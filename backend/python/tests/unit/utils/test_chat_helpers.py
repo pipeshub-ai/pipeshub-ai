@@ -309,6 +309,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {

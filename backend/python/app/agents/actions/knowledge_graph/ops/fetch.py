@@ -88,7 +88,7 @@ def resolve_block_cap(requested_max: int | None) -> int:
 # What to tell the model about ids that produced nothing. Grouped by reason so
 # "try again shortly" is not buried among ids that will never resolve.
 _UNAVAILABLE_PHRASING = {
-    "not_indexed_yet": "still being indexed — ask again shortly",
+    "not_indexed_yet": "exists, but its content is not indexed yet",
     "storage_error": "could not be read right now (storage error) — retrying may work",
     "not_available": "not available",
 }
@@ -98,14 +98,31 @@ def _unavailable_note(
     not_available: list[str],
     reasons: dict[str, str],
     record_id_shortener: Any = None,
+    not_indexed: dict[str, dict[str, str]] | None = None,
 ) -> str:
-    """A per-id explanation, or an empty string when every id resolved."""
+    """A per-id explanation, or an empty string when every id resolved.
+
+    A record that exists but has no indexed content gets its own block (its
+    metadata and status) when the resolver described it: told only "not
+    available", a model concludes the record does not exist.
+    """
     if not not_available:
         return ""
 
+    from app.utils.not_indexed import not_indexed_note
+
+    not_indexed = not_indexed or {}
     grouped: dict[str, list[str]] = {}
+    described: list[str] = []
     for record_id in not_available:
         reason = reasons.get(record_id, "not_available")
+        if reason == "not_indexed_yet" and record_id in not_indexed:
+            entry = not_indexed[record_id]
+            block = entry.get("context") or f"Record ID: {record_id}"
+            if record_id_shortener is not None:
+                block = record_id_shortener.shorten_record_ids_in_text(block)
+            described.append(f"{block}\n{not_indexed_note(entry.get('status'))}")
+            continue
         # `shorten_if_known` never mints a label for an id the model has not
         # already seen -- an invented "R7" would be worse than the raw id.
         label = (
@@ -118,7 +135,8 @@ def _unavailable_note(
     for reason, ids in grouped.items():
         ids_str = ", ".join(f"'{rid}'" for rid in ids)
         lines.append(f"{ids_str}: {_UNAVAILABLE_PHRASING.get(reason, 'not available')}")
-    return "\n\nNote: " + "; ".join(lines)
+    note = "\n\nNote: " + "; ".join(lines) if lines else ""
+    return note + "".join(f"\n\n{block}" for block in described)
 
 
 async def execute_fetch_record(
@@ -294,6 +312,7 @@ async def execute_fetch_record(
             result.get("not_available_ids", []),
             result.get("unavailable_reasons", {}),
             record_id_shortener,
+            result.get("not_indexed_records"),
         )
         text += _recovery_hint()
 
@@ -362,6 +381,7 @@ async def execute_fetch_record(
         message = str(result.get("error") or "None of the requested records were available.")
         message += _unavailable_note(
             result["not_available_ids"], result.get("unavailable_reasons", {}), record_id_shortener,
+            result.get("not_indexed_records"),
         )
         message += _recovery_hint()
         return ToolOutput(success=False, error=message), citation_ref_mapper

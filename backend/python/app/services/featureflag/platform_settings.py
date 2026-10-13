@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -114,7 +115,11 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
 
 
 async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
-    """Labs gate for typed named-entity extraction. Read live. Defaults to off."""
+    """Gate for typed named-entity extraction and the tools that read it: on when
+    the deployment sets ``HIGH_ACCURACY_MODE`` or the Labs flag is on. The flag is
+    read live and defaults to off; under ``HIGH_ACCURACY_MODE`` it is not read."""
+    if high_accuracy_mode():
+        return True
     return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
 
 

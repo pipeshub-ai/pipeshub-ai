@@ -913,6 +913,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             specific_args = {
                 "record_type": RecordType.TICKET,
                 "status": graph_doc.get("status"),
+                "source_status": graph_doc.get("sourceStatus"),
                 "priority": graph_doc.get("priority"),
                 "type": graph_doc.get("type"),
                 "delivery_status": graph_doc.get("deliveryStatus"),

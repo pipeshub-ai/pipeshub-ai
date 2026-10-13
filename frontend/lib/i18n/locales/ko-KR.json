@@ -2644,6 +2644,7 @@
         "add": "필터 추가",
         "incomplete": "여기에 요약을 보려면 아래 각 필터의 연산자와 값을 완성하세요.",
         "empty": "아직 필터가 없습니다. \"필터 추가\"를 사용해 지원되는 필터 중 하나를 선택하세요.",
+        "unsetFallback": "{{field}}: {{value}} (기본값)",
         "operator": "연산자",
         "chooseOperator": "연산자 선택…",
         "value": "값",

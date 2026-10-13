@@ -360,6 +360,28 @@ class TestFilterField:
         assert "is_after" in schema["operators"]
         assert "noImplicitOperatorDefault" not in schema
 
+    def test_to_schema_dict_fallback_operator(self) -> None:
+        ff = FilterField(
+            name="sync_window",
+            display_name="Sync Messages From",
+            filter_type=FilterType.DATETIME,
+            fallback_operator="last_30_days",
+        )
+        assert ff.to_schema_dict()["fallbackOperator"] == "last_30_days"
+
+    def test_to_schema_dict_omits_fallback_operator_when_unset(self) -> None:
+        ff = FilterField(name="modified", display_name="Modified", filter_type=FilterType.DATETIME)
+        assert "fallbackOperator" not in ff.to_schema_dict()
+
+    def test_fallback_operator_must_be_a_field_operator(self) -> None:
+        with pytest.raises(ValueError, match="fallback_operator"):
+            FilterField(
+                name="sync_window",
+                display_name="Sync Messages From",
+                filter_type=FilterType.DATETIME,
+                fallback_operator="in",
+            )
+
     def test_to_schema_dict_no_implicit_operator_default(self):
         ff = FilterField(
             name="modified",

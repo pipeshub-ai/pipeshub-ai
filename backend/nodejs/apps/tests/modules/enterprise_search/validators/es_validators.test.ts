@@ -511,6 +511,21 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('should reject a query over 100000 characters, like a chat question', () => {
+      const data = { body: { query: 'a'.repeat(100001) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.false
+      expect(result.error!.issues.map((i) => i.message)).to.include(
+        'Search query exceeds maximum length of 100000 characters',
+      )
+    })
+
+    it('should accept a query of exactly 100000 characters', () => {
+      const data = { body: { query: 'a'.repeat(100000) } }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
     it('should strip model fields from body (semantic search schema is query-centric)', () => {
       const data = {
         body: {

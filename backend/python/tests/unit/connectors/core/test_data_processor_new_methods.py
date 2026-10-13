@@ -219,7 +219,14 @@ class TestDelegateMethods:
         tx.get_app_users.return_value = sentinel
         result = await proc.get_all_app_users("conn-1")
         assert result is sentinel
-        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1")
+        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1", raise_on_error=False)
+
+    @pytest.mark.asyncio
+    async def test_get_all_app_users_passes_raise_on_error(self):
+        proc, tx = _make_processor()
+        tx.get_app_users.return_value = []
+        await proc.get_all_app_users("conn-1", raise_on_error=True)
+        tx.get_app_users.assert_awaited_once_with("org-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_record_by_external_id(self):

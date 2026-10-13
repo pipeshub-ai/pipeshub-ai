@@ -1019,7 +1019,14 @@ export const enterpriseSearchQuerySchema = z.object({
 
 export const enterpriseSearchSearchSchema = z.object({
   body: z.object({
-    query: z.string().min(1, { message: 'Search query is required' }),
+    // Same ceiling as a chat question (chatQuerySchema). The XSS middleware
+    // also refuses a longer query before it gets here.
+    query: z
+      .string()
+      .min(1, { message: 'Search query is required' })
+      .max(100000, {
+        message: 'Search query exceeds maximum length of 100000 characters',
+      }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
   }),

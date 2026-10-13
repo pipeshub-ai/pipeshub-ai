@@ -173,6 +173,55 @@ describe('Logger', () => {
       };
       logger.logRequest(mockReq as any);
       expect(logStub.calledOnce).to.be.true;
+      const logged = JSON.stringify(logStub.firstCall.args);
+      expect(logged).to.not.contain('Bearer token');
+      expect(logged).to.not.contain('session=abc');
+    });
+
+    it('should redact OAuth codes from the query and the referer', () => {
+      const logger = new Logger({ service: 'test' });
+      const logStub = sinon.stub((logger as any).logger, 'log');
+      logger.logRequest({
+        method: 'GET',
+        path: '/api/v1/connectors/oauth/callback',
+        query: { code: 'fake-code-value', page: '1' },
+        params: {},
+        headers: { referer: 'http://localhost:3001/cb?code=fake-code-value', 'x-session-token': 'fake-session' },
+      } as any);
+      const logged = JSON.stringify(logStub.firstCall.args);
+      expect(logged).to.not.contain('fake-code-value');
+      expect(logged).to.not.contain('fake-session');
+    });
+  });
+
+  describe('metadata redaction format', () => {
+    it('redacts URL-valued fields before any transport formats the line', () => {
+      const logger = new Logger({ service: 'test' });
+      const format = (logger as any).logger.format;
+      const info = format.transform(
+        {
+          level: 'error',
+          message: 'Application error',
+          metadata: {
+            context: {
+              request: {
+                path: '/api/v1/connectors/oauth/callback',
+                headers: {
+                  referer: 'http://localhost:3001/connectors/oauth/callback/Drive?state=fake-state-value&code=fake-code-value',
+                  authorization: 'Bearer fake-bearer-value',
+                },
+              },
+            },
+            redirectUrl: '/oauth/authorize?state=fake-state-value',
+          },
+        },
+        {},
+      );
+      const rendered = String(info[Symbol.for('message')]) + JSON.stringify(info.metadata);
+      for (const secret of ['fake-code-value', 'fake-state-value', 'fake-bearer-value']) {
+        expect(rendered).to.not.contain(secret);
+      }
+      expect(rendered).to.contain('/connectors/oauth/callback/Drive');
     });
   });
 

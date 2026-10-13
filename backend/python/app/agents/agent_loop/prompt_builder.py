@@ -432,6 +432,54 @@ def _build_finding_information(
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
 
 
+# What each exact-calculation tool is for, keyed by its tool-name suffix.
+_EXACT_NUMBER_USES = {
+    "evaluate_expression": "any calculation with more than one step (durations too)",
+    "date_difference": "any age or gap between two dates",
+    "count_text": "any count of letters or words",
+}
+
+
+def _join_with_and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _build_exact_numbers(tool_names: tuple[str, ...], toolset: str | None) -> str | None:
+    """When to use the calculator rather than mental arithmetic, for the
+    calculator tools this request grants. `toolset` is the group a lazily
+    disclosed agent must load first; the rule then names that group, never
+    its tools, whose schemas are not bound yet."""
+    if not tool_names:
+        return None
+    uses = _join_with_and([_EXACT_NUMBER_USES[name.replace(".", "__").rsplit("__", 1)[-1]] for name in tool_names])
+    if toolset is None:
+        rule = f"Use {_join_with_and([f'`{name}`' for name in tool_names])} for {uses}"
+        load = ""
+    else:
+        rule = f"Use the `{toolset}` toolset for {uses}"
+        load = f' Load it with `fetch_tools("{toolset}")` when its tools are not in your tool list yet.'
+    return (
+        "\n## Exact Numbers\n\n"
+        f"{rule}, rather than working them out in your head.{load} Convert every "
+        "operand to one unit first, copy each figure exactly from its source, and "
+        "give the result in the unit the question asks for."
+    )
+
+
+def _toolset_to_load(tool_names: tuple[str, ...], spec: AgentSpec, runtime: AgentRuntime) -> str | None:
+    """The toolset a lazily disclosed agent must `fetch_tools` before it can
+    call `tool_names`, or None when they are bound from turn 0 (eager
+    disclosure, a pinned toolset, or a tool in no toolset). Reads the
+    registry's grouping, which `fetch_tools` never changes, so the answer
+    stays the same for the whole run."""
+    if not tool_names or spec.tool_disclosure != "lazy" or runtime.tool_registry is None:
+        return None
+    groups = [group for group in runtime.tool_registry.toolsets() if tool_names[0] in group.tool_names]
+    if not groups or any(group.name in (spec.pinned_toolsets or []) for group in groups):
+        return None
+    return groups[0].name
+
+
 def _build_code_execution_section(*, composed: bool, networked: bool) -> str:
     """The MANDATORY trigger list plus the one override no tool schema can
     state: that the file must actually be produced, not described in
@@ -648,6 +696,9 @@ class PipesHubPromptBuilder:
 
         # ── Finding information: the one source-precedence section ──────────
         tpl.set("finding_information", _build_finding_information(surfaces, catalog) or None)
+        tpl.set("exact_numbers", _build_exact_numbers(
+            surfaces.calculator_tools, _toolset_to_load(surfaces.calculator_tools, spec, runtime),
+        ))
 
         # ── Code execution steering ───────────────────────────────────────────
         code_tool = surfaces.code

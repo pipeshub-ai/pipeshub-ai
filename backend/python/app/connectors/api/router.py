@@ -149,6 +149,7 @@ from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
 from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
+from app.utils.not_indexed import not_indexed_note
 from app.utils.user_messages import (
     EPUB_PREVIEW_UNAVAILABLE,
     action_failed,
@@ -1939,6 +1940,12 @@ async def get_record_content(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
 
     if not result.get("ok") or not result.get("records"):
+        # The caller passed the access check above, so a record that exists
+        # but has no indexed content is described rather than reported as
+        # missing: "No record found" reads as "does not exist".
+        unindexed = (result.get("not_indexed_records") or {}).get(record_id)
+        if unindexed:
+            return {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"}
         return {"content": "No record found"}
 
     try:
