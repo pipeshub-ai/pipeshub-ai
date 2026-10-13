@@ -105,6 +105,9 @@ class CountingGitHub:
         return self._ok("get_pull_review_comments", [])
 
     async def get_pull_file_changes(self, owner: str, repo: str, number: int, fetch_full_content: bool = True) -> GitHubResponse:
+        # The connector indexes a pull request from its diffs. With the flag on, the real client downloads
+        # both sides of every file whose patch is missing, which these call counts do not include.
+        assert not fetch_full_content, "get_pull_file_changes must be called with fetch_full_content=False"
         # GitHub omits ``patch`` when a file's diff is too large to show.
         return self._ok("get_pull_file_changes", [
             SimpleNamespace(filename=f"src/f{i}.py", status="modified", patch="@@ -1 +1 @@\n-a\n+b")
