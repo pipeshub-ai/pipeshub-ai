@@ -35,3 +35,6 @@ class CONFIG:
     # instead of removing it; a scheduled purge removes it later. Defaults to
     # disabled; admins opt in from Labs.
     ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"
+    # Controls whether the Semantic Caching layer for plain-RAG chat
+    # is active. Defaults to disabled; admins opt in per organization.
+    ENABLE_SEMANTIC_CACHE = "ENABLE_SEMANTIC_CACHE"

@@ -21,6 +21,14 @@ class QueryAppContainer(BaseAppContainer):
     # Override config_service to use the service-specific logger
     config_service = providers.Singleton(ConfigurationService, logger=logger, key_value_store=key_value_store)
 
+    # Multi-tenant Semantic Caching layer for plain-RAG chat
+    semantic_cache_service = providers.Resource(
+        container_utils.create_semantic_cache_service,
+        logger=logger,
+        config_service=config_service,
+        redis_provider=BaseAppContainer.redis_provider,
+    )
+
     # Caches the accessible-record maps every search resolves; falls back to
     # live queries when Redis is unavailable or the kill-switch is set.
     accessible_records_cache = providers.Resource(

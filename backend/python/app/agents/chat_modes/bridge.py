@@ -29,10 +29,11 @@ Modes differ only in:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import time
 import uuid
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
@@ -46,7 +47,7 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
-from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.respond import AnswerFinalizer, _tool_names_from_state
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -55,6 +56,13 @@ from app.agents.agent_loop.stream_bridge import (
     sse_queue_maxsize,
 )
 from app.agents.chat_modes.attachments import resolve_attachments
+from app.agents.chat_modes.cache_bridge import (
+    emit_shadow_comparison,
+    evaluate_cacheability,
+    replay_cached_turn,
+    resolve_config_hash_params,
+    should_store_turn,
+)
 from app.agents.chat_modes.custom_instructions import (
     resolve_custom_instructions as _resolve_custom_instructions,
 )
@@ -71,11 +79,34 @@ from app.modules.demo_data.chat import (
     exclude_from_state,
     note_org_real_data,
 )
+from app.services.cache.config import get_semantic_cache_config
+from app.services.cache.semantic_cache_service import (
+    CacheLookupResult,
+    SemanticCacheService,
+    compute_config_hash,
+    compute_context_digest,
+)
+from app.telemetry.event_buffer import record_event
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.streaming import create_sse_event, handle_simple_mode
 
+_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _track_background_task(task: asyncio.Task[Any]) -> None:
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+
+
+def get_background_tasks() -> set[asyncio.Task[Any]]:
+    """Return in-flight background tasks (for diagnostics and test verification)."""
+    return _BACKGROUND_TASKS
+
+
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.agent_loop.cancellation.registry import RunCancellationRegistry
@@ -144,7 +175,7 @@ async def _resolve_web_search_config(config_service: Any, logger: logging.Logger
         web_search_config = await config_service.get_config(
             config_node_constants.WEB_SEARCH.value, default={}, use_cache=True,
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("run_chat_stream: failed to load web search config: %s", exc)
         return None
     providers = (web_search_config or {}).get("providers") or []
@@ -160,7 +191,7 @@ async def _resolve_web_search_config(config_service: Any, logger: logging.Logger
 async def _none() -> None:
     """Placeholder awaitable so a conditional lookup can still take a slot in
     the `asyncio.gather` below without branching the result unpacking."""
-    return None
+    return
 
 
 async def _fetch_available_connectors(
@@ -316,7 +347,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
-async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
+async def run_chat_stream(
     query_info: dict[str, Any],
     user_info: dict[str, Any],
     llm: "BaseChatModel",
@@ -340,6 +371,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
     entity_vector_store: Any = None,
+    semantic_cache_service: SemanticCacheService | None = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
     request, regardless of mode. See module docstring.
@@ -350,7 +382,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     """
     from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
     from app.modules.transformers.blob_storage import BlobStorage
-    from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
+    from app.utils.execute_query import (
+        connector_instances_have_sql,
+        sql_connector_instance_ids,
+    )
     from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
@@ -477,6 +512,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
     async def _produce() -> None:
         agent: Any = None
+        shadow_lookup_task: asyncio.Task[CacheLookupResult] | None = None
         try:
             factory = PipesHubAgentFactory()
             # Shared with `retrieval.py`/`citations.py`'s tool-result image
@@ -510,6 +546,143 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             )
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
+
+            # --- Semantic Caching (Phase 4): Pre-LLM Cache Lookup ---
+            cache_config = None
+            cached_context_digest: str | None = None
+            cached_config_hash: str | None = None
+            is_cacheable: bool = False
+            active_cache: SemanticCacheService | None = None
+            replay_started: bool = False
+            try:
+                cache_config = await get_semantic_cache_config(config_service, context.org_id)
+                if cache_config.mode != "off":
+                    active_cache = semantic_cache_service
+                    if active_cache is None:
+                        record_event(
+                            "semantic_cache_bypass",
+                            {
+                                "reason": "service_unavailable",
+                                "mode": cache_config.mode,
+                                "org_id": context.org_id,
+                            },
+                        )
+                    else:
+                        cache_query_info = {
+                            **query_info,
+                            "chatMode": policy.name if policy else query_info.get("chatMode"),
+                        }
+                        config_params = (
+                            resolve_config_hash_params(context, cache_query_info, prefetch_result)
+                            if prefetch_result
+                            else None
+                        )
+                        is_cacheable, bypass_reason = evaluate_cacheability(
+                            cache_config,
+                            query_info.get("query", ""),
+                            cache_query_info,
+                            prefetch_result,
+                            config_params,
+                        )
+                        if not is_cacheable:
+                            record_event(
+                                "semantic_cache_bypass",
+                                {
+                                    "reason": bypass_reason,
+                                    "mode": cache_config.mode,
+                                    "org_id": context.org_id,
+                                },
+                            )
+                        elif config_params is not None and prefetch_result is not None:
+                            cached_config_hash = compute_config_hash(config_params)
+                            cached_context_digest = compute_context_digest(
+                                prefetch_result.record_fingerprints or []
+                            )
+
+                            if cache_config.mode == "serve":
+                                lookup_start = time.perf_counter()
+                                try:
+                                    lookup_res = await asyncio.wait_for(
+                                        active_cache.lookup(
+                                            org_id=context.org_id,
+                                            user_id=context.user_id,
+                                            query=query_info.get("query", ""),
+                                            query_embedding=prefetch_result.query_embedding,
+                                            context_digest=cached_context_digest,
+                                            config_hash=cached_config_hash,
+                                            config=cache_config,
+                                        ),
+                                        timeout=0.050,
+                                    )
+                                except asyncio.TimeoutError:
+                                    log.warning("SemanticCache: lookup timed out after 50ms; failing open")
+                                    lookup_res = CacheLookupResult(hit=False, kind="none", reasons=["cache_timeout"])
+                                except Exception as exc:
+                                    log.warning("SemanticCache: lookup failed: %s; failing open", type(exc).__name__)
+                                    lookup_res = CacheLookupResult(hit=False, kind="none", reasons=["cache_error"])
+
+                                latency_ms = (time.perf_counter() - lookup_start) * 1000
+
+                                if lookup_res.hit:
+                                    record_event(
+                                        "semantic_cache_hit",
+                                        {
+                                            "kind": lookup_res.kind,
+                                            "score": round(lookup_res.score, 4),
+                                            "mode": "serve",
+                                            "latency_ms": round(latency_ms, 2),
+                                            "org_id": context.org_id,
+                                        },
+                                    )
+                                    def _mark_replay_started() -> None:
+                                        nonlocal replay_started
+                                        replay_started = True
+
+                                    _ = await replay_cached_turn(
+                                        context,
+                                        lookup_res,
+                                        query=query_info.get("query", ""),
+                                        current_user_id=context.user_id,
+                                        on_before_write=_mark_replay_started,
+                                    )
+                                    return
+                                else:
+                                    record_event(
+                                        "semantic_cache_miss",
+                                        {
+                                            "mode": "serve",
+                                            "latency_ms": round(latency_ms, 2),
+                                            "reasons": lookup_res.reasons,
+                                            "org_id": context.org_id,
+                                        },
+                                    )
+
+                            elif cache_config.mode == "shadow":
+                                shadow_lookup_task = asyncio.create_task(
+                                    active_cache.lookup(
+                                        org_id=context.org_id,
+                                        user_id=context.user_id,
+                                        query=query_info.get("query", ""),
+                                        query_embedding=prefetch_result.query_embedding,
+                                        context_digest=cached_context_digest,
+                                        config_hash=cached_config_hash,
+                                        config=cache_config,
+                                    )
+                                )
+            except Exception as exc:
+                if replay_started:
+                    raise
+                log.warning("SemanticCache: pre-LLM cache block failed: %s; failing open", type(exc).__name__)
+                record_event(
+                    "semantic_cache_error",
+                    {
+                        "op": "pre_llm_cache",
+                        "org_id": context.org_id,
+                    },
+                )
+                is_cacheable = False
+                active_cache = None
+
             if prefetch_result is not None and not prefetch_result.is_empty:
                 context.tool_state["final_results"] = [
                     *context.tool_state.get("final_results", []), *prefetch_result.final_results,
@@ -628,7 +801,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 result = agent.last_stream_result
 
                 finalizer = AnswerFinalizer(context, collector)
-                await finalizer.run(
+                completion_data = await finalizer.run(
                     agent_success=result.success, agent_error=result.error,
                     agent_output=result.output, event_sink=context.event_sink,
                     streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,
@@ -640,12 +813,134 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # is_cancelled` here.
                     agent_cancelled=result.cancelled,
                 )
+
+                # --- Semantic Caching (Phase 4): Post-stream hooks ---
+                try:
+                    if shadow_lookup_task is not None:
+                        try:
+                            shadow_res = await asyncio.wait_for(
+                                asyncio.shield(shadow_lookup_task),
+                                timeout=0.100,
+                            )
+                            emit_shadow_comparison(completion_data, shadow_res, org_id=context.org_id)
+                        except asyncio.TimeoutError:
+                            log.warning("SemanticCache: shadow lookup timed out after 100ms")
+                            _ = shadow_lookup_task.cancel()
+                            record_event(
+                                "semantic_cache_error",
+                                {
+                                    "op": "shadow_timeout",
+                                    "org_id": context.org_id,
+                                },
+                            )
+                        except Exception as exc:
+                            log.warning("SemanticCache: shadow comparison failed: %s", type(exc).__name__)
+                            record_event(
+                                "semantic_cache_error",
+                                {
+                                    "op": "shadow_comparison",
+                                    "org_id": context.org_id,
+                                },
+                            )
+
+                    if (
+                        cache_config is not None
+                        and cache_config.mode in ("serve", "shadow")
+                        and is_cacheable
+                        and active_cache is not None
+                        and cached_context_digest is not None
+                        and cached_config_hash is not None
+                        and prefetch_result is not None
+                    ):
+                        is_eligible, skip_reason = should_store_turn(
+                            completion_data,
+                            is_cancelled=(result.cancelled or cancellation_token.is_cancelled),
+                            agent_success=result.success,
+                        )
+                        if is_eligible:
+                            state_tools = _tool_names_from_state(context.tool_state)
+                            if (
+                                state_tools.get("succeeded_tool_names")
+                                or state_tools.get("failed_tool_names")
+                            ):
+                                is_eligible = False
+                                skip_reason = "tool_calls"
+                        if is_eligible:
+                            async def _bg_store(
+                                ac: SemanticCacheService = active_cache,
+                                cdata: dict[str, Any] = completion_data,
+                                cdigest: str = cached_context_digest,
+                                chash: str = cached_config_hash,
+                                qemb: list[float] | None = prefetch_result.query_embedding,
+                            ) -> None:
+                                try:
+                                    stored = await ac.store(
+                                        org_id=context.org_id,
+                                        user_id=context.user_id,
+                                        query=query_info.get("query", ""),
+                                        query_embedding=qemb or [],
+                                        context_digest=cdigest,
+                                        config_hash=chash,
+                                        completion_data=cdata,
+                                        config=cache_config,
+                                    )
+                                    if stored:
+                                        record_event(
+                                            "semantic_cache_write",
+                                            {
+                                                "org_id": context.org_id,
+                                                "mode": cache_config.mode,
+                                            },
+                                        )
+                                    else:
+                                        record_event(
+                                            "semantic_cache_write_skipped",
+                                            {
+                                                "reason": "store_skipped",
+                                                "org_id": context.org_id,
+                                                "mode": cache_config.mode,
+                                            },
+                                        )
+                                except Exception as exc:
+                                    log.warning("SemanticCache: background store failed: %s", type(exc).__name__)
+                                    record_event(
+                                        "semantic_cache_error",
+                                        {
+                                            "op": "store",
+                                            "org_id": context.org_id,
+                                        },
+                                    )
+
+                            bg_task = asyncio.create_task(_bg_store())
+                            _track_background_task(bg_task)
+                        else:
+                            record_event(
+                                "semantic_cache_write_skipped",
+                                {
+                                    "reason": skip_reason,
+                                    "org_id": context.org_id,
+                                    "mode": cache_config.mode,
+                                },
+                            )
+                except Exception as exc:
+                    log.warning("SemanticCache: post-stream cache block failed: %s", type(exc).__name__)
+                    record_event(
+                        "semantic_cache_error",
+                        {
+                            "op": "post_stream_cache",
+                            "org_id": context.org_id,
+                        },
+                    )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
             error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:
+            if shadow_lookup_task is not None and not shadow_lookup_task.done():
+                _ = shadow_lookup_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await shadow_lookup_task
             if cancellation_registry is not None:
                 await cancellation_registry.unregister(run_id)
             await _cancel_orphaned_agent_tasks(agent)
