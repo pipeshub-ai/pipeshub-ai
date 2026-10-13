@@ -394,6 +394,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_id=connector_id,
                         org_id=org_id,
                         app=app,
+                        graph_provider=graph_provider,
                     )
                 return connector_name, connector_id, connector
 
@@ -441,6 +442,27 @@ def _resumes_interrupted_full_sync(app: dict | None) -> bool:
     )
 
 
+async def _current_app(
+    graph_provider, logger: logging.Logger, connector_id: str
+) -> dict | None:
+    """The app doc as it is now, not as the boot traversal read it.
+
+    That read came before the connector's init (OAuth, a live connection test),
+    which can take seconds while the API already serves requests. A stop in
+    that window clears pendingResync in the database, not in the snapshot, and
+    the start path does not look at pendingResync, so only a fresh read keeps
+    the stop in force. A failed read resumes nothing: the connector keeps its
+    marks, and the next sync anyone starts still runs in full.
+    """
+    if graph_provider is None:
+        return None
+    try:
+        return await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    except Exception as e:
+        logger.warning(f"Could not re-read {connector_id} before resuming it: {e}")
+        return None
+
+
 async def _publish_startup_resync(
     app_container: ConnectorAppContainer,
     config_service,
@@ -450,6 +472,7 @@ async def _publish_startup_resync(
     connector_id: str,
     org_id: str,
     app: dict | None = None,
+    graph_provider=None,
 ) -> None:
     """Hand a startup sync to whichever process consumes sync events.
 
@@ -464,7 +487,9 @@ async def _publish_startup_resync(
     """
     try:
         if await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id):
-            if not _resumes_interrupted_full_sync(app):
+            if not _resumes_interrupted_full_sync(app) or not _resumes_interrupted_full_sync(
+                await _current_app(graph_provider, logger, connector_id)
+            ):
                 logger.info(
                     f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
                 )

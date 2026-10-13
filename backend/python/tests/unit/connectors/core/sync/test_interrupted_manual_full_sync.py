@@ -47,19 +47,25 @@ def _app(**fields: object) -> dict:
     }
 
 
-async def _boot(app: dict, strategy: str = "MANUAL") -> tuple[AsyncMock, MagicMock]:
+async def _boot(
+    app: dict, strategy: str = "MANUAL", *, current: dict | None = None
+) -> tuple[AsyncMock, MagicMock]:
     """Run the real boot resume for one connector.
 
     Only the edges are mocked: the graph, the connector's init, the dispatcher
     (what a resume publishes to) and the coordinator (what an in-place start
     would take a lease from). Returns those last two so a test can assert that
     nothing was published and nothing was started.
+
+    ``current`` is the app doc as a re-read finds it after init, when something
+    changed it in the meantime; by default it is unchanged.
     """
     from app.connectors_main import resume_sync_services
 
     graph = AsyncMock()
     graph.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
     graph.get_org_apps = AsyncMock(return_value=[app])
+    graph.get_document = AsyncMock(return_value=current if current is not None else app)
     graph.get_users = AsyncMock(return_value=[{"id": "u1"}])
     data_store = MagicMock()
     data_store.graph_provider = graph
@@ -134,6 +140,14 @@ class TestBootLeavesOtherManualConnectorsAlone:
         """Stopping a full sync leaves pendingFullSync (the edges it removed are
         still missing) but clears pendingResync first, so the stop holds."""
         _started_nothing(*await _boot(_app(**{_FULL: True, _OWED: False})))
+
+    @pytest.mark.asyncio
+    async def test_a_stop_that_lands_while_the_connector_initialises_holds(self) -> None:
+        """The boot traversal reads the app doc before the connector's init,
+        which can take seconds while the API already serves requests. A stop in
+        that window clears pendingResync in the database; resuming from the
+        earlier read would start the sync the person just stopped."""
+        _started_nothing(*await _boot(_app(**_INTERRUPTED), current=_app(**{_FULL: True, _OWED: False})))
 
     @pytest.mark.asyncio
     async def test_a_queued_manual_connector_is_left_to_the_startup_drain(self) -> None:
