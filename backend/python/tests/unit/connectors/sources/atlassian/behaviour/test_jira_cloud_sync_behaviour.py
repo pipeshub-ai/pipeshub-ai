@@ -1352,6 +1352,73 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
         assert self._access(site_db) == before, "the stored group members and role members survive"
 
+    async def test_a_full_sync_whose_role_list_is_refused_keeps_the_roles_and_still_unlinks(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+        ]})
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"]
+
+        # A lasting refusal (403, no Administer Projects) repeats on every full sync.
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is True, "a refusal does not make every full sync incomplete"
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"], "the kept role keeps its members"
+        assert ("EntityType.ROLE", "ENG_10002") in acl(site_db)
+
+    async def test_a_full_sync_with_one_unreadable_role_keeps_it_and_reports_incomplete(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/project/ENG/role", {
+            "Developers": f"{SITE}{JIRA}/project/ENG/role/10002",
+            "Testers": f"{SITE}{JIRA}/project/ENG/role/10003",
+        })
+        api.on("GET", f"{JIRA}/project/ENG/role/10003", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-ana"}},
+        ]})
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert [m.email for m in site_db.app_roles["ENG_10003"]] == ["ana@acme.com"]
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/role/10003", json_response({"errorMessages": ["boom"]}, status=500))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert [m.email for m in site_db.app_roles["ENG_10003"]] == ["ana@acme.com"], "the unread role keeps its members"
+        assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"], "the other role is read as usual"
+
+    async def test_a_full_sync_whose_group_members_are_refused_keeps_the_group_and_still_unlinks(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = saved_members(site_db, "grp-dev")
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/group/member", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert saved_members(site_db, "grp-dev") == before, "the kept group keeps its members"
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
