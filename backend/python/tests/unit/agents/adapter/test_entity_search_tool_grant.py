@@ -154,8 +154,18 @@ class TestTheSwitch:
 
 class TestGrantPerMode:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("env", [
+        {},
+        {"HIGH_ACCURACY_MODE": "true"},
+        {"HIGH_ACCURACY_MODE": "true", ENTITY_SEARCH_TOOL_ENV_VAR: ""},
+        {"HIGH_ACCURACY_MODE": "true", ENTITY_SEARCH_TOOL_ENV_VAR: "false"},
+    ], ids=["unset", "high-accuracy", "high-accuracy-blank", "high-accuracy-false"])
     @pytest.mark.parametrize("mode", _MODES)
-    async def test_off_offers_nothing_new(self, mode: str) -> None:
+    async def test_off_offers_nothing_new(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str, env: dict[str, str],
+    ) -> None:
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
         context, agent, runtime, goal = await _create(mode)
         assert context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] is False
         assert not runtime.tool_registry.has(SEARCH_BY_ENTITIES_TOOL_NAME)
