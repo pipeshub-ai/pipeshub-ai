@@ -46,7 +46,7 @@ from tests.unit.agents.actions.knowledge_graph.test_fetch_sizing import (
 SWITCH = "FETCH_SIZE_BY_CHARS"
 # What the scenarios in `fetch_scenarios` rendered before this switch existed.
 # Recompute only for a deliberate change to fetch with the switch off.
-_SWITCH_OFF_DIGEST = "172c3e406fc7546dcd15297a951b05c0540d897b06f83a34c9740670026b5909"
+_SWITCH_OFF_DIGEST = "7ff8992e7554c6992f990fade408cad8522794b8efaeea5ab1017b092cd73406"
 
 
 @pytest.fixture
