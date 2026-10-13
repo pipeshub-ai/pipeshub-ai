@@ -78,6 +78,7 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - see the first import
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -421,7 +422,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
 
 
 async def _current_app(
-    graph_provider, logger: logging.Logger, connector_id: str, snapshot: dict | None
+    graph_provider: IGraphDBProvider | None, logger: logging.Logger, connector_id: str, snapshot: dict | None
 ) -> dict | None:
     """The app doc as it is now, not as the boot traversal read it.
 
@@ -460,7 +461,7 @@ async def _publish_startup_resync(
     connector_id: str,
     org_id: str,
     app: dict | None = None,
-    graph_provider=None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> None:
     """Hand a startup sync to whichever process consumes sync events.
 

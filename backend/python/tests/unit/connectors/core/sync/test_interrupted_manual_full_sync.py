@@ -20,6 +20,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
 from app.config.constants.arangodb import AppStatus
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
