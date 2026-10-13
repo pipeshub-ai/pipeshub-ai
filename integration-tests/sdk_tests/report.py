@@ -307,62 +307,160 @@ def _slack_escape(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+@dataclass(frozen=True)
+class RunInfo:
+    """Where a run came from, for the Slack message. Any field may be empty."""
+
+    trigger: str = ""  # plain text, such as "PR #4107" or "Nightly"
+    run_url: str = ""
+    pr_url: str = ""
+    pr_title: str = ""
+    author: str = ""
+    branch: str = ""
+    commit: str = ""
+    generator: str = ""  # such as "Speakeasy v1.801.0, open-api 11f2c86"
+
+    @classmethod
+    def from_env(cls) -> RunInfo:
+        return cls(
+            **{
+                name: os.getenv(f"SDK_TEST_{name.upper()}", "")
+                for name in cls.__dataclass_fields__
+            }
+        )
+
+
+# Slack refuses a message over 40,000 characters; the reports zip has every failure.
+_SLACK_TEXT_LIMIT = 38_000
+
+
+def _tally(cases: dict[str, Case]) -> tuple[int, int, int, int]:
+    """Total, passed, failed and skipped cases of one suite."""
+    statuses = [case.status for case in cases.values()]
+    passed = statuses.count(Status.PASSED)
+    skipped = statuses.count(Status.SKIPPED)
+    return len(statuses), passed, len(statuses) - passed - skipped, skipped
+
+
+def _table_rows(
+    results: list[LanguageResult], releases: dict[str, str]
+) -> list[list[str]]:
+    rows = [["SDK", "Run", "Total", "Passed", "Failed", "Skipped", "Pass rate"]]
+    for result in results:
+        runs = (
+            (CURRENT, result.current),
+            (
+                f"{PREVIOUS} ({_previous_label(result.language, releases)})",
+                result.previous,
+            ),
+        )
+        for run, cases in runs:
+            if cases is None:
+                rows.append([result.language, run, "not run", "-", "-", "-", "-"])
+                continue
+            total, passed, failed, skipped = _tally(cases)
+            rate = f"{passed * 100 // total}%" if total else "-"
+            rows.append(
+                [
+                    result.language,
+                    run,
+                    *map(str, (total, passed, failed, skipped)),
+                    rate,
+                ]
+            )
+    return rows
+
+
 def slack_payloads(
     results: list[LanguageResult],
-    run_url: str,
-    trigger: str,
+    info: RunInfo,
     releases: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    """The verdict message and, when a case failed, a thread reply listing the failures.
+    """The report message and, when a case failed, a thread reply with the failures.
 
-    trigger is Slack mrkdwn from the workflow, such as a link to the pull request.
+    Both are chat.postMessage bodies without the channel. The workflow posts the
+    reports zip in the same thread.
     """
     releases = releases or {}
     verdict = overall_verdict(results)
-    title = f"{_SLACK_ICONS[verdict]} SDK tests: {verdict.value}"
-    current = "\n".join(f"{r.language}: {_counts(r.current)}" for r in results)
-    previous = "\n".join(
-        f"{r.language} {_previous_label(r.language, releases)}: {_counts(r.previous)}"
-        for r in results
-    )
+    title = f"{_SLACK_ICONS[verdict]} SDK Tests: {verdict.value}"
+    if info.trigger:
+        title += f" - {info.trigger}"
+
+    fields = []
+    if info.pr_url:
+        label = _slack_escape(info.pr_title or info.pr_url)
+        fields.append(f"*PR:*\n<{info.pr_url}|{label}>")
+    if info.author:
+        fields.append(f"*Author:*\n<https://github.com/{info.author}|@{info.author}>")
+    if info.branch:
+        fields.append(f"*Branch:*\n`{info.branch}`")
+    if info.commit:
+        fields.append(f"*Commit:*\n`{info.commit[:9]}`")
+
+    rows = _table_rows(results, releases)
     blocks: list[dict[str, object]] = [
+        {"type": "header", "text": {"type": "plain_text", "text": title[:150]}},
+    ]
+    if fields:
+        blocks.append(
+            {
+                "type": "section",
+                "fields": [{"type": "mrkdwn", "text": text} for text in fields],
+            }
+        )
+    blocks += [
+        {"type": "section", "text": {"type": "mrkdwn", "text": "*Test results*"}},
         {
-            "type": "header",
-            "text": {"type": "plain_text", "text": title, "emoji": True},
-        },
-        {"type": "section", "text": {"type": "mrkdwn", "text": MEANING[verdict]}},
-        {
-            "type": "section",
-            "fields": [
-                {"type": "mrkdwn", "text": f"*Trigger:*\n{trigger or 'unknown'}"},
-                {"type": "mrkdwn", "text": f"*Current run (SDK from CI):*\n{current}"},
-                {
-                    "type": "mrkdwn",
-                    "text": f"*Previous run (last release):*\n{previous}",
-                },
+            "type": "table",
+            "column_settings": [{"align": "left"}] * 2 + [{"align": "right"}] * 5,
+            "rows": [
+                [{"type": "raw_text", "text": cell} for cell in row] for row in rows
             ],
         },
+        {"type": "section", "text": {"type": "mrkdwn", "text": MEANING[verdict]}},
     ]
-    if run_url:
+    context = [
+        part
+        for part in (
+            info.generator,
+            "Previous release: "
+            + ", ".join(
+                f"{r.language} {_previous_label(r.language, releases)}" for r in results
+            ),
+        )
+        if part
+    ]
+    blocks.append(
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": " • ".join(context)}],
+        }
+    )
+    if info.run_url:
         blocks.append(
             {
                 "type": "actions",
                 "elements": [
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "Open the run"},
-                        "url": run_url,
+                        "text": {"type": "plain_text", "text": "View workflow run"},
+                        "url": info.run_url,
                     }
                 ],
             }
         )
-    failures = _failure_lines(results, releases)
-    return {
-        "message": {"text": title, "blocks": blocks},
-        "thread": {"text": "\n".join(f"• {_slack_escape(line)}" for line in failures)}
-        if failures
-        else None,
-    }
+
+    failures = [_slack_escape(line) for line in _failure_lines(results, releases)]
+    thread = None
+    if failures:
+        body = "\n".join(failures)
+        if len(body) > _SLACK_TEXT_LIMIT:
+            body = body[:_SLACK_TEXT_LIMIT].rsplit("\n", 1)[0]
+            omitted = len(failures) - body.count("\n") - 1
+            body += f"\n... ({omitted} more, see the reports zip)"
+        thread = {"text": f"*Failed cases ({len(failures)}):*\n```\n{body}\n```"}
+    return {"message": {"text": title, "blocks": blocks}, "thread": thread}
 
 
 def main() -> int:
@@ -391,12 +489,7 @@ def main() -> int:
     (args.out / "verdict.txt").write_text(verdict.value + "\n", encoding="utf-8")
     (args.out / "slack.json").write_text(
         json.dumps(
-            slack_payloads(
-                results,
-                os.getenv("SDK_TEST_RUN_URL", ""),
-                os.getenv("SDK_TEST_TRIGGER", ""),
-                releases,
-            ),
+            slack_payloads(results, RunInfo.from_env(), releases),
             indent=2,
         )
         + "\n",

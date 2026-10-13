@@ -114,16 +114,15 @@ jobs:
           curl -fsSL -o /tmp/speakeasy.zip "https://github.com/speakeasy-api/speakeasy/releases/download/${version}/speakeasy_linux_amd64.zip"
           sudo unzip -o /tmp/speakeasy.zip -d /usr/local/bin speakeasy
           speakeasy --version
+          echo "SPEAKEASY_VERSION=${version}" >> "$GITHUB_ENV"
 
       # Fails when a test names an operation the spec no longer has.
       - name: List the SDK operations no test calls
         run: |
-          {
-            echo '### SDK test coverage'
-            echo '```'
-            python3 integration-tests/sdk_tests/coverage.py
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          mkdir -p "$SDK_REPORTS_DIR"
+          python3 integration-tests/sdk_tests/coverage.py | tee "$SDK_REPORTS_DIR/coverage.txt"
+          { echo '### SDK test coverage'; echo '```'; cat "$SDK_REPORTS_DIR/coverage.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
       # A language that fails to generate has no suite to run, which the report reads as BLOCK.
       - name: Generate the SDKs and their tests
@@ -131,7 +130,9 @@ jobs:
         continue-on-error: true
         env:
           SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
-        run: integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_WORK_DIR"
+        run: |
+          set -o pipefail
+          integration-tests/sdk_tests/generate_sdks.sh open-api "$SDK_WORK_DIR" 2>&1 | tee "$SDK_REPORTS_DIR/generate.log"
 
       # The app Dockerfile uses these as FROM stages. From GHCR first, as integration-tests.yml does;
       # Docker Hub is the fallback per image.
@@ -182,7 +183,9 @@ jobs:
         # Mask the OAuth client secret in this step: the header of every later step lists
         # the $GITHUB_ENV values.
         run: |
-          uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py
+          set -o pipefail
+          uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py 2>&1 \
+            | tee "$SDK_REPORTS_DIR/provision.log"
           echo "::add-mask::$(sed -n 's/^PIPESHUB_CLIENT_SECRET=//p' "$GITHUB_ENV")"
 
       # The suites get only the OAuth app the provisioning step wrote to $GITHUB_ENV.
@@ -207,10 +210,17 @@ jobs:
         id: report
         if: ${{ !cancelled() }}
         env:
+          # The details of the Slack message (report.py, RunInfo). PR metadata goes through env, never the shell.
           SDK_TEST_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           # Folded, because " #" would start a YAML comment in a plain value.
           SDK_TEST_TRIGGER: >-
-            ${{ github.event_name == 'pull_request' && format('<{0}|pull request #{1}>', github.event.pull_request.html_url, github.event.pull_request.number) || format('{0} on {1}', github.event_name, github.ref_name) }}
+            ${{ github.event_name == 'pull_request' && format('PR #{0}', github.event.pull_request.number) || (github.event_name == 'schedule' && 'Nightly' || 'Manual run') }}
+          SDK_TEST_PR_URL: ${{ github.event.pull_request.html_url }}
+          SDK_TEST_PR_TITLE: ${{ github.event.pull_request.title }}
+          SDK_TEST_AUTHOR: ${{ github.event.pull_request.user.login || github.actor }}
+          SDK_TEST_BRANCH: ${{ github.head_ref || github.ref_name }}
+          SDK_TEST_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          SDK_TEST_GENERATOR: ${{ format('Speakeasy {0}, open-api {1}', env.SPEAKEASY_VERSION, env.OPEN_API_REF) }}
         run: |
           status=0
           python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --out "$SDK_REPORTS_DIR/report" \
@@ -228,31 +238,6 @@ jobs:
           VERDICT: ${{ steps.report.outputs.verdict }}
         run: integration-tests/sdk_tests/update_pull_request.sh "$PR_NUMBER" "$VERDICT" "$SDK_REPORTS_DIR/report/summary.md"
 
-      # report.py wrote both chat.postMessage bodies; the failures go in the message's thread.
-      - name: Send the report to Slack
-        if: ${{ !cancelled() && steps.report.outputs.verdict != '' }}
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
-          SLACK_CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
-        run: |
-          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
-            echo "::notice::SLACK_BOT_TOKEN or SLACK_CI_CHANNEL_ID is not set, so the report is not sent to Slack."
-            exit 0
-          fi
-          post() {
-            curl -sS --fail-with-body -X POST https://slack.com/api/chat.postMessage \
-              -H "Authorization: Bearer ${SLACK_BOT_TOKEN}" \
-              -H "Content-Type: application/json; charset=utf-8" --data-binary @- \
-              | jq -er 'if .ok then .ts else error("Slack refused the message: \(.error)") end'
-          }
-          payloads="$SDK_REPORTS_DIR/report/slack.json"
-          ts=$(jq --arg channel "$SLACK_CHANNEL_ID" '.message + {channel: $channel}' "$payloads" | post)
-          if jq -e '.thread' "$payloads" > /dev/null; then
-            jq --arg channel "$SLACK_CHANNEL_ID" --arg ts "$ts" '.thread + {channel: $channel, thread_ts: $ts}' "$payloads" \
-              | post > /dev/null
-          fi
-
       - name: Collect Docker logs
         if: ${{ always() }}
         working-directory: deployment/docker-compose
@@ -263,6 +248,21 @@ jobs:
             docker compose -f "$COMPOSE_FILE" logs --no-color --timestamps "$svc" \
               > "$SDK_REPORTS_DIR/docker-logs/${svc}.log" 2>&1 || true
           done
+
+      # Everything a developer needs to debug the run, for the Slack thread (as integration-tests.yml does).
+      - name: Zip the reports
+        if: ${{ !cancelled() }}
+        run: (cd "$SDK_REPORTS_DIR" && zip -qr "$RUNNER_TEMP/sdk-test-reports-$GITHUB_RUN_ID.zip" .)
+
+      - name: Send the report to Slack
+        if: ${{ !cancelled() && steps.report.outputs.verdict != '' }}
+        continue-on-error: true
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          SLACK_CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
+        run: |
+          integration-tests/sdk_tests/send_to_slack.sh "$SDK_REPORTS_DIR/report/slack.json" \
+            "$RUNNER_TEMP/sdk-test-reports-$GITHUB_RUN_ID.zip"
 
       - name: Upload the reports
         if: ${{ always() }}

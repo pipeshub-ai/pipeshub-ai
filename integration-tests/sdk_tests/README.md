@@ -11,7 +11,10 @@ folder, so the same run works on a laptop. It runs on pull requests and every ni
 
 The previous run starts only for the languages whose current run passed. The report
 goes to the job summary, a comment on the pull request, and Slack
-(`SLACK_BOT_TOKEN`, channel `vars.SLACK_CI_CHANNEL_ID`).
+(`SLACK_BOT_TOKEN`, channel `vars.SLACK_CI_CHANNEL_ID`). The Slack message has the
+results table; its thread has the failed cases and a zip of the reports folder:
+JUnit files, each suite's output and exit code, the generation, provisioning and
+coverage output, and the Docker logs of every service.
 
 ## When the verdict is FLAG
 

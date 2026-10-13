@@ -15,6 +15,7 @@ import pytest
 from sdk_tests import report
 from sdk_tests.report import (
     COMMENT_MARKER,
+    RunInfo,
     Status,
     Verdict,
     case_id,
@@ -234,25 +235,88 @@ def test_summary_and_slack_name_each_failed_case(tmp_path: Path):
 
     results = read_results(tmp_path)
     summary = render_summary(results)
-    payloads = slack_payloads(results, "https://example.test/run/1", "nightly")
+    payloads = slack_payloads(
+        results, RunInfo(trigger="Nightly", run_url="https://example.test/run/1")
+    )
 
     assert summary.startswith(COMMENT_MARKER)
     assert "## SDK tests: BLOCK" in summary
     assert "- go current: TestAgents_AgentLifecycle: expected 200, got 500" in summary
-    assert payloads["message"]["text"] == ":red_circle: SDK tests: BLOCK"
+    assert payloads["message"]["text"] == ":red_circle: SDK Tests: BLOCK - Nightly"
     assert payloads["message"]["blocks"][-1]["elements"][0]["url"] == (
         "https://example.test/run/1"
     )
     assert payloads["thread"] == {
-        "text": "• go current: TestAgents_AgentLifecycle: expected 200, got 500"
+        "text": "*Failed cases (1):*\n```\n"
+        "go current: TestAgents_AgentLifecycle: expected 200, got 500\n```"
     }
+
+
+def test_the_slack_table_has_one_row_per_sdk_and_run(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_report(
+        tmp_path,
+        "current",
+        "go",
+        PASS.format(name="TestAgents_AgentLifecycle"),
+        FAIL.format(name="TestSearch_SearchLifecycle"),
+        SKIP.format(name="TestWebSearch_Providers"),
+    )
+    write_all_passing(tmp_path, "previous")
+    (tmp_path / "previous-go.xml").unlink()
+
+    message = slack_payloads(read_results(tmp_path), RunInfo(), {"go": "v1.7.0"})[
+        "message"
+    ]
+    table = next(block for block in message["blocks"] if block["type"] == "table")
+    rows = [[cell["text"] for cell in row] for row in table["rows"]]
+
+    assert rows[0] == [
+        "SDK",
+        "Run",
+        "Total",
+        "Passed",
+        "Failed",
+        "Skipped",
+        "Pass rate",
+    ]
+    assert ["typescript", "current", "1", "1", "0", "0", "100%"] in rows
+    assert ["go", "current", "3", "1", "1", "1", "33%"] in rows
+    assert ["go", "previous (v1.7.0)", "not run", "-", "-", "-", "-"] in rows
+    assert len(rows) == 7
+
+
+def test_the_slack_message_links_the_pull_request_and_its_author(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_all_passing(tmp_path, "previous")
+    info = RunInfo(
+        trigger="PR #7",
+        pr_url="https://github.com/acme/app/pull/7",
+        pr_title="fix <b> & co",
+        author="ana",
+        branch="fix/b",
+        commit="0123456789abcdef",
+        generator="Speakeasy v1.801.0",
+    )
+
+    blocks = slack_payloads(read_results(tmp_path), info)["message"]["blocks"]
+    fields = [field["text"] for field in blocks[1]["fields"]]
+
+    assert fields == [
+        "*PR:*\n<https://github.com/acme/app/pull/7|fix &lt;b&gt; &amp; co>",
+        "*Author:*\n<https://github.com/ana|@ana>",
+        "*Branch:*\n`fix/b`",
+        "*Commit:*\n`012345678`",
+    ]
+    assert blocks[-1]["type"] == "context"
+    assert "Speakeasy v1.801.0" in blocks[-1]["elements"][0]["text"]
 
 
 def test_a_passing_run_has_no_slack_thread(tmp_path: Path):
     write_all_passing(tmp_path, "current")
     write_all_passing(tmp_path, "previous")
 
-    assert slack_payloads(read_results(tmp_path), "", "nightly")["thread"] is None
+    assert slack_payloads(read_results(tmp_path), RunInfo())["thread"] is None
 
 
 def test_slack_thread_escapes_control_characters(tmp_path: Path):
@@ -267,11 +331,12 @@ def test_slack_thread_escapes_control_characters(tmp_path: Path):
         '<failure message="got &lt;nil&gt; &amp; 500"/></testcase>',
     )
 
-    thread = slack_payloads(read_results(tmp_path), "", "nightly")["thread"]
+    thread = slack_payloads(read_results(tmp_path), RunInfo())["thread"]
 
-    assert thread == {
-        "text": "• go current: TestAgents_AgentLifecycle: got &lt;nil&gt; &amp; 500"
-    }
+    assert (
+        "go current: TestAgents_AgentLifecycle: got &lt;nil&gt; &amp; 500"
+        in (thread["text"])
+    )
 
 
 def test_a_flag_names_the_release_that_breaks(tmp_path: Path):
