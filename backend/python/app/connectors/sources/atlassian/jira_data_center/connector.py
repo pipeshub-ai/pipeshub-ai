@@ -66,7 +66,10 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
-from app.connectors.sources.atlassian.core.read_outcome import is_inconclusive_status
+from app.connectors.sources.atlassian.core.read_outcome import (
+    StoredAccessReadError,
+    is_inconclusive_status,
+)
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -199,12 +202,6 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
         name = group_name.strip()
         normalized.append({"groupId": name, "name": name})
     return normalized
-
-
-# Sync point that notes which kinds of access this connector has saved, so a later sync
-# whose read was cut short knows what it would be replacing (see _load_stored_access).
-STORED_ACCESS_SYNC_POINT: str = "stored_access"
-STORED_ACCESS_KINDS: frozenset[str] = frozenset({"groups", "roles", "leads", "projects"})
 
 
 def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
@@ -447,20 +444,6 @@ class JiraDataCenterConnector(BaseConnector):
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
         self._user_bulk_refused: bool = False
-        # Kinds of access (STORED_ACCESS_KINDS) that earlier syncs saved and that this sync
-        # must not replace from a read that was cut short. Empty on a first sync and after a
-        # full sync's prep, which deletes the stored edges along with every sync point.
-        self._stored_access_kinds: frozenset[str] = frozenset()
-        # Projects whose access list earlier syncs saved, by project id (a project key can
-        # change), and projects whose lead role they saved, by key (the lead role's id is
-        # built from the key, so a renamed project gets a new lead role).
-        self._stored_project_ids: set[str] = set()
-        # Project id -> the key its access list was saved under. Its grants name roles and
-        # the lead by key, so a renamed project's saved list names roles under the old key.
-        self._stored_project_key_by_id: dict[str, str] = {}
-        self._stored_lead_project_keys: set[str] = set()
-        # Project key -> id for the projects this sync has listed.
-        self._project_id_by_key: dict[str, str] = {}
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
@@ -478,12 +461,10 @@ class JiraDataCenterConnector(BaseConnector):
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
 
-    def _keeps_stored_user_access(self, kind: str) -> bool:
-        """Whether writes of ``kind`` that replace members or grants from the user list are held back.
-
-        Only when the user read did not finish and earlier syncs saved that kind of access.
-        """
-        return self._user_read_unfinished and kind in self._stored_access_kinds
+    def _project_access_may_be_partial(self, project_key: str) -> bool:
+        """Whether this project's access list may be partial: the user list was not read in
+        full, so a user it names, or a role or lead under a renamed key, may be missing."""
+        return self._user_read_unfinished
 
     async def init(self) -> bool:
         try:
@@ -725,30 +706,24 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.info("ℹ️ No users found")
                 return
 
-            await self._load_stored_access()
-
             # Fetch and sync users
             jira_users = await self._fetch_users()
             if self._user_read_unfinished:
-                # What no earlier sync saved (a first sync, or a full sync whose prep deleted it)
-                # is saved from what was read: holding it back would leave it with no access.
+                # Access already stored is kept; what has none stored yet is saved from what
+                # was read, since holding it back would leave it with no access at all.
                 self.logger.warning(
-                    "⚠️ The Jira user list could not be read in full: access that earlier syncs saved is "
-                    "kept, and anything not saved before is saved from what was read. The next sync reads it again"
+                    "⚠️ The Jira user list could not be read in full: stored group members, roles, leads and "
+                    "project access are kept, and anything with nothing stored is saved from what was read. "
+                    "The next sync reads it again"
                 )
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
             # Fetch and sync user groups (returns mapping for role resolution). Saving a
-            # group replaces its members, so an unfinished user read leaves groups as stored.
-            group_memberships = None
-            if self._keeps_stored_user_access("groups"):
-                self.logger.warning(
-                    "Keeping the stored members of every group: the Jira user list could not be read in full"
-                )
-            else:
-                group_memberships = await self._sync_user_groups(jira_users)
+            # group replaces its members, so on an unfinished user read a group whose
+            # members are stored keeps them.
+            group_memberships = await self._sync_user_groups(jira_users)
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -777,11 +752,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync project roles BEFORE RecordGroups
             project_keys_for_roles = [proj.short_name for proj, _ in projects]
-            if self._keeps_stored_user_access("roles"):
-                self.logger.warning(
-                    "Keeping the stored members of every project role: the Jira user list could not be read in full"
-                )
-            elif group_memberships is None:
+            if group_memberships is None:
                 # A role saved without a group's members would take their access away.
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
@@ -806,11 +777,7 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            if "projects" in self._stored_access_kinds:
-                await self._settle_project_backfill([(group.external_group_id, group.short_name) for group, _ in projects])
-            await self._note_stored_project_access(
-                [(group.external_group_id, group.short_name) for group, _ in readable_projects]
-            )
+            readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # Sync issues for all projects
@@ -880,131 +847,84 @@ class JiraDataCenterConnector(BaseConnector):
         except Exception:
             return None
 
-    async def _load_stored_access(self) -> None:
-        """Load which access earlier syncs saved, so a short read does not replace it.
+    async def _has_stored_access(self, entity: str, external_id: str) -> bool:
+        """Whether this connector's ``entity`` (``record_group``, ``user_group`` or ``role``)
+        ``external_id`` already has permission edges stored.
 
-        Groups and project roles are noted as a whole, project access lists by project id
-        and lead roles by project key. Each is noted just before it is saved, so a sync cut short after a
-        save still counts it. A full sync's prep deletes every sync point along with the
-        stored edges, so after it, and on a first sync, nothing is noted. A connector last
-        synced before these notes existed has only its issues checkpoint: everything counts
-        once, and is noted, so from then on the notes alone decide.
-
-        A read or write that fails is raised, so the sync stops before any write that
-        replaces stored access. Carrying on could save nothing now and then write the
-        checkpoint, which would make an empty store look like a kept one on the next sync.
+        Asked only when a write may be partial this sync: stored edges are access worth
+        keeping, and with none there is nothing to keep, so what was read is saved. A read
+        that fails raises ``StoredAccessReadError``, which stops the sync before the write:
+        a failed read is never taken for "nothing stored".
         """
-        noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
-        if not noted:
-            checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
-            if checkpoint and checkpoint.get("last_sync_time") is not None:
-                noted = dict.fromkeys(STORED_ACCESS_KINDS, True)
-                await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, noted)
-        noted = noted or {}
-        # "projects" or "leads" set to True is the note for every project (from the checkpoint).
-        self._stored_access_kinds = frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind) is True)
-        self._stored_project_ids = set(noted.get("project_ids") or [])
-        self._stored_project_key_by_id = dict(
-            entry.split(":", 1) for entry in noted.get("project_key_by_id") or [] if ":" in entry
-        )
-        self._stored_lead_project_keys = set(noted.get("lead_project_keys") or [])
+        try:
+            return await self.data_entities_processor.has_stored_permissions(
+                entity, self.connector_id, external_id
+            )
+        except Exception as e:
+            raise StoredAccessReadError(
+                f"Could not read the stored access of {entity} {external_id}: {e}"
+            ) from e
 
-    def _project_access_stored(self, project_key: str) -> bool:
-        return (
-            "projects" in self._stored_access_kinds
-            or self._project_id_by_key.get(project_key) in self._stored_project_ids
-        )
+    async def _keep_stored_project_access(
+        self, projects: list[tuple[RecordGroup, list[Permission]]]
+    ) -> list[tuple[RecordGroup, list[Permission]]]:
+        """Leave out the projects whose access list may be partial this sync and that already
+        have stored access, so their stored list is kept. The rest are saved as read."""
+        kept: list[tuple[RecordGroup, list[Permission]]] = []
+        for group, permissions in projects:
+            if self._project_access_may_be_partial(group.short_name) and await self._has_stored_access(
+                "record_group", str(group.external_group_id)
+            ):
+                self.logger.warning(
+                    "Keeping the stored access of project %s: its access list may be incomplete this sync",
+                    group.short_name,
+                )
+                continue
+            kept.append((group, permissions))
+        return kept
 
-    def _project_renamed_since_saved(self, project_key: str) -> bool:
-        """Whether this project's saved access list was saved under another key.
+    async def _without_stored_members(
+        self, entity: str, items: list[tuple[Any, list[AppUser]]]
+    ) -> list[tuple[Any, list[AppUser]]]:
+        """On an unfinished user read, leave out the groups or roles (``entity`` is
+        ``user_group`` or ``role``) whose members are stored, so they keep them. One with
+        no members stored is saved with the members that were read."""
+        kept: list[tuple[Any, list[AppUser]]] = []
+        for item, members in items:
+            external_id = item.source_user_group_id if entity == "user_group" else item.source_role_id
+            if await self._has_stored_access(entity, external_id):
+                self.logger.warning(
+                    "Keeping the stored members of %s: the Jira user list could not be read in full", item.name
+                )
+                continue
+            kept.append((item, members))
+        return kept
 
-        The list's grants name project roles and the lead by key (``{key}_{roleId}``,
-        ``{key}_projectLead``). After a rename, a short read neither syncs the roles nor
-        keeps the lead under the new key, so saving the new list would swap roles that have
-        members for roles that do not exist yet. A saved list with no key noted counts as
-        renamed: holding it back is the safe side.
-        """
-        project_id = self._project_id_by_key.get(project_key)
-        if project_id is None or project_id not in self._stored_project_ids:
-            return False
-        return self._stored_project_key_by_id.get(project_id) != project_key
-
-    def _project_lead_stored(self, project_key: str) -> bool:
-        return "leads" in self._stored_access_kinds or project_key in self._stored_lead_project_keys
-
-    async def _note_stored_access(self, kind: str) -> None:
-        """Note, just before saving groups or project roles, that they are stored.
-
-        Noted first so that a save is never left without its note: if the note cannot be
-        written the error stops the sync before the save, and a save that fails after it
-        only makes a later short read hold back, which keeps access rather than dropping it.
-        """
-        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
-
-    async def _note_stored_project_access(self, projects: list[tuple[str, str]]) -> None:
-        """Note, just before saving them, the projects whose access lists are stored and the
-        key each is saved under (``(project id, key)`` pairs)."""
-        ids = self._stored_project_ids | {project_id for project_id, _ in projects if project_id}
-        key_by_id = {
-            **self._stored_project_key_by_id,
-            **{project_id: key for project_id, key in projects if project_id and key},
-        }
-        if ids == self._stored_project_ids and key_by_id == self._stored_project_key_by_id:
-            return
-        await self.issues_sync_point.update_sync_point(
-            STORED_ACCESS_SYNC_POINT,
-            {
-                "project_ids": sorted(ids),
-                "project_key_by_id": sorted(f"{project_id}:{key}" for project_id, key in key_by_id.items()),
-            },
-        )
-        self._stored_project_ids = ids
-        self._stored_project_key_by_id = key_by_id
-
-    async def _settle_project_backfill(self, projects: list[tuple[str, str]]) -> None:
-        """Turn the checkpoint backfill's "every project" flag into the ids it stands for.
-
-        ``projects: True`` (written by ``_load_stored_access`` for a connector synced before
-        these notes) means every project counts as stored, and the stores merge fields, so
-        it would never clear on its own: a project created later would be held with nothing
-        stored. It stands for the projects that exist now, so they are recorded by id with
-        their current key, held ones included, and the flag is cleared in the same write.
-        """
-        ids = self._stored_project_ids | {project_id for project_id, _ in projects if project_id}
-        key_by_id = {
-            **{project_id: key for project_id, key in projects if project_id and key},
-            **self._stored_project_key_by_id,
-        }
-        await self.issues_sync_point.update_sync_point(
-            STORED_ACCESS_SYNC_POINT,
-            {
-                "projects": False,
-                "project_ids": sorted(ids),
-                "project_key_by_id": sorted(f"{project_id}:{key}" for project_id, key in key_by_id.items()),
-            },
-        )
-        self._stored_project_ids = ids
-        self._stored_project_key_by_id = key_by_id
-        self._stored_access_kinds = self._stored_access_kinds - {"projects"}
-
-    async def _settle_lead_backfill(self, project_keys: list[str]) -> None:
-        """Turn the checkpoint backfill's "every lead" flag into the project keys it stands for,
-        and clear it in the same write (see ``_settle_project_backfill``)."""
-        keys = self._stored_lead_project_keys | {key for key in project_keys if key}
-        await self.issues_sync_point.update_sync_point(
-            STORED_ACCESS_SYNC_POINT, {"leads": False, "lead_project_keys": sorted(keys)}
-        )
-        self._stored_lead_project_keys = keys
-        self._stored_access_kinds = self._stored_access_kinds - {"leads"}
-
-    async def _note_stored_projects(self, field: str, values: list[str]) -> None:
-        """Note, just before saving them, the projects whose access lists or lead roles are stored."""
-        stored = self._stored_project_ids if field == "project_ids" else self._stored_lead_project_keys
-        new = {value for value in values if value}
-        if new <= stored:
-            return
-        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | new)})
-        stored.update(new)
+    async def _without_unresolved_stored_leads(
+        self,
+        lead_roles: list[tuple[AppRole, list[AppUser]]],
+        unresolved_leads: dict[str, tuple[str, Optional[str]]],
+    ) -> list[tuple[AppRole, list[AppUser]]]:
+        """Leave out the lead roles whose lead the short user list did not have, when that
+        lead role or its project has stored access. A renamed project's saved lead role is
+        under the old key, so its project's stored access keeps an empty lead role under the
+        new key from being saved."""
+        kept: list[tuple[AppRole, list[AppUser]]] = []
+        for role, members in lead_roles:
+            unresolved = unresolved_leads.get(role.source_role_id)
+            if unresolved is not None:
+                project_key, project_id = unresolved
+                if await self._has_stored_access("role", role.source_role_id) or (
+                    project_id and await self._has_stored_access("record_group", str(project_id))
+                ):
+                    self.logger.warning(
+                        "Keeping the stored lead of project %s: the lead was not in the Jira user list, "
+                        "which could not be read in full",
+                        project_key,
+                    )
+                    continue
+            kept.append((role, members))
+        return kept
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
@@ -2128,14 +2048,6 @@ class JiraDataCenterConnector(BaseConnector):
                             email=resolved_email,
                             type=PermissionType.READ
                         ))
-                    elif self._user_read_unfinished and self._project_access_stored(project_key):
-                        # The user may be missing only because the read stopped early.
-                        self.logger.warning(
-                            "Keeping the stored access of project %s: it grants a user who was not "
-                            "in the Jira user list, which could not be read in full",
-                            project_key,
-                        )
-                        return None
                     else:
                         self.logger.debug(f"  {project_key}: User permission skipped - cannot resolve key '{holder_param}'")
 
@@ -2207,9 +2119,6 @@ class JiraDataCenterConnector(BaseConnector):
         (saving only upserts those groups, so the ones past the limit keep what is
         stored) and comes back marked ``cut_off``.
         """
-        # Set once the groups are noted as stored: from then on a failure must stop the sync,
-        # or it would finish as a success with the note saying groups are stored.
-        saving = False
         try:
             self.logger.info("🚀 Starting Jira user group synchronization")
 
@@ -2300,20 +2209,20 @@ class JiraDataCenterConnector(BaseConnector):
                             groups_members_map[key] = None
                     continue
 
+            if self._user_read_unfinished:
+                user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
+
             # Save all groups in one batch
             if user_groups_batch:
-                saving = True
-                await self._note_stored_access("groups")
                 await self.data_entities_processor.on_new_user_groups(user_groups_batch)
-                saving = False
             else:
                 self.logger.info("ℹ️ No groups with valid members to sync")
 
             return GroupMemberships(groups_members_map, cut_off)
 
+        except StoredAccessReadError:
+            raise
         except Exception as e:
-            if saving:
-                raise
             self.logger.error(f"❌ Error syncing user groups: {e}")
             await self._notify_group_sync_failed()
             return None
@@ -2723,9 +2632,11 @@ class JiraDataCenterConnector(BaseConnector):
                 ),
             )
 
+        if self._user_read_unfinished:
+            roles_to_sync = await self._without_stored_members("role", roles_to_sync)
+
         # Step 4: Sync all roles in batch
         if roles_to_sync:
-            await self._note_stored_access("roles")
             await self.data_entities_processor.on_new_app_roles(roles_to_sync)
             self.logger.info(
                 f"✅ Synced {total_roles} project roles with {total_members} direct user members"
@@ -2750,7 +2661,8 @@ class JiraDataCenterConnector(BaseConnector):
         }
 
         lead_roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
-        lead_project_keys: list[str] = []
+        # Lead role id -> (project key, project id) for leads the short user list did not have.
+        unresolved_leads: dict[str, tuple[str, Optional[str]]] = {}
         total_leads = 0
 
         # Iterate through raw project data already fetched with lead
@@ -2791,18 +2703,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if lead_identifier:
                         lead_user = user_by_account_id.get(lead_identifier)
 
-                        if not lead_user and self._user_read_unfinished and (
-                            self._project_lead_stored(project_key) or self._project_access_stored(project_key)
-                        ):
-                            # A project with stored access may have been renamed: its saved lead
-                            # role is under the old key, so an empty one under the new key is
-                            # not saved either.
-                            self.logger.warning(
-                                "Keeping the stored lead of project %s: the lead was not in the "
-                                "Jira user list, which could not be read in full",
-                                project_key,
-                            )
-                            continue
+                        if not lead_user and self._user_read_unfinished:
+                            unresolved_leads[app_role.source_role_id] = (project_key, project.get("id"))
                         if not lead_user:
                             self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
                     else:
@@ -2813,7 +2715,6 @@ class JiraDataCenterConnector(BaseConnector):
                 # Always sync the role (even with empty members list) to ensure old edges are deleted
                 members = [lead_user] if lead_user else []
                 lead_roles_to_sync.append((app_role, members))
-                lead_project_keys.append(project_key)
                 total_leads += 1
 
 
@@ -2821,11 +2722,11 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
+        if unresolved_leads:
+            lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
+
         # Sync all project lead roles in batch
-        if "leads" in self._stored_access_kinds:
-            await self._settle_lead_backfill([project.get("key") for project in raw_projects])
         if lead_roles_to_sync:
-            await self._note_stored_projects("lead_project_keys", lead_project_keys)
             await self.data_entities_processor.on_new_app_roles(lead_roles_to_sync)
         else:
             self.logger.info("No project leads to sync")
@@ -2938,22 +2839,9 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             # This determines which groups/users can access the project
-            if project_key and project_id:
-                self._project_id_by_key[project_key] = str(project_id)
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_key
             )
-            if (
-                project_permissions is not None
-                and self._user_read_unfinished
-                and self._project_renamed_since_saved(project_key)
-            ):
-                self.logger.warning(
-                    "Keeping the stored access of project %s: it was saved under another key, and its "
-                    "roles and lead under the new key are not saved while the user list is read in part",
-                    project_key,
-                )
-                project_permissions = None
 
             record_groups.append((record_group, project_permissions))
 

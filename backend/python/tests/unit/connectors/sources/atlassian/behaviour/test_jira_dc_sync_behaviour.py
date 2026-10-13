@@ -23,6 +23,7 @@ from atlassian_behaviour_fakes import (
 )
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     DC_EPIC_LINK_SCHEMA_CUSTOM,
     JiraDataCenterConnector,
@@ -1253,34 +1254,6 @@ class TestReindexEdgeCases:
 
 
 
-def fail_checkpoint_reads(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make reading the stored-access note fail as the graph stores do: a failed read raises
-    only when the caller asks for that, and otherwise comes back as None (no sync point)."""
-    real = store.get_sync_point
-
-    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
-        if key.endswith("stored_access"):
-            if raise_on_error:
-                raise RuntimeError("database unavailable")
-            return None
-        return await real(key, raise_on_error)
-
-    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
-
-
-
-def fail_note_writes(store: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make writing the stored-access note fail, as a database error would."""
-    real = store.update_sync_point
-
-    async def update_sync_point(key: str, data: dict[str, Any]) -> None:
-        if key.endswith("stored_access"):
-            raise RuntimeError("database unavailable")
-        await real(key, data)
-
-    monkeypatch.setattr(store, "update_sync_point", update_sync_point)
-
-
 class TestUnfinishedUserRead:
     """A user list that stops part-way must not shrink who can see what.
 
@@ -1452,16 +1425,17 @@ class TestUnfinishedUserRead:
             "the grants that were read are saved"
         )
 
-    async def test_a_full_sync_with_a_short_user_read_saves_what_was_read(self, jira, db, store, search) -> None:
+    async def test_a_full_sync_whose_prep_deleted_the_grants_saves_what_was_read(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         self._stub_carol_everywhere(jira)
         connector, _ = await make_connector(db, store)
         await connector.run_sync()
         assert "carol@example.com" in self._access(db)["devs"]
 
-        # A full sync's prep deletes the sync points and every stored grant before the connector runs.
+        # On main, a full sync's prep deletes the sync points and every stored grant before the connector runs.
         store.sync_points.clear()
         db.groups_saved.clear()
+        db.user_groups.clear()
         db.app_roles.clear()
         db.record_group_permissions.clear()
         self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
@@ -1486,22 +1460,6 @@ class TestUnfinishedUserRead:
 
         assert db.groups_saved["devs"] == [], "a refused user list is not kept open by a lookup that failed"
 
-    async def test_a_stored_access_note_that_cannot_be_read_stops_the_sync(
-        self, jira, db, store, search, monkeypatch
-    ) -> None:
-        stub_site(jira, search)
-        self._stub_carol_everywhere(jira)
-        connector, _ = await make_connector(db, store)
-        await connector.run_sync()
-        before = self._access(db)
-
-        fail_checkpoint_reads(store, monkeypatch)
-        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert self._access(db) == before, "the sync stops before replacing anything"
-
     async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
         self, jira, db, store, search
     ) -> None:
@@ -1525,38 +1483,6 @@ class TestUnfinishedUserRead:
             db.record_group_permissions["10000"]
         ), "a project it never saved is saved with the grants that were read"
 
-    async def test_a_note_that_cannot_be_written_stops_the_sync_before_groups_are_saved(
-        self, jira, db, store, search, monkeypatch
-    ) -> None:
-        stub_site(jira, search)
-        connector, _ = await make_connector(db, store)
-        fail_note_writes(store, monkeypatch)
-
-        with pytest.raises(RuntimeError, match="database unavailable"):
-            await connector.run_sync()
-
-        assert db.groups_saved == {}, "no membership is saved without its note"
-
-    async def test_a_connector_synced_before_the_notes_keeps_its_access_and_is_noted(self, jira, db, store, search) -> None:
-        stub_site(jira, search)
-        self._stub_carol_everywhere(jira)
-        connector, _ = await make_connector(db, store)
-        await connector.run_sync()
-        before = self._access(db)
-        for key in [k for k in store.sync_points if k.endswith("stored_access")]:
-            del store.sync_points[key]  # as left by a version without the notes
-
-        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        assert self._access(db) == before
-        note = store.values_for("stored_access") or {}
-        assert all(note.get(kind) for kind in ("groups", "roles")), "groups and roles are noted once"
-        assert note.get("projects") is False and note.get("project_ids") == ["10000"], (
-            "the every-project flag is turned into the ids of the projects it stood for, held ones included"
-        )
-        assert note.get("leads") is False and note.get("lead_project_keys") == ["ENG"]
-
     @pytest.mark.parametrize("payload", ["not json", 5, {"other": 1}, {"values": "x"}, {"users": None}])
     def test_a_user_list_answer_that_is_not_a_page_is_not_read_as_the_last_page(self, payload) -> None:
         assert _parse_jira_dc_user_list_page(payload) is None
@@ -1569,7 +1495,6 @@ class TestUnfinishedUserRead:
         connector, _ = await make_connector(db, store)
         await connector.run_sync()
         assert db.groups_saved == {}, "the group list could not be read, so no group is saved"
-        assert not (store.values_for("stored_access") or {}).get("groups"), "nor noted as stored"
 
         jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}], "total": 2})
         self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
@@ -1605,17 +1530,6 @@ class TestUnfinishedUserRead:
         assert acl_summary(db.record_group_permissions["20000"]) == [
             ("EntityType.GROUP", "PermissionType.READ", "devs", None),
         ], "OPS had nothing stored, so the grants that were read are saved"
-
-    async def test_a_group_save_that_fails_after_its_note_stops_the_sync(self, jira, db, store, search, monkeypatch) -> None:
-        stub_site(jira, search)
-        connector, _ = await make_connector(db, store)
-
-        async def failing_save(groups: list[tuple[Any, list[Any]]]) -> None:
-            raise RuntimeError("write rolled back")
-
-        monkeypatch.setattr(db, "on_new_user_groups", failing_save)
-        with pytest.raises(RuntimeError, match="write rolled back"):
-            await connector.run_sync()
 
     async def test_an_older_jira_user_search_answer_that_is_not_a_page_is_unfinished(self, jira, db, store, search) -> None:
         stub_site(jira, search)
@@ -1702,7 +1616,6 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert [p.external_id for p in db.record_group_permissions["10000"]] == ["NEW_10002"]
-        assert (store.values_for("stored_access") or {}).get("project_key_by_id") == ["10000:NEW"]
 
     async def test_after_the_checkpoint_backfill_a_new_project_is_saved_from_a_short_read(
         self, jira, db, store, search
@@ -1764,4 +1677,33 @@ class TestUnfinishedUserRead:
         )
         assert [m.email for m in db.app_roles["ENG_projectLead"]] == ["carol@example.com"]
         assert "NEW_projectLead" not in db.app_roles, "no empty lead is saved for a project whose access is stored"
-        assert "NEW" not in ((store.values_for("stored_access") or {}).get("lead_project_keys") or [])
+
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_them_on_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(db) == before, "stored members, roles, lead and project access are kept"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_replacing_anything(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+
+        db.fail_stored_permission_reads = True
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert self._access(db) == before, "a failed read is not taken for 'nothing stored'"

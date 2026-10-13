@@ -3086,6 +3086,35 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
+    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str) -> bool:
+        """Whether this connector's record group, user group or role ``external_id`` has
+        permission edges stored.
+
+        For a connector that must not replace stored access with a list it could not read
+        in full. ``entity`` is ``record_group``, ``user_group`` or ``role``. A read that
+        fails raises: taken for "nothing stored", it would let a partial list replace the
+        stored one.
+        """
+        async with self.data_store_provider.transaction() as tx_store:
+            if entity == "record_group":
+                # Raises when the lookup cannot be read; None means there is no such group.
+                node = await tx_store.get_record_group_by_external_id(connector_id, external_id)
+                collection = CollectionNames.RECORD_GROUPS.value
+            elif entity == "user_group":
+                node = await tx_store.get_user_group_by_external_id(connector_id, external_id, raise_on_error=True)
+                collection = CollectionNames.GROUPS.value
+            elif entity == "role":
+                node = await tx_store.get_app_role_by_external_id(connector_id, external_id, raise_on_error=True)
+                collection = CollectionNames.ROLES.value
+            else:
+                raise ValueError(f"Unknown entity {entity!r}")
+            if node is None:
+                return False
+            edges = await tx_store.get_edges_to_node(
+                f"{collection}/{node.id}", CollectionNames.PERMISSION.value, raise_on_error=True
+            )
+            return bool(edges)
+
     async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
         # Most connectors have no dedicated "space renamed"/"project renamed"
         # webhook (Dropbox's team_folder_rename -> update_record_group_name
