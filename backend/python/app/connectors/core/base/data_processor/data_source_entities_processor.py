@@ -4219,10 +4219,13 @@ class DataSourceEntitiesProcessor:
         list. One replace per group, of the member edges into it only, from the
         complete list, so a member removed at the source goes, the grants that
         name the group stay, and nobody is ever left without access part-way.
-        The group is found by connector and external id, so the stored node is
-        the one replaced whatever id the upsert was given. A group one
+        Every group node with that connector and external id is handled, not
+        one: syncs before #4126 wrote a new copy of the group each time, and the
+        grants and memberships naming it may sit on any copy. Each copy gets the
+        same members and counts as seen, so none of them is unlinked with its
+        grants. A group one
         of whose membership writes did not land keeps the members it has. A group
-        that on_new_user_groups already rewrote is left as it is. Every group
+        node that on_new_user_groups already rewrote is left as it is. Every group
         handled here counts as seen, so the unlink after this does not touch it.
         Raises on failure: the caller then owes another full sync.
         """
@@ -4233,24 +4236,30 @@ class DataSourceEntitiesProcessor:
         if not external_ids:
             return
         for external_id in sorted(external_ids):
+            members = run.group_memberships.get(external_id, {})
             async with self.data_store_provider.transaction() as tx_store:
-                group = await tx_store.get_user_group_by_external_id(
-                    connector_id, external_id, raise_on_error=True
+                copies = await tx_store.get_nodes_by_filters(
+                    groups,
+                    {"connectorId": connector_id, "externalGroupId": external_id},
+                    raise_on_error=True,
                 )
-                if group is None or run.has(groups, group.id):
-                    continue
-                if external_id not in run.groups_members_unsure:
-                    edges = [
-                        Permission(
-                            external_id=source_id,
-                            email=email,
-                            type=PermissionType.READ,
-                            entity_type=EntityType.USER,
-                        ).to_arango_permission(user_id, CollectionNames.USERS.value, group.id, groups)
-                        for user_id, (source_id, email) in run.group_memberships.get(external_id, {}).items()
-                    ]
-                    await tx_store.replace_edges_to(group.id, groups, edges, CollectionNames.PERMISSION.value)
-            run.add(groups, group.id)
+                group_ids = sorted({doc.get("_key") or doc.get("id") for doc in copies or []} - {None})
+                for group_id in group_ids:
+                    if run.has(groups, group_id):
+                        continue
+                    if external_id not in run.groups_members_unsure:
+                        edges = [
+                            Permission(
+                                external_id=source_id,
+                                email=email,
+                                type=PermissionType.READ,
+                                entity_type=EntityType.USER,
+                            ).to_arango_permission(user_id, CollectionNames.USERS.value, group_id, groups)
+                            for user_id, (source_id, email) in members.items()
+                        ]
+                        await tx_store.replace_edges_to(group_id, groups, edges, CollectionNames.PERMISSION.value)
+            for group_id in group_ids:
+                run.add(groups, group_id)
         await self._access_changed([connector_id])
 
     async def update_user_group_name(

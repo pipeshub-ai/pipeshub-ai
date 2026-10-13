@@ -282,7 +282,9 @@ class TestWhatTheProcessorNotes:
         tx.get_user_by_source_id = AsyncMock(
             side_effect=lambda source_id, _connector: MagicMock(id=f"user-{source_id}", email=f"{source_id}@x")
         )
-        tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="g1"))
+        tx.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "g1"}])
+        # Read by batch_upsert_user_groups once #4126 reuses the stored id.
+        tx.get_user_group_by_external_id = AsyncMock(return_value=None)
         tx.replace_edges_to = AsyncMock()
         tx.delete_edges_to = AsyncMock()
         return tx
@@ -362,6 +364,21 @@ class TestWhatTheProcessorNotes:
         tx.replace_edges_to.assert_awaited_once()
         assert tx.replace_edges_to.await_args.args[2] == []
         assert run.has(CollectionNames.GROUPS.value, "g1")
+
+    @pytest.mark.asyncio
+    async def test_every_copy_of_a_group_gets_the_members_and_counts_as_seen(self) -> None:
+        """Syncs before #4126 wrote a new node per sync for one department; the
+        grants naming it may be on any of them."""
+        tx = self._membership_store(True)
+        tx.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "g1"}, {"id": "g2"}])
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        assert sorted(c.args[0] for c in tx.replace_edges_to.await_args_list) == ["g1", "g2"]
+        assert run.has(CollectionNames.GROUPS.value, "g1") and run.has(CollectionNames.GROUPS.value, "g2")
 
     @pytest.mark.asyncio
     async def test_outside_a_full_sync_memberships_are_not_tracked(self) -> None:

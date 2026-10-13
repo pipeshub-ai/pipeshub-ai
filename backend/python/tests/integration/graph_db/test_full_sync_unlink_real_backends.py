@@ -680,3 +680,70 @@ async def test_a_department_that_never_had_users_keeps_its_grants(sync: _Sync) -
 
     group = await sync.graph.get_user_group_by_external_id(sync.connector_id, "dept-1")
     assert group.id in await _department_grant(sync)
+
+
+async def _department_copies(sync: _Sync) -> list[str]:
+    docs = await sync.graph.get_nodes_by_filters(
+        CollectionNames.GROUPS.value, {"connectorId": sync.connector_id, "externalGroupId": "dept-1"}
+    )
+    return sorted(d.get("_key") or d.get("id") for d in docs or [])
+
+
+async def _members_of(sync: _Sync, group_id: str) -> set[str]:
+    edges = await sync.graph.get_edges_to_node(
+        f"{CollectionNames.GROUPS.value}/{group_id}", CollectionNames.PERMISSION.value
+    )
+    return {(e.get("_from") or e.get("from_id") or "").split("/")[-1] for e in edges or []}
+
+
+async def test_a_department_written_with_a_fresh_id_each_sync_keeps_its_grant(sync: _Sync) -> None:
+    """As the ServiceNow connector does without #4126: a new id every sync, so
+    each sync may add a copy of the department, and the grant and the members
+    may land on different copies."""
+    users = CollectionNames.USERS.value
+    await sync.graph.batch_create_edges(
+        [{"from_id": sync.alice, "from_collection": users, "to_id": sync.connector_id,
+          "to_collection": CollectionNames.APPS.value, "sourceUserId": f"src-{sync.alice}",
+          "syncState": "NOT_STARTED", "lastSyncUpdate": sync.now}],
+        collection=CollectionNames.USER_APP_RELATION.value,
+    )
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([AppUserGroup(
+            app_name=Connectors.SERVICENOW, connector_id=s.connector_id,
+            source_user_group_id="dept-1", name="Sales", org_id=s.org_id,
+        )])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        await s.processor.on_new_record_groups([_channel_shared_with_department(s)])
+
+    for _ in range(2):
+        task, _lease = await sync.full_sync(script)
+        await asyncio.wait_for(task, timeout=60)
+
+    copies = await _department_copies(sync)
+    assert set(copies) & await _department_grant(sync), "the department's grant on the channel was unlinked"
+    for copy in copies:
+        assert await _members_of(sync, copy) == {sync.alice}, copy
+
+
+async def test_an_older_copy_of_a_department_is_not_unlinked(sync: _Sync) -> None:
+    """A copy left by an earlier sync, holding a grant, is handled like the
+    current one: given the members this sync read, and counted as seen."""
+    department, _members = await _department(sync)
+    old_copy = f"old-{sync.connector_id}"
+    # Written straight to the graph, as a sync before #4126 left it.
+    await sync.graph.batch_upsert_user_groups([department().model_copy(update={"id": old_copy})])
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        await s.processor.on_new_record_groups([_channel_shared_with_department(s)])
+
+    task, _lease = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    copies = await _department_copies(sync)
+    assert old_copy in copies
+    assert set(copies) & await _department_grant(sync)
+    for copy in copies:
+        assert await _members_of(sync, copy) == {sync.alice}, copy
