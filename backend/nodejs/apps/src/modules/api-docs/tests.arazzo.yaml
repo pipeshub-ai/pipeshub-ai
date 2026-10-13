@@ -7,6 +7,8 @@
 # TypeScript build; tests that need either live in integration-tests/sdk_tests/handwritten.
 # Do not put a condition on a field the spec types as a one-value enum (such as `enum: [true]`): the Go
 # SDK makes it a constant with no struct field, and the generated Go test does not compile.
+# Compare only strings and booleans in a response-body condition: the generated Go test compares
+# a number as an int, so an int64 field never equals it.
 arazzo: 1.0.1
 info:
   title: Test Suite
@@ -641,7 +643,7 @@ workflows:
         successCriteria:
           - condition: $statusCode == 200
           - condition: $response.header.Content-Type == application/json
-          - condition: $response.body#/searchResponse/status_code == 200
+          - condition: $response.body#/searchResponse/status == success
         outputs:
           searchId: $response.body#/searchId
       - stepId: listSearchHistory

@@ -53,6 +53,9 @@ The three suites run at the same time against one app.
 - Do not put a condition on a field the spec types as a one-value enum, such as
   `success` with `enum: [true]`. The Go SDK has no field for it, so the generated
   Go test does not compile.
+- Compare only strings and booleans in a response-body condition. The generated
+  Go test compares a number as an `int`, so an `int64` field never equals it
+  (`$statusCode` conditions are fine).
 
 ## Run it locally
 
