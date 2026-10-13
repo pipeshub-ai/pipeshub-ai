@@ -38,8 +38,9 @@ CLIENT_SECRET = "s3cr3t-value-that-must-not-leak"
 class InMemoryConfigService:
     """Stands in for ConfigurationService: values go in and come out as copies."""
 
-    def __init__(self, values: dict[str, Any] | None = None) -> None:
+    def __init__(self, values: dict[str, Any] | None = None, *, failing_paths: tuple[str, ...] = ()) -> None:
         self.values: dict[str, Any] = copy.deepcopy(values or {})
+        self.failing_paths = failing_paths
         self.values.setdefault("/services/endpoints", {"frontend": {"publicEndpoint": "https://pipeshub.example"}})
 
     async def get_config(self, path: str, default: object = None, use_cache: bool = True) -> object:
@@ -47,6 +48,8 @@ class InMemoryConfigService:
         return copy.deepcopy(self.values.get(path, default))
 
     async def set_config(self, path: str, value: object) -> bool:
+        if path in self.failing_paths:
+            return False
         self.values[path] = copy.deepcopy(value)
         return True
 
@@ -181,9 +184,18 @@ class TestInlineCredentialsLinkAnOAuthApp:
         auth = result["config"]["auth"]
         assert result["success"] is True
         assert auth["clientId"] == CLIENT_ID
-        assert "clientSecret" in auth  # masked, as before
         for key in ("authorizeUrl", "tokenUrl", "scopes", "redirectUri", "authType", "connectorType"):
             assert key in auth
+
+    async def test_the_linked_connector_keeps_no_copy_of_the_secret(self) -> None:
+        # As on creating a connector and on PUT /config/auth: the app holds the secret.
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        result = await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
+
+        assert "clientSecret" not in store.values[CONFIG_PATH]["auth"]
+        assert "clientSecret" not in result["config"]["auth"]
+        assert store.values[CONFIG_PATH]["auth"]["clientId"] == CLIENT_ID
 
     async def test_a_connector_saved_inline_earlier_is_linked_when_resaved(self) -> None:
         # Sent back as GET /config returns it: the secret comes back as the mask.
@@ -205,6 +217,7 @@ class TestInlineCredentialsLinkAnOAuthApp:
         assert apps[0]["config"] == {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}
         stored = store.values[CONFIG_PATH]
         assert stored["auth"]["oauthConfigId"] == apps[0]["_id"]
+        assert "clientSecret" not in stored["auth"]
         # Same client as the one that signed in, so the sign-in is kept.
         assert stored["credentials"] == {"access_token": "access", "refresh_token": "refresh"}
         assert await _start_drive(store) is True
@@ -235,26 +248,6 @@ class TestInlineCredentialsLinkAnOAuthApp:
 
 @pytest.mark.asyncio
 class TestOtherSavesAreUnchanged:
-    async def test_a_linked_connector_keeps_its_app(self) -> None:
-        app = {
-            "_id": "app-1",
-            "orgId": ORG_ID,
-            "oauthInstanceName": "Shared Drive app",
-            "connectorType": "Drive",
-            "config": {"clientId": "app-client", "clientSecret": "app-secret"},
-        }
-        store = InMemoryConfigService(
-            {
-                CONFIG_PATH: {"auth": {"connectorScope": "personal", "oauthConfigId": "app-1"}},
-                OAUTH_APPS_PATH: [app],
-            }
-        )
-
-        await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
-
-        assert store.apps() == [app]
-        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == "app-1"
-
     async def test_an_app_named_at_the_top_level_is_linked_and_nothing_is_created(self) -> None:
         app = {"_id": "app-1", "orgId": ORG_ID, "oauthInstanceName": "Shared", "config": {"clientId": "c"}}
         store = InMemoryConfigService(
@@ -304,6 +297,18 @@ class TestOtherSavesAreUnchanged:
         assert caught.value.status_code == 500
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
 
+    async def test_a_failed_connector_write_takes_back_the_new_app_and_fails_the_save(self) -> None:
+        store = InMemoryConfigService(
+            {CONFIG_PATH: {"auth": {"connectorScope": "personal"}}}, failing_paths=(CONFIG_PATH,)
+        )
+
+        with pytest.raises(HTTPException) as caught:
+            await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
+
+        assert caught.value.status_code == 500
+        assert store.apps() == []
+        assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
+
 
 @pytest.mark.asyncio
 class TestAPartialSaveLinksNothingUntilEveryRequiredFieldIsThere:
@@ -337,3 +342,146 @@ class TestAPartialSaveLinksNothingUntilEveryRequiredFieldIsThere:
         auth = store.values[CONFIG_PATH]["auth"]
         assert auth["instanceUrl"] == "https://acme.service-now.com"
         assert "oauthConfigId" not in auth
+
+
+SHARED_APP = {
+    "_id": "app-1",
+    "orgId": ORG_ID,
+    "oauthInstanceName": "Shared Drive app",
+    "connectorType": "Drive",
+    "config": {"clientId": "app-client", "clientSecret": "app-secret"},
+}
+TOKENS = {"access_token": "access", "refresh_token": "refresh"}
+
+
+def _linked_store(**auth: str) -> InMemoryConfigService:
+    return InMemoryConfigService(
+        {
+            CONFIG_PATH: {
+                "auth": {"connectorScope": "personal", "clientId": "app-client", "oauthConfigId": "app-1", **auth},
+                "credentials": dict(TOKENS),
+            },
+            OAUTH_APPS_PATH: [copy.deepcopy(SHARED_APP)],
+        }
+    )
+
+
+@pytest.mark.asyncio
+class TestALinkedConnectorSavedAgainBehavesAsOnTheAuthOnlySave:
+    async def test_a_new_secret_without_naming_the_app_links_a_new_app_and_leaves_the_old_one(self) -> None:
+        store = _linked_store()
+
+        await _save(store, {"auth": {"clientSecret": "new-secret"}})
+
+        apps = {app["_id"]: app for app in store.apps()}
+        assert apps.pop("app-1") == SHARED_APP
+        (new_app,) = apps.values()
+        assert new_app["config"] == {"clientId": "app-client", "clientSecret": "new-secret"}
+        assert new_app["oauthInstanceName"] == "My Drive"
+        stored = store.values[CONFIG_PATH]
+        assert stored["auth"]["oauthConfigId"] == new_app["_id"]
+        assert "clientSecret" not in stored["auth"]
+        # A different client: the old sign-in goes, as on every credential change.
+        assert stored["credentials"] is None
+
+    async def test_a_new_secret_for_the_app_the_request_names_updates_that_app(self) -> None:
+        store = _linked_store()
+
+        await _save(store, {"auth": {"oauthConfigId": "app-1", "clientSecret": "new-secret"}})
+
+        assert len(store.apps()) == 1
+        assert store.apps()[0]["config"] == {"clientId": "app-client", "clientSecret": "new-secret"}
+        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == "app-1"
+        assert "clientSecret" not in store.values[CONFIG_PATH]["auth"]
+
+    async def test_a_get_then_put_round_trip_changes_nothing(self) -> None:
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+        await _save(store, {"auth": {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}})
+        store.values[CONFIG_PATH]["credentials"] = dict(TOKENS)
+        before = copy.deepcopy(store.values)
+        # What GET /config returns, sent straight back.
+        sent = router_module._config_for_response(store.values[CONFIG_PATH], frozenset({"clientSecret"}))
+
+        await _save(store, {"auth": sent["auth"], "sync": {"selectedStrategy": "SCHEDULED"}})
+
+        assert store.apps() == before[OAUTH_APPS_PATH]
+        assert store.values[CONFIG_PATH]["auth"] == before[CONFIG_PATH]["auth"]
+        assert store.values[CONFIG_PATH]["credentials"] == TOKENS
+
+    async def test_a_stale_inline_copy_sent_back_does_not_rewrite_the_app(self) -> None:
+        # Saved before this change: linked, yet still holding an older client inline.
+        store = _linked_store(clientId=CLIENT_ID, clientSecret=CLIENT_SECRET)
+
+        await _save(
+            store, {"auth": {"clientId": CLIENT_ID, "clientSecret": router_module.REDACTED_PLACEHOLDER}}
+        )
+
+        assert store.apps() == [SHARED_APP]
+        stored = store.values[CONFIG_PATH]
+        assert stored["auth"]["oauthConfigId"] == "app-1"
+        assert "clientSecret" not in stored["auth"]
+        assert stored["credentials"] == TOKENS
+
+    async def test_a_new_client_id_without_its_secret_is_refused(self) -> None:
+        store = _linked_store()
+        before = copy.deepcopy(store.values)
+
+        with pytest.raises(HTTPException) as caught:
+            await _save(store, {"auth": {"clientId": "another-client"}})
+
+        assert caught.value.status_code == 400
+        assert store.values == before
+
+
+def test_a_blank_required_value_counts_as_missing() -> None:
+    assert router_module._has_required_oauth_credentials({"clientId": "id", "clientSecret": "s"}, "Drive")
+    assert not router_module._has_required_oauth_credentials({"clientId": "id", "clientSecret": "   "}, "Drive")
+    assert not router_module._has_required_oauth_credentials({"client_id": " ", "client_secret": "s"}, "Drive")
+    # Either spelling may carry the value.
+    assert router_module._has_required_oauth_credentials(
+        {"clientId": "  ", "client_id": "id", "clientSecret": "s"}, "Drive"
+    )
+
+
+SERVICENOW_APPS_PATH = "/services/oauth/servicenow"
+SN_URLS = {
+    "instanceUrl": "https://acme.service-now.com",
+    "authorizeUrl": "https://acme.service-now.com/oauth_auth.do",
+    "tokenUrl": "https://acme.service-now.com/oauth_token.do",
+}
+
+
+@pytest.mark.asyncio
+class TestServiceNowProviderUrls:
+    async def test_urls_saved_first_are_kept_and_go_into_the_app_with_the_credentials(self) -> None:
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "team"}}})
+
+        await _save(store, {"auth": dict(SN_URLS)}, connector_type="ServiceNow")
+
+        auth = store.values[CONFIG_PATH]["auth"]
+        assert {key: auth[key] for key in SN_URLS} == SN_URLS
+        assert store.values.get(SERVICENOW_APPS_PATH) is None
+
+        await _save(
+            store, {"auth": {"clientId": "sn-client", "clientSecret": "sn-secret"}}, connector_type="ServiceNow"
+        )
+
+        (app,) = store.values[SERVICENOW_APPS_PATH]
+        assert app["config"]["authorizeUrl"] == SN_URLS["authorizeUrl"]
+        assert app["config"]["tokenUrl"] == SN_URLS["tokenUrl"]
+        assert app["config"]["instanceUrl"] == SN_URLS["instanceUrl"]
+        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == app["_id"]
+
+    async def test_registry_placeholder_urls_saved_earlier_never_go_into_an_app(self) -> None:
+        defaults = router_module._registry_oauth_urls("ServiceNow")
+        assert "example.service-now.com" in defaults["authorizeUrl"]
+        store = InMemoryConfigService(
+            {CONFIG_PATH: {"auth": {"connectorScope": "team", "instanceUrl": SN_URLS["instanceUrl"], **defaults}}}
+        )
+
+        await _save(
+            store, {"auth": {"clientId": "sn-client", "clientSecret": "sn-secret"}}, connector_type="ServiceNow"
+        )
+
+        assert store.values.get(SERVICENOW_APPS_PATH) is None
+        assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
