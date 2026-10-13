@@ -12,7 +12,10 @@ import pytest
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.core.responses import TokenUsage
 from app.agent_loop_lib.core.types import Goal
-from tests.unit.agent_loop_lib.runtime.test_run_child_streaming import _build_runtime, _child_spec
+from tests.unit.agent_loop_lib.runtime.test_run_child_streaming import (
+    _build_runtime,
+    _child_spec,
+)
 from tests.unit.agents.adapter.support.scripted_transport import ScriptedTransport
 
 
