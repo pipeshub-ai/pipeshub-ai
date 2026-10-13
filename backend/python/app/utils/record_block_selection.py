@@ -111,14 +111,14 @@ def estimate_render_chars(record: dict[str, Any], start_block: int = 0) -> int:
     )
 
 
-def estimate_frame_chars(record: dict[str, Any]) -> int:
+def estimate_frame_chars(record: dict[str, Any], *, selection: bool = False) -> int:
     """What a record's render spends outside its blocks: the header carrying
     its metadata, and room held for the hint and closing tag."""
     metadata = record.get("context_metadata")
     return (
         _RECORD_FRAME_OVERHEAD
         + (len(metadata) if isinstance(metadata, str) else 0)
-        + record_trailer_reserve(record)
+        + record_trailer_reserve(record, selection=selection)
     )
 
 
@@ -378,9 +378,18 @@ def continuation_hint(label: str, start: int, end: int, total: int, next_start: 
     )
 
 
-def selection_hint(label: str, shown: int, total: int) -> str:
+def selection_hint(label: str, shown: int, total: int, resume: int | None = None) -> str:
     """A selection is not a window: the blocks shown are not contiguous, so a
-    "next slice" offset would be the wrong instruction."""
+    "next slice" offset would be the wrong instruction. `resume` is where a
+    selection that ran out of room stopped, which reads on in order."""
+    if resume is not None:
+        return (
+            f"\n[Record {label}: showed the {shown} block(s) most relevant "
+            f"to the question, of {total}; the rest of the selection did not fit. "
+            f"To read on from block {resume}, call knowledgegraph__fetch_record with "
+            f"record_ids=[\"{label}\"] and start_block={resume}; to read it in order "
+            f"instead, use start_block=0.]\n"
+        )
     return (
         f"\n[Record {label}: showed the {shown} block(s) most relevant "
         f"to the question, of {total}. To read it in order "
@@ -398,15 +407,16 @@ def no_fit_hint(label: str, next_start: int) -> str:
     )
 
 
-def record_trailer_reserve(record: dict[str, Any]) -> int:
+def record_trailer_reserve(record: dict[str, Any], *, selection: bool = False) -> int:
     """The longest hint and closing tag a record's render can end with, so the
-    render can hold room for them before it walks the blocks."""
+    render can hold room for them before it walks the blocks. Only a selection
+    can end with the (longer) selection hint."""
     label = str(record.get("id") or record.get("virtual_record_id") or "")
     indices = _block_indices(record)
     widest = int("9" * len(str(len(indices) + max(indices, default=0) + 1)))
     longest = max(
         len(continuation_hint(label, widest, widest, widest, widest)),
-        len(selection_hint(label, widest, widest)),
+        len(selection_hint(label, widest, widest, widest)) if selection else 0,
         len(no_fit_hint(label, widest)),
     )
     return longest + len(RECORD_CLOSE)

@@ -253,6 +253,15 @@ class RenderBudget:
         if state is not None:
             state.spent += chars
 
+    def refund_framing_chars(self, chars: int) -> None:
+        """Take back framing that was charged but is not printed after all
+        (a gap marker whose block did not render)."""
+        self.chars_used -= chars
+        self.framing_chars -= chars
+        state = self._current_state()
+        if state is not None:
+            state.spent -= chars
+
     def take(self, text: str) -> str | None:
         """The text to emit, or None when there is no room left.
 

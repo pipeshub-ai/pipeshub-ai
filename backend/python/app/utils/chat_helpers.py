@@ -73,11 +73,9 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
-    BLOCK_RENDER_OVERHEAD,
     RECORD_CLOSE,
     continuation_hint,
     describe_gaps,
-    estimate_block_chars,
     no_fit_hint,
     record_trailer_reserve,
     selection_hint,
@@ -4110,6 +4108,24 @@ def _mint_refs(
 
 
 _METADATA_TRUNCATED = "\n[…metadata truncated to fit]"
+_FK_TRUNCATED = "\n[…foreign keys truncated to fit]\n"
+# A frame that leaves less than this for the body is cut, to leave
+# `_MIN_BODY_CHARS` (or half the room), so a read whose metadata fills the
+# room still shows (a clipped prefix of) a block and advances. The first
+# `_MIN_METADATA_CHARS` of the metadata, the record's id and name, are kept.
+_MIN_PROGRESS_CHARS = 64
+_MIN_BODY_CHARS = 1_000
+_MIN_METADATA_CHARS = 200
+
+
+def _fit_text(text: str, room: int, marker: str) -> str:
+    """`text` cut to `room` characters with `marker` saying so, or "" when not
+    even the marker fits."""
+    if len(text) <= room:
+        return text
+    if room < len(marker):
+        return ""
+    return text[:room - len(marker)] + marker
 
 
 def _record_header(context_metadata: str) -> str:
@@ -4223,16 +4239,22 @@ def record_to_message_content(
         content = []
         context_metadata = record.get("context_metadata", "") or ""
         fk_text = _fk_lines_text(record)
-        trailer_reserve = record_trailer_reserve(record)
-        frame = len(_record_header(context_metadata)) + trailer_reserve + len(fk_text)
-        if frame > render_budget.chars_remaining:
-            # Metadata larger than the record's room: what was printed has to
-            # be what was charged, so the metadata is cut (and the FK lines
-            # dropped) rather than the budget overrun.
-            room = render_budget.chars_remaining - (frame - len(context_metadata)) + len(fk_text)
-            fk_text = ""
-            keep = max(0, room - len(_METADATA_TRUNCATED))
-            context_metadata = context_metadata[:keep] + _METADATA_TRUNCATED
+        trailer_reserve = record_trailer_reserve(record, selection=include_blocks is not None)
+        # A frame that leaves no room to show a block is cut, not overrun:
+        # what is printed has to be what was charged. The cut leaves room for
+        # one (clipped) block so the read advances, keeps the start of the
+        # metadata (the record's id and name), and FK lines yield after it.
+        available = render_budget.chars_remaining
+        fixed = len(_record_header("")) + trailer_reserve
+        if fixed + len(context_metadata) + len(fk_text) + _MIN_PROGRESS_CHARS > available:
+            body_room = min(_MIN_BODY_CHARS, available // 2)
+            kept_metadata = min(len(context_metadata), _MIN_METADATA_CHARS, max(0, available - fixed))
+            fk_text = _fit_text(fk_text, available - fixed - body_room - kept_metadata, _FK_TRUNCATED)
+            context_metadata = _fit_text(
+                context_metadata,
+                min(available - fixed, max(kept_metadata, available - fixed - body_room - len(fk_text))),
+                _METADATA_TRUNCATED,
+            )
         record_header = _record_header(context_metadata)
         render_budget.charge_framing(record_header)
         content.append({"type": "text", "text": record_header})
@@ -4278,7 +4300,22 @@ def record_to_message_content(
         # Index order, not list order: the walk compares `block.index` against
         # the window, and nothing guarantees the stored list is sorted.
         # `blocks` itself stays untouched — group expansion indexes into it.
+        pending_gap: tuple[int, int] | None = None
+
+        def _settle_gap() -> None:
+            nonlocal pending_gap, gaps_emitted
+            if pending_gap is None:
+                return
+            position, chars = pending_gap
+            if len(content) - 1 == position:
+                content.pop()
+                render_budget.refund_framing_chars(chars)
+            else:
+                gaps_emitted = True
+            pending_gap = None
+
         for block in sorted(blocks, key=lambda b: b.get("index", 0)):
+            _settle_gap()
             block_index = block.get("index", 0)
             block_type = block.get("type")
 
@@ -4318,19 +4355,16 @@ def record_to_message_content(
                 break
 
             if block_index in gap_markers:
-                # Printed only with room for it and, after earlier blocks, for
-                # the block it introduces: a gap marker is charged like text.
-                needed = len(gap_markers[block_index]) + (
-                    estimate_block_chars(block) + BLOCK_RENDER_OVERHEAD if _renderable_rendered else 0
-                )
-                if not render_budget.can_afford_chars(needed):
+                # Printed tentatively: taken back below if the block it
+                # introduces prints nothing, so no gap ever dangles.
+                if not render_budget.can_afford(gap_markers[block_index]):
                     if _truncated_at is None:
                         _truncated_at = block_index
                     render_budget.stop_at(block_index)
                     break
                 render_budget.charge_framing(gap_markers[block_index])
                 content.append({"type": "text", "text": gap_markers[block_index]})
-                gaps_emitted = True
+                pending_gap = (len(content) - 1, len(gap_markers[block_index]))
 
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
             # Minted only once the block is printed: a ref for a block that is
@@ -4744,6 +4778,7 @@ def record_to_message_content(
             else:
                 continue
 
+        _settle_gap()
         if pending_images:
             content = _resolve_pending_images(
                 content, pending_images, admission, collected_images, record_vrid,
@@ -4770,11 +4805,18 @@ def record_to_message_content(
         ] if include_blocks is not None else []
 
         if unshown and gaps_emitted:
+            # A selection that ran out of room before its last block says
+            # where it stopped, so the rest can still be read.
+            resume = (
+                outcome.stopped_at_block
+                if outcome.stop_reason in ("chars", "blocks") and outcome.stopped_at_block in include_blocks
+                else None
+            )
             render_budget.note_selection(unshown[0])
             content.append({
                 "type": "text",
                 "text": selection_hint(
-                    record_label, len(outcome.shown_blocks), len(_all_block_indices),
+                    record_label, len(outcome.shown_blocks), len(_all_block_indices), resume,
                 ),
             })
         else:

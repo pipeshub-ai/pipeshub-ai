@@ -154,3 +154,62 @@ class TestWhatIsShownIsReported:
         second, _budget, _mapper = _render(record, 1_000, start=1)
 
         assert "summary is shown" not in second
+
+
+class TestOversizedMetadataStillAdvances:
+    """Metadata cut to the whole room left nothing for the body: no block was
+    shown and the hint named the same offset again."""
+
+    @staticmethod
+    def _record(fk: bool = False) -> dict[str, Any]:
+        record = _record([_text(i, f"body{i} " + "b" * 300) for i in range(5)],
+                         metadata="Record ID: rec-1\n" + "m" * 60_000)
+        if fk:
+            record["fk_parent_record_ids"] = [
+                {"parentTable": "accounts", "sourceColumn": "account_id", "targetColumn": "id", "record_id": "rec-2"},
+            ]
+        return record
+
+    def test_following_the_hints_reads_the_body(self) -> None:
+        shown, _complete = _follow(self._record(), 40_000)
+
+        assert shown == {0, 1, 2, 3, 4}
+
+    def test_the_first_read_shows_a_block(self) -> None:
+        text, budget, _mapper = _render(self._record(), 40_000)
+
+        assert budget.outcome("rec-1").blocks_rendered >= 1
+        assert len(text) <= budget.max_chars
+
+    def test_foreign_key_lines_are_kept(self) -> None:
+        text, budget, _mapper = _render(self._record(fk=True), 40_000)
+
+        assert "Parent Table: accounts" in text
+        assert len(text) <= budget.max_chars
+
+    def test_a_room_smaller_than_the_marker_is_not_overrun(self) -> None:
+        record = _record([_text(0, "body0 " + "b" * 300)], metadata="m" * 5_000)
+        for max_chars in range(300, 1_200, 25):
+            text, budget, _mapper = _render(record, max_chars)
+            assert budget.chars_used <= max_chars or budget.outcome("rec-1").clipped, max_chars
+
+
+class TestAGapIsPrintedOnlyBeforeWhatRenders:
+    """A gap was priced with the next block's text alone; a table row also
+    spends its table's header, so the gap printed and the row did not."""
+
+    def test_a_row_behind_a_large_table_header_leaves_no_dangling_gap(self) -> None:
+        rows = [{"index": i, "type": BlockType.TABLE_ROW.value, "parent_index": 0,
+                 "data": {"row_natural_language_text": f"row{i} " + "c" * 50}} for i in (2, 3)]
+        record = _record([_text(0, "A" * 200), _text(1, "B" * 200), *rows], [{
+            "index": 0, "type": GroupType.TABLE.value, "data": {"table_summary": "", "ddl": "CREATE " + "D" * 600},
+            "children": {"block_ranges": [{"start": 2, "end": 3}]},
+        }])
+
+        for max_chars in range(700, 1_600, 20):
+            text, budget, _mapper = _render(record, max_chars, include={0, 2, 3})
+            shown = budget.outcome("rec-1").shown_blocks
+            if 2 not in shown:
+                assert "(1–1)" not in text, max_chars
+                assert "start_block=2" in text, max_chars
+            assert budget.chars_used <= max_chars, max_chars

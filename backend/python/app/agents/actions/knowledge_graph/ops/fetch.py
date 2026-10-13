@@ -364,7 +364,7 @@ async def execute_fetch_record(
                     user_id=context.user_id,
                     org_id=context.org_id,
                     budget=budget,
-                    reserve=estimate_frame_chars(record),
+                    reserve=estimate_frame_chars(record, selection=True),
                 )
             # The character allowance bounds size. A block count only limits
             # an in-order read of a record too large for its share, or what
