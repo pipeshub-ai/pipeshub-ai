@@ -129,7 +129,6 @@ import {
 import { ProjectService } from '../../projects/services/project.service';
 import {
   assignAgentCapabilitiesToPayload,
-  assignRetrievalContextToPayload,
   assignToolsToPayload,
   buildAiChatRequest,
   parseChatMode,
@@ -3346,7 +3345,6 @@ async function regenerateAnswersInternal(
     };
     if (agentKey || regenIsAgentMode) {
       assignToolsToPayload(aiPayload, req.body.tools);
-      assignRetrievalContextToPayload(aiPayload, req.body as Record<string, unknown>);
       assignAgentCapabilitiesToPayload(aiPayload, req.body as Record<string, unknown>);
     }
     const regenProject = await loadProjectForSession(
