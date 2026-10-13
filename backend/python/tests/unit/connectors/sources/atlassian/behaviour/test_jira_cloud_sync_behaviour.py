@@ -1300,6 +1300,36 @@ class TestUnfinishedUserRead:
         ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
         assert ops == [("EntityType.GROUP", "grp-dev")], "OPS was never saved, so the grants that were read are saved"
 
+    async def test_a_renamed_project_granted_through_groups_a_role_and_its_lead_keeps_its_access_on_a_short_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert before == [("EntityType.GROUP", "grp-dev"), ("EntityType.ROLE", "ENG_10002"), ("EntityType.ROLE", "ENG_projectLead")]
+        assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
+
+        # The same project (id 10000) now has the key NEW; Bo, its lead, is on the page that fails.
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/NEW/permissionscheme", {"id": 1})
+        api.on("GET", f"{JIRA}/project/NEW/role", {"Developers": f"{SITE}{JIRA}/project/NEW/role/10002"})
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl(site_db) == before, "the Developers and project-lead grants under the old key stay"
+        assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
+        assert "NEW_projectLead" not in site_db.app_roles, "no empty lead is saved for a project whose access is stored"
+        assert "NEW" not in ((checkpoints.values_for("stored_access") or {}).get("lead_project_keys") or [])
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__
