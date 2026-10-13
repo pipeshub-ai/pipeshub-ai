@@ -827,8 +827,9 @@ class BookStackConnector(BaseConnector):
                     done = False
                     continue
 
-                # Delete edges to groups for the user
-                user = await self.data_entities_processor.get_user_by_email(user_email)
+                # Delete edges to groups for the user. A failed lookup raises rather
+                # than answering None, which would count the change as applied.
+                user = await self.data_entities_processor.get_user_by_email(user_email, raise_on_error=True)
                 if not user:
                     self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                     continue
@@ -856,8 +857,14 @@ class BookStackConnector(BaseConnector):
         return done
 
     async def _withdraw_user_roles(self, user_id: int, name: Optional[str]) -> None:
-        """Take a BookStack user out of every role they are stored in."""
-        user = await self.data_entities_processor.get_user_by_source_id(str(user_id), self.connector_id)
+        """Take a BookStack user out of every role they are stored in.
+
+        Raises when the stored user can't be looked up or their role edges can't be
+        deleted, so the caller reads the event again; a user never stored has nothing to withdraw.
+        """
+        user = await self.data_entities_processor.get_user_by_source_id(
+            str(user_id), self.connector_id, raise_on_error=True
+        )
         if not user:
             return
         self.logger.warning(f"Withdrawing the stored roles of user {name} (ID: {user_id})")
@@ -965,9 +972,18 @@ class BookStackConnector(BaseConnector):
             return False
 
         # 1. Fetch details for all roles, including the users assigned to each role.
+        # A role that wasn't read is not in the batch, so it keeps its stored members
+        # whatever the reason. Refused (403) as well as interrupted, the role
+        # checkpoint stays, so the next sync rebuilds the roles again instead of
+        # leaving those members in place with nothing left to check them.
         all_roles_with_details = await self._fetch_all_roles_with_details()
-        roles_complete = self._roles_read is not ReadOutcome.INTERRUPTED
-        if not roles_complete:
+        roles_complete = self._roles_read is ReadOutcome.COMPLETE
+        if self._roles_read is ReadOutcome.REFUSED:
+            self.logger.error(
+                "❌ BookStack refused part of the role list or a role's details; roles not read keep their "
+                "stored members, and the next sync reads them again"
+            )
+        elif not roles_complete:
             self.logger.warning("⚠️ BookStack roles were not all read; the next sync reads them again")
         if not all_roles_with_details:
             if roles_complete:

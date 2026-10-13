@@ -5653,7 +5653,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """
         Get a user by their source system ID (sourceUserId field in userAppRelation edge).
@@ -5710,6 +5712,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to get user by source_id {source_user_id}: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_user_id(
@@ -11886,10 +11890,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
+            # Raise, as the Neo4j provider does: a caller that took 0 for "deleted"
+            # would move on as if the edges were gone.
             self.logger.error(
                 f"❌ Failed to delete edges from {from_key} to {to_collection} in {edge_collection}: {str(e)}"
             )
-            return 0
+            raise
 
     async def _stop_inheriting_from_record_groups(
         self, record_id: str, transaction: str | None

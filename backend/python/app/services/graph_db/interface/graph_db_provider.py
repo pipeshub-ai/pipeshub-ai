@@ -2396,10 +2396,16 @@ class IGraphDBProvider(ABC):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by their source system ID.
+
+        None means there is no such user. A read that fails also answers None unless
+        ``raise_on_error`` is set, which a caller needs when it would act on "no such
+        user" (treating a change to that user as applied, say).
 
         Args:
             source_user_id (str): User ID in source system

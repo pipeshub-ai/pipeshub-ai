@@ -2955,12 +2955,13 @@ class TestDeleteEdgesBetweenCollections:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider):
+        """A failed delete raises, as on Neo4j, rather than answering 0 as if nothing was there."""
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
-        result = await connected_provider.delete_edges_between_collections(
-            "u1", "users", "permission", "records"
-        )
-        assert result == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_edges_between_collections(
+                "u1", "users", "permission", "records"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -6313,6 +6314,12 @@ class TestGetUserBySourceId:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.get_user_by_source_id("src_u1", "c1")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_exception_raises_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_by_source_id("src_u1", "c1", raise_on_error=True)
 
 
 # ===========================================================================

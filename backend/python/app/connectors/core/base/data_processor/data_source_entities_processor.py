@@ -3617,16 +3617,18 @@ class DataSourceEntitiesProcessor:
             )
             
     async def get_user_by_source_id(
-        self, source_user_id: str, connector_id: str
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None:
+        """None means no such user; with ``raise_on_error`` a failed lookup raises instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_user_by_source_id(
-                source_user_id, connector_id
+                source_user_id, connector_id, raise_on_error=raise_on_error
             )
 
-    async def get_user_by_email(self, email: str) -> User | None:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+        """None means no such user; with ``raise_on_error`` a failed lookup raises instead of answering None."""
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_user_by_email(email)
+            return await tx_store.get_user_by_email(email, raise_on_error=raise_on_error)
 
     async def get_user_group_by_external_id(
         self, connector_id: str, external_id: str, *, raise_on_error: bool = False

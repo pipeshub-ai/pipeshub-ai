@@ -144,17 +144,29 @@ class Directory:
         self.user_rows: set[str] = set()
         self.require_user_rows = False
         self.fail_role_write = False
+        # The graph can't be read or written. Like both graph providers, a failed user
+        # lookup answers None unless raise_on_error is set, and a failed delete raises.
+        self.fail_user_lookup = False
+        self.fail_edge_delete = False
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.user_rows.update(u.email for u in users)
 
-    async def get_user_by_email(self, email: str) -> SimpleNamespace | None:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> SimpleNamespace | None:
+        if self.fail_user_lookup:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable")
+            return None
         return SimpleNamespace(id=email, email=email) if email in self.user_rows else None
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> SimpleNamespace | None:
-        return await self.get_user_by_email(f"u{source_user_id}@example.com")
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> SimpleNamespace | None:
+        return await self.get_user_by_email(f"u{source_user_id}@example.com", raise_on_error=raise_on_error)
 
     async def delete_edges_between_collections(self, from_id: str, *_: object, **__: object) -> None:
+        if self.fail_edge_delete:
+            raise RuntimeError("graph unavailable")
         for members in self.role_members.values():
             members.discard(from_id)
 
@@ -414,6 +426,38 @@ async def test_a_failed_role_details_read_in_the_role_sync_is_read_again_on_the_
     assert world.members(AUDITOR) == emails(1)
 
 
+@pytest.mark.parametrize("status", [401, 403])
+async def test_a_refused_role_details_read_keeps_the_role_and_is_read_again(world: World, status: int) -> None:
+    """A role left out of the write keeps its members, so the checkpoint must stay for the rebuild to run again."""
+    world.api.fail_once[(f"/api/roles/{VIEWER}", None)] = status
+    world.api.roles[VIEWER]["users"].remove(5)
+
+    await world.sync_roles()
+
+    assert world.role_checkpoint() == {}
+    assert world.members(VIEWER) == emails(4, 5)
+    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)  # read whole, so written whole
+
+    await world.sync_roles()
+
+    assert world.members(VIEWER) == emails(4)
+
+
+async def test_a_refused_role_list_keeps_the_role_checkpoint(world: World) -> None:
+    """Not "no roles": nothing was listed, so the stored roles must be rebuilt on a later sync."""
+    world.api.fail_once[("/api/roles", 0)] = 403
+    world.api.roles[VIEWER]["users"].remove(5)
+
+    await world.sync_roles()
+
+    assert world.role_checkpoint() == {}
+    assert world.members(VIEWER) == emails(4, 5)
+
+    await world.sync_roles()
+
+    assert world.members(VIEWER) == emails(4)
+
+
 # ---- the user sync, which stores the users a role write attaches ----
 
 async def test_a_first_sync_whose_user_list_fails_writes_roles_only_once_every_user_is_stored() -> None:
@@ -479,3 +523,49 @@ async def test_a_user_update_whose_role_write_fails_is_applied_again(synced_user
     await world.sync_users()
 
     assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
+
+
+@pytest.mark.parametrize("status", [403, 404])
+async def test_a_user_withdrawal_whose_user_lookup_fails_is_applied_again(synced_users: World, status: int) -> None:
+    """A failed lookup is not "never stored": the stored roles stay, and so does the checkpoint."""
+    world = synced_users
+    user_updated(world, 5)
+    world.api.fail[("/api/users/5", None)] = status
+    world.directory.fail_user_lookup = True
+
+    await world.sync_users()
+
+    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
+    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)
+
+
+async def test_a_user_withdrawal_whose_edge_delete_fails_is_applied_again(synced_users: World) -> None:
+    world = synced_users
+    user_updated(world, 5)
+    world.api.fail[("/api/users/5", None)] = 403
+    world.directory.fail_edge_delete = True
+
+    await world.sync_users()
+
+    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
+
+
+async def test_a_user_update_whose_user_lookup_fails_is_applied_again(synced_users: World) -> None:
+    world = synced_users
+    user_updated(world, 4)
+    world.directory.fail_user_lookup = True
+
+    await world.sync_users()
+
+    assert [p["timestamp"] for p in world.user_checkpoint().values()] == ["2026-01-01T00:00:00Z"]
+
+
+async def test_a_user_update_for_a_user_never_stored_still_counts_as_applied(synced_users: World) -> None:
+    """A lookup that answers "no such user" is a definite answer, so the checkpoint moves on."""
+    world = synced_users
+    user_updated(world, 4)
+    world.directory.user_rows.discard("u4@example.com")
+
+    await world.sync_users()
+
+    assert [p["timestamp"] for p in world.user_checkpoint().values()] != ["2026-01-01T00:00:00Z"]

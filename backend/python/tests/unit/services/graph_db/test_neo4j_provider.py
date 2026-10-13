@@ -2014,6 +2014,13 @@ class TestUserAndOrganizationLookups:
         assert await neo4j_provider.get_user_by_source_id("src-missing", "conn-1") is None
 
     @pytest.mark.asyncio
+    async def test_get_user_by_source_id_failure_raises_only_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("down"))
+        assert await neo4j_provider.get_user_by_source_id("src-1", "conn-1") is None
+        with pytest.raises(RuntimeError, match="down"):
+            await neo4j_provider.get_user_by_source_id("src-1", "conn-1", raise_on_error=True)
+
+    @pytest.mark.asyncio
     async def test_get_user_by_user_id_success_and_none(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"u": {"id": "u1", "userId": "uid1"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "u1", "userId": "uid1"})  # type: ignore[method-assign]

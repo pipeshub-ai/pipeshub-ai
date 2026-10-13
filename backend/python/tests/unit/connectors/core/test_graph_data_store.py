@@ -475,7 +475,16 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_user_by_source_id(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_by_source_id("src1", "conn1")
-        mock_graph_provider.get_user_by_source_id.assert_awaited_once_with("src1", "conn1", transaction="txn-123")
+        mock_graph_provider.get_user_by_source_id.assert_awaited_once_with(
+            "src1", "conn1", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_user_by_source_id_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_user_by_source_id("src1", "conn1", raise_on_error=True)
+        mock_graph_provider.get_user_by_source_id.assert_awaited_once_with(
+            "src1", "conn1", transaction="txn-123", raise_on_error=True
+        )
 
     @pytest.mark.asyncio
     async def test_create_record_relation(self, tx_store, mock_graph_provider) -> None:
