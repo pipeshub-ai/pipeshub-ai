@@ -1679,21 +1679,6 @@ class TestUnfinishedUserRead:
 
         assert self._access(db) == before, "a failed read is not taken for 'nothing stored'"
 
-    async def test_a_full_sync_that_kept_stored_access_reports_it_did_not_read_everything(
-        self, jira, db, store, search
-    ) -> None:
-        stub_site(jira, search)
-        self._stub_carol_everywhere(jira)
-        connector, _ = await make_connector(db, store)
-        await connector.run_sync()
-        assert connector.full_sync_coverage().complete is True
-
-        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
-        await connector.run_sync()
-
-        # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
-        assert connector.full_sync_coverage().complete is False
-
     async def test_a_full_sync_with_a_short_read_keeps_what_it_held_after_the_unlink(self, jira, db, store, search) -> None:
         stub_site(jira, search)
         connector, _ = await make_connector(db, store)
@@ -1721,3 +1706,30 @@ class TestUnfinishedUserRead:
 
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the stored grants survive the unlink"
+
+    async def test_a_full_sync_with_a_short_read_still_unlinks_what_is_gone(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        graph = await run_full_sync(connector, db)
+
+        # What this sync held is noted as seen, so the unlink still runs for what Jira no longer has.
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
