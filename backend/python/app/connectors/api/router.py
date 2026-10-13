@@ -3744,7 +3744,6 @@ async def _handle_oauth_config_creation(
             return oauth_app_id
         else:
             logger.info(f"No OAuth credentials provided and no oauthConfigId specified for {connector_type} - skipping OAuth config creation")
-            logger.debug(f"Expected OAuth fields for {connector_type}: {_get_oauth_field_names_from_registry(connector_type)}")
             logger.debug(f"Received auth config keys: {list(auth_config.keys())}")
             return None
 
