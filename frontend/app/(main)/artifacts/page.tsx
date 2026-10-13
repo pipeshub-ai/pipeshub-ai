@@ -6,6 +6,11 @@ import { Flex, TextField } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { FilePreviewSidebar } from '@/app/components/file-preview';
+import {
+  isLegacyWordDocFile,
+  isPresentationFile,
+  resolvePreviewMimeAfterStream,
+} from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { toast } from '@/lib/store/toast-store';
 import { ArtifactsApi } from './api';
@@ -16,11 +21,6 @@ import { ArtifactsHeader } from './components/header';
 import { ArtifactsFilterBar } from './components/filter-bar';
 import { ArtifactsDataTable } from './components/artifacts-data-table';
 
-function needsPdfConversion(item: ArtifactListItem): boolean {
-  const mime = (item.mimeType || '').toLowerCase();
-  return mime.includes('presentation') || /\.(ppt|pptx)$/i.test(item.name);
-}
-
 function ArtifactsPageContent() {
   const { t } = useTranslation();
   const router = useRouter();
@@ -29,6 +29,7 @@ function ArtifactsPageContent() {
   const [previewItem, setPreviewItem] = useState<ArtifactListItem | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [previewBlob, setPreviewBlob] = useState<Blob | undefined>();
+  const [previewType, setPreviewType] = useState<string | undefined>();
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState<string | undefined>();
   const [previewVersion, setPreviewVersion] = useState<number | undefined>();
@@ -151,10 +152,14 @@ function ArtifactsPageContent() {
     const id = requestId ?? ++previewRequestIdRef.current;
     setPreviewLoading(true);
     setPreviewError(undefined);
+    const mimeType = item.mimeType ?? undefined;
+    const streamAsPdf =
+      isPresentationFile(mimeType, item.name) ||
+      isLegacyWordDocFile(mimeType, item.name);
     try {
       const blob = await KnowledgeBaseApi.streamRecord(item.artifactId, {
         version,
-        convertTo: needsPdfConversion(item) ? 'pdf' : undefined,
+        ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
       });
       if (id !== previewRequestIdRef.current) return;
       revokePreviewUrl();
@@ -162,6 +167,7 @@ function ArtifactsPageContent() {
       blobUrlRef.current = url;
       setPreviewUrl(url);
       setPreviewBlob(blob);
+      setPreviewType(resolvePreviewMimeAfterStream(item.mimeType || '', item.name, blob, streamAsPdf));
       setPreviewVersion(version ?? item.version);
     } catch {
       if (id !== previewRequestIdRef.current) return;
@@ -177,6 +183,7 @@ function ArtifactsPageContent() {
   const openPreview = useCallback(async (item: ArtifactListItem) => {
     const requestId = ++previewRequestIdRef.current;
     setPreviewItem(item);
+    setPreviewType(item.mimeType || 'application/octet-stream');
     setLatestVersion(item.version);
     setPreviewVersion(item.version);
     try {
@@ -198,10 +205,10 @@ function ArtifactsPageContent() {
     await loadPreview(previewItem, version);
   }, [loadPreview, previewItem]);
 
-  const handleDownload = useCallback(async (item: ArtifactListItem) => {
+  const handleDownload = useCallback(async (item: ArtifactListItem, version?: number) => {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.artifactId, item.name, {
-        version: item.version,
+        version: version ?? item.version,
       });
     } catch {
       toast.error(t('artifacts.downloadFailed', { defaultValue: "Couldn't download this file" }));
@@ -258,11 +265,14 @@ function ArtifactsPageContent() {
           source="artifacts"
           hideFileDetails
           showDownload
+          onDownload={() => {
+            void handleDownload(previewItem, previewVersion);
+          }}
           file={{
             id: previewItem.artifactId,
             name: previewItem.name,
             url: previewUrl || '',
-            type: previewItem.mimeType || 'application/octet-stream',
+            type: previewType || previewItem.mimeType || 'application/octet-stream',
             size: previewItem.sizeInBytes ?? undefined,
             blob: previewBlob,
             version: previewVersion,
@@ -278,6 +288,7 @@ function ArtifactsPageContent() {
               setPreviewItem(null);
               setPreviewUrl(null);
               setPreviewBlob(undefined);
+              setPreviewType(undefined);
               setPreviewLoading(false);
               setIsSwitchingVersion(false);
               revokePreviewUrl();

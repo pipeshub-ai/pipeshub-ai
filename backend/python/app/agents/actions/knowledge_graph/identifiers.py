@@ -22,6 +22,7 @@ class RefKind(str, Enum):
     SLACK_TS = "slack_ts"            # Slack channel + timestamp
     WEB_URL = "web_url"              # raw URL that maps to a webUrl index lookup
     DRIVE_FILE = "drive_file"        # Google Drive file id (resolved via externalRecordId)
+    RECORD_ID = "record_id"          # PipesHub record id (UUID), as other tools print it
 
 
 @dataclass
@@ -90,6 +91,7 @@ _SLACK_PERMALINK = re.compile(
 # Linear: /issue/TEAM-123 or /TEAM/TEAM-123
 _LINEAR_ISSUE = re.compile(r"/(?:issue|[A-Z]{2,10})/([A-Z]{2,10}-\d+)", re.IGNORECASE)
 
+_RECORD_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.IGNORECASE)
 # Notion: 32-char hex (no dashes) or UUID with dashes
 _NOTION_UUID = re.compile(r"/([0-9a-f]{32})$|/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", re.IGNORECASE)
 
@@ -151,6 +153,8 @@ def resolve_canonical_ref(raw: str) -> CanonicalRef | None:
         return CanonicalRef(kind=RefKind.ISSUE_KEY, value=m.group(1).upper(), connector_hint="JIRA")
 
     if not _is_url(raw):
+        if _RECORD_ID.match(raw):
+            return CanonicalRef(kind=RefKind.RECORD_ID, value=raw)
         # Google Drive file ids are 25–44 base64url characters.
         # Classify them early so the resolver tries Drive-type connectors first.
         if re.match(r"^[A-Za-z0-9_-]{25,44}$", raw):

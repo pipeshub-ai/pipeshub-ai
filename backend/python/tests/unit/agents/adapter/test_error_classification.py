@@ -76,6 +76,26 @@ def test_classify_error_returns_expected_code(raw: str, expected_code: str) -> N
     assert error_code == expected_code
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected_code"),
+    [
+        (
+            "LLM call failed: LangChain transport error (complete): ValueError: Azure has not "
+            "provided the response due to a content filter being triggered",
+            "content_filter",
+        ),
+        (
+            "LLM call failed: LangChain transport error (stream): ContentFilterFinishReasonError: "
+            "Could not parse response content as the request was rejected by the content filter",
+            "content_filter",
+        ),
+        ("Tool 'search' failed: no setting named content filter in this workspace", "unknown"),
+    ],
+)
+def test_content_filter_wording_is_matched_only_in_sdk_phrases(raw: str, expected_code: str) -> None:
+    assert classify_error(raw)[0] == expected_code
+
+
 def test_content_filter_wins_over_status_code_hints() -> None:
     """An Azure content-filter body carries `'status': 400` and often other
     numeric fragments — it must still classify as content_filter (telling

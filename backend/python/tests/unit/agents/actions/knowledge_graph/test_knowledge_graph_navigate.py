@@ -337,6 +337,34 @@ class TestNavigateExposesRecordMetadata:
         assert "External ID: PA-1787" in text
 
     @pytest.mark.asyncio
+    async def test_pull_request_merge_state_is_shown(self):
+        """A PR node used to show only the base header, so the model guessed
+        whether it was merged."""
+        from app.models.entities import PullRequestRecord
+        pr = PullRequestRecord(
+            id="rec1",
+            record_name="Fix login redirect",
+            record_type=RecordType.PULL_REQUEST,
+            external_record_id="123/pull/42",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GITHUB,
+            connector_id="gh-conn",
+            weburl="https://github.com/org/repo/pull/42",
+            status="DONE",
+            creator_name="octocat",
+            merged_by="hubot",
+        )
+        state = self._state_on_ticket(pr)
+
+        success, text = await self._navigate(state)
+
+        assert success
+        assert "* Status: Merged" in text
+        assert "* Author: octocat" in text
+        assert "* Merged By: hubot" in text
+
+    @pytest.mark.asyncio
     async def test_read_step_is_offered_for_a_record_node(self):
         state = self._state_on_ticket(_ticket_record())
 

@@ -59,11 +59,15 @@ async def write_app_status(
     status: str,
     *,
     is_locked: bool | None = None,
+    full_sync_owed: bool = False,
 ) -> bool:
     """Best-effort status write; a DB blip must never fail the sync itself.
 
     Returns whether the write landed, so a caller that reports the status back
     to a user can tell the difference between repaired and merely attempted.
+
+    ``full_sync_owed`` sets pendingFullSync in the same write, for a caller
+    clearing a full sync that never finished (see ``_finalize``).
     """
     payload: dict[str, Any] = {
         "id": connector_id,
@@ -72,6 +76,8 @@ async def write_app_status(
     }
     if is_locked is not None:
         payload["isLocked"] = is_locked
+    if full_sync_owed:
+        payload[ConnectorStateKeys.PENDING_FULL_SYNC] = True
     try:
         await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
     except Exception as e:
@@ -130,6 +136,8 @@ async def _finalize(
     connector: "BaseConnector | None" = None,
     resync_spec: object | None = None,
     org_id: str | None = None,
+    *,
+    full_sync_cut_short: bool = False,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -144,7 +152,20 @@ async def _finalize(
     A lost lease means someone else owns the connector now, so we must not write
     its status; the CAS release is still safe (it no-ops) and keeps bookkeeping
     tidy.
+
+    ``full_sync_cut_short``: a full sync that stopped before it finished — a
+    restart, a stop, a crash in ``run_sync``. Its prep already deleted the
+    connector's sync points and permission edges, and only the records it got
+    through were linked again, so the rest stay unreadable until a full sync
+    runs to the end. The flag that asks for one goes in the same write as IDLE:
+    the connector is never seen IDLE without it.
     """
+    owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
+    if full_sync_cut_short:
+        logger.warning(
+            f"Full sync for connector {connector_id} did not finish; the next sync "
+            "will run in full"
+        )
     if lease is None or not lease.lost.is_set():
         # Not over a delete: the status is an upsert, so writing it after the
         # delete removed the doc resurrected a ghost App node, and writing it
@@ -159,10 +180,19 @@ async def _finalize(
                     connector_id,
                     CollectionNames.APPS.value,
                     {"status": AppStatus.IDLE.value,
-                     "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
+                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                     **owed},
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
+    elif owed:
+        # The new owner's status is not ours to write, but the debt is: whatever
+        # it runs next must be a full sync. Only ever set, so it cannot undo
+        # anything the new owner wrote, and update_node cannot create the node.
+        try:
+            await graph_provider.update_node(connector_id, CollectionNames.APPS.value, owed)
+        except Exception as e:
+            logger.error(f"❌ Could not record the owed full sync for {connector_id}: {e}")
     if lease is not None and coordinator is not None:
         await coordinator.end(lease)
     if connector is not None:
@@ -491,6 +521,7 @@ async def run_sync_task(
     start = time.monotonic()
     stopped = False
     failed = False
+    finished = False
     skipped_code: str | None = None
     try:
         await write_app_status(graph_provider, logger, connector_id, start_status)
@@ -519,6 +550,7 @@ async def run_sync_task(
             await connector.run_sync()
         else:
             await _run_until_aborted(connector, lease)
+        finished = True
     except asyncio.CancelledError:
         stopped = True
         raise
@@ -568,6 +600,16 @@ async def run_sync_task(
                 # connector when it is also responsible for closing it.
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
+                ),
+                # A stop or a lost lease returns from _run_until_aborted without
+                # raising, so `finished` alone would call that run complete.
+                full_sync_cut_short=(
+                    start_status == AppStatus.FULL_SYNCING.value
+                    and (
+                        not finished
+                        or stopped
+                        or (lease is not None and lease.lost.is_set())
+                    )
                 ),
             ),
             name=f"sync_cleanup_{connector_id}",

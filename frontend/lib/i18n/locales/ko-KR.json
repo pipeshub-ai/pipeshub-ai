@@ -424,7 +424,8 @@
     "statuses": "상태",
     "sources": "소스",
     "sizes": "크기",
-    "clearFilter": "필터 초기화"
+    "clearFilter": "필터 초기화",
+    "applyFilters": "필터 적용"
   },
   "form": {
     "leaveBlankToKeep": "기존 값을 유지하려면 비워 두세요.",

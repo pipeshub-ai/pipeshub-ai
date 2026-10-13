@@ -36,6 +36,9 @@ services:
   pipeshub-ai:
     image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
     restart: always
+    # Node drains in-flight requests for up to 8s before closing Mongo, Redis
+    # and the brokers; Docker's 10s default would leave too little for that.
+    stop_grace_period: 30s
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
     build:
@@ -230,7 +233,7 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
       - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read}
@@ -287,6 +290,9 @@ services:
       # Most characters one agent turn may stream before it is stopped as a
       # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
       - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
+      # true: retrieval steps that trade some compute per question for better
+      # answers (keyword hits merged by rank fusion). Off by default.
+      - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
 
       # Storage config
       - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}

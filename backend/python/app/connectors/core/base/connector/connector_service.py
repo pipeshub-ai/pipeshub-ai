@@ -44,6 +44,19 @@ class ConnectorInitError(Exception):
     as a failure, so raising it there is safe."""
 
 
+def oauth_app_not_linked_error() -> ConnectorInitError:
+    """The error for a sign-in connector whose saved settings name no OAuth app.
+
+    Some connectors read their client ID and secret only from a linked OAuth app,
+    never from client credentials saved on the connector itself. Without the link
+    they cannot start, even when sign-in already succeeded."""
+    return ConnectorInitError(
+        "This connector is not linked to an OAuth app, so it cannot start. "
+        "An admin can fix this on the connector's Authenticate Instance tab: choose "
+        "or create an OAuth app and save, then sign in again on the Authorize tab."
+    )
+
+
 class ConnectionCheckResult(BaseModel):
     """Outcome of trying credentials before they are saved. ``message`` is shown to the user."""
 

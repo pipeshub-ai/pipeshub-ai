@@ -34,7 +34,10 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -326,12 +329,15 @@ class DropboxConnector(BaseConnector):
         refresh_token = credentials_config.get("refresh_token")
         is_team = credentials_config.get("isTeam", True)
 
-        auth_config = config.get("auth")
+        auth_config = config.get("auth") or {}
         oauth_config_id = auth_config.get("oauthConfigId")
 
         if not oauth_config_id:
-            self.logger.error("Dropbox oauthConfigId not found in auth configuration.")
-            return False
+            self.logger.error(
+                "Dropbox has no oauthConfigId in its auth config; it reads its "
+                "client ID and secret only from a linked OAuth app."
+            )
+            raise oauth_app_not_linked_error()
 
         oauth_config = await self._fetch_oauth_config_by_id(
             oauth_config_id=oauth_config_id,

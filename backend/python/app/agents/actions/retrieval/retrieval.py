@@ -36,6 +36,7 @@ from app.utils.chat_helpers import (
     get_flattened_results,
     get_record_id_shortener_if_enabled,
     image_dict_to_part,
+    merge_into_records_map,
 )
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
@@ -530,7 +531,10 @@ class Retrieval:
             # Fail-soft: any exception here falls back to semantic-only results.
             raw_pattern_records: list[dict[str, Any]] = []
             if pattern_match_task is not None:
-                raw_pattern_records = await await_pattern_match(pattern_match_task, logger_instance)
+                raw_pattern_records = await await_pattern_match(
+                    pattern_match_task, logger_instance,
+                    run_timer=self.state.get("_run_timer"),
+                )
                 if raw_pattern_records:
                     logger_instance.info(
                         "Pattern match: %d raw record(s)", len(raw_pattern_records),
@@ -652,10 +656,10 @@ class Retrieval:
                 existing_final_results, final_results,
             )
 
-            existing_virtual_map = self.state.get("virtual_record_id_to_result", {})
-            if not isinstance(existing_virtual_map, dict):
-                existing_virtual_map = {}
-            self.state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
+            live_virtual_map = self.state.get("virtual_record_id_to_result")
+            if not isinstance(live_virtual_map, dict):
+                live_virtual_map = self.state["virtual_record_id_to_result"] = {}
+            merge_into_records_map(live_virtual_map, virtual_record_id_to_result)
 
             existing_tool_records = self.state.get("tool_records", [])
             if not isinstance(existing_tool_records, list):

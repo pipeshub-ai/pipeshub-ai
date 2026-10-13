@@ -65,6 +65,7 @@ export function FilePreviewInlinePanel({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -240,7 +241,7 @@ export function FilePreviewInlinePanel({
               color="gray"
               size="2"
               onClick={() =>
-                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob })
+                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob, onDownload })
               }
               title={t('action.download')}
             >

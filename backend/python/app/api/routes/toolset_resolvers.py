@@ -10,7 +10,7 @@ from fastapi import HTTPException, Request
 from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
-from app.config.redaction import REDACTED_PLACEHOLDER
+from app.config.redaction import REDACTED_PLACEHOLDER, hide_secrets_by_default
 
 logger = logging.getLogger(__name__)
 
@@ -199,9 +199,9 @@ def mask_oauth_secrets(
     is_inherited: bool = False,
     reveal: bool = False,
 ) -> dict[str, Any]:
-    """Redact secret fields; OSS has no org inheritance, so ``is_inherited`` changes nothing."""
+    """Redact secret fields under HIDE_SECRET_CONFIG unless revealed; OSS has no org inheritance."""
     del is_inherited
-    if reveal:
+    if reveal or not hide_secrets_by_default():
         return dict(cfg_data)
     return {k: (REDACTED_PLACEHOLDER if k in _TOOLSET_SECRET_FIELDS else v) for k, v in cfg_data.items()}
 

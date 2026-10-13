@@ -132,6 +132,8 @@ COPY ./backend/python/pyproject.toml ./
 # env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
 # runtime finds the pre-downloaded model without any code change.
 ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+# The model pre-download below imports onnxruntime outside the `app` package, which opts services out.
+ENV ORT_DISABLE_TELEMETRY=1
 
 # Pre-install pinned CPU-only PyTorch wheels so the resolver in the next step never
 # pulls the CUDA variant (~1.5-2 GB of nvidia-* libs). Override via --build-arg when

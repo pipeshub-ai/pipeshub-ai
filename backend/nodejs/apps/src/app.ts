@@ -120,6 +120,11 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+// Well under the stop grace period (30s in docker-compose.yml, 300s in Helm),
+// leaving time to close Mongo, Redis and the brokers after a drain that runs
+// the full time.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const loggerConfig = {
   service: 'Application',
@@ -822,9 +827,56 @@ export class Application {
     }
   }
 
+  /**
+   * Stops accepting connections and resolves once in-flight requests have
+   * finished, force-closing whatever is still open after the drain timeout.
+   */
+  private async closeHttpServer(): Promise<void> {
+    if (!this.server.listening) return;
+    const closed = new Promise<void>((resolve) => {
+      this.server.close(() => {
+        resolve();
+      });
+    });
+    // close() drops only the sockets idle at this moment. A keep-alive socket
+    // whose response finishes later stays open for keepAliveTimeout (65s) and
+    // would hold close() until the drain timeout, so keep sweeping.
+    const sweep = setInterval(() => {
+      this.server.closeIdleConnections();
+    }, SHUTDOWN_IDLE_SWEEP_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout');
+      }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        closed.then(() => 'drained' as const),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          'Requests still open after the shutdown drain timeout; closing them',
+          { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        );
+        this.server.closeAllConnections();
+        await closed;
+      }
+    } finally {
+      clearInterval(sweep);
+      clearTimeout(timer);
+    }
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      // Stop accepting first, and only dispose Mongo/Redis/brokers once the
+      // requests already in flight have finished — otherwise they fail
+      // mid-request on closed clients. Socket.IO connections are closed by
+      // the gateway shutdowns below, so they don't hold the drain open.
+      const drained = this.closeHttpServer();
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -846,15 +898,6 @@ export class Application {
         });
       }
       try {
-        this.mailServiceContainer
-          .get<MailSenderService>(MailSenderService)
-          .close();
-      } catch (err) {
-        this.logger.warn('MailSenderService not available during shutdown', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
         registerDesktopPresence(null);
@@ -864,6 +907,18 @@ export class Application {
       } catch (err) {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
+      }
+      await drained;
+      // After the drain: an in-flight /mail/emails/sendEmail request may still be
+      // queued on this pool, and close() fails queued messages.
+      try {
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
+      } catch (err) {
+        this.logger.warn('MailSenderService not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       // Stopped before the containers go, because it holds the message
       // producer one of them owns.

@@ -68,6 +68,8 @@ from app.utils.chat_helpers import (
     GRAPH_BATCH_CHUNK_SIZE,
     get_flattened_results,
     get_record,
+    group_child_results,
+    valid_group_labels,
 )
 from app.utils.image_utils import get_extension_from_mimetype
 
@@ -155,16 +157,6 @@ PERMISSION_CHECK_UNAVAILABLE_MESSAGE = (
     "are shown. Please try again in a minute."
 )
 
-
-valid_group_labels = [
-        GroupType.LIST.value,
-        GroupType.ORDERED_LIST.value,
-        GroupType.FORM_AREA.value,
-        GroupType.INLINE.value,
-        GroupType.KEY_VALUE_AREA.value,
-        GroupType.TEXT_SECTION.value,
-        GroupType.CODE.value,
-    ]
 
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
@@ -880,8 +872,10 @@ class RetrievalService:
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
-                    if block_type == GroupType.TABLE.value or block_type in valid_group_labels:
-                        _, child_results = result.get("content")
+                    child_results = group_child_results(result)
+                    if (
+                        block_type == GroupType.TABLE.value or block_type in valid_group_labels
+                    ) and child_results is not None:
                         for child in child_results:
                             final_search_results.append(child)
                     else:

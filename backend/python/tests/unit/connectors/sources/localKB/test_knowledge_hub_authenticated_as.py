@@ -7,13 +7,14 @@ themselves. These tests pin that the service stays a pass-through.
 
 import logging
 from collections.abc import Awaitable
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
     KnowledgeHubService,
 )
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 USER_KEY = "creator-key"
 ORG = "org-1"
@@ -87,3 +88,30 @@ class TestSearch:
 
         call = provider.get_knowledge_hub_search.await_args.kwargs
         assert (call["skip"], call["limit"]) == (2, 2)
+
+
+class TestAppLookupFailure:
+    async def test_browse_reports_an_error_not_an_empty_listing(self, service, provider) -> None:
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": USER_KEY})
+        provider.get_user_app_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        provider.get_knowledge_hub_root_nodes = AsyncMock(return_value={"nodes": [], "total": 0})
+
+        response = await service.get_nodes(user_id="user-1", org_id=ORG)
+
+        assert response.success is False
+        assert response.items == []
+        provider.get_knowledge_hub_root_nodes.assert_not_awaited()
+
+    async def test_name_search_on_neo4j_reports_an_error_not_an_empty_listing(self) -> None:
+        # A name search reaches the app lookup inside the provider's own search,
+        # not through the service, so the real provider is wired in here.
+        neo4j = Neo4jProvider(logger=MagicMock(), config_service=MagicMock())
+        neo4j.client = AsyncMock()
+        neo4j.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
+        neo4j.get_user_by_user_id = AsyncMock(return_value={"_key": USER_KEY})
+        service = KnowledgeHubService(logger=logging.getLogger("test_kh_authenticated_as"), graph_provider=neo4j)
+
+        response = await service.get_nodes(user_id="user-1", org_id=ORG, q="budget")
+
+        assert response.success is False
+        assert response.items == []

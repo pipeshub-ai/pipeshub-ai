@@ -2,7 +2,12 @@ import { Request, Response, NextFunction } from 'express';
 import xss from 'xss';
 import { Logger } from '../services/logger.service';
 import { BadRequestError } from '../errors/http.errors';
-import { containsXSSPattern } from '../../utils/xss-sanitization';
+import {
+  containsEncodedScriptTag,
+  containsHTMLTag,
+  containsXSSPattern,
+  XSS_CHECK_MAX_LENGTH,
+} from '../../utils/xss-sanitization';
 
 /**
  * XSS Sanitization Middleware
@@ -49,6 +54,65 @@ function sanitizeString(value: string): string {
   }
 }
 
+// Field paths are built from the request's own keys, so only plain names are
+// repeated back; anything else (a key that is itself markup) is not echoed.
+const SAFE_FIELD_PATH = /^[A-Za-z0-9_.[\]-]{1,200}$/;
+
+/**
+ * Turns a validation path such as `body.params.arguments.query` into the words
+ * a caller needs to find the field: `the field "params.arguments.query"`,
+ * `the query parameter "search"` or `the URL parameter "id"`.
+ */
+function describeField(path: string): string {
+  const dot = path.indexOf('.');
+  const source = dot === -1 ? path : path.slice(0, dot);
+  const field = dot === -1 ? '' : path.slice(dot + 1);
+  if (field === '' || !SAFE_FIELD_PATH.test(field)) {
+    return 'the request';
+  }
+  if (source === 'query') {
+    return `the query parameter "${field}"`;
+  }
+  if (source === 'params') {
+    return `the URL parameter "${field}"`;
+  }
+  return `the field "${field}"`;
+}
+
+/**
+ * Says what was refused and what to change. The angle-bracket hint is only
+ * given when the value has something tag-shaped in it; a value refused for
+ * `javascript:` or `onclick=` gets no tag hint, and an over-long value is
+ * told it is too long rather than that it contains HTML.
+ */
+function xssRejectionMessage(value: string, field: string): string {
+  if (value.length > XSS_CHECK_MAX_LENGTH) {
+    return (
+      `The value of ${field} is longer than ${XSS_CHECK_MAX_LENGTH.toLocaleString('en-US')} characters, ` +
+      `which is too long to check for HTML tags and scripts. Please shorten it and try again.`
+    );
+  }
+  if (containsHTMLTag(value)) {
+    return (
+      `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+      `Text in angle brackets, such as <id>, counts as an HTML tag. ` +
+      `Please remove any HTML tags and try again.`
+    );
+  }
+  if (containsEncodedScriptTag(value)) {
+    return (
+      `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+      `A script tag written in an encoded form, such as &lt;script or %3Cscript, counts. ` +
+      `Please remove it and try again.`
+    );
+  }
+  return (
+    `HTML tags, scripts, and XSS content are not allowed in ${field}. ` +
+    `Script content such as an onclick= handler, a javascript: link or a data:text/html URL counts. ` +
+    `Please remove it and try again.`
+  );
+}
+
 /**
  * Recursively checks for HTML/XSS content in an object or array
  * Throws an error if HTML is detected
@@ -66,9 +130,8 @@ function validateNoXSS(value: any, path: string = ''): void {
   // Handle strings - check for HTML/XSS using utility function
   if (typeof value === 'string') {
     if (containsXSSPattern(value)) {
-      // Create a user-friendly field name from the path
       throw new BadRequestError(
-        `HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again.`,
+        xssRejectionMessage(value, describeField(path)),
       );
     }
     return;

@@ -1131,6 +1131,22 @@ class TestRecordNotFound:
         ]
 
     @pytest.mark.asyncio
+    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+        """Deleting a record while its event is queued is normal, so draining
+        it must not show up in error-level alerting."""
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
+
+        payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        handler.logger.error.assert_not_called()
+        assert any(
+            "not found in database" in str(c)
+            for c in handler.logger.warning.call_args_list
+        )
+
+    @pytest.mark.asyncio
     async def test_an_unreadable_graph_is_not_drained_as_a_deletion(self):
         """Draining is permanent: the event is gone and the record keeps its
         status, so a document discarded here waits for the stranded sweep an

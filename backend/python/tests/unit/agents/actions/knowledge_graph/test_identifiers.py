@@ -220,3 +220,16 @@ class TestNormalizeWeburl:
 
     def test_empty_url_returns_input(self):
         assert normalize_weburl("not-a-url") == "not-a-url"
+
+
+class TestRecordId:
+    def test_bare_uuid_is_a_record_id(self) -> None:
+        ref = resolve_canonical_ref("62636daf-bfeb-4052-8222-71e72993810e")
+        assert ref is not None
+        assert ref.kind == RefKind.RECORD_ID
+        assert ref.value == "62636daf-bfeb-4052-8222-71e72993810e"
+
+    def test_drive_id_is_still_a_drive_file(self) -> None:
+        ref = resolve_canonical_ref("1BxiMVs0XRA5nFMdKvBdBZjgmUUqptlbs74OgVE2upms")
+        assert ref is not None
+        assert ref.kind == RefKind.DRIVE_FILE

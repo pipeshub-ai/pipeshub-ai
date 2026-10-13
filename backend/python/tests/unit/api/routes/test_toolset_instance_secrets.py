@@ -168,8 +168,14 @@ class TestListInstances:
         assert listed[0]["auth"] == {"clientSecret": MASK}
 
 
+@pytest.fixture
+def secrets_hidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HIDE_SECRET_CONFIG", "true")
+
+
+@pytest.mark.usefixtures("secrets_hidden")
 class TestWithTheRealEditionMasker:
-    """No monkeypatching: whichever edition runs the suite must hide the secret."""
+    """No masker monkeypatching: with HIDE_SECRET_CONFIG=true either edition must hide the secret."""
 
     def test_admin_response_never_carries_the_secret(self) -> None:
         import app.edition_config as edition
