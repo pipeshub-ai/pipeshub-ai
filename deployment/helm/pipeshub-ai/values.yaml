@@ -334,14 +334,14 @@ config:
   # built-in 1000000; 0 removes the limit.
   agentMaxTurnOutputChars: ""
   # true: features that trade some compute or tokens per question for better
-  # answers (keyword hits merged by rank fusion, keyword-dense search
-  # queries, search results with the most relevant record first, search hits
-  # fused deeper and cut by record, answer composition and multi-step rules,
-  # reading an answer's records in full). Off by default. To override one
-  # feature, set its switch (GREP_RANK_FUSION, KEYWORD_SEARCH_QUERIES,
-  # RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT, ANSWER_COMPOSITION_RULES,
-  # MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to "true" or "false" through
-  # extraEnv.
+  # answers (keyword hits merged by rank fusion, search results with the
+  # most relevant record first, search hits fused deeper and cut by record,
+  # answer composition and multi-step rules, reading an answer's records in
+  # full). Off by default. To override one feature, set its switch
+  # (GREP_RANK_FUSION, RELEVANCE_ORDERED_CONTEXT, FUSION_RECORD_CUT,
+  # ANSWER_COMPOSITION_RULES, MULTI_STEP_ANSWER_RULES, THOROUGH_RETRIEVAL) to
+  # "true" or "false" through extraEnv. KEYWORD_SEARCH_QUERIES is opt-in only:
+  # the mode does not turn it on.
   # It also turns on named-entity extraction while indexing, and the entity
   # tools that read it (search_entities, find_records_by_entity,
   # find_records_by_value), whatever the Labs flag

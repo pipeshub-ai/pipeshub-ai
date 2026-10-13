@@ -496,15 +496,15 @@ class TestFindingInformation:
         ("high_accuracy", "feature", "expected"),
         [
             (None, None, False),
-            ("true", None, True),
-            ("true", "", True),
+            ("true", None, False),
+            ("true", "", False),
             ("true", "false", False),
             (None, "true", True),
             ("false", "TRUE", True),
             (None, "1", False),
         ],
     )
-    def test_keyword_query_rule_follows_its_switch_then_high_accuracy_mode(
+    def test_keyword_query_rule_follows_only_its_own_switch(
         self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
     ) -> None:
         for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("KEYWORD_SEARCH_QUERIES", feature)):

@@ -165,6 +165,7 @@ services:
       # High-accuracy features (see docker-compose.yml). Off unless set.
       - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
       - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
       - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
       - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
       - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
