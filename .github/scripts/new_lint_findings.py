@@ -57,12 +57,29 @@ def main() -> None:
 
     head = lint(tool, files)
 
+    # A renamed file is compared with its old path on main, not treated as new.
+    renamed = {}
+    diff = git("diff", "--name-status", "--find-renames", "-z", base, "HEAD").stdout.decode().split("\0")
+    i = 0
+    while i < len(diff) - 1:
+        status = diff[i]
+        if status[:1] in ("R", "C"):   # a rename or copy lists two paths: old, then new
+            if status[0] == "R":
+                renamed[diff[i + 2]] = diff[i + 1]
+            i += 3
+        else:
+            i += 2
+    main_path = {f: renamed.get(f, f) for f in files}
+
     # Put each file that exists on main back to its main version, lint it, then restore the pull request's version.
-    on_main = [f for f in files if git("cat-file", "-e", f"{base}:{f}").returncode == 0]
+    on_main = [f for f in files if git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0]
     try:
         for f in on_main:
+            shown = git("show", f"{base}:{main_path[f]}")
+            if shown.returncode:
+                sys.exit(f"git show {base}:{main_path[f]} failed: {shown.stderr.decode().strip()}")
             with open(f, "wb") as out:
-                out.write(git("show", f"{base}:{f}").stdout)
+                out.write(shown.stdout)
         main_found = lint(tool, on_main) if on_main else []
     finally:
         if on_main:
