@@ -12,8 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.utils.record_block_selection import (
+    _UNKNOWN_BLOCK_CHARS,
     build_selection_query,
     describe_gaps,
+    estimate_block_chars,
     estimate_record_chars,
     select_relevant_blocks,
 )
@@ -255,3 +257,36 @@ class TestEstimation:
             },
         }
         assert estimate_record_chars(record) < 1_000
+
+    def test_a_string_block_is_measured_by_its_length(self) -> None:
+        """A plain text block is the one case the estimate can measure exactly."""
+        assert estimate_block_chars({"data": "abc"}) == 3
+
+    def test_the_first_present_key_decides_the_estimate(self) -> None:
+        """`row_natural_language_text` is what a table row renders to; when it
+        is there it is what the model sees, and the raw `text` beside it is the
+        same content in a shape that never renders."""
+        block = {"data": {"row_natural_language_text": "hello", "text": "x" * 100}}
+
+        assert estimate_block_chars(block) == 5
+
+    def test_an_empty_string_falls_through_to_the_next_key(self) -> None:
+        """A key that is present but empty renders nothing, so the estimate has
+        to keep looking rather than charge the row for nothing."""
+        block = {"data": {"text": "", "description": "abcd"}}
+
+        assert estimate_block_chars(block) == 4
+
+    def test_an_image_block_is_charged_the_unknown_estimate(self) -> None:
+        """Base64 never reaches the text, so a uri says nothing about render
+        size — the flat unknown charge is what keeps a selection from assuming
+        the image is free."""
+        block = {"data": {"uri": "data:image/png;base64," + "A" * 1_000}}
+
+        assert estimate_block_chars(block) == _UNKNOWN_BLOCK_CHARS
+
+    def test_data_that_is_not_text_or_a_mapping_is_charged_the_unknown_estimate(self) -> None:
+        """`None` and a missing key both render through machinery this cannot
+        see; neither may be measured as zero."""
+        assert estimate_block_chars({"data": None}) == _UNKNOWN_BLOCK_CHARS
+        assert estimate_block_chars({}) == _UNKNOWN_BLOCK_CHARS
