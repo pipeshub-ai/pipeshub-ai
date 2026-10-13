@@ -71,6 +71,9 @@ class _SlotStats:
         self.wait_s = 0.0
         self.hold_s = 0.0
         self.rate_limit_retries = 0
+        # Slots are budgeted per loop (see _indexing_llm_semaphore), so the
+        # free count is per loop too.
+        self.in_use_by_loop: WeakKeyDictionary[asyncio.AbstractEventLoop, int] = WeakKeyDictionary()
 
     def snapshot(self) -> dict[str, float | int]:
         with self._lock:
@@ -109,20 +112,21 @@ def indexing_llm_slots_remaining() -> int:
     Used to skip the multi-turn extractor when the process is already
     saturated. Returns the configured ceiling when no loop is running.
     """
+    ceiling = scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
-        return scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
-    sem = _sem_by_loop.get(loop)
-    if sem is None:
-        return scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
-    return int(getattr(sem, "_value", 0))
+        return ceiling
+    with _slot_stats._lock:
+        held = _slot_stats.in_use_by_loop.get(loop, 0)
+    return max(0, ceiling - held)
 
 
 @asynccontextmanager
 async def indexing_llm_slot() -> AsyncGenerator[None, None]:
     """Hold a slot in the process-wide indexing LLM budget."""
     stats = _slot_stats
+    loop = asyncio.get_running_loop()
     sem = _indexing_llm_semaphore()
     with stats._lock:
         stats.waiting += 1
@@ -135,6 +139,7 @@ async def indexing_llm_slot() -> AsyncGenerator[None, None]:
     granted = time.perf_counter()
     with stats._lock:
         stats.in_use += 1
+        stats.in_use_by_loop[loop] = stats.in_use_by_loop.get(loop, 0) + 1
         stats.acquired += 1
         stats.wait_s += granted - asked
     try:
@@ -143,6 +148,7 @@ async def indexing_llm_slot() -> AsyncGenerator[None, None]:
         sem.release()
         with stats._lock:
             stats.in_use -= 1
+            stats.in_use_by_loop[loop] -= 1
             stats.hold_s += time.perf_counter() - granted
 
 

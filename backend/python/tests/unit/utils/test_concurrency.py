@@ -188,3 +188,38 @@ class TestIndexingLlmStats:
             await task
         stats = concurrency.indexing_llm_stats()
         assert stats["waiting"] == 0 and stats["in_use"] == 0 and stats["acquired"] == 0
+
+
+class TestIndexingLlmSlotsRemaining:
+    """The free count comes from the slots this loop holds, not the semaphore's
+    private counter, which a missing attribute would turn into "saturated"."""
+
+    @pytest.mark.asyncio
+    async def test_counts_the_slots_this_loop_holds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.utils import concurrency
+
+        class _PublicOnlySemaphore:
+            def __init__(self) -> None:
+                self._inner = asyncio.Semaphore(concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS))
+
+            async def acquire(self) -> bool:
+                return await self._inner.acquire()
+
+            def release(self) -> None:
+                self._inner.release()
+
+        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
+        sem = _PublicOnlySemaphore()
+        monkeypatch.setattr(concurrency, "_indexing_llm_semaphore", lambda: sem)
+        monkeypatch.setitem(concurrency._sem_by_loop, asyncio.get_running_loop(), sem)
+        ceiling = concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
+
+        assert concurrency.indexing_llm_slots_remaining() == ceiling
+        async with indexing_llm_slot():
+            assert concurrency.indexing_llm_slots_remaining() == ceiling - 1
+        assert concurrency.indexing_llm_slots_remaining() == ceiling
+
+    def test_outside_a_loop_reports_the_ceiling(self) -> None:
+        from app.utils import concurrency
+
+        assert concurrency.indexing_llm_slots_remaining() == concurrency.scaled(MAX_CONCURRENT_INDEXING_LLM_CALLS)
