@@ -2681,7 +2681,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     )
                                     concurrency.release_admission(index_admission)
                                     indexing_held = False
-                                    timeline.mark(timing.RELEASED)
                                     self.logger.debug(
                                         f"Released indexing gate for {message_id}"
                                     )

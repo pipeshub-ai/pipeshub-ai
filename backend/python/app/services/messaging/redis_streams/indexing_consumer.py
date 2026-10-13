@@ -2620,7 +2620,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     )
                                     concurrency.release_admission(index_admission)
                                     indexing_held = False
-                                    timeline.mark(timing.RELEASED)
                                     indexing_complete = True
                         finally:
                             # If this coroutine is cancelled (timeout, or the
