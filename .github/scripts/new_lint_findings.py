@@ -7,6 +7,12 @@ Findings are counted per file and rule. The check fails when a count goes up, so
 a pull request is never asked to fix findings that were already on main. A new
 file has nothing on main, so every finding in it counts as new.
 
+Counting per rule means a rule that fires once per region does not go up when
+that region grows. The one that matters is I001, one finding per unsorted import
+block: adding an import to a block main already leaves unsorted passes. The
+block was not sorted before and is not made worse; `ruff check --fix --select I`
+sorts it in a cleanup pull request.
+
 Usage, from the repository root:
     new_lint_findings.py ruff   <merge-base> <file>...   (files under backend/python)
     new_lint_findings.py eslint <merge-base> <file>...   (files under backend/nodejs/apps)
@@ -28,7 +34,7 @@ def lint(tool: str, files: list[str]) -> list[tuple[str, str, int]]:
         cmd = ["ruff", "check", "--output-format=json", "--exit-zero", *rel]
     else:
         cmd = ["npx", "eslint", "--format", "json", *rel]
-    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    proc = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, check=False)
     # ESLint exits 1 when it finds errors and 2 when it cannot run at all.
     if proc.returncode not in (0, 1) or (tool == "ruff" and proc.returncode):
         sys.stderr.write(proc.stderr)
@@ -72,7 +78,11 @@ def main() -> None:
     main_path = {f: renamed.get(f, f) for f in files}
 
     # Put each file that exists on main back to its main version, lint it, then restore the pull request's version.
-    on_main = [f for f in files if git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0]
+    # A symlink is never put back: writing through it would overwrite its target, which the restore does not undo.
+    on_main = [
+        f for f in files
+        if not os.path.islink(f) and git("cat-file", "-e", f"{base}:{main_path[f]}").returncode == 0
+    ]
     try:
         for f in on_main:
             shown = git("show", f"{base}:{main_path[f]}")
