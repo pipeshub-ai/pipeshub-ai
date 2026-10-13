@@ -1,0 +1,447 @@
+"""Exact arithmetic, date differences and text counts behind the calculator tools."""
+
+from __future__ import annotations
+
+import contextlib
+import time
+
+import pytest
+
+from app.agents.actions.calculator.exact import (
+    MAX_EXPRESSION_CHARS,
+    MAX_TEXT_CHARS,
+    CalculationError,
+    count_text,
+    date_difference,
+    evaluate,
+)
+
+
+def _result(expression: str) -> dict[str, object]:
+    return evaluate(expression).to_dict()
+
+
+class TestExactArithmetic:
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("0.1 + 0.2", 0.3),
+            ("1/3*3", 1),
+            ("(90 - 16) * 1954", 144596),
+            ("2^10", 1024),
+            ("10 / 4", 2.5),
+            ("2 ** -1", 0.5),
+            ("7 // 2", 3),
+            ("-7 // 2", -4),
+            ("7 % 3", 1),
+            ("-7 % 3", 2),
+            ("1e-400 * 1e400", 1),
+            ("1_000 + 1", 1001),
+            ("  2 + 2 \n", 4),
+            ("6 × 7", 42),
+            ("84 ÷ 2", 42),
+            ("5 − 3", 2),
+            ("-(-3)", 3),
+            ("+4", 4),
+            ("1e308 * 10 / 1e309", 1),
+        ],
+    )
+    def test_rational_results_are_exact(self, expression: str, expected: object) -> None:
+        payload = _result(expression)
+        assert payload["result"] == expected
+        assert type(payload["result"]) is type(expected)
+        assert "approximate" not in payload
+        assert "exact" not in payload
+
+    def test_a_repeating_decimal_carries_its_exact_fraction(self) -> None:
+        payload = _result("1/3")
+        assert payload["result"] == pytest.approx(1 / 3)
+        assert payload["exact"] == "1/3"
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            # Out of a double's range or precision: a decimal string, never 0.0.
+            ("1e-400", "1e-400"),
+            ("-1e-400", "-1e-400"),
+            ("(1/7)**499", "1.97732488871112e-422"),
+            ("2/3*1e-320", "6.66666666666667e-321"),
+            ("10**450/3", "3.33333333333333e+449"),
+            # Either side of the plain-notation range [1e-6, 1e15).
+            ("1/3*1e-6", "3.33333333333333e-7"),
+            ("1/3*1e-5", 3.33333333333333e-06),
+            ("10**15/3", 333333333333333.0),
+            ("10**16/3", "3.33333333333333e+15"),
+            ("1/3", 0.333333333333333),
+            # round() stays exact too.
+            ("round(2/3*1e-320, 330)", "6.666666667e-321"),
+        ],
+    )
+    def test_an_inexact_decimal_is_computed_without_floating_point(
+        self, expression: str, expected: object,
+    ) -> None:
+        payload = _result(expression)
+        assert payload["result"] == expected
+        assert "exact" in payload
+        assert "approximate" not in payload
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [("0.3", 0.3), ("3703703.673", 3703703.673), ("1.5e-7", 1.5e-7), ("2.5", 2.5)],
+    )
+    def test_a_decimal_a_float_holds_exactly_stays_a_plain_number(
+        self, expression: str, expected: float,
+    ) -> None:
+        assert _result(expression) == {"result": expected}
+
+    def test_a_decimal_with_more_digits_than_a_float_keeps_them(self) -> None:
+        payload = _result("0.12345678901234567891")
+        assert payload["exact"] == "12345678901234567891/100000000000000000000"
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("sqrt(16)", 4),
+            ("sqrt(9/4)", 1.5),
+            ("8 ** (1/3)", 2),
+            ("27 ** (2/3)", 9),
+            ("(-8) ** (1/3)", -2),
+            ("-8 ** (1/3)", -2),
+            ("4 ** 0.5", 2),
+            ("sqrt(10**400) / 10**199", 10),
+        ],
+    )
+    def test_exact_roots_stay_exact(self, expression: str, expected: object) -> None:
+        payload = _result(expression)
+        assert payload["result"] == expected
+        assert "approximate" not in payload
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("round(2.5)", 3),
+            ("round(-2.5)", -3),
+            ("round(0.5)", 1),
+            ("round(2.675, 2)", 2.68),
+            ("round(1234, -2)", 1200),
+            ("round(1/3, 4)", 0.3333),
+            ("floor(-2.5)", -3),
+            ("ceil(2.1)", 3),
+            ("abs(-3)", 3),
+            ("max(3, 9, 4)", 9),
+            ("min(5)", 5),
+            ("max(1/3, 0.3)", 1 / 3),
+        ],
+    )
+    def test_rounding_and_selection(self, expression: str, expected: object) -> None:
+        assert _result(expression)["result"] == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        ("expression", "expected"),
+        [
+            ("sqrt(2)", 1.4142135623731),
+            ("2*pi", 6.28318530717959),
+            ("log(100, 10)", 2),
+            ("log10(1000)", 3),
+            ("exp(0)", 1),
+            ("sin(pi/2)", 1),
+            ("degrees(atan2(1, 1))", 45),
+            ("sqrt(2)**2", 2),
+            ("hypot(3, 4)", 5),
+        ],
+    )
+    def test_floating_point_functions_are_marked_approximate(self, expression: str, expected: float) -> None:
+        payload = _result(expression)
+        assert payload["result"] == pytest.approx(expected, rel=1e-14)
+        assert payload["approximate"] is True
+
+    def test_floating_point_results_lose_binary_noise(self) -> None:
+        # 15 significant digits: sqrt(2)**2 is 2.0000000000000004 in binary.
+        assert _result("sqrt(2)**2")["result"] == 2
+
+
+class TestRefusedExpressions:
+    @pytest.mark.parametrize(
+        ("expression", "hint"),
+        [
+            ("", "empty"),
+            ("   ", "empty"),
+            ("1/0", "Division by zero"),
+            ("5 // 0", "Division by zero"),
+            ("5 % 0", "Division by zero"),
+            ("0 ** -1", "Division by zero"),
+            ("1,234", "thousands separators"),
+            ("(1, 2)", "thousands separators"),
+            ("True + 1", "number"),
+            ("None", "number"),
+            ("'a'", "number"),
+            ("[1, 2]", "Only numbers"),
+            ("x + 1", "Only numbers"),
+            ("abs.__class__", "Only numbers"),
+            ("(lambda: 1)()", "Only numbers"),
+            ("[i for i in range(3)]", "Only numbers"),
+            ("max(*[1, 2])", "Only numbers"),
+            ("round(2.5, ndigits=1)", "Only numbers"),
+            ("(y := 2)", "Only numbers"),
+            ("1 if 1 else 2", "Only numbers"),
+            ("1 < 2", "Only numbers"),
+            ("1 and 2", "Only numbers"),
+            ("~1", "Unsupported operator"),
+            ("1 << 2", "Unsupported operator"),
+            ("1 & 2", "Unsupported operator"),
+            ("1j", "real number"),
+            ("__import__('os')", "Only numbers"),
+            ("open('x')", "Only numbers"),
+            ("max()", "max()"),
+            ("sqrt(1, 2)", "sqrt()"),
+            ("round(1, 2, 3)", "round()"),
+            ("round(1.5, 0.5)", "round()"),
+            ("sqrt(-1)", "sqrt()"),
+            ("log(0)", "log()"),
+            ("log(-1)", "log()"),
+            ("log(10, 1)", "log()"),
+            ("asin(2)", "asin()"),
+            ("exp(1000)", "too large"),
+            ("(-8) ** 0.5", "no real value"),
+            ("(-2) ** 1.5", "no real value"),
+            ("١٢ + 1", "Not a valid arithmetic expression"),
+            ("2 +", "Not a valid arithmetic expression"),
+            ("15% * 200", "Not a valid arithmetic expression"),
+        ],
+    )
+    def test_refused_with_a_message_the_model_can_act_on(self, expression: str, hint: str) -> None:
+        with pytest.raises(CalculationError, match=hint):
+            evaluate(expression)
+
+    def test_overlong_expression_is_refused(self) -> None:
+        with pytest.raises(CalculationError, match=str(MAX_EXPRESSION_CHARS)):
+            evaluate("1+" * MAX_EXPRESSION_CHARS + "1")
+
+    @pytest.mark.parametrize(
+        "expression",
+        [
+            "9**9**9", "2**10**6", "10**1001", "(10**300)*(10**300)", "1/10**1001",
+            "sqrt(2*10**800)", "sqrt(2*10**400)", "2 ** 0.5 ** 10000",
+        ],
+    )
+    def test_huge_results_are_refused_before_they_are_computed(self, expression: str) -> None:
+        started = time.monotonic()
+        with pytest.raises(CalculationError, match="too large"):
+            evaluate(expression)
+        assert time.monotonic() - started < 1.0
+
+    @pytest.mark.parametrize("expression", ["(" * 250 + "1" + ")" * 250, "~" * 3000 + "1"])
+    def test_deep_nesting_is_refused_without_recursion_error(self, expression: str) -> None:
+        with pytest.raises(CalculationError):
+            evaluate(expression)
+
+    def test_a_deep_chain_of_signs_evaluates_or_is_refused_cleanly(self) -> None:
+        try:
+            payload = _result("-" * 3000 + "1")
+        except CalculationError:
+            return
+        assert payload["result"] == 1
+
+    def test_worst_case_operands_stay_fast(self) -> None:
+        # Every intermediate sits just under the digit cap: the cap bounds
+        # the CPU a single call can spend on the event loop.
+        terms = [f"(10**499 - {k})/(10**498 + {k})" for k in range(1, 120)]
+        started = time.monotonic()
+        with contextlib.suppress(CalculationError):
+            evaluate(" + ".join(terms))
+        assert time.monotonic() - started < 1.0
+
+    def test_a_long_sum_of_line_items_is_accepted(self) -> None:
+        # A left-deep chain of 900 additions: deeper than Python's recursion
+        # limit if evaluated recursively.
+        expression = " + ".join(["1.25"] * 900)
+        assert len(expression) < MAX_EXPRESSION_CHARS
+        assert _result(expression)["result"] == 1125
+
+    def test_too_many_terms_are_refused(self) -> None:
+        with pytest.raises(CalculationError, match="too many"):
+            evaluate("+".join(["1"] * 3000))
+
+
+class TestDurations:
+    def test_minutes_subtracted_from_a_clock_time(self) -> None:
+        payload = _result('hms("2:00:35") - minutes(38)')
+        assert payload == {"result": 4955, "unit": "seconds", "hms": "1:22:35"}
+
+    @pytest.mark.parametrize(
+        ("expression", "seconds", "hms"),
+        [
+            ('hms("38:10")', 2290, "0:38:10"),
+            ('hms("75:30")', 4530, "1:15:30"),
+            ('hms("1:02:03.5")', 3723.5, "1:02:03.5"),
+            ('hms("1:00:00") * 2', 7200, "2:00:00"),
+            ('-hms("0:30")', -30, "-0:00:30"),
+            ('round(hms("1:00:00.6"))', 3601, "1:00:01"),
+            ('max(hms("1:00"), minutes(2))', 120, "0:02:00"),
+            ("days(1) + hours(2)", 93600, "26:00:00"),
+            ("seconds(90)", 90, "0:01:30"),
+        ],
+    )
+    def test_duration_results_carry_seconds_and_hms(self, expression: str, seconds: object, hms: str) -> None:
+        payload = _result(expression)
+        assert payload["result"] == seconds
+        assert payload["unit"] == "seconds"
+        assert payload["hms"] == hms
+
+    def test_a_fraction_of_a_second_stays_exact(self) -> None:
+        assert _result('hms("0:00:01") / 3') == {
+            "result": 0.333333333333333, "exact": "1/3", "unit": "seconds", "hms": "0:00:00.333",
+        }
+
+    def test_a_ratio_of_durations_is_a_plain_number(self) -> None:
+        payload = _result('hms("1:00:00") / minutes(1)')
+        assert payload == {"result": 60}
+
+    def test_a_rate_is_per_second(self) -> None:
+        assert _result('100 / hms("0:01:40")') == {"result": 1, "unit": "per second"}
+
+    @pytest.mark.parametrize(
+        ("expression", "hint"),
+        [
+            ('hms("2:00") + 5', "duration and a plain number"),
+            ('max(hms("1:00"), 5)', "duration and a plain number"),
+            ('hms("1:00:00") * hms("1:00:00")', "not a usable unit"),
+            ('hms("1:00") ** 2', "duration"),
+            ('sqrt(hms("1:00"))', "duration"),
+            ('minutes(hms("1:00"))', "duration"),
+            ('hms("1:75:00")', "minutes must be under 60"),
+            ('hms("1:00:60")', "seconds must be under 60"),
+            ('hms("abc")', "h:mm:ss"),
+            ('hms("-1:00")', "h:mm:ss"),
+            ("hms(5)", "quoted time"),
+            ('hms("1:00", "2:00")', "quoted time"),
+        ],
+    )
+    def test_unit_mistakes_are_refused(self, expression: str, hint: str) -> None:
+        with pytest.raises(CalculationError, match=hint):
+            evaluate(expression)
+
+
+class TestDateDifference:
+    def test_a_gap_in_completed_months_and_days(self) -> None:
+        gap = date_difference("2024-01-15", "2024-08-11").to_dict()
+        assert gap == {
+            "start": "2024-01-15",
+            "end": "2024-08-11",
+            "end_before_start": False,
+            "total_days": 209,
+            "weeks": 29,
+            "remaining_days": 6,
+            "years": 0,
+            "months": 6,
+            "days": 27,
+            "calendar_years": 0,
+        }
+
+    def test_same_day(self) -> None:
+        gap = date_difference("2024-05-05", "2024-05-05")
+        assert (gap.total_days, gap.years, gap.months, gap.days) == (0, 0, 0, 0)
+
+    def test_reversed_dates_are_signed_and_flagged(self) -> None:
+        gap = date_difference("2024-08-11", "2024-01-15")
+        assert gap.end_before_start is True
+        assert gap.total_days == -209
+        assert gap.calendar_years == 0
+        # The span itself reads the same either way round.
+        assert (gap.months, gap.days, gap.weeks, gap.remaining_days) == (6, 27, 29, 6)
+
+    @pytest.mark.parametrize(
+        ("start", "end", "years", "months", "days"),
+        [
+            # An anniversary that does not exist falls on the month's last day.
+            ("2020-02-29", "2021-02-28", 1, 0, 0),
+            ("2020-02-29", "2021-03-01", 1, 0, 1),
+            ("2020-02-29", "2024-02-29", 4, 0, 0),
+            ("2020-02-29", "2021-02-27", 0, 11, 29),
+            ("2023-01-31", "2023-02-28", 0, 1, 0),
+            ("2023-01-31", "2023-03-01", 0, 1, 1),
+            ("2023-01-30", "2023-02-28", 0, 1, 0),
+            ("2023-12-31", "2024-01-01", 0, 0, 1),
+        ],
+    )
+    def test_month_ends_and_leap_days(self, start: str, end: str, years: int, months: int, days: int) -> None:
+        gap = date_difference(start, end)
+        assert (gap.years, gap.months, gap.days) == (years, months, days)
+
+    def test_calendar_years_differ_before_the_anniversary(self) -> None:
+        gap = date_difference("1776-07-04", "2024-01-01")
+        assert (gap.years, gap.calendar_years) == (247, 248)
+
+    def test_the_whole_calendar_range(self) -> None:
+        gap = date_difference("0001-01-01", "9999-12-31")
+        assert gap.years == 9998 and gap.months == 11 and gap.days == 30
+
+    @pytest.mark.parametrize(
+        "value",
+        ["2023-02-29", "2024/01/01", "20240101", "2024-W10-1", "2024-01-01T10:00:00", "", "2024-1-5", None, 20240101],
+    )
+    def test_anything_but_a_calendar_date_is_refused(self, value: object) -> None:
+        with pytest.raises(CalculationError, match="YYYY-MM-DD"):
+            date_difference(value, "2024-01-01")  # type: ignore[arg-type]
+
+
+class TestCountText:
+    def test_letters_characters_and_words(self) -> None:
+        assert count_text("hello world").to_dict() == {
+            "letters": 10,
+            "characters": 11,
+            "characters_excluding_spaces": 10,
+            "words": 2,
+        }
+
+    def test_an_accent_typed_as_a_combining_mark_counts_once(self) -> None:
+        counts = count_text("Brontë")
+        assert (counts.letters, counts.characters) == (6, 6)
+
+    def test_emoji_sequences_are_one_character_each(self) -> None:
+        counts = count_text("\U0001f44d\U0001f3fd \U0001f468‍\U0001f469‍\U0001f467 \U0001f1e9\U0001f1ea")
+        assert counts.characters == 5
+        assert counts.letters == 0
+        assert counts.words == 0
+
+    def test_letters_in_other_scripts(self) -> None:
+        assert count_text("हिन्दी").letters == 3
+
+    @pytest.mark.parametrize(
+        ("text", "words"),
+        [("well-known don't  e-mail", 3), ("Hello — world", 2), ("", 0), ("one\ntwo\tthree", 3)],
+    )
+    def test_words(self, text: str, words: int) -> None:
+        assert count_text(text).words == words
+
+    @pytest.mark.parametrize(
+        ("text", "letter", "occurrences"),
+        [
+            ("Hello World", "l", 3),
+            ("Hello World", "L", 3),
+            ("résumé", "e", 0),
+            ("résumé", "é", 2),
+            ("résumé", "é", 2),
+            ("Straße", "s", 1),
+        ],
+    )
+    def test_one_letter_ignores_case_but_not_accents(self, text: str, letter: str, occurrences: int) -> None:
+        counts = count_text(text, letter)
+        assert counts.letter_occurrences == occurrences
+
+    @pytest.mark.parametrize("letter", ["", "  ", None])
+    def test_no_letter_means_no_letter_count(self, letter: str | None) -> None:
+        assert "letter_occurrences" not in count_text("abc", letter).to_dict()
+
+    @pytest.mark.parametrize("letter", ["ab", "1", "!"])
+    def test_letter_must_be_one_letter(self, letter: str) -> None:
+        with pytest.raises(CalculationError, match="single letter"):
+            count_text("abc", letter)
+
+    def test_overlong_text_is_refused(self) -> None:
+        with pytest.raises(CalculationError, match=str(MAX_TEXT_CHARS)):
+            count_text("a" * (MAX_TEXT_CHARS + 1))
+
+    def test_text_must_be_a_string(self) -> None:
+        with pytest.raises(CalculationError, match="string"):
+            count_text(None)  # type: ignore[arg-type]
