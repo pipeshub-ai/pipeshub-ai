@@ -40,6 +40,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.sync.sync_coordinator import SyncLease
 from app.connectors.services.event_service import EventService
 from app.models.entities import (
+    AppUserGroup,
     MessageRecord,
     RecordGroup,
     RecordGroupType,
@@ -288,6 +289,12 @@ async def _cleanup(sync: _Sync) -> None:
         groups = await sync.graph.get_nodes_by_filters(RECORD_GROUPS, {"connectorId": sync.connector_id}) or []
         await sync.graph.delete_nodes_and_edges([r.get("_key") or r.get("id") for r in records], RECORDS)
         await sync.graph.delete_nodes_and_edges([g.get("_key") or g.get("id") for g in groups], RECORD_GROUPS)
+        user_groups = await sync.graph.get_nodes_by_filters(
+            CollectionNames.GROUPS.value, {"connectorId": sync.connector_id}
+        ) or []
+        await sync.graph.delete_nodes_and_edges(
+            [g.get("_key") or g.get("id") for g in user_groups], CollectionNames.GROUPS.value
+        )
         await sync.graph.delete_nodes_and_edges([sync.alice, sync.bob], CollectionNames.USERS.value)
         await sync.graph.delete_nodes_and_edges([sync.connector_id], CollectionNames.APPS.value)
 
@@ -483,3 +490,62 @@ async def test_a_link_to_a_placeholder_survives_the_unlink(sync: _Sync) -> None:
     await asyncio.wait_for(task, timeout=60)
 
     assert await links_out() == 1, "the link to the placeholder was unlinked"
+
+
+async def test_a_channel_whose_members_cannot_be_read_keeps_its_access(sync: _Sync) -> None:
+    """Slack answers not_in_channel or missing_scope on every sync for such a
+    channel. It is written without a permission list: still seen, grants kept."""
+    await _first_sync(sync)
+
+    async def script(s: _Sync) -> None:
+        channel, _ = s.channel(readers=())
+        await s.processor.on_new_record_groups([(channel, None)])
+        await s.processor.on_new_records([s.message(n) for n in ("m1", "m2", "m3")])
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    for name in ("m1", "m2", "m3"):
+        assert await sync.can_read(sync.alice, name) and await sync.can_read(sync.bob, name), name
+
+
+async def test_a_member_removed_from_an_organisational_group_is_gone_after_a_full_sync(sync: _Sync) -> None:
+    """ServiceNow writes such groups without members and adds them one at a
+    time, which only ever adds."""
+    users = CollectionNames.USERS.value
+    await sync.graph.batch_create_edges(
+        [{"from_id": key, "from_collection": users, "to_id": sync.connector_id,
+          "to_collection": CollectionNames.APPS.value, "sourceUserId": f"src-{key}",
+          "syncState": "NOT_STARTED", "lastSyncUpdate": sync.now}
+         for key in (sync.alice, sync.bob)],
+        collection=CollectionNames.USER_APP_RELATION.value,
+    )
+
+    def department() -> AppUserGroup:
+        # One id across both writes, so both backends upsert the same node.
+        return AppUserGroup(id=f"dept-{sync.connector_id}", app_name=Connectors.SERVICENOW,
+                            connector_id=sync.connector_id, source_user_group_id="dept-1",
+                            name="Sales", org_id=sync.org_id)
+
+    async def members() -> set[str]:
+        group = await sync.graph.get_user_group_by_external_id(sync.connector_id, "dept-1")
+        edges = await sync.graph.get_edges_to_node(
+            f"{CollectionNames.GROUPS.value}/{group.id}", CollectionNames.PERMISSION.value
+        )
+        return {(e.get("_from") or e.get("from_id") or "").split("/")[-1] for e in edges or []}
+
+    await sync.processor.batch_upsert_user_groups([department()])
+    for key in (sync.alice, sync.bob):
+        assert await sync.processor.create_user_group_membership(f"src-{key}", "dept-1", sync.connector_id)
+    assert await members() == {sync.alice, sync.bob}
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        # Bob left the department at the source.
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert await members() == {sync.alice}

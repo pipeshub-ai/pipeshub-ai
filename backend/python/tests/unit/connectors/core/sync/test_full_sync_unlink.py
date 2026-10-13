@@ -276,25 +276,25 @@ class TestWhatTheProcessorNotes:
         assert processor._full_sync_run("a") is None and processor._full_sync_run("b") is b
 
     @pytest.mark.asyncio
-    async def test_groups_upserted_without_members_count_as_seen(self) -> None:
-        """ServiceNow writes its organisational groups this way and adds members
-        afterwards; unseen, the unlink would drop those memberships."""
-        from app.models.entities import AppUserGroup
-
+    async def test_a_groups_first_membership_in_a_full_sync_replaces_its_members(self) -> None:
+        """ServiceNow writes organisational groups without members and adds them
+        one at a time, which only adds: someone who left would keep access."""
         tx = MagicMock()
-        tx.batch_upsert_user_groups = AsyncMock()
-        tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="stored-id"))
+        tx.get_user_group_by_external_id = AsyncMock(return_value=MagicMock(id="g1"))
+        tx.delete_edges_to = AsyncMock(return_value=2)
+        tx.create_user_group_membership = AsyncMock(return_value=True)
 
         @contextlib.asynccontextmanager
         async def transaction() -> AsyncIterator[MagicMock]:
             yield tx
 
         processor = self._processor(transaction)
+        assert await processor.create_user_group_membership("u1", "dept-1", "c1")
+        tx.delete_edges_to.assert_not_awaited()  # no full sync: add only, as before
+
         run = processor.begin_full_sync_run("c1")
-        group = AppUserGroup(
-            app_name="SERVICENOW", connector_id="c1", source_user_group_id="dept-1", name="Sales"
-        )
+        assert await processor.create_user_group_membership("u1", "dept-1", "c1")
+        assert await processor.create_user_group_membership("u2", "dept-1", "c1")
 
-        await processor.batch_upsert_user_groups([group])
-
-        assert run.has(CollectionNames.GROUPS.value, "stored-id")
+        tx.delete_edges_to.assert_awaited_once_with("g1", CollectionNames.GROUPS.value, CollectionNames.PERMISSION.value)
+        assert run.has(CollectionNames.GROUPS.value, "g1")

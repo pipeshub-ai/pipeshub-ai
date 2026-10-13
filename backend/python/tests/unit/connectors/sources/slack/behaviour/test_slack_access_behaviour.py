@@ -130,10 +130,6 @@ class TestChannelAccess:
 
 class TestFailedReads:
     @pytest.mark.parametrize("failure", MEMBER_READ_FAILURES)
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a private channel's member list can't be read, the channel is saved with an empty "
-        "access list, which replaces the stored one: everyone loses access until a later read succeeds."
-    ))
     async def test_a_failed_member_read_keeps_the_stored_access(self, workspace, store, checkpoints, failure) -> None:
         connector, _ = await workspace_connector(store, checkpoints)
         await connector.run_sync()
@@ -143,10 +139,6 @@ class TestFailedReads:
 
         assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a later page of a channel's members fails, the members read so far are saved as the "
-        "whole access list, so members on the unread pages lose access."
-    ))
     async def test_a_member_read_failing_part_way_does_not_narrow_access(self, workspace, store, checkpoints) -> None:
         workspace.page_size["conversations.members"] = 1
         connector, _ = await workspace_connector(store, checkpoints)

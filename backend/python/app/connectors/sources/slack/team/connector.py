@@ -1098,7 +1098,7 @@ class SlackConnector(BaseConnector):
                 return_exceptions=True,
             )
 
-            batch: list[tuple[RecordGroup, list[Permission]]] = []
+            batch: list[tuple[RecordGroup, list[Permission] | None]] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
                     # Written with no permissions, the channel would lose every
@@ -1135,9 +1135,12 @@ class SlackConnector(BaseConnector):
     async def _channel_permissions(
         self,
         channel_data: dict[str, Any],
-    ) -> list[Permission]:
+    ) -> list[Permission] | None:
         """
         Return the correct HAS_PERMISSION list for a single channel.
+
+        None when the channel's members cannot be read with this token at all
+        (see _fetch_channel_members): its stored permissions are then kept.
 
         Public channel  → workspace_member AppRole (efficient single edge)
         Private channel → explicit member list from conversations.members
@@ -1168,6 +1171,8 @@ class SlackConnector(BaseConnector):
 
         # Private channel or group DM — resolve explicit member list
         member_ids = await self._fetch_channel_members(cid)
+        if member_ids is None:
+            return None
         perms: list[Permission] = []
         for uid in member_ids:
             email = self.user_id_to_email_cache.get(uid)
@@ -1179,10 +1184,15 @@ class SlackConnector(BaseConnector):
                 ))
         return perms
 
-    async def _fetch_channel_members(self, channel_id: str) -> list[str]:
+    async def _fetch_channel_members(self, channel_id: str) -> list[str] | None:
         """
         Return all member Slack user IDs for a channel via conversations.members
         with full cursor-based pagination.
+
+        None when the first page answers channel_not_found, not_in_channel or
+        missing_scope: the members cannot be read with this token, which is not
+        the same as having none, and those answers repeat on every sync. Any
+        failure after the first page, or any other failure, raises.
         """
         members: list[str] = []
         cursor: Optional[str] = None
@@ -1201,12 +1211,13 @@ class SlackConnector(BaseConnector):
                     # Connector may lack membership scope — log and bail
                     error = getattr(resp, "error", "no response")
                     # On the first page these mean the members cannot be read at
-                    # all. After it they cut the list short like any other error.
+                    # all, and will not be next time either. After it they cut the
+                    # list short like any other error.
                     if cursor is None and error in ("channel_not_found", "not_in_channel", "missing_scope"):
                         self.logger.debug(
-                            f"Cannot fetch members for {channel_id}: {error}"
+                            f"Cannot fetch members for {channel_id}: {error}; keeping its stored access"
                         )
-                        break
+                        return None
                     # Any other failure leaves the member list short. Returned,
                     # it would replace the channel's grants and lock out every
                     # member not yet read; raised, the channel is left as it is.

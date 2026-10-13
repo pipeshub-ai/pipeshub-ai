@@ -4347,7 +4347,7 @@ class TestSlackConnectorCoverageExtended:
         ds = MagicMock()
         ds.conversations_members = AsyncMock(return_value=MagicMock(success=False, error="channel_not_found"))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cx") == []
+            assert await c._fetch_channel_members("Cx") is None  # unknown, not empty
 
         # Any other failure leaves the list short, so it is raised, not returned.
         ds2 = MagicMock()
@@ -9868,15 +9868,42 @@ class TestChannelMembersReadPartWay:
             await c._fetch_channel_members("Cpriv")
 
     @pytest.mark.asyncio
-    async def test_a_skip_error_on_the_first_page_means_no_members(self) -> None:
+    @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
+    async def test_a_skip_error_on_the_first_page_means_members_unknown(self, error: str) -> None:
+        """Not "no members": written as [], it would remove every stored grant."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
         c.rate_limiter.acquire = AsyncMock()
         ds = MagicMock()
-        ds.conversations_members = _pages(_slack_failure("not_in_channel"))
+        ds.conversations_members = AsyncMock(return_value=_slack_failure(error))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cpriv") == []
+            assert await c._fetch_channel_members("Cpriv") is None
+            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_channel_with_unreadable_members_is_written_without_a_permission_list(self) -> None:
+        """Seen, so not unlinked; its grants kept; and, as the answer repeats every
+        sync, not an incomplete read that would stop all unlinking."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "Cpriv", "name": "secret", "is_private": True}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_channel_permissions", new_callable=AsyncMock, return_value=None),
+        ):
+            rgs = await c._sync_channels()
+
+        assert len(rgs) == 1
+        (written,) = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert written[1] is None
+        assert c.full_sync_coverage().complete is True
 
 
 class TestUnbuildableChannel:

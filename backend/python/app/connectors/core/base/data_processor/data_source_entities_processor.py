@@ -3061,7 +3061,17 @@ class DataSourceEntitiesProcessor:
             raise e
 
     @retry_on_deadlock()
-    async def on_new_record_groups(self, record_groups: list[tuple[RecordGroup, list[Permission]]]) -> None:
+    async def on_new_record_groups(
+        self, record_groups: list[tuple[RecordGroup, list[Permission] | None]]
+    ) -> None:
+        """Upsert record groups and replace their permission edges.
+
+        ``None`` in place of a group's permission list means the connector could
+        not read who may see it (Slack: ``not_in_channel`` on its member list).
+        The group is still written, and so counts as seen by a full sync, but the
+        permission edges it already has are left as they are. An empty list
+        means nobody, and removes them.
+        """
         # Most connectors have no dedicated "space renamed"/"project renamed"
         # webhook (Dropbox's team_folder_rename -> update_record_group_name
         # is the only one that does); everyone else re-pushes the group's
@@ -3247,6 +3257,8 @@ class DataSourceEntitiesProcessor:
                             #if inherit records is false we need to remove the edge aswell
 
                     # 4. Handle User and Group Permissions (from the passed 'permissions' list)
+                    if permissions is None:
+                        continue
                     if not permissions:
                         await self._write_permission_edges(
                             tx_store, record_group.id, CollectionNames.RECORD_GROUPS.value, [],
@@ -3789,20 +3801,11 @@ class DataSourceEntitiesProcessor:
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         for ug in user_groups:
             ug.org_id = self.org_id
-        async with self._sync_transaction() as tx_store:
+        # Not noted as seen for a full sync: a group's members come afterwards
+        # through create_user_group_membership, which notes it. Seen means its
+        # member list was rewritten in this sync.
+        async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_user_groups(user_groups)
-            # Groups written this way (ServiceNow's organisational entities) get
-            # their members later through create_user_group_membership; a full
-            # sync must count them as seen, or the unlink after it drops those
-            # memberships. Read back for the stored id, which the upsert keeps.
-            for ug in user_groups:
-                if self._full_sync_run(ug.connector_id) is None:
-                    continue
-                stored = await tx_store.get_user_group_by_external_id(
-                    connector_id=ug.connector_id, external_id=ug.source_user_group_id
-                )
-                if stored is not None:
-                    self._note_full_sync_seen(ug.connector_id, CollectionNames.GROUPS.value, stored.id)
 
     async def delete_edges_between_collections(
         self,
@@ -4135,7 +4138,6 @@ class DataSourceEntitiesProcessor:
                     [permission_edge],
                     collection=CollectionNames.PERMISSION.value
                 )
-                self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, user_group.id)
 
                 self.logger.debug(
                     f"Successfully added user {user_email} to group {user_group.name} "
@@ -4157,10 +4159,29 @@ class DataSourceEntitiesProcessor:
         connector_id: str,
     ) -> bool:
         try:
-            async with self.data_store_provider.transaction() as tx_store:
-                return await tx_store.create_user_group_membership(
+            async with self._sync_transaction() as tx_store:
+                group = None
+                if self._full_sync_run(connector_id) is not None:
+                    # Memberships come one at a time and only add. In a full sync
+                    # the group's first one replaces the members it had, so a
+                    # member removed at the source goes; later ones add. A group
+                    # that gets no member this sync stays unseen and is unlinked
+                    # after it, which clears its members too.
+                    group = await tx_store.get_user_group_by_external_id(
+                        connector_id, group_external_id, raise_on_error=True
+                    )
+                    if group is not None and self._first_full_sync_visit(
+                        connector_id, CollectionNames.GROUPS.value, group.id
+                    ):
+                        await tx_store.delete_edges_to(
+                            group.id, CollectionNames.GROUPS.value, CollectionNames.PERMISSION.value
+                        )
+                created = await tx_store.create_user_group_membership(
                     user_source_id, group_external_id, connector_id
                 )
+                if group is not None:
+                    self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, group.id)
+                return created
         except Exception as e:
             self.logger.error(
                 f"Failed to create user group membership "
