@@ -423,9 +423,11 @@ export class DelegationService {
   /**
    * Withdraw one delegation.
    *
-   * Tokens already issued under it are not revoked, and do not need to be:
-   * they live for minutes, so the window is bounded by the lifetime rather
-   * than by anyone remembering to clean up.
+   * Tokens already issued under it are not revoked here, and do not need to
+   * be: the auth middleware reads this row on every request a delegated token
+   * makes, so deleting it stops those tokens at once. Revoking them instead
+   * would also be a race the deletion could lose — an exchange already past
+   * its allow-list read can insert a token after any sweep has run.
    */
   async revoke(
     orgId: string,

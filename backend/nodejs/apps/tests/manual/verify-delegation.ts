@@ -291,8 +291,42 @@ async function main(): Promise<void> {
       'subject_is_admin',
   );
 
+  // The auth middleware re-reads this row on every request a delegated token
+  // makes, with these exact clauses. Running them here proves the casting
+  // works against real documents — a unit test with a stubbed model cannot.
+  console.log('\nthe query the middleware repeats on every request');
+  const middlewareQuery = {
+    orgId: { $eq: org },
+    serviceAccountId: { $eq: accountId },
+    subjectUserId: { $eq: person._id.toString() },
+  };
+  check(
+    'it finds a live permission',
+    (await ServiceAccountDelegation.findOne(middlewareQuery)
+      .select('_id')
+      .lean()
+      .exec()) !== null,
+  );
+  check(
+    'and not one in another organisation',
+    (await ServiceAccountDelegation.findOne({
+      ...middlewareQuery,
+      orgId: { $eq: otherOrgId.toString() },
+    })
+      .select('_id')
+      .lean()
+      .exec()) === null,
+  );
+
   console.log('\nrevoke');
   await service.revoke(org, adminId, accountId, person._id.toString());
+  check(
+    'the middleware query stops matching the moment it is withdrawn',
+    (await ServiceAccountDelegation.findOne(middlewareQuery)
+      .select('_id')
+      .lean()
+      .exec()) === null,
+  );
   check(
     'a revoked pair is no longer allowed',
     (await service.isDelegationAllowed(org, accountId, person._id.toString())) ===
@@ -382,29 +416,145 @@ async function main(): Promise<void> {
     JSON.stringify(ttl?.key),
   );
 
-  console.log('\nattempts by an account that is no longer usable');
-  await service.recordEvent({
-    orgId: org,
-    serviceAccountId: accountId,
-    requestedSubject: 'person@example.com',
-    outcome: 'refused',
-    refusedReason: 'service_account_disabled',
-  });
-  const disabledAttempts = await service.listEvents(org);
-  check(
-    'a disabled account still using its token is recorded',
-    disabledAttempts.some(
-      (e) => e.refusedReason === 'service_account_disabled',
-    ),
-  );
-
-  console.log('\nrevoking delegated tokens by their actor');
+  // Everything above drives the service directly. This drives the whole
+  // exchange: a real signed service token, the real token service, and the
+  // real audit writes — the only way to know the pieces agree.
   const tokenService = new OAuthTokenService(
     logger as never,
     { algorithm: 'HS256', secret: 'verification-only-secret' } as never,
     'http://localhost:3000',
   );
-  const liveDelegated = await OAuthAccessToken.create({
+
+  console.log('\nthe exchange itself, end to end');
+  const { TokenExchangeService } = await import(
+    '../../src/modules/oauth_provider/services/token-exchange.service'
+  );
+  const { OAuthApp } = await import(
+    '../../src/modules/oauth_provider/schema/oauth.app.schema'
+  );
+
+  const app = await OAuthApp.create({
+    clientId: `svc-system:${org}`,
+    clientSecretEncrypted: 'unused',
+    name: 'Service Tokens',
+    orgId,
+    createdBy: boss._id,
+    redirectUris: [],
+    allowedGrantTypes: [],
+    allowedScopes: ['kb:read', 'semantic:write'],
+    isConfidential: true,
+  });
+
+  const exchangeService = new TokenExchangeService(
+    logger as never,
+    tokenService,
+    service,
+  );
+
+  const serviceToken = await tokenService.generateTokens(
+    app as never,
+    accountId,
+    org,
+    ['kb:read', 'semantic:write'],
+    false,
+  );
+
+  await service.grant(org, adminId, accountId, 'person@example.com');
+  const issued = await exchangeService.exchange({
+    subjectToken: serviceToken.accessToken,
+    requestedSubject: 'person@example.com',
+  });
+  check('a delegated token is issued', issued.access_token.length > 0);
+  check('for five minutes', issued.expires_in === 300);
+
+  // The claim every authorisation check reads must name the person, and `act`
+  // must name the account that obtained it.
+  const issuedPayload = await tokenService.verifyAccessToken(
+    issued.access_token,
+  );
+  check(
+    'and it speaks as the person, not the service account',
+    issuedPayload.userId === person._id.toString(),
+  );
+  check(
+    'while recording who obtained it',
+    issuedPayload.act?.sub === accountId,
+  );
+  check(
+    'the issue is in the log, tied to the token by jti',
+    (await DelegationEvent.countDocuments({
+      outcome: 'issued',
+      jti: issuedPayload.jti,
+    })) === 1,
+  );
+
+  // Someone the account may not act as.
+  await expectThrows(
+    'acting as someone not on the list is refused',
+    () =>
+      exchangeService.exchange({
+        subjectToken: serviceToken.accessToken,
+        requestedSubject: 'away@example.com',
+      }),
+    'may not act as',
+  );
+  check(
+    'and that refusal reaches the log with its real cause',
+    (await DelegationEvent.countDocuments({
+      outcome: 'refused',
+      refusedReason: 'not_on_allow_list',
+    })) +
+      (await DelegationEvent.countDocuments({
+        outcome: 'refused',
+        refusedReason: 'subject_disabled',
+      })) >
+      0,
+  );
+
+  console.log('\nattempts by an account that is no longer usable');
+  await Users.updateOne({ _id: account._id }, { $set: { isDisabled: true } });
+
+  await expectThrows(
+    'a disabled account cannot exchange its token',
+    () =>
+      exchangeService.exchange({
+        subjectToken: serviceToken.accessToken,
+        requestedSubject: 'person@example.com',
+      }),
+    'disabled',
+  );
+  check(
+    'and the attempt is persisted, not only refused',
+    (await DelegationEvent.countDocuments({
+      outcome: 'refused',
+      refusedReason: 'service_account_disabled',
+    })) === 1,
+  );
+
+  // The case the required-string rule used to swallow: a disabled account
+  // asking for nobody at all. The refusal is decided before the subject is
+  // looked at, so the record carries a blank subject and must still be saved.
+  await expectThrows(
+    'and so is an attempt that names nobody',
+    () =>
+      exchangeService.exchange({
+        subjectToken: serviceToken.accessToken,
+      }),
+    'disabled',
+  );
+  check(
+    'including when it asked for nobody at all',
+    (await DelegationEvent.countDocuments({
+      outcome: 'refused',
+      refusedReason: 'service_account_disabled',
+      requestedSubject: '',
+    })) === 1,
+  );
+
+  await Users.updateOne({ _id: account._id }, { $set: { isDisabled: false } });
+
+  console.log('\nrevoking delegated tokens by their actor');
+  const handMadeDelegated = await OAuthAccessToken.create({
     tokenHash: 'hash-delegated',
     clientId: `svc-system:${org}`,
     userId: person._id,
@@ -422,13 +572,32 @@ async function main(): Promise<void> {
     expiresAt: new Date(Date.now() + 300_000),
   });
 
+  // Counted first rather than hard-coded: the end-to-end section above issued
+  // a real delegated token for this same account, so the number here depends
+  // on what ran before. What matters is that the sweep finds every live one.
+  const liveDelegated = await OAuthAccessToken.countDocuments({
+    actorUserId: account._id,
+    isRevoked: false,
+  });
   const revokedCount = await tokenService.revokeDelegatedTokensForActor(
     accountId,
   );
-  check('the delegated token is found by its actor', revokedCount === 1, `count=${revokedCount}`);
+  check(
+    'the delegated tokens are found by their actor',
+    revokedCount === liveDelegated && liveDelegated >= 2,
+    `revoked=${revokedCount} live=${liveDelegated}`,
+  );
+  check(
+    'and none is left behind',
+    (await OAuthAccessToken.countDocuments({
+      actorUserId: account._id,
+      isRevoked: false,
+    })) === 0,
+  );
   check(
     'and is actually marked revoked',
-    (await OAuthAccessToken.findById(liveDelegated._id))?.isRevoked === true,
+    (await OAuthAccessToken.findById(handMadeDelegated._id))?.isRevoked ===
+      true,
   );
   check(
     'the person’s own token is untouched',

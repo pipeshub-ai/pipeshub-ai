@@ -17210,10 +17210,10 @@ paths:
         - OAuth Provider
       summary: Stop a service account acting as this person
       description: |
-        Administrator only. Tokens already issued under the entry are not
-        revoked and do not need to be: they last five minutes, so the window
-        is bounded by the lifetime rather than by anyone remembering to clean
-        up.
+        Administrator only, and effective at once. Tokens already issued under
+        the entry are not revoked because they do not need to be: the auth
+        middleware reads this row on every request a delegated token makes, so
+        removing it stops those tokens immediately.
       operationId: revokeServiceAccountDelegation
       security:
         - bearerAuth: []

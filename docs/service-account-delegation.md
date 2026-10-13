@@ -89,10 +89,15 @@ administrator can read.
 | Audit | Every grant, revocation and attempt kept for 400 days |
 | Chaining | A delegated token cannot be exchanged again |
 
-Disabling a service account revokes the tokens it obtained to act as other
-people at once, rather than leaving them to run out. Deleting one also empties
-its allow-list, so restoring the account under the same name does not bring
-back a list of people somebody else can now become.
+Every rule above is checked again on each request a delegated token makes, not
+only when it was issued. Withdrawing a permission, promoting the person to
+administrator, or switching the service account off all take effect at once
+rather than after the token's last few minutes.
+
+Disabling a service account also revokes the tokens it obtained, rather than
+leaving them to be refused one by one. Deleting one empties its allow-list, so
+restoring the account under the same name does not bring back a list of people
+somebody else can now become.
 
 ## What it does not do
 

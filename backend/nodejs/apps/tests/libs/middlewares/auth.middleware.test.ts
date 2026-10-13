@@ -10,6 +10,7 @@ import { UserActivities } from '../../../src/modules/auth/schema/userActivities.
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
 import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { ServiceAccountDelegation } from '../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { PAT_TOKEN_PREFIX } from '../../../src/modules/oauth_provider/constants/constants'
 
@@ -682,6 +683,9 @@ describe('AuthMiddleware', () => {
         }),
       )
       users.onSecondCall().returns(createMockQuery({ isDisabled: false }))
+      const delegations = sinon
+        .stub(ServiceAccountDelegation, 'findOne')
+        .returns(createMockQuery({ _id: 'delegation-1' }))
 
       const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
       const res = createMockResponse()
@@ -698,6 +702,54 @@ describe('AuthMiddleware', () => {
       expect(appLookup.called).to.equal(false)
       expect(req.user.email).to.equal('person@example.com')
       expect(req.user.role).to.equal('member')
+      // The allow-list entry is read on every request, scoped to the actor
+      // and the person the token speaks as.
+      expect(delegations.firstCall.args[0]).to.deep.equal({
+        orgId: { $eq: 'org1' },
+        serviceAccountId: { $eq: 'the-service-account' },
+        subjectUserId: { $eq: 'the-person' },
+      })
+    })
+
+    it('refuses a delegated token once the permission is withdrawn', async () => {
+      // An administrator withdrawing a permission is the most deliberate way
+      // of saying stop, and it was the one rule of the three that did not take
+      // effect until the token expired. It also closes the window the issuing
+      // path cannot: a revocation landing between the allow-list read and the
+      // token insert leaves a token that never had a live row behind it.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: false }))
+      sinon
+        .stub(ServiceAccountDelegation, 'findOne')
+        .returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('may no longer act as')
     })
 
     it('refuses a delegated token once its subject becomes an administrator', async () => {

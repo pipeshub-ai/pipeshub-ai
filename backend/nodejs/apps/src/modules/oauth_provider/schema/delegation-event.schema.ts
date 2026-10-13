@@ -35,7 +35,10 @@ export interface IDelegationEvent extends Document {
   serviceAccountId: Types.ObjectId;
   /** Who it asked to act as. Absent when the request named nobody resolvable. */
   subjectUserId?: Types.ObjectId;
-  /** What it asked for, verbatim, even when that resolved to nobody. */
+  /**
+   * What it asked for, verbatim, even when that resolved to nobody — and even
+   * when it asked for nobody at all.
+   */
   requestedSubject: string;
   outcome: DelegationOutcome;
   /** Machine-readable refusal cause, e.g. `not_on_allow_list`. */
@@ -70,7 +73,14 @@ const DelegationEventSchema = new Schema<IDelegationEvent>(
       index: true,
     },
     subjectUserId: { type: Schema.Types.ObjectId, ref: 'users', index: true },
-    requestedSubject: { type: String, required: true, maxlength: 320 },
+    // Deliberately not `required`. Mongoose counts an empty string as absent,
+    // and an empty string is a real thing to record here: a refusal can be
+    // written before the request is known to name anyone, because whether the
+    // service account itself is still usable is decided first. Requiring a
+    // value would throw inside the audit write, which `recordEvent` swallows,
+    // so the only visible effect would be a missing record — the one case
+    // where the log is most worth having.
+    requestedSubject: { type: String, maxlength: 320 },
     outcome: {
       type: String,
       enum: ['issued', 'refused', 'granted', 'revoked'],

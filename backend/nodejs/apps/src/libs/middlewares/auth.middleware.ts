@@ -18,6 +18,7 @@ import { parseScopeString } from '../../modules/oauth_provider/services/scope.va
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { ServiceAccountDelegation } from '../../modules/oauth_provider/schema/service-account-delegation.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 
@@ -302,6 +303,34 @@ export class AuthMiddleware {
       if (!actor || actor.isDisabled === true) {
         throw new UnauthorizedError(
           'The service account behind this token is no longer active',
+        );
+      }
+
+      // And the allow-list entry that authorised this token in the first
+      // place. Re-checking the other two rules but not this one would have
+      // been the odd omission: an administrator withdrawing a permission is
+      // the most deliberate way of saying "stop", more so than a promotion or
+      // a disabled account, and it was the only one of the three that did not
+      // take effect until the token expired.
+      //
+      // It also closes the window the issuing path cannot. The exchange reads
+      // the allow-list and then writes a token; a revocation landing between
+      // the two produces a token that never had a live row behind it, and
+      // revoking rows at that moment cannot catch an insert that has not
+      // happened yet. Reading the row on every request means neither side has
+      // to win the race.
+      const stillAllowed = await ServiceAccountDelegation.findOne({
+        orgId: { $eq: orgId },
+        serviceAccountId: { $eq: payload.act.sub },
+        subjectUserId: { $eq: userId },
+      })
+        .select('_id')
+        .lean()
+        .exec();
+
+      if (!stillAllowed) {
+        throw new UnauthorizedError(
+          'This service account may no longer act as this person',
         );
       }
     }
