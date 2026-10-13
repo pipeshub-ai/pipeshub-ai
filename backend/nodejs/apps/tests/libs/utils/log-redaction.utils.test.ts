@@ -442,6 +442,15 @@ describe('log-redaction.utils', () => {
       ['postgres://app:%3Fmore%40pg/db', ['more']],
       ['/debug?db=mongodb://root:%2Fab%2Fcd==@mongo:27017/db', ['ab/cd', 'ab%2Fcd']],
       ['postgres://app:1234/xsecret@pg/db', ['xsecret']],
+      // A port-like start with a `?` or `#` before the userinfo `@`.
+      ['postgres://app:1234/xsecret?more@pg/db', ['xsecret', 'more']],
+      ['https://user:8080?hunter2@host/db', ['hunter2']],
+      ['https://user:12?34@host', ['12?34', '?34']],
+      ['https://user:8080#hunter2@host/db', ['hunter2']],
+      ['mongodb://alice@example.com:8080?hunter2@mongo/db', ['hunter2']],
+      ['redis://:8080?hunter2@redis:6379/0', ['hunter2']],
+      ['https://user:8080?hunter2%40host/db', ['hunter2']],
+      ['/debug?db=postgres://app:1234?xsecret@pg/db', ['xsecret']],
       // A user name that holds an `@`.
       ['mongodb://alice@example.com:hunter2@mongo:27017/db', ['hunter2']],
       ['postgres://alice@example.com:sec/ret@pg/db', ['sec/ret', 'sec']],
@@ -465,11 +474,15 @@ describe('log-redaction.utils', () => {
       })
     }
 
-    it('still reads a port followed by an `@` later in the URL as a port', () => {
-      expect(redactSensitiveQueryParams('http://localhost:3001/invite?email=a@b.com')).to.equal(
-        'http://localhost:3001/invite?email=a@b.com',
-      )
-    })
+    for (const url of [
+      'http://localhost:3001/invite?email=a@b.com',
+      'http://localhost:3001?email=a@b.com',
+      'http://localhost:3001/#/login?next=a@b.com',
+    ]) {
+      it(`still reads a port with an \`@\` in a query pair as a port: ${url}`, () => {
+        expect(redactSensitiveQueryParams(url)).to.equal(url)
+      })
+    }
 
     it('keeps a `?` inside a value in that value', () => {
       const out = redactSensitiveQueryParams('/cb?code=AB?TAILSECRET&page=1')
@@ -507,6 +520,8 @@ describe('log-redaction.utils', () => {
       '#HEADX',
       '8080/HEADX',
       '8080%2FHEADX',
+      '8080?HEADX',
+      '8080#HEADX',
       'HEADX TAILX',
     ]
     const MARKERS = ['HEADX', 'TAILX']
@@ -562,7 +577,9 @@ describe('log-redaction.utils', () => {
       }
     }
 
-    it('never leaves the secret readable at any decoding depth', () => {
+    it('never leaves the secret readable at any decoding depth', function () {
+      // Over 20,000 inputs; under coverage instrumentation this takes a while.
+      this.timeout(60_000)
       let checked = 0
       const cases = [
         ...QUERY_TEMPLATES.flatMap((t) => SECRETS.map((s) => t(s))),
@@ -670,10 +687,16 @@ describe('log-redaction.utils', () => {
         [`db=${encodeURIComponent('//user:hunter2@host/db')}`, 'hunter2'],
         ['X-Amz-Signature%253DSECRETSIG%26X-Amz-Date=1', 'SECRETSIG'],
         [`db=${encodeURIComponent('mongodb://alice@example.com:hunter2@mongo:27017/db')}`, 'hunter2'],
+        [`db=${encodeURIComponent('postgres://app:1234?xsecret@pg/db')}`, 'xsecret'],
       ]) {
         const logged = JSON.stringify(redactQueryForLog(querystring.parse(raw)))
         expect(decodeAll(logged), logged).to.not.contain(secret)
       }
+    })
+
+    it('redacts a port-like password in a parsed query value', () => {
+      const logged = JSON.stringify(redactQueryForLog({ db: 'postgres://app:1234?xsecret@pg/db' }))
+      expect(decodeAll(logged), logged).to.not.contain('xsecret')
     })
 
     it('keeps an ordinary parameter name as it was', () => {

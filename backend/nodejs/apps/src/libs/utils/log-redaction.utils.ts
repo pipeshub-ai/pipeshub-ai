@@ -270,9 +270,13 @@ const USERINFO_COLON = /:|%(?:25)*3a/i;
 const NOT_A_USER = /[\s/?#[\]]|%(?:25)*(?:2f|3f|23)/i;
 // `host:8080/…` is a port, not a password: one or more digits, then a raw
 // `/`, `?`, `#`, `,` (several hosts), whitespace or the end, and no `@` raw
-// or encoded before the query, fragment or end. `app:1234/x@host` is a
-// password; `localhost:3001/invite?email=a@b.com` is a port.
-const PORT = /^\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:[?#]|$)/i;
+// or encoded before the query, fragment or end. Past that `?` or `#`, an `@`
+// still makes it a password unless an `=` comes first: in a query an `@` sits
+// inside a pair (`?email=a@b.com`), while a userinfo `@` has no `=` before
+// it (`app:1234?secret@host`). `localhost:3001/invite?email=a@b.com` is a
+// port; `app:1234/x@host` and `app:1234/x?y@host` are passwords.
+const PORT =
+  /^\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:$|[?#](?:(?!%(?:25)*40)[^@=])*(?:=|$))/i;
 const ANY_AT = /@|%(?:25)*40/gi;
 // Query or fragment syntax, raw or encoded, inside what is read as a password.
 const QUERY_MARK = /[?#;&]|%(?:25)*(?:3f|23|3b|26)/i;
@@ -480,7 +484,12 @@ function showsSecretPair(layer: string): boolean {
 function hasResidualSecret(text: string): boolean {
   let layer = text;
   for (let i = 0; i < MAX_SCAN_LAYERS; i += 1) {
-    if (PASSWORD_URL.test(layer)) return true;
+    // Every password shape ends at an `@`, so only the text up to the last
+    // one is scanned; that keeps long text with none (or none late) cheap.
+    const lastAt = layer.lastIndexOf('@');
+    if (lastAt !== -1 && PASSWORD_URL.test(layer.slice(0, lastAt + 1))) {
+      return true;
+    }
     if (showsSecretPair(layer)) return true;
     const next = decodeEscapes(layer);
     if (next === layer) return false;

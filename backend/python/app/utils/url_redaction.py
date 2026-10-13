@@ -137,9 +137,12 @@ _USERINFO_COLON = re.compile(r":|%(?:25)*3a", re.IGNORECASE)
 _NOT_A_USER = re.compile(r"[\s/?#\[\]]|%(?:25)*(?:2f|3f|23)", re.IGNORECASE)
 # `host:8080/…` is a port, not a password: one or more digits, then a raw `/`,
 # `?`, `#`, `,` (several hosts), whitespace or the end, and no `@` raw or
-# encoded before the query, fragment or end. `app:1234/x@host` is a password;
-# `localhost:3001/invite?email=a@b.com` is a port.
-_PORT = r"\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:[?#]|$)"
+# encoded before the query, fragment or end. Past that `?` or `#`, an `@`
+# still makes it a password unless an `=` comes first: in a query an `@` sits
+# inside a pair (`?email=a@b.com`), while a userinfo `@` has no `=` before it
+# (`app:1234?secret@host`). `localhost:3001/invite?email=a@b.com` is a port;
+# `app:1234/x@host` and `app:1234/x?y@host` are passwords.
+_PORT = r"\d+(?=[/?#,\s]|$)(?:(?!%(?:25)*40)[^?#@])*(?:$|[?#](?:(?!%(?:25)*40)[^@=])*(?:=|$))"
 _ANY_AT = re.compile(r"@|%(?:25)*40", re.IGNORECASE)
 # Query or fragment syntax, raw or encoded, inside what is read as a password.
 _QUERY_MARK = re.compile(r"[?#;&]|%(?:25)*(?:3f|23|3b|26)", re.IGNORECASE)
@@ -380,7 +383,11 @@ def _shows_secret_pair(layer: str) -> bool:
 def _has_residual_secret(text: str) -> bool:
     layer = text
     for _ in range(_MAX_SCAN_LAYERS):
-        if _PASSWORD_URL.search(layer):
+        # Every password shape ends at an `@`, so only the text up to the
+        # last one is scanned; that keeps long text with none (or none late)
+        # cheap.
+        last_at = layer.rfind("@")
+        if last_at != -1 and _PASSWORD_URL.search(layer[: last_at + 1]):
             return True
         if _shows_secret_pair(layer):
             return True

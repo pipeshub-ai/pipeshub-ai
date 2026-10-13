@@ -270,6 +270,15 @@ class TestRedactSensitiveQueryParams:
             ("postgres://app:%3Fmore%40pg/db", ["more"]),
             ("/debug?db=mongodb://root:%2Fab%2Fcd==@mongo:27017/db", ["ab/cd", "ab%2Fcd"]),
             ("postgres://app:1234/xsecret@pg/db", ["xsecret"]),
+            # A port-like start with a `?` or `#` before the userinfo `@`.
+            ("postgres://app:1234/xsecret?more@pg/db", ["xsecret", "more"]),
+            ("https://user:8080?hunter2@host/db", ["hunter2"]),
+            ("https://user:12?34@host", ["12?34", "?34"]),
+            ("https://user:8080#hunter2@host/db", ["hunter2"]),
+            ("mongodb://alice@example.com:8080?hunter2@mongo/db", ["hunter2"]),
+            ("redis://:8080?hunter2@redis:6379/0", ["hunter2"]),
+            ("https://user:8080?hunter2%40host/db", ["hunter2"]),
+            ("/debug?db=postgres://app:1234?xsecret@pg/db", ["xsecret"]),
             # A user name that holds an `@`.
             ("mongodb://alice@example.com:hunter2@mongo:27017/db", ["hunter2"]),
             ("postgres://alice@example.com:sec/ret@pg/db", ["sec/ret", "sec"]),
@@ -290,8 +299,15 @@ class TestRedactSensitiveQueryParams:
         for secret in secrets:
             assert secret not in out, out
 
-    def test_a_port_followed_by_an_at_sign_later_is_still_a_port(self) -> None:
-        url = "http://localhost:3001/invite?email=a@b.com"
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:3001/invite?email=a@b.com",
+            "http://localhost:3001?email=a@b.com",
+            "http://localhost:3001/#/login?next=a@b.com",
+        ],
+    )
+    def test_a_port_with_an_at_sign_in_a_query_pair_is_still_a_port(self, url: str) -> None:
         assert redact_sensitive_query_params(url) == url
 
     def test_a_question_mark_inside_a_value_stays_in_it(self) -> None:
@@ -345,6 +361,8 @@ _PASSWORD_SECRETS = [
     "#HEADX",
     "8080/HEADX",
     "8080%2FHEADX",
+    "8080?HEADX",
+    "8080#HEADX",
     "HEADX TAILX",
 ]
 _MARKERS = ["HEADX", "TAILX"]
