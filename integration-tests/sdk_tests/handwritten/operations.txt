@@ -10,3 +10,6 @@ regenerateAgentConversationMessage
 updateAgentConversationMessageFeedback
 getConversationById
 deleteConversationById
+updateConversationTitle
+archiveConversation
+unarchiveConversation
