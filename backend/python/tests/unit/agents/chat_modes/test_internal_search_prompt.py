@@ -44,7 +44,7 @@ _BLOCKS_SUFFICE = "the blocks are sufficient"
 _SEARCH_AGAIN = "search again in the terms a document would use"
 _LIST_THE_SET = "one search returns a sample, not the set"
 _SEEK_OTHER = "search for other sources on the same subject before answering"
-_ENTITY_TOOLS = ("knowledgegraph__search_entities", "knowledgegraph__find_records_by_entity", "entity_ids")
+_ENTITY_TOOLS = ("knowledgegraph__search_entities", "entity_ids")
 
 _COMPOSITION_MARKERS = (
     _COMPOSE, _SPEAKER, _QUALIFIERS, _PREMISE, _DEFINING_RECORD, _CONFLICT_ORDER, _SECOND_VALUE,
@@ -57,9 +57,9 @@ _ALWAYS_GRANTED = frozenset({
     "knowledgegraph__fetch_record", "knowledgegraph__list_files", "knowledgegraph__navigate",
     "knowledgegraph__search", "start_block",
 })
-_GRANTED_WITH_ENTITY_STORE = frozenset({
-    "knowledgegraph__search_entities", "knowledgegraph__find_records_by_entity", "entity_ids",
-})
+# `find_records_by_entity` is not here: it is granted only after
+# `search_entities` has returned an entity id.
+_GRANTED_WITH_ENTITY_STORE = frozenset({"knowledgegraph__search_entities", "entity_ids"})
 
 _ALL_COMBINATIONS = list(itertools.product((False, True), repeat=3))
 

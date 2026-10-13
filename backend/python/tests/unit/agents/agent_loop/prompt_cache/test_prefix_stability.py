@@ -363,6 +363,22 @@ class TestAnswerRulesKeepThePrefixStable:
         assert ("read in full the records your answer will rest on" in stable) is (mode == "internal_search")
         assert MULTI_STEP_ANSWER_RULES in (sections.get("finding_information") or "") or not has_retrieval
 
+    async def test_enterprise_search_text_names_only_what_the_first_turn_can_call(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The mode text is not filtered by the grant, so every tool or
+        parameter it names must be in this turn's tool schemas."""
+        import re
+
+        _set_answer_rules(monkeypatch, on=True)
+        _stable, sections, tools = await _mode_request("internal_search", _QUESTIONS[0])
+        callable_names = {tool["name"] for tool in tools}
+        parameters = {name for tool in tools for name in (tool["input_schema"].get("properties") or {})}
+        named = set(re.findall(r"`([^`]+)`", sections["agent_instructions"] or ""))
+
+        assert "knowledgegraph__search_entities" in named
+        assert named <= callable_names | parameters, named - callable_names - parameters
+
     async def test_sections_match_the_reviewed_snapshot(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Every prompt edit to these sections shows up as a reviewed diff.
         Regenerate with UPDATE_PROMPT_SNAPSHOTS=1 after checking the change."""
