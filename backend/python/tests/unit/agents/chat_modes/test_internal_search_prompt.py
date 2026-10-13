@@ -150,6 +150,14 @@ class TestEveryCombination:
         named = set(re.findall(r"`([^`]+)`", text))
         assert named <= allowed, named - allowed
 
+    def test_claims_no_list_position(self, composition: bool, thorough: bool, entity_tools: bool) -> None:
+        """Whether the context and candidate list are in relevance order is
+        RELEVANCE_ORDERED_CONTEXT's choice; without it they are in record-id
+        order, so "the top records" would point at arbitrary ones."""
+        text = _text(composition=composition, thorough=thorough, entity_tools=entity_tools).lower()
+        for phrase in ("the top ", "top one", "first records", "highest-ranked", "highest ranked", "listed first"):
+            assert phrase not in text, phrase
+
     def test_does_not_depend_on_anything_but_its_arguments(
         self, composition: bool, thorough: bool, entity_tools: bool,
     ) -> None:

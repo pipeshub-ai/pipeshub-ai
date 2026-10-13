@@ -34,7 +34,7 @@ _READ_IN_FULL = (
     "The context you are given contains the most relevant BLOCKS from each document — not "
     "the full documents. Before answering, read in full the records your answer will rest "
     f"on: in ONE `{FETCH_RECORD_TOOL_NAME}` call, pass the IDs of the records that are "
-    "about the specific thing the question asks (usually the top one to three; skip records "
+    "about the specific thing the question asks (usually one to three; skip records "
     "that only share words with it). Do this for a single fact too: a block can hold an "
     "outdated value, part of a list, or a step without its conditions, and the rest of the "
     "record settles which. Skip it only for a record you already hold in full or nearly so "
