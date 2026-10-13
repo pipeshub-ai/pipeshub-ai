@@ -215,7 +215,7 @@ async def test_all_with_a_name_that_did_not_link_searches_nothing(
     )
     assert ok and searches == []
     assert "Together:" not in text and "matched no readable entity" not in text
-    assert "Acme (organization); exact match; mentioned in 1 readable records." in text
+    assert "Acme (organization); exact match; mentioned in 1 readable record." in text
     assert text.endswith('No readable record mentions all of them; try match="any" or fewer names.')
 
 
@@ -450,7 +450,7 @@ class TestPermissions:
     async def test_a_reader_gets_the_record_searched(self, monkeypatch: pytest.MonkeyPatch) -> None:
         result, _state_after, searches = await self._run(monkeypatch, self._context(org=self.ORG, apps=frozenset({"kb-1"})))
         assert searches == [["v-msa"]]
-        assert '"Contoso" (organization): Contoso (organization); exact match; mentioned in 1 readable records.' in result
+        assert '"Contoso" (organization): Contoso (organization); exact match; mentioned in 1 readable record.' in result
 
     @pytest.mark.asyncio
     async def test_a_reader_asking_for_all_with_a_name_nobody_has_gets_no_search(
@@ -460,7 +460,7 @@ class TestPermissions:
             monkeypatch, self._context(org=self.ORG, apps=frozenset({"kb-1"})), match="all",
         )
         assert ok and searches == []
-        assert "mentioned in 1 readable records" in text and "No readable record mentions all of them" in text
+        assert "mentioned in 1 readable record" in text and "No readable record mentions all of them" in text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("org", "apps"), [

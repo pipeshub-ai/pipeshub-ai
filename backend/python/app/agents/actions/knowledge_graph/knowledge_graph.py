@@ -1320,7 +1320,10 @@ def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") 
     if isinstance(parsed.get("queries"), list):
         groups = [q for q in parsed["queries"] if isinstance(q, dict)]
         found = sum(len(q.get("results") or []) for q in groups)
-        return f"Found {found} entit{'y' if found == 1 else 'ies'} across {len(groups)} queries"
+        return (
+            f"Found {found} entit{'y' if found == 1 else 'ies'} across "
+            f"{len(groups)} quer{'y' if len(groups) == 1 else 'ies'}"
+        )
     results = parsed.get("results") or []
     if not results:
         return parsed.get("message") or "No matching entities found"

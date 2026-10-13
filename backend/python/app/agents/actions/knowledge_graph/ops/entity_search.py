@@ -243,7 +243,7 @@ def _line(result: LinkResult, names: dict[str, str], count: str) -> str:
     if result.status in (LinkStatus.MATCHED, LinkStatus.CHECKED):
         how = "exact match" if result.status is LinkStatus.MATCHED else "checked"
         entities = ", ".join(_entity(c, names) for c in result.accepted)
-        line = f"- {asked}: {entities}; {how}; mentioned in {count} readable records."
+        line = f"- {asked}: {entities}; {how}; mentioned in {count} readable record{'' if count == '1' else 's'}."
         if result.rejected:
             line += f" Not the same: {_entities(result.rejected, names)}."
         return line

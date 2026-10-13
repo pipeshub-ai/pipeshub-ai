@@ -291,7 +291,7 @@ Each name the agent passes is linked to stored entities
   beside "Sam Lee"), goes to one model call that picks the candidates that are
   the same thing, or none; for an exact name the check can only add to it. It uses the `query` model role at low effort (the default
   model when the role is unassigned, the chat's model when none can be built),
-  with an 8 second limit; a failed or late call uses nothing it could not
+  with an 8-second limit; a failed or late call uses nothing it could not
   check, and the result says so. Its tokens are reported as `entity_linking` in
   the request's usage. Shown names are the spellings on readable records.
 - **Records.** Readable records per name (`list_accessible_entity_records`,

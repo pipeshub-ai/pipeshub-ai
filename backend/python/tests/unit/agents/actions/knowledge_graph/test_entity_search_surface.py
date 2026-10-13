@@ -125,7 +125,7 @@ def test_the_offered_search_entities_names_every_query_in_its_activity_line() ->
         ]},
         "Found 2 entities across 3 queries",
     ),
-    ({"status": "success", "queries": [{"query": "A", "results": [{"name": "A"}]}]}, "Found 1 entity across 1 queries"),
+    ({"status": "success", "queries": [{"query": "A", "results": [{"name": "A"}]}]}, "Found 1 entity across 1 query"),
 ])
 def test_a_grouped_result_is_summarized_across_its_queries(payload: dict[str, Any], expected: str) -> None:
     import json
