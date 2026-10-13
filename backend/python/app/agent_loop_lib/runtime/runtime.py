@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -8,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 from app.agent_loop_lib.core.context import CancellationToken, RunContext
 from app.agent_loop_lib.core.exceptions import AgentError
 from app.agent_loop_lib.core.types import AgentResult, Goal
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.events.base import EventEmitter
 from app.agent_loop_lib.modules.providers.budget.base import BudgetManager
 from app.agent_loop_lib.modules.providers.knowledge.base import KnowledgeProvider
@@ -21,7 +21,6 @@ from app.agent_loop_lib.modules.stores.timeline.base import TimelineStore
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.agent.spec import AgentSpec
-    from app.agent_loop_lib.core.responses import RunUsage, TokenUsage
     from app.agent_loop_lib.core.scope import RunScope
     from app.agent_loop_lib.hooks.registry import HookRegistry
     from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
@@ -29,8 +28,6 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.tools.registry import ToolRegistry
     from app.agent_loop_lib.tools.summarizer import ToolSummarizer
     from app.agent_loop_lib.transport.registry import TransportRegistry
-
-logger = logging.getLogger(__name__)
 
 __all__ = ["AgentRuntime", "MAX_SPAWN_DEPTH"]
 
@@ -96,13 +93,6 @@ class AgentRuntime:
     # `None` (the default, e.g. `ControlPlane` standalone agents) means
     # "no summaries" — every downstream consumer already tolerates that.
     summarizer: "ToolSummarizer | None" = None
-
-    # Receives `(source, usage)` for every LLM call of an agent the caller
-    # never holds: `"sub_agent:<spec name>"` from `run_child()`,
-    # `"single_shot:<spec name>"` from `run_single_shot()`. Each is a separate
-    # `Agent` with its own `usage`, so a caller accounting for a whole
-    # request's model calls needs this. `None` (the default) costs nothing.
-    usage_sink: "Callable[[str, TokenUsage], None] | None" = None
 
     def __post_init__(self) -> None:
         if self.hooks is None:
@@ -253,22 +243,7 @@ class AgentRuntime:
             goal=goal,
             project_name=self.opik_project_name,
         ) as span:
-            try:
+            with llm_usage_source(f"sub_agent:{spec.name}"):
                 result = await child.run(goal)
-            finally:
-                self.report_usage(f"sub_agent:{spec.name}", child.usage)
             record_agent_span_result(span, result=result)
             return result
-
-    def report_usage(self, source: str, usage: "RunUsage") -> None:
-        """Send every call in `usage` to `usage_sink` under `source`. For an
-        agent other than the caller's own (a child, a single-shot helper),
-        whose usage the caller never sees."""
-        if self.usage_sink is None:
-            return
-        try:
-            for request_usage in usage.per_request:
-                self.usage_sink(source, request_usage)
-        except Exception:
-            # Accounting must never cost the result it accounts for.
-            logger.warning("usage sink failed for %s", source, exc_info=True)

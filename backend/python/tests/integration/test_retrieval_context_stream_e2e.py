@@ -85,7 +85,7 @@ class TestRetrievalContextOnTheStream:
             "app.agents.agent_loop.retrieval_ledger.RetrievalContextLedger.take_delta",
             side_effect=RuntimeError("ledger bug"),
         ), patch(
-            "app.agents.agent_loop.protocol.run_usage.RunUsagePayload.from_usage",
+            "app.agents.agent_loop.protocol.run_usage.RunUsagePayload.from_ledger",
             side_effect=RuntimeError("usage bug"),
         ):
             events = await _stream(includeRetrievalContext=True)
@@ -94,3 +94,44 @@ class TestRetrievalContextOnTheStream:
         assert _custom(events, "retrieval_context") == []
         assert _custom(events, "run_usage") == []
 
+
+
+class TestRunUsageOnEveryExit:
+    """The frame goes out however the turn ends, and only once."""
+
+    async def test_a_clarifying_question_still_reports_the_turn(
+        self, chat_model: _ScriptedChatModel,  # noqa: F811  (fixture imported above)
+    ) -> None:
+        from app.agents.actions.internal_tools.intrim_tools import (
+            AskUserQuestionItemInput,
+        )
+        from app.agents.agent_loop.factory import PipesHubAgentFactory
+
+        chat_model.responses = _script()
+        create = PipesHubAgentFactory.create
+
+        async def create_then_ask(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+            agent, runtime, goal, _questions = await create(self, *args, **kwargs)
+            question = AskUserQuestionItemInput(question="Which quarter?", options=["Q1", "Q2", "Q3"])
+            return agent, runtime, goal, [question]
+
+        with patch.object(PipesHubAgentFactory, "create", create_then_ask):
+            events = await _stream(includeRetrievalContext=True)
+
+        assert "RUN_ERROR" not in events, events.get("RUN_ERROR")
+        [usage] = _custom(events, "run_usage")
+        assert "turns" not in usage, "the loop never ran"
+        assert chat_model.calls == [], "no model call was made"
+
+    async def test_a_failure_after_the_frame_sends_no_second_one(
+        self, chat_model: _ScriptedChatModel,  # noqa: F811  (fixture imported above)
+    ) -> None:
+        chat_model.responses = _script()
+
+        with patch(
+            "app.agents.agent_loop.respond.AnswerFinalizer.run", side_effect=RuntimeError("finalizer bug"),
+        ):
+            events = await _stream(includeRetrievalContext=True)
+
+        assert len(_custom(events, "run_usage")) == 1
+        assert "RUN_ERROR" in events

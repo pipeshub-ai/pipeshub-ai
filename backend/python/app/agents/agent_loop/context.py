@@ -37,9 +37,9 @@ class AgentContext(BaseModel):
     # One ledger per request so `retrieval_context` frames carry only what
     # is new since the last tool call, not the whole accumulated set.
     _retrieval_ledger: Any = PrivateAttr(default=None)
-    # LLM calls made outside `Agent`'s own turn loop (sub-agents, auto-compact
-    # summaries, grep-command generation), which `Agent.usage` never sees.
+    # Every model call of the request, for the opt-in `run_usage` frame.
     _usage_ledger: Any = PrivateAttr(default=None)
+    _run_usage_claimed: bool = PrivateAttr(default=False)
 
     # Identity
     org_id: str
@@ -467,6 +467,14 @@ class AgentContext(BaseModel):
         if self._usage_ledger is None:
             self._usage_ledger = UsageLedger()
         return self._usage_ledger
+
+    def claim_run_usage_frame(self) -> bool:
+        """True the first time it is called for this request: the `run_usage`
+        frame is sent from every way a turn ends, but only once."""
+        if self._run_usage_claimed:
+            return False
+        self._run_usage_claimed = True
+        return True
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""

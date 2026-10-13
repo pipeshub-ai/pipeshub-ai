@@ -1,4 +1,4 @@
-"""`run_usage` frame payload and the auto-compact usage callback."""
+"""`run_usage` frame payload, the request `UsageLedger`, and `emit_run_usage`."""
 
 from __future__ import annotations
 
@@ -9,9 +9,7 @@ import pytest
 from langchain_core.messages import AIMessage
 from pydantic import ValidationError
 
-from app.agent_loop_lib.core.responses import RunUsage, TokenUsage
-from app.agent_loop_lib.core.types import UserMessage
-from app.agent_loop_lib.hooks.middleware.builtin.auto_compact import make_llm_summarizer
+from app.agent_loop_lib.core.responses import TokenUsage
 from app.agents.agent_loop.protocol.formatter import AGUI_FORMATTER
 from app.agents.agent_loop.protocol.run_usage import (
     MAX_CALLS_PER_FRAME,
@@ -23,15 +21,6 @@ from app.agents.agent_loop.protocol.run_usage import (
 from tests.unit.agents.adapter.conftest import make_context
 
 
-def _usage(requests: int, inp: int, out: int, cache_read: int = 0, cache_write: int = 0) -> RunUsage:
-    usage = RunUsage()
-    for _ in range(requests):
-        usage.add(TokenUsage(
-            input_tokens=inp, output_tokens=out, cache_read_tokens=cache_read, cache_write_tokens=cache_write,
-        ))
-    return usage
-
-
 def _ledger(*entries: tuple[str, TokenUsage]) -> UsageLedger:
     ledger = UsageLedger()
     for source, usage in entries:
@@ -39,40 +28,60 @@ def _ledger(*entries: tuple[str, TokenUsage]) -> UsageLedger:
     return ledger
 
 
-def test_payload_sums_the_main_loop_and_every_other_call() -> None:
+def _main_calls(count: int, inp: int, out: int) -> list[tuple[str, TokenUsage]]:
+    return [("main", TokenUsage(input_tokens=inp, output_tokens=out))] * count
+
+
+class _Sink:
+    def __init__(self) -> None:
+        self.events: list[dict[str, Any]] = []
+
+    async def write(self, event: dict[str, Any]) -> None:
+        self.events.append(event)
+
+
+def _opted_in_context() -> Any:  # noqa: ANN401
+    context = make_context(protocol="agui", run_id="run-1")
+    context.include_retrieval_context = True
+    context.event_sink = _Sink()
+    return context
+
+
+def test_payload_sums_every_call_and_labels_each() -> None:
     ledger = _ledger(
-        ("auto_compact", TokenUsage(input_tokens=500, output_tokens=50)),
+        ("single_shot:intent.parse_intent_and_route", TokenUsage(input_tokens=900, output_tokens=40)),
+        ("main", TokenUsage(input_tokens=100, output_tokens=10, cache_read_tokens=40, cache_write_tokens=5)),
         ("sub_agent:researcher", TokenUsage(input_tokens=60, output_tokens=6, cache_read_tokens=30)),
         ("grep_generation", TokenUsage(input_tokens=9, output_tokens=1)),
+        ("main", TokenUsage(input_tokens=120, output_tokens=12)),
     )
 
-    payload = RunUsagePayload.from_usage(_usage(3, 100, 10, 40, 5), ledger, model="m")
+    payload = RunUsagePayload.from_ledger(ledger, model="m")
 
-    assert payload.llmCalls == 6
+    assert payload.llmCalls == 5
     assert payload.auxiliaryLlmCalls == 3
-    assert payload.inputTokens == 300 + 500 + 60 + 9
-    assert payload.outputTokens == 30 + 50 + 6 + 1
-    assert payload.cacheReadTokens == 120 + 30
-    assert payload.cacheWriteTokens == 15
-    assert payload.calls == [[100, 10, 40, 5]] * 3 + [[500, 50, 0, 0], [60, 6, 30, 0], [9, 1, 0, 0]]
+    assert payload.inputTokens == 900 + 100 + 60 + 9 + 120
+    assert payload.outputTokens == 40 + 10 + 6 + 1 + 12
+    assert payload.cacheReadTokens == 70
+    assert payload.cacheWriteTokens == 5
+    assert payload.calls[1] == [100, 10, 40, 5]
     assert payload.callSources == [
-        "main", "main", "main", "auto_compact", "sub_agent:researcher", "grep_generation",
+        "single_shot:intent.parse_intent_and_route", "main", "sub_agent:researcher", "grep_generation", "main",
     ]
 
 
 def test_a_frame_within_the_call_cap_carries_no_truncated_key() -> None:
-    payload = RunUsagePayload.from_usage(_usage(2, 1, 1), UsageLedger(), model="m")
+    payload = RunUsagePayload.from_ledger(_ledger(*_main_calls(2, 1, 1)), model="m")
     assert "truncated" not in payload.to_wire_dict()
 
 
 def test_the_per_call_breakdown_is_capped_but_the_totals_are_not() -> None:
-    loop_calls = MAX_CALLS_PER_FRAME + 4
-    ledger = _ledger(("auto_compact", TokenUsage(input_tokens=500, output_tokens=50)))
-    payload = RunUsagePayload.from_usage(_usage(loop_calls, 10, 1), ledger, model="m")
+    calls = MAX_CALLS_PER_FRAME + 5
+    payload = RunUsagePayload.from_ledger(_ledger(*_main_calls(calls, 10, 1)), model="m")
     assert len(payload.calls) == len(payload.callSources) == MAX_CALLS_PER_FRAME
     assert payload.truncated is True
-    assert payload.llmCalls == loop_calls + 1
-    assert payload.inputTokens == loop_calls * 10 + 500
+    assert payload.llmCalls == calls
+    assert payload.inputTokens == calls * 10
 
 
 def test_agui_frame_is_custom_run_usage() -> None:
@@ -83,45 +92,10 @@ def test_agui_frame_is_custom_run_usage() -> None:
     assert frame["data"]["value"]["inputTokens"] == 5
 
 
-@pytest.mark.asyncio
-async def test_summarizer_reports_usage() -> None:
-    seen: list[TokenUsage] = []
-
-    class _Transport:
-        async def complete(self, **_: Any) -> Any:  # noqa: ANN401
-            return SimpleNamespace(
-                message=SimpleNamespace(text="summary"),
-                usage=TokenUsage(input_tokens=7, output_tokens=3),
-            )
-
-    registry = SimpleNamespace(resolve=lambda _provider: _Transport())
-    summarize = make_llm_summarizer(registry, "langchain", "m", on_usage=seen.append)
-    assert await summarize([UserMessage(content="hi")]) == "summary"
-    assert seen == [TokenUsage(input_tokens=7, output_tokens=3)]
-
-
-@pytest.mark.asyncio
-async def test_a_failing_usage_callback_keeps_the_summary() -> None:
-    class _Transport:
-        async def complete(self, **_: Any) -> Any:  # noqa: ANN401
-            return SimpleNamespace(
-                message=SimpleNamespace(text="the model's summary"),
-                usage=TokenUsage(input_tokens=7, output_tokens=3),
-            )
-
-    def broken_callback(_usage: TokenUsage) -> None:
-        raise RuntimeError("telemetry bug")
-
-    registry = SimpleNamespace(resolve=lambda _provider: _Transport())
-    summarize = make_llm_summarizer(registry, "langchain", "m", on_usage=broken_callback)
-    assert await summarize([UserMessage(content="hi")]) == "the model's summary"
-
-
 class TestLoopOutcomeFieldsAreValidatedOnAssignment:
     """`emit_run_usage` sets the loop-outcome fields after construction.
-    Pydantic does not validate assignment by default, so `payload.turns =
-    result.turns` — a `list[AgentTurn]`, not a count — serialized as `[]`
-    and only blew up in the consumer, mid-run, after 200 questions had
+    Without `validate_assignment` a wrong type (the turn LIST, not its count)
+    went out on the wire and failed only in the consumer, after the run had
     already been paid for."""
 
     def test_assigning_a_list_to_turns_is_rejected(self) -> None:
@@ -130,53 +104,75 @@ class TestLoopOutcomeFieldsAreValidatedOnAssignment:
             payload.turns = []  # type: ignore[assignment]
 
 
-@pytest.mark.asyncio
-async def test_emit_run_usage_sends_turn_count() -> None:
-    written: list[dict[str, Any]] = []
+class TestEmitRunUsage:
+    async def test_sends_the_ledger_with_the_main_loop_outcome(self) -> None:
+        context = _opted_in_context()
+        context.completion_gate_nudges = 2
+        context.usage_ledger.add("main", TokenUsage(input_tokens=10, output_tokens=1))
+        context.usage_ledger.add("main", TokenUsage(input_tokens=10, output_tokens=1))
+        agent = SimpleNamespace(spec=SimpleNamespace(max_turns=15))
+        result = SimpleNamespace(turns=[object(), object(), object()], error=None)
 
-    class _Sink:
-        async def write(self, event: dict[str, Any]) -> None:
-            written.append(event)
+        await emit_run_usage(context, agent, result, model="m")
 
-    context = make_context(protocol="agui", run_id="run-1")
-    context.include_retrieval_context = True
-    context.event_sink = _Sink()
-    context.completion_gate_nudges = 2
+        [frame] = context.event_sink.events
+        value = frame["data"]["value"]
+        assert value["turns"] == 3
+        assert value["maxTurns"] == 15
+        assert value["completionGateNudges"] == 2
+        assert value["llmCalls"] == 2
 
-    agent = SimpleNamespace(usage=_usage(2, 10, 1), spec=SimpleNamespace(max_turns=15))
-    result = SimpleNamespace(turns=[object(), object(), object()], error=None)
+    async def test_a_turn_that_ended_before_the_loop_still_reports_its_calls(self) -> None:
+        """A clarifying question or a failure before the loop has no result."""
+        context = _opted_in_context()
+        context.usage_ledger.add("single_shot:intent.parse_intent_and_route", TokenUsage(input_tokens=900))
 
-    await emit_run_usage(context, agent, result, model="m")
+        await emit_run_usage(context, None, model="m")
 
-    [frame] = written
-    value = frame["data"]["value"]
-    assert value["turns"] == 3
-    assert value["maxTurns"] == 15
-    assert value["completionGateNudges"] == 2
-    assert value["llmCalls"] == 2
+        [frame] = context.event_sink.events
+        value = frame["data"]["value"]
+        assert value["callSources"] == ["single_shot:intent.parse_intent_and_route"]
+        assert "turns" not in value
+        assert "maxTurns" not in value
 
+    async def test_only_the_first_call_sends_a_frame(self) -> None:
+        """Sent from every exit of a turn; a failure after the success-path
+        frame (the finalizer raising) must not send a second one."""
+        context = _opted_in_context()
 
-@pytest.mark.asyncio
-async def test_emit_run_usage_never_raises_onto_the_answer_path() -> None:
-    """`emit_run_usage` runs immediately before `AnswerFinalizer`. A telemetry
-    bug must cost the frame, not the user's answer."""
-    written: list[dict[str, Any]] = []
+        await emit_run_usage(context, None, model="m")
+        await emit_run_usage(context, None, model="m")
 
-    class _Sink:
-        async def write(self, event: dict[str, Any]) -> None:
-            written.append(event)
+        assert len(context.event_sink.events) == 1
 
-    context = make_context(protocol="agui", run_id="run-1")
-    context.include_retrieval_context = True
-    context.event_sink = _Sink()
+    async def test_nothing_is_sent_unless_the_request_opted_in(self) -> None:
+        context = make_context(protocol="agui", run_id="run-1")
+        context.event_sink = _Sink()
 
-    # `usage` is the wrong type entirely — `from_usage` will blow up inside.
-    agent = SimpleNamespace(usage="not-a-RunUsage", spec=SimpleNamespace(max_turns=15))
-    result = SimpleNamespace(turns=[], error=None)
+        await emit_run_usage(context, None, model="m")
 
-    await emit_run_usage(context, agent, result, model="m")
+        assert context.event_sink.events == []
 
-    assert written == []
+    async def test_a_fault_never_reaches_the_answer_path(self) -> None:
+        """`emit_run_usage` runs immediately before `AnswerFinalizer`."""
+        context = _opted_in_context()
+        context.usage_ledger.add("main", "not a TokenUsage")  # type: ignore[arg-type]
+
+        await emit_run_usage(context, None, model="m")
+
+        assert context.event_sink.events == []
+
+    async def test_a_failing_stream_write_never_reaches_the_answer_path(self) -> None:
+        """A client gone mid-run makes the sink raise; that must cost the frame only."""
+
+        class _BrokenSink:
+            async def write(self, _event: dict[str, Any]) -> None:
+                raise ConnectionResetError("client went away")
+
+        context = _opted_in_context()
+        context.event_sink = _BrokenSink()
+
+        await emit_run_usage(context, None, model="m")
 
 
 class TestGrepGenerationUsage:
@@ -195,19 +191,3 @@ class TestGrepGenerationUsage:
         assert grep_generation_usage_reporter({"usage_ledger": None}) is None
         assert grep_generation_usage_reporter({}) is None
         assert grep_generation_usage_reporter(None) is None
-
-
-@pytest.mark.asyncio
-async def test_a_failing_stream_write_never_reaches_the_answer_path() -> None:
-    """A client gone mid-run makes the sink raise; that must cost the frame only."""
-
-    class _BrokenSink:
-        async def write(self, _event: dict[str, Any]) -> None:
-            raise ConnectionResetError("client went away")
-
-    context = make_context(protocol="agui", run_id="run-1")
-    context.include_retrieval_context = True
-    context.event_sink = _BrokenSink()
-    agent = SimpleNamespace(usage=_usage(1, 10, 1), spec=SimpleNamespace(max_turns=15))
-
-    await emit_run_usage(context, agent, SimpleNamespace(turns=[], error=None), model="m")

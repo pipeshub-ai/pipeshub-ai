@@ -10,14 +10,12 @@ from app.agent_loop_lib.agent.loops import SingleShotLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.context.manager import ContextManager
 from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from app.agent_loop_lib.core.messages import Message
-    from app.agent_loop_lib.core.responses import TokenUsage
     from app.agent_loop_lib.transport.registry import TransportRegistry
 
 __all__ = [
@@ -52,11 +50,9 @@ def build_task_complete_runtime(
     *,
     opik_enabled: bool = False,
     opik_project_name: str | None = None,
-    usage_sink: "Callable[[str, TokenUsage], None] | None" = None,
 ) -> AgentRuntime:
     """Minimal `AgentRuntime` for auxiliary single-shot agents (intent, goal,
-    judge, ...) — one `task_complete` tool and the caller's transport.
-    `usage_sink`: see `AgentRuntime.usage_sink`."""
+    judge, ...) — one `task_complete` tool and the caller's transport."""
     from app.agent_loop_lib.tools.builtin.planning.task_complete import TaskCompleteTool
 
     tool_registry = ToolRegistry()
@@ -66,7 +62,6 @@ def build_task_complete_runtime(
         tool_registry=tool_registry,
         opik_enabled=opik_enabled,
         opik_project_name=opik_project_name,
-        usage_sink=usage_sink,
     )
 
 
@@ -80,18 +75,15 @@ async def run_single_shot(
     session_id: str | None = None,
 ) -> Any:
     """Drive one `Agent.run()` with `SingleShotLoop` — the shared entry for
-    auxiliary agents that must not implement their own turn loops. Its calls
-    reach `runtime.usage_sink` as `single_shot:<spec name>`, like a child's."""
+    auxiliary agents that must not implement their own turn loops."""
     agent = Agent(spec, runtime, session_id=session_id)
     if seed_messages:
         ctx = ContextManager()
         for message in seed_messages:
             await ctx.add(message)
         agent.seed_context(ctx)
-    try:
+    with llm_usage_source(f"single_shot:{spec.name}"):
         return await agent.run(goal, _skip_start=skip_start)
-    finally:
-        runtime.report_usage(f"single_shot:{spec.name}", agent.usage)
 
 
 def parse_json_task_output(result: Any) -> dict[str, Any]:

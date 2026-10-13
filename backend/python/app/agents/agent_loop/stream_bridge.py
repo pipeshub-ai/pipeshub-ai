@@ -440,6 +440,8 @@ async def run_agent_loop_stream(
                     context, goal.description, clarifying_questions,
                     event_sink=context.event_sink,
                 )
+                # The intent call that asked the question has been paid for.
+                await emit_run_usage(context, agent, model=model_name or None)
                 run_finished = True
             else:
                 collector = CitationCollector(context)
@@ -493,6 +495,9 @@ async def run_agent_loop_stream(
                 run_finished = bool(result.success)
         except Exception as exc:
             log.error("agent-loop stream: run failed: %s", exc, exc_info=True)
+            # What the turn spent before failing; nothing when the frame
+            # already went out on the success path.
+            await emit_run_usage(context, agent, model=model_name or None)
             error_code, user_message = classify_exception(exc)
             # Genuine unhandled failure (never reached AnswerFinalizer's
             # graceful error-answer path) -- RUN_ERROR in AG-UI mode, same

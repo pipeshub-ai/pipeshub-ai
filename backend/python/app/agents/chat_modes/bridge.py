@@ -638,6 +638,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
                 )
+                await emit_run_usage(context, agent, model=model_name or None)
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
@@ -662,6 +663,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
+            # What the turn spent before failing; nothing when the frame
+            # already went out on the success path.
+            await emit_run_usage(context, agent, model=model_name or None)
             error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)

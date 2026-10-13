@@ -45,7 +45,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from functools import partial
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
@@ -168,7 +167,6 @@ from app.agents.agent_loop.output_cap_transport import (
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
-from app.agents.agent_loop.protocol.run_usage import AUTO_COMPACT_SOURCE
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 from app.agents.agent_loop.router import select_loop_and_goal
 from app.agents.agent_loop.sandbox_bridge import (
@@ -188,6 +186,7 @@ from app.agents.agent_loop.skills_wiring import (
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
@@ -357,14 +356,17 @@ class PipesHubAgentFactory:
                 ),
             )
 
+        # Opt-in: every agent of this request resolves its model from this
+        # registry, so its transports are where each call's usage is counted.
+        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
         # Same model as "langchain" above, reached through the provider's own
         # SDK instead. LangChain builds an AIMessageChunk per streamed token and
@@ -406,11 +408,11 @@ class PipesHubAgentFactory:
 
         transport_registry.register(
             DIRECT_TRANSPORT,
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 _direct_or_langchain,
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -707,7 +709,6 @@ class PipesHubAgentFactory:
             # `step()`'s per-tool-call check) when this is set, so those
             # callers are unaffected.
             cancellation_token=context.cancellation_token,
-            usage_sink=context.usage_ledger.add if context.include_retrieval_context else None,
         )
         if skill_manager is not None:
             # `hooks` here is the SAME HookRegistry instance now held by
@@ -1045,15 +1046,7 @@ class PipesHubAgentFactory:
         hooks.on(HookEvent.PRE_MODEL).use(shape_deterministic_compact())      # L6
 
         if transport_registry is not None:
-            summarizer = make_llm_summarizer(
-                transport_registry, "langchain", model_name,
-                # Compaction calls the model outside the turn loop, so
-                # `Agent.usage` never sees them.
-                on_usage=(
-                    partial(context.usage_ledger.add, AUTO_COMPACT_SOURCE)
-                    if context.include_retrieval_context else None
-                ),
-            )
+            summarizer = make_llm_summarizer(transport_registry, "langchain", model_name)
             hooks.on(HookEvent.PRE_MODEL).use(shape_auto_compact(             # L7a
                 summarizer=summarizer,
                 trigger_ratio=_AUTO_COMPACT_TRIGGER_RATIO,

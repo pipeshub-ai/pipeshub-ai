@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 Summarizer = Callable[[list[Message]], Awaitable[str]]
@@ -83,21 +83,12 @@ def _naive_summary(messages: list[Message]) -> str:
     return joined or "(no content)"
 
 
-def make_llm_summarizer(
-    transport_registry,
-    provider: str,
-    model: str,
-    on_usage: Callable[[Any], None] | None = None,
-) -> Summarizer:
+def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summarizer:
     """Build a ``Summarizer`` that calls the real LLM via the already-lazy
     ``TransportRegistry`` — resolving (and thus instantiating) the
     transport only the first time compaction actually triggers, not at
     wiring time.  Single source of truth for both ``ControlPlane`` and
-    ``PipesHubAgentFactory``.
-
-    ``on_usage`` receives each summarisation call's token usage. These calls
-    happen outside the agent's own turn loop, so nothing else counts them —
-    and a long run can spend a real share of its budget here."""
+    ``PipesHubAgentFactory``."""
     from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage
     from app.agent_loop_lib.core.tokens import extract_text
 
@@ -158,19 +149,14 @@ def make_llm_summarizer(
         joined = _SEPARATOR.join(parts)
 
         try:
-            response = await transport.complete(
-                messages=[UserMessage(
-                    content=f"{_SUMMARIZER_PROMPT}\n{joined}",
-                )],
-                system=_SUMMARIZER_SYSTEM,
-                model=model,
-            )
-            if on_usage is not None and getattr(response, "usage", None) is not None:
-                try:
-                    on_usage(response.usage)
-                except Exception:
-                    # Usage accounting must not cost the summary it accounts for.
-                    logger.warning("auto_compact: on_usage callback failed", exc_info=True)
+            with llm_usage_source("auto_compact"):
+                response = await transport.complete(
+                    messages=[UserMessage(
+                        content=f"{_SUMMARIZER_PROMPT}\n{joined}",
+                    )],
+                    system=_SUMMARIZER_SYSTEM,
+                    model=model,
+                )
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)
