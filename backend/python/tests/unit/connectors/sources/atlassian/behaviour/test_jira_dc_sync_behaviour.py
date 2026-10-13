@@ -20,6 +20,7 @@ from atlassian_behaviour_fakes import (
     json_response,
     logged,
     record_logs,
+    run_full_sync,
 )
 from fastapi import HTTPException
 
@@ -1692,3 +1693,31 @@ class TestUnfinishedUserRead:
 
         # After a full sync, #4119 unlinks what the sync did not write; what this sync kept must stay.
         assert connector.full_sync_coverage().complete is False
+
+    async def test_a_full_sync_with_a_short_read_keeps_what_it_held_after_the_unlink(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+        assert "ENG_10002" in [p[2] for p in self._access(db)["project"]]
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, db)
+
+        after = self._access(db)
+        assert "carol@example.com" in after["devs"], "the held group keeps its stored members"
+        assert "carol@example.com" in after["developers"]
+        assert "ENG_10002" in [p[2] for p in after["project"]], "the held project keeps its grants"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
