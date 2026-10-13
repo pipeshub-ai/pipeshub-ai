@@ -747,3 +747,35 @@ async def test_an_older_copy_of_a_department_is_not_unlinked(sync: _Sync) -> Non
     assert set(copies) & await _department_grant(sync)
     for copy in copies:
         assert await _members_of(sync, copy) == {sync.alice}, copy
+
+
+async def test_an_unsure_member_list_keeps_access_through_whichever_copy_holds_the_grant(sync: _Sync) -> None:
+    """Two nodes share the department's external id; alice and bob are on the
+    older one. This sync records alice, then a membership write fails, and the
+    channel's grant ends up on the newer node, which has no members."""
+    department, _members = await _department(sync)
+    newer = f"newer-{sync.connector_id}"
+    await sync.graph.batch_upsert_user_groups([department().model_copy(update={"id": newer})])
+    await sync.processor.on_new_record_groups([sync.channel(readers=())])
+    await sync.processor.on_new_records([sync.message("m1")])
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.create_user_group_membership(f"src-{s.alice}", "dept-1", s.connector_id)
+        assert not await s.processor.create_user_group_membership("src-unknown", "dept-1", s.connector_id)
+        await s.processor.on_new_record_groups([s.channel(readers=())])
+        await s.processor.on_new_records([s.message("m1")])
+        # The grant resolved by external id onto the newer copy.
+        channel = await s.graph.get_record_group_by_external_id(s.connector_id, f"C-{s.connector_id}")
+        await s.graph.batch_create_edges(
+            [Permission(external_id="dept-1", entity_type=EntityType.GROUP, type=PermissionType.READ)
+             .to_arango_permission(newer, CollectionNames.GROUPS.value, channel.id, RECORD_GROUPS)],
+            collection=CollectionNames.PERMISSION.value,
+        )
+
+    task, _lease = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    assert newer in await _department_grant(sync)
+    assert await sync.can_read(sync.alice, "m1")
+    assert await sync.can_read(sync.bob, "m1")

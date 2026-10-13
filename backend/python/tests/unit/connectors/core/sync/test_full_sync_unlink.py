@@ -285,6 +285,8 @@ class TestWhatTheProcessorNotes:
         tx.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "g1"}])
         # Read by batch_upsert_user_groups once #4126 reuses the stored id.
         tx.get_user_group_by_external_id = AsyncMock(return_value=None)
+        tx.get_edges_to_node = AsyncMock(return_value=[])
+        tx.batch_create_edges = AsyncMock()
         tx.replace_edges_to = AsyncMock()
         tx.delete_edges_to = AsyncMock()
         return tx
@@ -379,6 +381,31 @@ class TestWhatTheProcessorNotes:
 
         assert sorted(c.args[0] for c in tx.replace_edges_to.await_args_list) == ["g1", "g2"]
         assert run.has(CollectionNames.GROUPS.value, "g1") and run.has(CollectionNames.GROUPS.value, "g2")
+
+    @pytest.mark.asyncio
+    async def test_an_unsure_list_gives_every_copy_the_members_stored_on_any(self) -> None:
+        """A grant may have been rewritten onto the copy that lacks the members;
+        with no complete list, every copy gets the union, and nothing is removed."""
+        tx = self._membership_store(True, False)
+        tx.get_nodes_by_filters = AsyncMock(return_value=[{"_key": "old"}, {"_key": "new"}])
+        stored = {
+            "groups/old": [{"_from": "users/alice", "type": "USER", "role": "READER"},
+                           {"from_id": "bob", "from_collection": "users", "type": "USER"}],
+            "groups/new": [],
+        }
+        tx.get_edges_to_node = AsyncMock(side_effect=lambda node, _collection: stored[node])
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.create_user_group_membership("u1", "dept-1", "c1")
+        await processor.create_user_group_membership("u2", "dept-1", "c1")
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        tx.replace_edges_to.assert_not_awaited()
+        written = {c.args[0][0]["to_id"]: {(e["from_collection"], e["from_id"]) for e in c.args[0]}
+                   for c in tx.batch_create_edges.await_args_list}
+        assert written == {"old": {("users", "alice"), ("users", "bob")}, "new": {("users", "alice"), ("users", "bob")}}
+        assert run.has(CollectionNames.GROUPS.value, "old") and run.has(CollectionNames.GROUPS.value, "new")
 
     @pytest.mark.asyncio
     async def test_outside_a_full_sync_memberships_are_not_tracked(self) -> None:
