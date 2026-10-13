@@ -466,7 +466,8 @@ async def execute_fetch_record(
                     "blocksRendered": outcome.blocks_rendered,
                     "complete": complete,
                     "truncatedBy": (
-                        None if outcome.complete else (outcome.stop_reason or "chars")
+                        None if complete
+                        else outcome.stop_reason or ("past_end" if outcome.complete else "chars")
                     ),
                     "requestedMaxBlocks": requested_max,
                     "startBlockSent": start_block_sent,

@@ -814,3 +814,84 @@ class TestAFigureInAGroup:
 
         assert "quarterly revenue chart" in text
         assert set(_outcome(context, "rec-fg")["shownBlocks"]) == {0, 1, 2}
+
+    @staticmethod
+    def _figure_list(last_chars: int) -> dict[str, Any]:
+        record = _text_record("fl", 0, 0)
+        record["block_containers"] = {"blocks": [
+            {"index": 0, "type": BlockType.TEXT.value, "parent_index": 0, "data": "fl para 0 the first item"},
+            {"index": 1, "type": BlockType.IMAGE.value, "parent_index": 0,
+             "data": {"uri": _png_uri(), "description": "quarterly revenue chart"}},
+            {"index": 2, "type": BlockType.TEXT.value, "parent_index": 0,
+             "data": "fl para 2 " + "x" * last_chars},
+            {"index": 3, "type": BlockType.TEXT.value, "parent_index": 0, "data": "fl para 3 the last item"},
+        ], "block_groups": [{
+            "index": 0, "type": GroupType.LIST.value, "data": {},
+            "children": {"block_ranges": [{"start": 0, "end": 3}]},
+        }]}
+        return record
+
+    @pytest.mark.asyncio
+    async def test_a_figure_before_a_child_that_does_not_fit_is_not_skipped(self) -> None:
+        context = _context(query="")
+        seen: set[int] = set()
+        texts: list[str] = []
+        start = 0
+        for _ in range(6):
+            text = await _fetch(context, [self._figure_list(80_000)], start_block=start, start_block_sent=start > 0)
+            texts.append(text)
+            seen |= set(_outcome(context, "rec-fl")["shownBlocks"])
+            match = re.search(r"start_block=(\d+)", text)
+            if match is None:
+                break
+            start = int(match.group(1))
+        assert any("quarterly revenue chart" in t for t in texts)
+        assert {0, 1, 3} <= seen
+
+    @pytest.mark.asyncio
+    async def test_a_figure_prints_in_place_between_its_neighbours(self) -> None:
+        context = _context(query="")
+        text = await _fetch(context, [self._figure_list(100)])
+
+        assert text.index("fl para 0") < text.index("quarterly revenue chart") < text.index("fl para 2")
+        assert set(_outcome(context, "rec-fl")["shownBlocks"]) == {0, 1, 2, 3}
+        assert _outcome(context, "rec-fl")["complete"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_figure_parented_to_a_table_prints_in_place(self) -> None:
+        record = _sheet("tf", 6)
+        blocks = record["block_containers"]["blocks"]
+        blocks.insert(3, {"index": 3, "type": BlockType.IMAGE.value, "parent_index": 0,
+                          "data": {"uri": _png_uri(), "description": "a chart of the rows above"}})
+        for i, block in enumerate(blocks):
+            block["index"] = i
+        record["block_containers"]["block_groups"][0]["children"] = {"block_ranges": [{"start": 0, "end": 2}, {"start": 4, "end": 6}]}
+        context = _context(query="")
+
+        text = await _fetch(context, [record])
+
+        assert text.index("row 2:") < text.index("a chart of the rows above") < text.index("row 4:")
+        assert set(_outcome(context, "rec-tf")["shownBlocks"]) == set(range(7))
+
+
+class TestClipGuardsAndTelemetry:
+    @pytest.mark.asyncio
+    async def test_a_table_row_that_could_not_be_clipped_is_not_skipped(self) -> None:
+        from app.utils.render_budget import RenderBudget
+
+        context = _context(query="")
+        record = TestAFirstUnitThatDoesNotFitStillMakesProgress._sql_table(rows=3, ddl_chars=60_000)
+        with patch.object(RenderBudget, "take", return_value=None):
+            text = await _fetch(context, [record])
+
+        assert "start_block=0" in text
+        assert _outcome(context, "rec-d")["blocksRendered"] == 0
+
+    @pytest.mark.asyncio
+    async def test_a_read_past_the_end_says_why_it_is_incomplete(self) -> None:
+        context = _context(query="")
+
+        await _fetch(context, [_text_record("pe", 5, 100)], start_block=9, start_block_sent=True)
+
+        entry = _outcome(context, "rec-pe")
+        assert (entry["complete"], entry["truncatedBy"]) == (False, "past_end")

@@ -66,8 +66,9 @@ MAX_CHARS_ENV_VAR = "PIPESHUB_FULL_RECORD_MAX_CHARS"
 TRUNCATION_MARKER = "\n[…block truncated to fit the context budget]\n"
 
 # What cut a record short, for the fetch telemetry: the characters (the call's
-# or the record's share), a block limit, relevance selection, or no room at all.
-TruncatedBy = Literal["chars", "blocks", "selection", "not_read"]
+# or the record's share), a block limit, relevance selection, no room at all,
+# or an offset past the record's last block.
+TruncatedBy = Literal["chars", "blocks", "selection", "not_read", "past_end"]
 
 
 @dataclass(frozen=True)

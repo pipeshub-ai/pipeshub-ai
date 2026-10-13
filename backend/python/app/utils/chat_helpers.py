@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import logging
+import math
 import re
 from collections import defaultdict
 from collections.abc import Iterable
@@ -4208,7 +4209,21 @@ def record_to_message_content(
         block_groups = block_containers.get("block_groups", [])
         fragment_map = _build_fragment_map(blocks)
 
-        seen_block_groups = set()
+        # Per table or group, the last block index its render covered. A unit
+        # renders up to the next figure parented to it, which the image branch
+        # prints in place; the walk then re-enters the unit after the figure.
+        covered_until: dict[str, float] = {}
+        figures_by_group: dict[object, list[int]] = defaultdict(list)
+        for b in sorted(blocks, key=lambda b: b.get("index", 0)):
+            if (
+                isinstance(b, dict) and b.get("type") == BlockType.IMAGE.value
+                and b.get("parent_index") is not None and b.get("parent_block_index") is None
+            ):
+                figures_by_group[b.get("parent_index")].append(b.get("index", 0))
+
+        def _next_figure(group_index: object, after: int) -> int | None:
+            return next((i for i in figures_by_group.get(group_index, ()) if i > after), None)
+
         blocks_by_index = {b.get("index", 0): b for b in blocks if isinstance(b, dict)}
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
@@ -4248,7 +4263,9 @@ def record_to_message_content(
             # Images are the exception: a group's render leaves them out, and
             # the image branch below is what prints a figure parented to it.
             if block.get("parent_index") is not None and block_type != BlockType.IMAGE.value and (
-                f"{record.get('virtual_record_id', '')}-{block.get('parent_index')}" in seen_block_groups
+                block_index <= covered_until.get(
+                    f"{record.get('virtual_record_id', '')}-{block.get('parent_index')}", -1,
+                )
             ):
                 continue
 
@@ -4354,7 +4371,9 @@ def record_to_message_content(
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
-                seen_block_groups.add(block_group_id)
+                reentered = block_group_id in covered_until
+                barrier = _next_figure(block_group_index, block_index)
+                covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
                 # A row whose table is missing is skipped like a row with no table at all.
                 if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
@@ -4388,7 +4407,7 @@ def record_to_message_content(
                         # A continuation into the middle of a table already
                         # showed its summary (a SQL table's DDL) with the first
                         # rows; repeating it can leave no room for the cells.
-                        continuing = (
+                        continuing = reentered or (
                             include_blocks is None and bool(rows_to_be_included_list)
                             and min(rows_to_be_included_list) < start_block
                         )
@@ -4398,6 +4417,7 @@ def record_to_message_content(
                         rows_to_be_included_list = [
                             r for r in rows_to_be_included_list
                             if r >= first_row and (include_blocks is None or r in include_blocks)
+                            and (barrier is None or r < barrier)
                         ]
                         # The header (a SQL table's DDL included) and each row's
                         # `[index|ref]` prefix are part of what the model reads,
@@ -4496,11 +4516,13 @@ def record_to_message_content(
                                 # Without the summary, so the clip keeps the cells.
                                 clip_framing = _TableFraming(block_group_index, _TABLE_SUMMARY_OMITTED)
                                 clipped = render_budget.take(f"{clip_framing.render(row_text)}\n\n")
+                                if not clipped:
+                                    render_budget.stop_at(row_index)
+                                    break
                                 render_budget.stop_at(row_index + 1)
-                                if clipped:
-                                    content.append({"type": "text", "text": clipped})
-                                    _renderable_rendered += 1
-                                    render_budget.count_block()
+                                content.append({"type": "text", "text": clipped})
+                                _renderable_rendered += 1
+                                render_budget.count_block()
                                 break
                             if unfit_row is not None:
                                 render_budget.stop_at(unfit_row[0])
@@ -4541,8 +4563,6 @@ def record_to_message_content(
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
-                if block_group_id in seen_block_groups:
-                    continue
                 template = compiled_template(block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
@@ -4556,18 +4576,20 @@ def record_to_message_content(
 
                 if not group_blocks:
                     continue
-                seen_block_groups.add(block_group_id)
+                barrier = _next_figure(parent_index, block_index)
+                covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
                 label = block_group.get("type")
                 # A group renders child by child, like a table: a continuation
                 # resumes at its child, and a selection reads its own children
                 # with the ones between announced inside the group.
-                first_child = start_block if include_blocks is None else max(start_block, block_index)
+                first_child = max(start_block, block_index)
                 units = [
                     list(entries)
                     for index, entries in groupby(group_blocks, key=lambda gb: gb.get("block_index"))
                     if isinstance(index, int) and index >= first_child
                     and (include_blocks is None or index in include_blocks)
+                    and (barrier is None or index < barrier)
                 ]
                 if not units:
                     continue
