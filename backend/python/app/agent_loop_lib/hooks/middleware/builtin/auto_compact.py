@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
-from typing import Any
-
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage

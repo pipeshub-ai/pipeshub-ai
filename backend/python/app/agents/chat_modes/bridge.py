@@ -46,7 +46,9 @@ from app.agents.agent_loop.hooks import (
     CitationCollector,
     ensure_fetch_full_record_available,
 )
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -63,8 +65,6 @@ from app.agents.chat_modes.policy import (
     ChatModePolicy,
     resolve_chat_mode_policy,
 )
-from app.agents.agent_loop.protocol.run_usage import emit_run_usage
-from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.chat_modes.prefetch import filter_notice_constraint, prefetch_retrieval
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
