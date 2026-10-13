@@ -7,8 +7,12 @@ from __future__ import annotations
 
 import pytest
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
 from app.utils.render_budget import (
     DEFAULT_CONTEXT_LENGTH,
+    FETCH_RESULT_RESERVE,
     MAX_CHARS_ENV_VAR,
     MAX_RENDER_CHARS,
     MIN_RENDER_CHARS,
@@ -58,6 +62,16 @@ class TestSpending:
         budget = _budget(100)
         budget.take("x" * 10)
         assert budget.take("y" * 5_000) is None
+
+    def test_framing_counts_against_the_size_but_still_allows_a_prefix(self) -> None:
+        """A record header is spent before the first block; that block must
+        still render a prefix rather than nothing."""
+        budget = _budget(100)
+        budget.charge_framing("h" * 30)
+        emitted = budget.take("x" * 5_000)
+
+        assert emitted is not None and emitted.endswith(TRUNCATION_MARKER)
+        assert budget.chars_used <= 100
 
     def test_empty_text_is_free(self) -> None:
         budget = _budget(100)
@@ -172,8 +186,15 @@ class TestSizing:
         assert resolve_render_budget(8_000).max_chars == MIN_RENDER_CHARS
 
     def test_a_typical_window_lands_between_the_bounds(self) -> None:
-        budget = resolve_render_budget(200_000)
+        budget = resolve_render_budget(50_000)
         assert MIN_RENDER_CHARS < budget.max_chars < MAX_RENDER_CHARS
+
+    @pytest.mark.parametrize("window", [8_000, 128_000, 200_000, 1_000_000])
+    def test_a_fetch_always_fits_under_the_tool_result_cap(self, window: int) -> None:
+        """Past the cap, the tool result is cut in the middle and the model
+        loses blocks the fetch reported as shown."""
+        budget = resolve_render_budget(window)
+        assert budget.max_chars + FETCH_RESULT_RESERVE <= DEFAULT_MAX_RESULT_CHARS
 
     @pytest.mark.parametrize("window", [None, 0, -1])
     def test_an_unknown_window_falls_back_to_the_default(self, window: int | None) -> None:
@@ -200,6 +221,8 @@ class TestSizing:
         monkeypatch.setenv(MAX_CHARS_ENV_VAR, bad)
         assert resolve_render_budget(128_000).max_chars == expected
 
-    def test_an_absurd_override_is_clamped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_an_override_past_the_tool_result_cap_is_clamped(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         monkeypatch.setenv(MAX_CHARS_ENV_VAR, "999999999")
-        assert resolve_render_budget(128_000).max_chars == 2_000_000
+        assert resolve_render_budget(128_000).max_chars == MAX_RENDER_CHARS
