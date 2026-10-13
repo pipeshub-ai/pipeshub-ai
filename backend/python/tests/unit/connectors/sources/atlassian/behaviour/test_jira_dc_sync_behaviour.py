@@ -1483,3 +1483,26 @@ class TestUnfinishedUserRead:
         await connector.run_sync()
 
         assert self._access(db) == before, "an unreadable checkpoint is not 'nothing stored'"
+
+    async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/project", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        with pytest.raises(Exception, match="Failed to fetch projects"):
+            await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+        assert store.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+
+        self._stub_carol_everywhere(jira)
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"], (
+            "groups the first sync saved are kept, though it never wrote a checkpoint"
+        )
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in acl_summary(
+            db.record_group_permissions["10000"]
+        ), "a project it never saved is saved with the grants that were read"
