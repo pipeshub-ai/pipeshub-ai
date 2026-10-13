@@ -64,6 +64,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
 from app.connectors.sources.atlassian.core.read_outcome import (
@@ -447,6 +448,9 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # True when this sync kept stored groups, roles, a lead, a project or its issues it
+        # could not read; full_sync_coverage() then reports the read as incomplete.
+        self._kept_unread_access: bool = False
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -467,6 +471,13 @@ class JiraDataCenterConnector(BaseConnector):
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that could not read groups, roles, a lead, a project or a project's
+        issues kept what was stored for them without seeing it, and those cannot be told
+        apart from what Jira removed, so nothing is unlinked after it. A short user read on
+        its own does not count: what it holds back is noted as seen (``_has_stored_access``)."""
+        return FullSyncCoverage(complete=not self._kept_unread_access)
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -715,6 +726,7 @@ class JiraDataCenterConnector(BaseConnector):
                 return
 
             # Fetch and sync users
+            self._kept_unread_access = False
             jira_users = await self._fetch_users()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
@@ -732,6 +744,9 @@ class JiraDataCenterConnector(BaseConnector):
             # group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             group_memberships = await self._sync_user_groups(jira_users)
+            if group_memberships is not None and group_memberships.cut_off:
+                # Groups past the picker limit are not read, so a full sync must not unlink them.
+                self._kept_unread_access = True
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -765,6 +780,7 @@ class JiraDataCenterConnector(BaseConnector):
                 self.logger.warning(
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
+                self._kept_unread_access = True
             else:
                 await self._sync_project_roles(
                     project_keys_for_roles,
@@ -806,6 +822,8 @@ class JiraDataCenterConnector(BaseConnector):
 
             failed_keys = sync_stats.get("failed_project_keys") or []
             if failed_keys:
+                # Their issues were not read, so they would look gone to a full sync's unlink.
+                self._kept_unread_access = True
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
                     preview = f"{preview}, and {len(failed_keys) - 10} more"
@@ -2205,6 +2223,7 @@ class JiraDataCenterConnector(BaseConnector):
                             "Keeping the stored members of group %s: its member list could not be read",
                             group_name,
                         )
+                        self._kept_unread_access = True
                         groups_members_map[group_id] = None
                         groups_members_map[group_name] = None
                         continue
@@ -2242,6 +2261,7 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     # Unknown members, not no members: roles that include this group keep what is stored.
+                    self._kept_unread_access = True
                     for key in (group.get("groupId"), group.get("name")):
                         if key:
                             groups_members_map[key] = None
@@ -2594,6 +2614,7 @@ class JiraDataCenterConnector(BaseConnector):
                                 elif group_name and group_name in groups_members_map:
                                     group_members = groups_members_map[group_name]
                                 elif groups_cut_off:
+                                    self._kept_unread_access = True
                                     group_past_cap = group_name or group_id
                                     break
                                 else:
@@ -2654,6 +2675,7 @@ class JiraDataCenterConnector(BaseConnector):
             preview = ", ".join(failed_project_keys[:10])
             if len(failed_project_keys) > 10:
                 preview = f"{preview}, and {len(failed_project_keys) - 10} more"
+            self._kept_unread_access = True
             self.logger.warning(
                 "⚠️ Project role sync failed for %s/%s projects: %s",
                 len(failed_project_keys), len(project_keys), preview,
@@ -2757,6 +2779,7 @@ class JiraDataCenterConnector(BaseConnector):
 
 
             except Exception as lead_error:
+                self._kept_unread_access = True
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 

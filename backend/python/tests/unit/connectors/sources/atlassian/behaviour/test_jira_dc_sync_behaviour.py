@@ -1760,6 +1760,25 @@ class TestUnfinishedUserRead:
         assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "the old-key role keeps its members"
         assert [m.email for m in db.app_roles["ENG_projectLead"]] == lead
 
+    async def test_a_full_sync_whose_group_list_fails_keeps_the_stored_members(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+
+        # A full sync (#4119) with a short user read whose group list then fails: the groups and the
+        # roles that need them are kept unread, so they look no different from ones Jira removed.
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["busy"]}, status=503))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert self._access(db) == before, "the stored group members and role members survive"
+
+
 
 class TestUnreadApplicationRoles:
     """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
