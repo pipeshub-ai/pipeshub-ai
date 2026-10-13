@@ -18,7 +18,8 @@ import {
 } from './../utils/utils';
 import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
-import mongoose, { ClientSession, Types } from 'mongoose';
+import type { Readable } from 'stream';
+import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -289,32 +290,32 @@ export {
   stableObjectIdHexForExternalEmail,
 } from '../utils/scoped-request';
 
-  export { handleBackendError };
-  
-  // Common helper to start AI streams with consistent error mapping and logging
-  export const startAIStream = async (
-    options: AICommandOptions,
-    operation: string,
-    logContext: Record<string, any> = {},
-    signal?: AbortSignal,
-  ) => {
-    const aiServiceCommand = new AIServiceCommand(options);
-    try {
-      return await aiServiceCommand.executeStream(signal);
-    } catch (error: any) {
-      // The caller's own cap abandoned the open (see `attachUpstreamAbort`): it already finalized the run.
-      if (signal?.aborted) {
-        logger.info('AI service stream open abandoned', logContext);
-        return undefined;
-      }
-      const mappedError = handleBackendError(error, operation);
-      logger.error('AI service stream start failed', {
-        ...logContext,
-        message: error?.message,
-      });
-      throw mappedError;
+export { handleBackendError };
+
+// Common helper to start AI streams with consistent error mapping and logging
+export const startAIStream = async (
+  options: AICommandOptions,
+  operation: string,
+  logContext: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<Readable | undefined> => {
+  const aiServiceCommand = new AIServiceCommand(options);
+  try {
+    return await aiServiceCommand.executeStream(signal);
+  } catch (error: unknown) {
+    // The caller's own cap abandoned the open (see `attachUpstreamAbort`): it already finalized the run.
+    if (signal?.aborted) {
+      logger.info('AI service stream open abandoned', logContext);
+      return undefined;
     }
-  };
+    const mappedError = handleBackendError(error, operation);
+    logger.error('AI service stream start failed', {
+      ...logContext,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw mappedError;
+  }
+};
 
 // Image compression configuration: re-encode raster images that exceed the
 // per-file threshold so they fit comfortably within multimodal LLM image
@@ -816,7 +817,7 @@ export const streamChat =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
-      keepRunAlive(stream, savedConversation._id as mongoose.Types.ObjectId);
+      keepRunAlive(stream, savedConversation._id);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -1181,11 +1182,15 @@ export const streamChat =
 
         res.end();
       };
-      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
+      });
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', { requestId });
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -1510,7 +1515,7 @@ export const addMessageStream =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
-      keepRunAlive(stream, confirmedConversation._id as mongoose.Types.ObjectId, reservation?.runId);
+      keepRunAlive(stream, confirmedConversation._id, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -1918,11 +1923,15 @@ export const addMessageStream =
 
         res.end();
       };
-      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
+      });
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', { requestId });
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -3260,7 +3269,12 @@ async function regenerateAnswersInternal(
       throw new BadRequestError('Conversation ID is required');
     }
     reservation = await reserveRun(
-      config.buildQueryFilter(conversationId, orgId, userId, agentKey),
+      config.buildQueryFilter(
+        conversationId,
+        orgId as string | undefined,
+        userId as string | undefined,
+        agentKey,
+      ) as FilterQuery<IChatSessionDocument>,
     );
 
     // Validate conversation and message
@@ -3388,10 +3402,10 @@ async function regenerateAnswersInternal(
         null,
         { replaceMessageId: messageId || undefined },
       )
-        .catch((err: any) => {
+        .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
-            error: err?.message,
+            error: err instanceof Error ? err.message : String(err),
           });
         })
         .finally(() => releaseRun(reservation));
@@ -3408,7 +3422,7 @@ async function regenerateAnswersInternal(
       throw new Error('Failed to get stream from AI service');
     }
     upstreamAbort.bindStream(stream);
-    keepRunAlive(stream, existingConversation._id as mongoose.Types.ObjectId, reservation?.runId);
+    keepRunAlive(stream, existingConversation._id, reservation?.runId);
 
     // Process SSE events, capture complete event, and forward non-complete events
     stream.on('data', (chunk: Buffer) => {
@@ -3606,11 +3620,15 @@ async function regenerateAnswersInternal(
       await releaseRun(reservation);
       res.end();
     };
-    stream.on('end', () => runGuarded(finalizeRun, { requestId }));
+    stream.on('end', () => {
+      runGuarded(finalizeRun, { requestId });
+    });
 
     stream.on('error', async (error: Error) => {
       if (upstreamAbort.isAborted()) {
-        logger.debug('Stream abandoned after the detached-run cap', { requestId });
+        logger.debug('Stream abandoned after the detached-run cap', {
+          requestId,
+        });
         return;
       }
       streamSettled = true;
@@ -5762,7 +5780,7 @@ export const deleteAgent =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
-      keepRunAlive(stream, savedConversation._id as mongoose.Types.ObjectId);
+      keepRunAlive(stream, savedConversation._id);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -6128,11 +6146,15 @@ export const deleteAgent =
 
         res.end();
       };
-      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
+      });
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', { requestId });
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -6470,7 +6492,7 @@ export const addMessageStreamToAgentConversation =
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
-      keepRunAlive(stream, confirmedConversation._id as mongoose.Types.ObjectId, reservation?.runId);
+      keepRunAlive(stream, confirmedConversation._id, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -6876,11 +6898,15 @@ export const addMessageStreamToAgentConversation =
 
         res.end();
       };
-      stream.on('end', () => runGuarded(finalizeRun, { requestId }));
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
+      });
 
       stream.on('error', async (error: Error) => {
         if (upstreamAbort.isAborted()) {
-          logger.debug('Stream abandoned after the detached-run cap', { requestId });
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;

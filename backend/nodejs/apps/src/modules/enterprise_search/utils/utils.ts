@@ -41,10 +41,11 @@ import {
   isAGUI,
   SSEProtocol,
 } from './agui';
+import { StreamedContentAccumulator } from './stream-lifecycle';
 import {
-  StreamedContentAccumulator,
-} from './stream-lifecycle';
-import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
+  CHAT_ERROR_MESSAGES,
+  userFacingChatError,
+} from './chat-error-messages';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -1685,7 +1686,7 @@ export const reserveRun = async (
     if (previous) {
       const was = String(previous.status ?? CONVERSATION_STATUS.COMPLETE);
       return {
-        sessionId: previous._id as mongoose.Types.ObjectId,
+        sessionId: previous._id,
         runId,
         previousStatus:
           was === CONVERSATION_STATUS.INPROGRESS
@@ -1725,10 +1726,10 @@ export const releaseRun = async (
       },
       { $set: { status: reservation.previousStatus } },
     ).lean();
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.warn('Failed to release the run reservation', {
       sessionId: String(reservation.sessionId),
-      error: error?.message,
+      error: error instanceof Error ? error.message : String(error),
     });
   }
 };
@@ -1757,16 +1758,18 @@ export const keepRunAlive = (
           { $set: { lastActivityAt: Date.now() } },
           { timestamps: false },
         );
-      } catch (error: any) {
+      } catch (error: unknown) {
         logger.warn('Failed to record run activity', {
           sessionId: String(sessionId),
-          error: error?.message,
+          error: error instanceof Error ? error.message : String(error),
         });
       }
     })();
   }, RUN_HEARTBEAT_MS);
-  timer.unref?.();
-  stream.once('close', () => clearInterval(timer));
+  timer.unref();
+  stream.once('close', () => {
+    clearInterval(timer);
+  });
 };
 
 export const markConversationFailed = async (
