@@ -61,6 +61,16 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     steps:
+      # Without the key no SDK can be generated, so the 10-minute app build would be for nothing.
+      - name: Check the Speakeasy API key
+        env:
+          SPEAKEASY_API_KEY: ${{ secrets.SPEAKEASY_API_KEY }}
+        run: |
+          if [ -z "$SPEAKEASY_API_KEY" ]; then
+            echo "::error::The secret SPEAKEASY_API_KEY is not set for this repository or its environment, so no SDK can be generated."
+            exit 1
+          fi
+
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
