@@ -74,11 +74,150 @@ const appliedFiltersSchema = z
   })
   .optional();
 
-/** `{ apps, kb }` filter object reused across search/message/regenerate flows. */
+// Built-in named-entity kinds; mirrors EntityKind in
+// backend/python/app/modules/named_entities/domain/kinds.py.
+export const NAMED_ENTITY_KINDS = [
+  'person',
+  'person_type',
+  'organization',
+  'event',
+  'product',
+  'skill',
+  'location',
+  'city',
+  'state',
+  'country_region',
+  'address',
+  'date',
+  'date_range',
+  'date_time',
+  'duration',
+  'currency',
+  'percentage',
+  'age',
+  'dimension',
+  'email',
+  'url',
+  'phone',
+  'ip',
+] as const;
+
+const finiteNumber = z.number().finite();
+
+const rangeChecked = <T extends z.ZodRawShape>(
+  shape: T,
+  low: string,
+  high: string,
+): z.ZodEffects<z.ZodObject<T, 'strict'>> =>
+  z
+    .object(shape)
+    .strict()
+    .superRefine((value: Record<string, unknown>, ctx) => {
+      const start = value[low];
+      const end = value[high];
+      if (typeof start === 'number' && typeof end === 'number' && start > end) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${low} must be less than or equal to ${high}`,
+        });
+      }
+    });
+
+// Epoch milliseconds, or an ISO-8601 date / date-time (a date alone is UTC midnight).
+const instant = z.union([
+  z.number().int(),
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value, ctx) => {
+      const parsed = Date.parse(value);
+      if (Number.isNaN(parsed)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'must be epoch milliseconds or an ISO-8601 date',
+        });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
+]);
+
+/**
+ * Experimental. Every constraint must hold for the same record: an amount and
+ * a date match a record that mentions both, not one entity that is both.
+ */
+const entityFiltersSchema = z
+  .object({
+    kinds: z
+      .array(z.string().trim().toLowerCase().pipe(z.enum(NAMED_ENTITY_KINDS)))
+      .min(1)
+      .max(NAMED_ENTITY_KINDS.length)
+      .optional(),
+    name: z
+      .string()
+      .trim()
+      .min(1, { message: 'name must not be blank' })
+      .max(256)
+      .optional(),
+    entityIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+    mentionedDate: rangeChecked(
+      { from: instant.optional(), to: instant.optional() },
+      'from',
+      'to',
+    ).optional(),
+    amount: rangeChecked(
+      {
+        min: finiteNumber.optional(),
+        max: finiteNumber.optional(),
+        currency: z
+          .string()
+          .trim()
+          .toUpperCase()
+          .regex(/^[A-Z]{3}$/, {
+            message: 'currency must be a three-letter ISO 4217 code',
+          })
+          .optional(),
+      },
+      'min',
+      'max',
+    ).optional(),
+    quantity: rangeChecked(
+      {
+        min: finiteNumber.optional(),
+        max: finiteNumber.optional(),
+        dimension: z
+          .string()
+          .trim()
+          .toLowerCase()
+          .regex(/^[a-z_]{1,32}$/)
+          .optional(),
+      },
+      'min',
+      'max',
+    ).optional(),
+    // Fractions: 0.125 is 12.5%.
+    percent: rangeChecked(
+      { min: finiteNumber.optional(), max: finiteNumber.optional() },
+      'min',
+      'max',
+    ).optional(),
+  })
+  .strict();
+
+/** `{ apps, kb, entityFilters }` filter object reused across search/message/regenerate flows. */
 const filtersSchema = z
   .object({
     apps: z.array(appOrKbIdSchema).optional(),
     kb: z.array(appOrKbIdSchema).optional(),
+    entityFilters: entityFiltersSchema.optional(),
+    // Reserved for the typed filter tree that will replace entityFilters.
+    where: z
+      .unknown()
+      .refine((value) => value === undefined, {
+        message: 'filters.where is not supported yet',
+      })
+      .optional(),
   })
   .optional();
 

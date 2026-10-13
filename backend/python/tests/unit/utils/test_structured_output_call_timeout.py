@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
@@ -72,6 +72,28 @@ class TestAinvokeThrottled:
         with pytest.raises(asyncio.TimeoutError):
             await _ainvoke_throttled(llm, [HumanMessage(content="q")], call_timeout=0.05)
         assert llm.calls == 1
+
+    async def test_a_rate_limit_retry_is_counted_in_the_slot_stats(self, monkeypatch) -> None:
+        from app.utils import concurrency
+
+        monkeypatch.setattr(concurrency, "_slot_stats", concurrency._SlotStats())
+
+        class _RateLimitedOnce:
+            calls = 0
+
+            async def ainvoke(self, messages: list) -> AIMessage:
+                self.calls += 1
+                if self.calls == 1:
+                    raise RuntimeError("429 Too Many Requests: rate limit exceeded")
+                return AIMessage(content="ok")
+
+        with patch.object(streaming.asyncio, "sleep", AsyncMock()):
+            result = await _ainvoke_throttled(_RateLimitedOnce(), [HumanMessage(content="q")])
+
+        assert result.content == "ok"
+        stats = concurrency.indexing_llm_stats()
+        assert stats["rate_limit_retries"] == 1
+        assert stats["acquired"] == 2
 
 
 class TestStructuredOutputTimeout:

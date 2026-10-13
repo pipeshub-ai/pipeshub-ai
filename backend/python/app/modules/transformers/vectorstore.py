@@ -35,6 +35,7 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
+from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
@@ -409,6 +410,20 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _bounded_documents(text: str, metadata: dict) -> list[Document]:
+    """Documents for one piece of table or SQL text, split to the model's token
+    ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
+    and an over-long one is rejected by the embedding API only after the full
+    retry budget."""
+    ceiling = _embed_token_ceiling()
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [Document(page_content=text, metadata=metadata)]
+    return [
+        Document(page_content=piece, metadata={**metadata})
+        for piece in _split_to_token_ceiling(text, ceiling)
+    ]
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
@@ -428,7 +443,9 @@ def _build_text_documents(
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        block_text = block.data or ""
+        # Links stay in the stored block for citations; only the embedded
+        # text loses their targets.
+        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -744,20 +761,29 @@ class VectorStore(Transformer):
 
         Prefers the description `ImageDescriber` wrote before the record was
         stored, since parser-captured captions are empty for most PDFs; falls
-        back to caption/footnote/annotation metadata (e.g. markdown/HTML alt
-        text), then to an empty string.
+        back to caption/footnote/annotation metadata, then to an empty string.
+        The author's alt text (``media_metadata.alt_text``) is added to either.
         """
         image_metadata = getattr(block, "image_metadata", None)
         if image_metadata is None:
             return ""
+        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
+        alt_text = alt_text.strip() if isinstance(alt_text, str) else ""
         described = getattr(image_metadata, "description", None)
         if isinstance(described, str) and described.strip():
-            return described.strip()
+            described = described.strip()
+            # The author's alt names what a generated description can only
+            # depict ("Revenue FY26" vs "a bar chart").
+            if alt_text and alt_text.lower() not in described.lower():
+                return f"{described} {alt_text}"
+            return described
         parts: List[str] = []
         for field in ("captions", "footnotes", "annotations"):
             values = getattr(image_metadata, field, None)
             if values:
                 parts.extend(v for v in values if v)
+        if alt_text and alt_text not in parts:
+            parts.append(alt_text)
         return " ".join(parts).strip()
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
@@ -1790,6 +1816,7 @@ class VectorStore(Transformer):
                     sql_base_metadata = {
                         "virtualRecordId": virtual_record_id,
                         "blockId": block_group.id,
+                        "blockGroupIndex": block_group.index,
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
@@ -1804,12 +1831,9 @@ class VectorStore(Transformer):
                             if table_summary:
                                 parts.append(f"/* Table Description:\n{table_summary}\n*/")
                             parts.append(ddl)
-                            documents_to_embed.append(
-                                Document(
-                                    page_content="\n\n".join(parts),
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                "\n\n".join(parts), sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
@@ -1844,12 +1868,9 @@ class VectorStore(Transformer):
 
                         view_context = "\n".join(view_context_parts)
                         if len(view_context.strip()) > len(f"-- View: {fqn}"):
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=view_context,
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                view_context, sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL VIEW for embedding: {fqn}"
                             )
@@ -1861,21 +1882,20 @@ class VectorStore(Transformer):
                 elif block_group_type == "table":
                     table_data = block_group.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block_group.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block_group.id,
+                                    "blockGroupIndex": block_group.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    "isBlockGroup": True,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
 
             # ── SQL row blocks ──
             sql_rows_embedded = 0
@@ -1883,19 +1903,18 @@ class VectorStore(Transformer):
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
-                    documents_to_embed.append(
-                        Document(
-                            page_content=row_text,
-                            metadata={
-                                "virtualRecordId": virtual_record_id,
-                                "blockId": block.id,
-                                "orgId": org_id,
-                                "isBlock": True,
-                                "isBlockGroup": False,
-                                "blockType": BlockType.TABLE_ROW.value,
-                            },
-                        )
-                    )
+                    documents_to_embed.extend(_bounded_documents(
+                        row_text,
+                        {
+                            "virtualRecordId": virtual_record_id,
+                            "blockId": block.id,
+                            "blockIndex": block.index,
+                            "orgId": org_id,
+                            "isBlock": True,
+                            "isBlockGroup": False,
+                            "blockType": BlockType.TABLE_ROW.value,
+                        },
+                    ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
                 self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
@@ -1910,39 +1929,41 @@ class VectorStore(Transformer):
                 if block_type == "table":
                     table_data = block.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    # A block, not a group: readers index
+                                    # block_groups with a group point's index.
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
-                        row_text = table_data.get("row_natural_language_text", "")
+                        row_text = anchor_text_only(
+                            table_data.get("row_natural_language_text", "")
+                        )
                         if row_text:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=row_text,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE_ROW.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                row_text,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": True,
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE_ROW.value,
+                                },
+                            ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):

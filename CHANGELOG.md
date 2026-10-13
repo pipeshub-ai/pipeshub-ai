@@ -6,6 +6,9 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 | Version | Date | Channel | Theme |
 |---|---|---|---|
+| [0.9.1](#091--2026-09-28) | Sep 28, 2026 | Stable | OAuth and PKCE hardening, Kafka fix, SDK 1.7.0 |
+| [0.9.0](#090--2026-09-28) | Sep 28, 2026 | Stable | Projects, service accounts, SMB and Drupal Wiki connectors |
+| [0.8.0](#080--2026-09-14) | Sep 14, 2026 | Stable | Fair connector scheduling, indexing under load, Redis Cluster |
 | [0.7.0](#070--2026-08-26) | Aug 26, 2026 | Stable | PATs, GitHub connector, Bedrock, one-command installer |
 | [0.6.0](#060--2026-08-10) | Aug 10, 2026 | Stable | New agent loop ships stable; query service ~1.8× faster |
 | [0.6.0-beta](#060-beta--2026-08-01) | Aug 1, 2026 | Beta | New agent loop, standalone parsing & extraction, OpenSearch |
@@ -52,6 +55,77 @@ Changes merged to `main` since the last release: [`v0.7.0...HEAD`](https://githu
 - **The crawling queue moved from BullMQ's default `bull` key prefix to the hash-tagged `{crawling}`**, required so BullMQ's multi-key Lua scripts stay within one Redis Cluster / MemoryDB slot. Jobs written under the old prefix are invisible to both the queue and the worker, so the connector-sync scheduled-jobs backfill re-runs once on the first boot after upgrade (under a new `/migrations/connector_sync_scheduled_jobs_v2` flag), re-creating every schedule from the connector's persisted `sync` block and sweeping the stranded `bull:*` keys. No action required; expect one extra migration pass in the startup logs.
 - **`VECTOR_DB_TYPE=redis` is now gated on `VECTOR_REDIS_MODE`** (defaulting to `REDIS_MODE`) rather than on `REDIS_MODE` alone. `FT.HYBRID` needs Redis ≥ 8.4 in standalone mode, which MemoryDB does not provide — but the vector store keeps its own `REDIS_VECTOR_*` connection, so running the app against MemoryDB with the vector index on a standalone Redis is valid: set `VECTOR_REDIS_MODE=standalone`.
 - **Security upgrade: the Python services move to FastAPI 0.136.3 and Starlette 1.7.0.** The Starlette release they ran on has published security advisories, including one where a crafted `Host` header could let a request sent directly to a Python service skip sign-in. Starlette is now pinned directly instead of following FastAPI's range. What changes for callers: JSON requests to the Python services without `Content-Type: application/json` are now answered 422 instead of being parsed. This affects only callers that talk to the Python ports directly; the gateway, the UI, Slack and MCP always send the header. CORS responses now echo the request's `Origin` and always carry `Vary: Origin` (a request without cookies used to get `Access-Control-Allow-Origin: *`). URL-encoded form bodies are limited to 1000 fields and 1 MiB per field, and a form over either limit is answered 400; file uploads (multipart) are not limited by this. An error raised by a background task after a streamed response is now logged instead of swallowed.
+
+---
+
+## 0.9.1 — 2026-09-28
+
+**OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0** · Stable · [`v0.9.1`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.1) · [Full changelog](changelog/0.9.1.md)
+
+A 20-PR security and reliability patch on top of 0.9.0, published the same day. The 1.7.0 SDKs, released on October 12, 2026, are compatible with 0.9.1. Upgrade from 0.9.0 is recommended.
+
+### Fixed
+- The Kafka consumer used by the connectors and query services no longer loses messages after a temporary failure ([#3515](https://github.com/pipeshub-ai/pipeshub-ai/pull/3515))
+- Graph enrichment permission-checks the related records it adds to a chat prompt ([#3590](https://github.com/pipeshub-ai/pipeshub-ai/pull/3590))
+
+### Security
+- OAuth app, personal access token, consent and device-flow routes require a user's sign-in session ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- PKCE is enforced where the authorization code is issued and redeemed; only `S256` is accepted ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
+- The record convert API no longer writes files outside its temp folder ([#3628](https://github.com/pipeshub-ai/pipeshub-ai/pull/3628))
+
+### Breaking changes & upgrade notes
+- OAuth access tokens and personal access tokens get `403` on the OAuth app, PAT, consent and device-flow routes ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- PKCE `plain` is rejected, and public clients must send an `S256` challenge on the consent `POST` ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
+- **SDK 1.7.0 is a minor version with breaking changes** for TypeScript, Python and Go. The fix for each change, in each language, is in the [full changelog](changelog/0.9.1.md#sdks--170-typescript-python-go)
+
+---
+
+## 0.9.0 — 2026-09-28
+
+**Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors** · Stable · [`v0.9.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.0) · [Full changelog](changelog/0.9.0.md)
+
+About 290 PRs since 0.8.0. Projects, identities for automation and three new connectors arrive; the rest makes failures visible instead of silent.
+
+### Added
+- **Projects**: a shared workspace for chats with members, its own knowledge base, pinning and archiving ([#3304](https://github.com/pipeshub-ai/pipeshub-ai/pull/3304), [#3426](https://github.com/pipeshub-ai/pipeshub-ai/pull/3426))
+- **Service accounts and service tokens**, so automation reads with its own permissions, and a **device-code login** for coding agents ([#3420](https://github.com/pipeshub-ai/pipeshub-ai/pull/3420), [#3422](https://github.com/pipeshub-ai/pipeshub-ai/pull/3422), [#3197](https://github.com/pipeshub-ai/pipeshub-ai/pull/3197))
+- **SMB 2/3, SMB1/CIFS and Drupal Wiki connectors**; PAT setup for GitHub Teams and GitLab; a "Folders" filter for the object stores ([#3533](https://github.com/pipeshub-ai/pipeshub-ai/pull/3533), [#3466](https://github.com/pipeshub-ai/pipeshub-ai/pull/3466), [#3325](https://github.com/pipeshub-ai/pipeshub-ai/pull/3325), [#3340](https://github.com/pipeshub-ai/pipeshub-ai/pull/3340))
+
+### Changed
+- Search filters on the user's accessible containers inside the vector query instead of listing every visible record, and BM25 keyword scoring applies IDF ([#3230](https://github.com/pipeshub-ai/pipeshub-ai/pull/3230), [#3488](https://github.com/pipeshub-ai/pipeshub-ai/pull/3488))
+
+### Fixed
+- A failed read is no longer treated as "nothing there", so a database restart cannot look like a deletion, and domain events go through an outbox so a broker outage delays them instead of losing them ([#3445](https://github.com/pipeshub-ai/pipeshub-ai/pull/3445), [#3444](https://github.com/pipeshub-ai/pipeshub-ai/pull/3444), [#3474](https://github.com/pipeshub-ai/pipeshub-ai/pull/3474), [#3521](https://github.com/pipeshub-ai/pipeshub-ai/pull/3521))
+
+### Breaking changes & upgrade notes
+- Each GitHub and GitLab connector instance syncs exactly one repository; split an instance that syncs several ([#3251](https://github.com/pipeshub-ai/pipeshub-ai/pull/3251))
+- Each organization is limited to 5 admins, counting pending invites ([#3284](https://github.com/pipeshub-ai/pipeshub-ai/pull/3284))
+- Sign-in no longer reveals whether an email has an account; clients that matched on the old answers need to change ([#3529](https://github.com/pipeshub-ai/pipeshub-ai/pull/3529))
+
+---
+
+## 0.8.0 — 2026-09-14
+
+**Fair scheduling across connectors, an indexing pipeline that holds up under load, and Redis Cluster readiness** · Stable · [`v0.8.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.8.0) · [Full changelog](changelog/0.8.0.md)
+
+103 PRs since 0.7.0, centred on the indexing pipeline and on Redis. Several Redis, TLS and vector-store settings now fail at startup instead of being ignored.
+
+### Added
+- Fair scheduling: each connector gets its own lane into indexing ([#3126](https://github.com/pipeshub-ai/pipeshub-ai/pull/3126))
+- One Redis connection provider per backend, with Redis Cluster and AWS MemoryDB support ([#3155](https://github.com/pipeshub-ai/pipeshub-ai/pull/3155), [#3254](https://github.com/pipeshub-ai/pipeshub-ai/pull/3254))
+- `VECTOR_COLLECTION_STRATEGY`, and S3 authentication with an instance IAM role ([#3112](https://github.com/pipeshub-ai/pipeshub-ai/pull/3112), [#3143](https://github.com/pipeshub-ai/pipeshub-ai/pull/3143))
+
+### Changed
+- Indexing concurrency follows what downstream services can take, and backs off when they struggle ([#3170](https://github.com/pipeshub-ai/pipeshub-ai/pull/3170), [#3174](https://github.com/pipeshub-ai/pipeshub-ai/pull/3174))
+- Chat messages move into their own collections through a one-time migration ([#3148](https://github.com/pipeshub-ai/pipeshub-ai/pull/3148))
+
+### Fixed
+- Records no longer stay in `QUEUED` forever when their event is lost or abandoned ([#3163](https://github.com/pipeshub-ai/pipeshub-ai/pull/3163), [#3140](https://github.com/pipeshub-ai/pipeshub-ai/pull/3140))
+
+### Breaking changes & upgrade notes
+- Redis TLS is enforced in every client, TLS values parse strictly, `REDIS_DB` is deprecated, and the crawling queue moves to the `{crawling}` prefix ([#3155](https://github.com/pipeshub-ai/pipeshub-ai/pull/3155))
+- MD5 deduplication is per organization, so content shared across orgs re-indexes once per org ([#3112](https://github.com/pipeshub-ai/pipeshub-ai/pull/3112))
+- Python services accept scoped-secret tokens only as service tokens with service scopes ([#3283](https://github.com/pipeshub-ai/pipeshub-ai/pull/3283))
 
 ---
 

@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
+import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -64,6 +65,7 @@ import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes
 import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
 import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
 import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
 import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
@@ -881,6 +883,72 @@ describe('Application', () => {
 
       // Should NOT throw — stop() has a try/catch for notification shutdown
       await app.stop();
+    });
+
+    it('should finish in-flight requests before disposing containers', async () => {
+      (app as any).notificationContainer = new Container();
+      const order: string[] = [];
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
+      (app as any).mailServiceContainer = mailContainer;
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        res.on('finish', () => { order.push('response'); });
+        setTimeout(() => { res.end('ok'); }, 50);
+      });
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      const inFlight = new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/`, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await requestReceived;
+
+      await app.stop();
+
+      expect(await inFlight).to.equal('ok');
+      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
+      expect(server.listening).to.be.false;
+    });
+
+    it('should not let an idle keep-alive socket hold the drain open', async () => {
+      (app as any).notificationContainer = new Container();
+      let respondedAt = 0;
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
+      });
+      server.keepAliveTimeout = 65_000;
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      // A raw socket, because nock (loaded by other specs) rewrites http.get
+      // requests to Connection: close and would hide the keep-alive case.
+      const socket = net.connect(port, '127.0.0.1');
+      let received = '';
+      socket.on('data', (c) => { received += c; });
+      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      await requestReceived;
+
+      try {
+        await Promise.all([app.stop(), socketClosed]);
+      } finally {
+        socket.destroy();
+      }
+
+      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
+      expect(Date.now() - respondedAt).to.be.below(1000);
+      expect(server.listening).to.be.false;
     });
 
     it('should throw if a container dispose fails', async () => {

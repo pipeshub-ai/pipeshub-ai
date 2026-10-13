@@ -29,6 +29,11 @@ from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
 )
+from app.modules.retrieval.result_merging import (
+    CollectionResults,
+    ReciprocalRankFusionMerger,
+    search_hit_identity,
+)
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import STRICT_SCOPE_FILTER_KEY
 from app.utils.chat_helpers import (
@@ -37,6 +42,7 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     get_flattened_results,
     get_record_id_shortener_if_enabled,
+    merge_into_records_map,
 )
 from app.utils.pattern_match import (
     await_pattern_match,
@@ -52,7 +58,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_RETRIEVAL_SOURCES_DIVISOR = 5
-_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 500, 503})
+# 422: the request's entity filter was refused; its message tells how to narrow it.
+_RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 422, 500, 503})
 
 # Returned when a search limited with source_ids finds nothing.
 NARROWED_SEARCH_EMPTY_MESSAGE = (
@@ -84,6 +91,21 @@ _RETRIEVED_COUNT_RE = re.compile(
 _RETRIEVED_COUNT_RE_LEGACY = re.compile(
     r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", re.IGNORECASE | re.MULTILINE
 )
+
+
+def _fuse_sources(per_source: list[CollectionResults]) -> list[dict[str, Any]]:
+    """One ranked list from the per-source searches of a fan-out.
+
+    Each source's scores are rank-fused positions within that search, so they
+    do not compare across sources, and appending the lists puts every hit of
+    the first source ahead of the next. Fusing the ranks interleaves the
+    sources by position, and the fused score replaces each hit's so that
+    later ranking by score or by order follows it.
+    """
+    fused = ReciprocalRankFusionMerger(identity=search_hit_identity).fuse(per_source)
+    for hit, score in fused:
+        hit["score"] = score
+    return [hit for hit, _ in fused]
 
 
 def resolve_entity_filter_groups(
@@ -388,10 +410,13 @@ async def execute_search(
         grep_filters: dict[str, Any] = (
             {**filter_groups, STRICT_SCOPE_FILTER_KEY: True} if strict_scope else filter_groups
         )
-
+        # The user's entity filter scopes every content search of the turn. It is
+        # not the tool's own entity filter below, and the retry without that one
+        # keeps it.
+        request_entity_filters = agent_filters.get("entityFilters")
         # Grep knows nothing of entity scope, so an entity-scoped search would
         # be widened by its hits; it runs only for unscoped-by-entity searches.
-        entity_scoped = bool(entity_filter_groups or record_scoped_entities)
+        entity_scoped = bool(entity_filter_groups or record_scoped_entities or request_entity_filters)
         if config_service is not None and not entity_scoped:
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
@@ -420,6 +445,8 @@ async def execute_search(
             filter_groups_for_call: dict[str, Any] = merge_filter_groups(fg, entity_fg)
             if strict_scope:
                 filter_groups_for_call[STRICT_SCOPE_FILTER_KEY] = True
+            if request_entity_filters:
+                filter_groups_for_call["entityFilters"] = request_entity_filters
             return await retrieval_service.search_with_filters(
                 queries=[query],
                 org_id=org_id,
@@ -465,7 +492,7 @@ async def execute_search(
                     ))
 
                 raw_results = await asyncio.gather(*tasks, return_exceptions=True)
-                attempt_results: list[dict[str, Any]] = []
+                per_source: list[CollectionResults] = []
                 attempt_map: dict[str, Any] = {}
                 any_success = False
                 error_status: int | None = None
@@ -486,7 +513,10 @@ async def execute_search(
                         error_message = raw.get("message", error_message)
                         continue
                     any_success = True
-                    attempt_results.extend(raw.get("searchResults", []))
+                    per_source.append(CollectionResults(
+                        collection_name=f"source-{len(per_source)}",
+                        results=raw.get("searchResults", []),
+                    ))
                     attempt_map.update(raw.get("virtual_to_record_map", {}))
 
                 if not any_success:
@@ -498,7 +528,7 @@ async def execute_search(
                         })
                     # Every source raised or returned nothing: nothing was searched.
                     return [], {}, json.dumps({"status": "error", "message": error_message})
-                return attempt_results, attempt_map, None
+                return _fuse_sources(per_source), attempt_map, None
 
             results = await _search_one(filter_groups, entity_fg, vrids)
             if results is None:
@@ -626,9 +656,15 @@ async def execute_search(
         state["final_results"] = _dedupe_append_final_results(
             state.get("final_results", []), final_results,
         )
-        existing_virtual_map = state.get("virtual_record_id_to_result") or {}
-        state["virtual_record_id_to_result"] = {**existing_virtual_map, **virtual_record_id_to_result}
-        existing_tool_records = state.get("tool_records") or []
+        # Updated in place: a fetch running in the same turn writes into this
+        # same dict, and replacing it would drop what that fetch added.
+        live_virtual_map = state.get("virtual_record_id_to_result")
+        if not isinstance(live_virtual_map, dict):
+            live_virtual_map = state["virtual_record_id_to_result"] = {}
+        merge_into_records_map(live_virtual_map, virtual_record_id_to_result)
+        existing_tool_records = state.get("tool_records")
+        if not isinstance(existing_tool_records, list):
+            existing_tool_records = []
         new_tool_records = list(virtual_record_id_to_result.values())
         existing_ids = {r.get("_id") for r in existing_tool_records if isinstance(r, dict)}
         state["tool_records"] = existing_tool_records + [

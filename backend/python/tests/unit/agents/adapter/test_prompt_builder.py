@@ -492,6 +492,58 @@ class TestFindingInformation:
         section = result.split("## Finding Information", 1)[1]
         assert "disagree" in section.lower()
 
+    @pytest.mark.parametrize(
+        ("high_accuracy", "feature", "expected"),
+        [
+            (None, None, False),
+            ("true", None, True),
+            ("true", "", True),
+            ("true", "false", False),
+            (None, "true", True),
+            ("false", "TRUE", True),
+            (None, "1", False),
+        ],
+    )
+    def test_keyword_query_rule_follows_its_switch_then_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
+    ) -> None:
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("KEYWORD_SEARCH_QUERIES", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        result = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert ("Query text for `retrieval__search_internal_knowledge`: keyword-dense" in section) is expected
+
+    def test_keyword_query_rule_not_given_to_a_parent_that_delegates_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The exploration delegate takes a self-contained goal; keyword text
+        there would drop the task. Its child gets the rule instead."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        result = _build(make_context(has_knowledge=True), tool_names=["internal_exploration_agent"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert "internal_exploration_agent" in section
+        assert "keyword-dense" not in section
+
+    def test_keyword_query_rule_needs_a_granted_search_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+
+        assert "keyword-dense" not in _build(context, tool_names=["web_search", "fetch_url"])
+
+    def test_keyword_query_rule_is_identical_across_requests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It sits in the cached prompt prefix, so it must not vary per request."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        first = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        second = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+
+        assert first.split("## Finding Information", 1)[1] == second.split("## Finding Information", 1)[1]
+
     def test_no_forbidden_bullets_style(self) -> None:
         context = make_context(has_knowledge=True)
         context.tool_state["agent_toolsets"] = [{"name": "jira-cloud"}]

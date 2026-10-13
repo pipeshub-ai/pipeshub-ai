@@ -1090,6 +1090,7 @@ export function ModelConfigDialog({
         revealing={revealState === 'loading'}
         discoverySlot={mode === 'add' ? discoverySlot : undefined}
         modelFieldSlot={mode === 'add' ? modelFieldSlot : undefined}
+        revealed={revealState === 'shown'}
       />
       {downloadTarget && (
         <EmbeddingDownloadProgress
@@ -1140,6 +1141,7 @@ function ModelConfigFormBody({
   revealing,
   discoverySlot,
   modelFieldSlot,
+  revealed,
 }: {
   provider: AIModelProvider | null;
   capability: string | null;
@@ -1157,6 +1159,7 @@ function ModelConfigFormBody({
   discoverySlot?: React.ReactNode;
   /** Replaces the plain `model` text input in place. */
   modelFieldSlot?: React.ReactNode;
+  revealed: boolean;
 }) {
   const { t } = useTranslation();
   const leaveBlankPlaceholder = t('workspace.aiModels.savedLeaveBlank');
@@ -1314,6 +1317,7 @@ function ModelConfigFormBody({
                 onChange={onFieldChange}
                 disabled={saving}
                 startAdornment={fieldStartAdornment(field.name)}
+                revealed={revealed && hiddenCredentials.has(field.name)}
               />
             )
           )}

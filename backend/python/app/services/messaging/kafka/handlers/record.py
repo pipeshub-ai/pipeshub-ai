@@ -964,6 +964,9 @@ class RecordEventHandler(BaseEventService):
 
         try:
             await sink.index(ctx)
+            # The stored extraction rebuilds the record's named entities and their
+            # vector points too, so a re-embed never drops them or calls a model.
+            await sink.reproject_named_entities(ctx)
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1251,7 +1254,7 @@ class RecordEventHandler(BaseEventService):
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message like the delete path
                 # does instead of retrying it three times.
-                self.logger.error(f"❌ Record {record_id} not found in database")
+                self.logger.warning(f"Record {record_id} not found in database; dropping its event")
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),

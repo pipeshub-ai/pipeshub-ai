@@ -700,6 +700,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await _collect_events(
@@ -774,6 +775,7 @@ class TestVectorDbOnlyReindex:
             return_value={"block_containers": {"blocks": [{"bogus": object()}]}}
         )
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         await _collect_events(
@@ -849,6 +851,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=_blob_with_blocks())
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         with patch(
@@ -881,6 +884,8 @@ class TestVectorDbOnlyReindex:
         sink.blob_storage.get_record_from_storage.assert_awaited_once_with("vr-1", "org-1")
         sink.index.assert_awaited_once()
         assert sink.index.await_args.args[0].settings["skip_blob"] is True
+        # The stored extraction rebuilds the named entities on the same context.
+        sink.reproject_named_entities.assert_awaited_once_with(sink.index.await_args.args[0])
         handler._download_from_signed_url.assert_not_awaited()
         stream_call.assert_not_awaited()
         assert all(e.event != "start_parsing" for e in events)
@@ -903,6 +908,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock(return_value=None)
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         events = await _collect_events(
@@ -946,6 +952,7 @@ class TestVectorDbOnlyReindex:
         sink = MagicMock()
         sink.blob_storage.get_record_from_storage = AsyncMock()
         sink.index = AsyncMock()
+        sink.reproject_named_entities = AsyncMock()
         handler.event_processor.sink_orchestrator = sink
 
         events = await _collect_events(
@@ -1129,6 +1136,22 @@ class TestRecordNotFound:
             IndexingEvent.PARSING_COMPLETE,
             IndexingEvent.INDEXING_COMPLETE,
         ]
+
+    @pytest.mark.asyncio
+    async def test_record_not_found_is_a_warning_not_an_error(self) -> None:
+        """Deleting a record while its event is queued is normal, so draining
+        it must not show up in error-level alerting."""
+        handler = _make_handler()
+        handler.event_processor.graph_provider.get_document = AsyncMock(return_value=None)
+
+        payload = {"recordId": "r1", "mimeType": "application/pdf", "extension": "pdf"}
+        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        handler.logger.error.assert_not_called()
+        assert any(
+            "not found in database" in str(c)
+            for c in handler.logger.warning.call_args_list
+        )
 
     @pytest.mark.asyncio
     async def test_an_unreadable_graph_is_not_drained_as_a_deletion(self):

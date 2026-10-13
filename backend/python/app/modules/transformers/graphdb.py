@@ -122,7 +122,7 @@ class GraphDBTransformer(Transformer):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _node_key(doc: Dict) -> str:
+    def _node_key(doc: Dict) -> str | None:
         """Extract the node key from a document returned by the graph provider."""
         return doc.get("_key") or doc.get("id")
 
@@ -132,16 +132,24 @@ class GraphDBTransformer(Transformer):
         collection: str,
         filter_field: str,
         filter_value: str,
-    ) -> str:
+    ) -> str | None:
         """
         Look up a node by a single field; create it if it does not exist.
-        Returns the node key.
+        Returns the node key, or None when every match has no key.
         """
         results = await tx_store.get_nodes_by_filters(
             collection, {filter_field: filter_value}, raise_on_error=True
         )
         if results:
-            return self._node_key(results[0])
+            # A Neo4j node written without an `id` property comes back with no
+            # key; an edge to it would point at "<collection>/None".
+            key = next((k for k in map(self._node_key, results) if k), None)
+            if key is None:
+                self.logger.warning(
+                    "%s node(s) matching %s=%r have no key; not linking to them",
+                    collection, filter_field, filter_value,
+                )
+            return key
 
         new_key = str(uuid.uuid4())
         await tx_store.batch_upsert_nodes(
@@ -156,16 +164,19 @@ class GraphDBTransformer(Transformer):
         kind: TaxonomyKind,
         name: str,
         resolution: Optional[EntityResolution],
-    ) -> _TaxonomyNode:
+    ) -> _TaxonomyNode | None:
         """The node ``name`` links to in ``kind``'s collection.
 
         With a resolution from ``EntityResolver`` (apply mode) the canonical
         node is used; ``_write_canonical_nodes`` already created it and added
         this record's aliases. Only without a resolution does the legacy
-        exact-name lookup run; it is not org-scoped.
+        exact-name lookup run; it is not org-scoped, and it returns None when
+        the name matches only nodes without a key.
         """
         if resolution is None:
             key = await self._find_or_create_node(tx_store, kind.collection, "name", name)
+            if key is None:
+                return None
             return _TaxonomyNode(key=key, name=name, level=kind.level)
 
         entry = resolution.get(kind.collection, name)
@@ -558,6 +569,10 @@ class GraphDBTransformer(Transformer):
                 category_node = await self._resolve_taxonomy_node(
                     tx_store, CATEGORY, primary_category, resolution
                 )
+            else:
+                category_node = None
+                self.logger.warning("⚠️ No category extracted for record %s", record_id)
+            if category_node is not None:
                 category_key = category_node.key
                 cat_to = f"{CollectionNames.CATEGORIES.value}/{category_node.key}"
                 new_cat_tos[cat_to] = category_node.name
@@ -567,15 +582,15 @@ class GraphDBTransformer(Transformer):
                     category_node, EntityType.CATEGORY, org_id_placeholder,
                     connector_ids_placeholder, record_group_ids_placeholder,
                 ))
-            else:
-                self.logger.warning("⚠️ No category extracted for record %s", record_id)
 
             # Handle subcategories
             async def handle_subcategory(
                 name: str, kind: TaxonomyKind, parent_key: str, parent_collection: str
-            ) -> str:
+            ) -> str | None:
                 collection_name = kind.collection
                 node = await self._resolve_taxonomy_node(tx_store, kind, name, resolution)
+                if node is None:
+                    return None
                 key = node.key
 
                 sub_to = f"{collection_name}/{key}"
@@ -647,6 +662,8 @@ class GraphDBTransformer(Transformer):
                 lang_node = await self._resolve_taxonomy_node(
                     tx_store, LANGUAGE, language, resolution
                 )
+                if lang_node is None:
+                    continue
                 lang_to = f"{CollectionNames.LANGUAGES.value}/{lang_node.key}"
                 new_lang_tos[lang_to] = lang_node.name
                 if lang_node.extracted_names:
@@ -671,6 +688,8 @@ class GraphDBTransformer(Transformer):
                 topic_node = await self._resolve_taxonomy_node(
                     tx_store, TOPIC, topic, resolution
                 )
+                if topic_node is None:
+                    continue
                 topic_to = f"{CollectionNames.TOPICS.value}/{topic_node.key}"
                 new_topic_tos[topic_to] = topic_node.name
                 if topic_node.extracted_names:

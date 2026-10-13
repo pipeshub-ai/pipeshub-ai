@@ -1102,21 +1102,67 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
             )
 
     # ── Neo4j ─────────────────────────────────────────────────────────────────
+    # One RETURN 1 on the driver already open. execute_query can connect and
+    # rebuild that driver; a 3s wait_for cancelled mid-handshake would leave
+    # the new driver installed. A fresh Bolt handshake can also take longer
+    # than Node's 5s budget while Neo4j is still up.
     if data_store == "neo4j":
-        from neo4j import AsyncGraphDatabase
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        username = os.getenv("NEO4J_USERNAME", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "")
+        # Under Node's 5s graph timeout, which is also the Helm probe budget.
+        # Acquisition is shorter than the wait so an idle-connection RESET
+        # fails inside the driver and releases the pool slot. wait_for
+        # cancelling that RESET would leave the slot checked out.
+        neo4j_probe_timeout_sec = 3.0
+        neo4j_acquire_timeout_sec = 2.0
 
-        driver = None
         try:
-            driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
-            await driver.verify_connectivity()
+            graph_provider = getattr(request.app.state, "graph_provider", None)
+            if graph_provider is None:
+                container = request.app.container  # type: ignore[attr-defined]
+                graph_provider = await container.graph_provider()
+
+            client = getattr(graph_provider, "client", None)
+            driver = getattr(client, "driver", None) if client is not None else None
+            if driver is None:
+                request.app.container.logger().error(  # type: ignore[attr-defined]
+                    "Neo4j health check failed: provider has no driver"
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "error": "Neo4j unavailable",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+
+            database = getattr(client, "database", None)
+
+            async def _ping() -> None:
+                async with driver.session(
+                    database=database,
+                    connection_acquisition_timeout=neo4j_acquire_timeout_sec,
+                ) as session:
+                    result = await session.run("RETURN 1 AS n")
+                    await result.consume()
+
+            await asyncio.wait_for(_ping(), timeout=neo4j_probe_timeout_sec)
             return JSONResponse(
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+            )
+        except TimeoutError:
+            request.app.container.logger().error(  # type: ignore[attr-defined]
+                "Neo4j health check timed out after %.1fs", neo4j_probe_timeout_sec
+            )
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check timed out",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
         except AuthError as e:
             request.app.container.logger().error("Neo4j auth failed: %s", e)
@@ -1148,9 +1194,6 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        finally:
-            if driver:
-                await driver.close()
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(

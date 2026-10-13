@@ -45,10 +45,13 @@ resources:
 persistence:
   enabled: false
 
-# pipeshubai/pipeshub-ai runs as root. process_monitor.sh tees to
+# The pinned 0.9.1 image runs as root. process_monitor.sh tees to
 # /app/process_monitor.log, which is not writable by uid 1000, and the
 # container-level securityContext overrides the pod one. Both must be root
 # or the app container exits before it listens.
+# Images built after #3782 own /app as uid 1000 and drop to it themselves; with
+# those, root here crash-loops ("setpriv: setresuid failed"), so remove both
+# overrides when moving the tag past 0.9.1 (as values-local.yaml does).
 podSecurityContext:
   runAsNonRoot: false
   runAsUser: 0

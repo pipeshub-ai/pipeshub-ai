@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from app.modules.transformers.blob_storage import BlobStorage
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-__all__ = ["PrefetchResult", "prefetch_retrieval"]
+__all__ = ["PrefetchResult", "filter_notice_constraint", "prefetch_retrieval"]
 
 # Statuses `RetrievalService.search_with_filters()` uses for "the backend
 # itself failed/is unavailable" -- as opposed to "ran fine, found nothing"
@@ -46,6 +46,9 @@ __all__ = ["PrefetchResult", "prefetch_retrieval"]
 # below, not an error). Mirrors the check `_generate_internal_search_
 # stream()` ran on the same call.
 _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 404, 500, 503})
+# The request's own filter was refused (an entity filter too broad for what the
+# user can read, or unusable): not "nothing found", and the user has to be told.
+_FILTER_REFUSED_STATUS_CODE = 422
 
 
 @dataclass
@@ -71,6 +74,8 @@ class PrefetchResult:
     # `final_results` in the search's relevance order; `final_results` itself
     # is sorted by virtual record id for display.
     ranked_results: list[dict[str, Any]] = field(default_factory=list)
+    # Why the request's filter could not be applied; the answer must say so.
+    filter_notice: str | None = field(default=None)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -140,6 +145,18 @@ async def prefetch_retrieval(
         )
 
     status_code = result.get("status_code", 500)
+    if status_code == _FILTER_REFUSED_STATUS_CODE:
+        message = result.get("message") or "The filter could not be applied."
+        return PrefetchResult(
+            formatted_context="",
+            final_results=[],
+            virtual_record_id_to_result={},
+            tool_records=[],
+            citation_ref_mapper=ref_mapper,
+            is_empty=True,
+            error_message=message,
+            filter_notice=message,
+        )
     if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
         return PrefetchResult(
             formatted_context="",
@@ -208,3 +225,12 @@ async def prefetch_retrieval(
         collected_images=collected_images,
         ranked_results=list(flattened_results),
     )
+
+
+def filter_notice_constraint(notice: str) -> str:
+    """What the model is told when the request's filter was refused."""
+    return (
+        f"The filter on this question could not be applied: {notice} Tell the user this, "
+        "and how to narrow the filter. Do not answer as if no documents matched."
+    )
+

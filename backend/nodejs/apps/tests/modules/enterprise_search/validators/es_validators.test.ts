@@ -487,6 +487,75 @@ describe('enterprise_search/validators/es_validators', () => {
         expect(result.data.body).to.not.have.property('modelName')
       }
     })
+
+    it('should accept entityFilters', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: {
+            entityFilters: {
+              kinds: ['currency'],
+              mentionedDate: { from: 1, to: 2 },
+              amount: { min: 10, max: 20, currency: 'USD' },
+            },
+          },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should normalise kinds and currency and accept ISO dates', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: {
+            entityFilters: {
+              kinds: [' Person ', 'CURRENCY'],
+              mentionedDate: { from: '2026-03-01', to: '2026-04-01T00:00:00Z' },
+              amount: { min: 10, currency: 'usd' },
+              percent: { min: 0.1, max: 0.2 },
+            },
+          },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      const filters = result.success ? result.data.body.filters?.entityFilters : undefined
+      expect(filters?.kinds).to.deep.equal(['person', 'currency'])
+      expect(filters?.amount?.currency).to.equal('USD')
+      expect(filters?.mentionedDate).to.deep.equal({ from: 1772323200000, to: 1775001600000 })
+    })
+
+    for (const [label, entityFilters] of [
+      ['an unknown kind', { kinds: ['spaceship'] }],
+      ['a blank name', { name: '   ' }],
+      ['a currency that is not an ISO code', { amount: { min: 1, currency: 'dollars' } }],
+      ['a date that is neither epoch nor ISO', { mentionedDate: { from: 'last tuesday' } }],
+      ['an entity id that is not a uuid', { entityIds: ['not-a-uuid'] }],
+      ['an infinite amount', { amount: { min: Infinity } }],
+    ] as const) {
+      it(`should reject ${label}`, () => {
+        const data = { body: { query: 'invoices', filters: { entityFilters } } }
+        expect(enterpriseSearchSearchSchema.safeParse(data).success).to.be.false
+      })
+    }
+
+    it('should reserve filters.where', () => {
+      const data = { body: { query: 'invoices', filters: { where: { and: [] } } } }
+      expect(enterpriseSearchSearchSchema.safeParse(data).success).to.be.false
+    })
+
+    it('should reject a date range whose start is after its end', () => {
+      const data = {
+        body: {
+          query: 'invoices',
+          filters: { entityFilters: { mentionedDate: { from: 5, to: 1 } } },
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.false
+    })
   })
 
   describe('addMessageParamsSchema', () => {

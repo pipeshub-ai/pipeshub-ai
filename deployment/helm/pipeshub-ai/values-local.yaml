@@ -51,25 +51,10 @@ persistence:
     - ReadWriteOnce
   storageClass: ""  # use cluster default
 
-# ----- App pod runs as root for local convenience -----
-# (matches docker-compose; production cloud preset locks this back to non-root)
-# Both pod-level AND container-level securityContext must be overridden,
-# because the container-level setting in values.yaml (runAsUser: 1000,
-# runAsNonRoot: true) wins over the pod-level setting. Running as 1000
-# breaks the entrypoint because /app/process_monitor.log (and other
-# build-time paths under /app) are owned by root and not writable.
-podSecurityContext:
-  runAsUser: 0
-  runAsNonRoot: false
-  fsGroup: 0
-securityContext:
-  runAsUser: 0
-  runAsNonRoot: false
-  allowPrivilegeEscalation: false
-  readOnlyRootFilesystem: false
-  capabilities:
-    drop:
-      - ALL
+# ----- App pod security -----
+# Inherits the non-root contexts from values.yaml (uid/gid/fsGroup 1000). The
+# image's entrypoint drops to uid 1000 itself when started as root, which needs
+# CAP_SETUID that these contexts drop, so forcing root here crash-loops the app.
 
 # ----- Public URLs / CORS for local browser access -----
 # Port-forward from your laptop:

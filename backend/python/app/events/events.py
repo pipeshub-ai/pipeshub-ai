@@ -30,13 +30,6 @@ from app.config.constants.arangodb import (
     get_mime_type_for_extension,
     normalize_file_extension,
 )
-from app.events.processor import Processor
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
-from app.modules.parsers.code_parser.file_role import is_generated_file_name
-from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.transformers.pipeline import IndexingPipeline
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -44,6 +37,13 @@ from app.events.dedup import (
     select_duplicate,
     will_promote_queued_copies,
 )
+from app.events.processor import Processor
+from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -521,6 +521,7 @@ class EventProcessor:
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
+        extraction = None
         if defer_extraction:
             await self.update_record_fields(
                 record_doc,
@@ -530,9 +531,13 @@ class EventProcessor:
                 "📨 Deferring graph enrichment for record %s", record_id
             )
         else:
+            ner_task = None
             try:
+                departments = await self.graph_provider.get_departments(org_id)
+                ner_task = asyncio.create_task(
+                    self.sink_orchestrator.extract_named_entities(ctx, client=self.extraction_client)
+                )
                 with stage("extract"):
-                    departments = await self.graph_provider.get_departments(org_id)
                     semantic_metadata = await self.extraction_client.classify(
                         block_container=block_container,
                         org_id=org_id,
@@ -540,6 +545,7 @@ class EventProcessor:
                         record_name=record.record_name,
                         record_type=record.record_type.value,
                     )
+                    extraction = await ner_task
 
                 record.semantic_metadata = semantic_metadata
                 if semantic_metadata:
@@ -547,6 +553,7 @@ class EventProcessor:
                     # blob and graph writes below all consume them.
                     with stage("entities.resolve"):
                         await self.sink_orchestrator.resolve_entities(ctx)
+                    self.sink_orchestrator.attach_named_entities(ctx, extraction)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
                     # Not wrapped in a stage: it times its own steps.
                     await self.sink_orchestrator.vector_store.index_record_summary(
@@ -558,6 +565,7 @@ class EventProcessor:
                     )
 
                 await self.sink_orchestrator.enrich(ctx)
+                await self.sink_orchestrator.persist_named_entities(ctx, extraction)
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
                 )
@@ -576,9 +584,16 @@ class EventProcessor:
                         "processingStartedAt": None,
                     },
                 )
+            finally:
+                # A record timeout or a lost lease cancels the handler, and CancelledError
+                # is not an Exception: without this the agent run would go on unowned.
+                if ner_task is not None and not ner_task.done():
+                    ner_task.cancel()
 
         try:
-            with stage("blob.write"):
+            from app.modules.named_entities.stage import extraction_blob_holder
+
+            with stage("blob.write"), extraction_blob_holder(record, extraction):
                 await self.sink_orchestrator.blob_storage.apply(ctx)
         except Exception as blob_exc:
             self.logger.error(
@@ -1019,6 +1034,22 @@ class EventProcessor:
             "Failed to copy duplicate record relationships",
             doc,
         )
+        from app.services.featureflag.platform_settings import (
+            is_named_entity_extraction_enabled,
+        )
+
+        # With the flag off the copy is skipped, so a deployment that never turned
+        # it on cannot fail a duplicate over named entities.
+        if not await is_named_entity_extraction_enabled(self.config_service):
+            return
+        # Fatal like the taxonomy copy: a same-collection duplicate is marked
+        # COMPLETED and never indexed, so nothing else would copy the mentions.
+        try:
+            await self.graph_provider.copy_named_entity_mentions(_record_key(twin), _record_key(doc))
+        except Exception as exc:
+            raise IndexingError(
+                "Failed to copy duplicate record mentions", details={"record_id": _record_key(doc)}
+            ) from exc
 
     async def _attach_to_finished_twin(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
         """Make ``doc`` a copy of a finished twin in the same collection.

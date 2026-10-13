@@ -543,6 +543,15 @@ def test_invariant_non_pinned_toolset_under_load_first_block() -> None:
     assert "`jira`" in load_first_section
 
 
+def test_invariant_load_first_block_asks_search_tools_for_capability_keywords() -> None:
+    """`search_tools` scores by query-token overlap, so the user's question
+    passed as the query buries the tool that would answer it."""
+    prompt = build_prompt_for_fixture("lazy_with_pinned")
+    load_first_section = prompt.split("Tools you must load before calling", 1)[1]
+    assert "capability keywords" in load_first_section
+    assert "never the user's question" in load_first_section
+
+
 def test_invariant_pinned_toolset_group_name_not_in_load_first_block() -> None:
     prompt = build_prompt_for_fixture("lazy_with_pinned")
     load_first_section = prompt.split("Tools you must load before calling", 1)[1]
