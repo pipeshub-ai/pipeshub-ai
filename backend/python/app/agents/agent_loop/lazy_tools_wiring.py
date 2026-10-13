@@ -30,9 +30,8 @@ unchanged.
   the highest-value case, since that's where an org with many attached
   connectors accumulates the most tool schemas.
 - `domain`: each domain child (`register_domain_agents()`) goes lazy over
-  its OWN claimed tools independently — mainly relevant for
-  `internal_exploration_agent`, whose claim grows with every attached
-  knowledge connector (`app_names={"retrieval", "knowledgehub"}`).
+  its OWN claimed tools independently — relevant for a domain that claims
+  many tools.
 - `both`: both, independently (each side's threshold check runs against
   its own tool count).
 

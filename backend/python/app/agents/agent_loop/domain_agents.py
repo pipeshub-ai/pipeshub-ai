@@ -26,7 +26,7 @@ Design:
   with no web-search provider configured never loads `web_search`, so no
   `web_agent` is planned and the definition is silently skipped — same for
   `internal_exploration_agent` when no knowledge node is attached (no
-  `retrieval`/`knowledgehub` tools load, so nothing is claimed). This IS
+  `knowledgegraph` tools load, so nothing is claimed). This IS
   the availability contract for both delegates — no separate gating check
   exists or should be added elsewhere; see `test_domain_agents.py`'s
   `TestAvailabilityGating` for the tests that pin it down.
@@ -188,7 +188,7 @@ class DomainAgentDefinition:
     the parent model sees, so it must say what to delegate and what comes back."""
 
     app_names: frozenset[str] = frozenset()
-    """Claim every registered tool whose adapter `app_name` is in this set."""
+    """Claim every registered tool whose `Tool.app_name` is in this set."""
 
     tool_names: frozenset[str] = frozenset()
     """Claim these exact registered tool names (for tools whose `app_name`
@@ -222,7 +222,7 @@ class DomainAgentDefinition:
     the request's own `model_name` (`register_domain_agents(model_name=...)`),
     same as every domain got before this field existed. Set this for a
     domain whose work reliably needs LESS capability than the rest of the
-    request (e.g. `calculator_agent`'s single arithmetic call) or MORE
+    request (e.g. a domain making one lookup call) or MORE
     (a domain doing multi-step synthesis) — the override applies to the
     domain's OWN `AgentSpec`, so it takes effect whether that domain is
     reached via static composition, `spawn_agent`'s direct-AgentTool
@@ -384,7 +384,6 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
             "specific facts, figures, and citations — never reduce them to a "
             "vague, uncited paraphrase."
         ),
-        app_names=frozenset({"retrieval", "knowledgehub"}),
         tool_names=frozenset({
             "knowledgegraph__search",
             "knowledgegraph__list_files",
@@ -394,29 +393,9 @@ DOMAIN_AGENT_DEFINITIONS: tuple[DomainAgentDefinition, ...] = (
         max_turns=_EXPLORATION_MAX_TURNS,
         result_note=_EXPLORATION_RESULT_NOTE,
     ),
-    DomainAgentDefinition(
-        name="calculator_agent",
-        domain="calculation",
-        description=(
-            "Delegate arithmetic, unit, and date calculations to a focused "
-            "sub-agent. Give it ONE self-contained calculation request with all "
-            "numbers/dates inline. Returns the computed result."
-        ),
-        app_names=frozenset({"calculator", "date_calculator"}),
-        max_turns=5,
-    ),
-    DomainAgentDefinition(
-        name="calendar_agent",
-        domain="calendar",
-        description=(
-            "Delegate calendar work to a focused sub-agent that can list, "
-            "create, and update events and check availability on the user's "
-            "connected calendars. Give it ONE self-contained request with "
-            "explicit dates/times and attendees. Returns the outcome with event "
-            "links."
-        ),
-        app_names=frozenset({"calendar", "google_calendar"}),
-    ),
+    # No calculator or calendar domain: they never ran (toolset tools did not
+    # expose `app_name`), and their tools stay on the top-level agent until
+    # there is a measured reason to delegate them.
 )
 
 
@@ -474,7 +453,7 @@ def plan_domain_agents(
             if name in claimed:
                 continue
             tool = tool_registry.resolve_by_name(name)
-            app_name = getattr(tool, "app_name", None)
+            app_name = tool.app_name
             if name in definition.tool_names or (app_name and app_name in definition.app_names):
                 names.append(name)
                 claimed.add(name)
