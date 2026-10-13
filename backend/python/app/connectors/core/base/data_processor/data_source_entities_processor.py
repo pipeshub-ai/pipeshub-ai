@@ -26,6 +26,7 @@ from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlo
 from app.connectors.core.sync.full_sync_coverage import (
     GROUP_MEMBERS_UNSURE,
     GROUP_MEMBERSHIP,
+    GROUP_WRITTEN_WITHOUT_MEMBERS,
     PERMISSIONS_REWRITTEN,
     FullSyncSeen,
 )
@@ -3816,6 +3817,12 @@ class DataSourceEntitiesProcessor:
         async with self.data_store_provider.transaction() as tx_store:
             await tx_store.batch_upsert_user_groups(user_groups)
 
+        # A full sync gives each of these groups its members once it has run to
+        # the end, by external id (finish_full_sync_memberships), even if none
+        # came; left unseen, the unlink would also take the grants that name it.
+        for ug in user_groups:
+            self._note_full_sync_seen(ug.connector_id, GROUP_WRITTEN_WITHOUT_MEMBERS, ug.source_user_group_id)
+
     async def delete_edges_between_collections(
         self,
         from_id: str,
@@ -4207,15 +4214,22 @@ class DataSourceEntitiesProcessor:
         """After a full sync ran to the end, give each group that gained members
         one at a time exactly the members this sync read for it.
 
-        One replace per group, from the complete list, so a member removed at the
-        source goes and nobody is ever left without access part-way. A group one
+        Every group written without members this sync is covered, including one
+        that got none (a department with no users): its members become the empty
+        list. One replace per group, of the member edges into it only, from the
+        complete list, so a member removed at the source goes, the grants that
+        name the group stay, and nobody is ever left without access part-way.
+        The group is found by connector and external id, so the stored node is
+        the one replaced whatever id the upsert was given. A group one
         of whose membership writes did not land keeps the members it has. A group
         that on_new_user_groups already rewrote is left as it is. Every group
         handled here counts as seen, so the unlink after this does not touch it.
         Raises on failure: the caller then owes another full sync.
         """
         groups = CollectionNames.GROUPS.value
-        external_ids = set(run.group_memberships) | run.groups_members_unsure
+        external_ids = (
+            set(run.group_memberships) | run.groups_members_unsure | run.groups_written_without_members
+        )
         if not external_ids:
             return
         for external_id in sorted(external_ids):

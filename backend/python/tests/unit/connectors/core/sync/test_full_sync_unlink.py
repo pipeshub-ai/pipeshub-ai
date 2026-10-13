@@ -344,6 +344,26 @@ class TestWhatTheProcessorNotes:
         assert run.has(CollectionNames.GROUPS.value, "g1"), "kept as it is, so not unlinked either"
 
     @pytest.mark.asyncio
+    async def test_a_group_written_without_members_and_given_none_gets_an_empty_list(self) -> None:
+        """A department with no users this sync: its member edges are replaced by
+        none, and it counts as seen, so the grants naming it are not unlinked."""
+        from app.models.entities import AppUserGroup
+
+        tx = self._membership_store()
+        tx.batch_upsert_user_groups = AsyncMock()
+        processor = self._membership_processor(tx)
+        run = processor.begin_full_sync_run("c1")
+        await processor.batch_upsert_user_groups(
+            [AppUserGroup(app_name="SERVICENOW", connector_id="c1", source_user_group_id="dept-1", name="Sales")]
+        )
+
+        await processor.finish_full_sync_memberships("c1", run)
+
+        tx.replace_edges_to.assert_awaited_once()
+        assert tx.replace_edges_to.await_args.args[2] == []
+        assert run.has(CollectionNames.GROUPS.value, "g1")
+
+    @pytest.mark.asyncio
     async def test_outside_a_full_sync_memberships_are_not_tracked(self) -> None:
         tx = self._membership_store(True)
         processor = self._membership_processor(tx)

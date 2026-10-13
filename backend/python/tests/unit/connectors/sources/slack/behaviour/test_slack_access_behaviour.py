@@ -163,10 +163,6 @@ class TestFailedReads:
         assert not any(p.entity_type in (EntityType.ROLE, EntityType.ORG) for p in grants)
         assert store.access_emails(SECRET) <= {"alice@acme.com", "bob@acme.com"}
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When the user list fails part way, the workspace-member role is saved with only the users "
-        "read so far, which replaces its members: everyone else loses access to every public channel."
-    ))
     async def test_a_user_list_failing_part_way_keeps_the_workspace_role(self, workspace, store, checkpoints) -> None:
         workspace.page_size["users.list"] = 1
         connector, _ = await workspace_connector(store, checkpoints)
@@ -176,6 +172,22 @@ class TestFailedReads:
         await connector.run_sync()
 
         assert role_member_emails(store) == {"alice@acme.com", "bob@acme.com"}
+
+    async def test_a_user_list_failing_on_its_first_page_leaves_private_channels_alone(
+        self, workspace, store, checkpoints
+    ) -> None:
+        """Private channels and DMs get their members' emails from the user list;
+        built from a list that was never read, they would be left with nobody."""
+        connector, _ = await workspace_connector(store, checkpoints)
+        await connector.run_sync()
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+
+        workspace.fail("users.list", SlackError("internal_error"))
+        await connector.run_sync()
+
+        assert store.access_emails(SECRET) == {"alice@acme.com", "bob@acme.com"}
+        assert role_member_emails(store) == {"alice@acme.com", "bob@acme.com"}
+        assert connector.full_sync_coverage().complete is False
 
     async def test_a_user_list_failing_outright_leaves_the_workspace_role_alone(self, workspace, store, checkpoints) -> None:
         connector, _ = await workspace_connector(store, checkpoints)

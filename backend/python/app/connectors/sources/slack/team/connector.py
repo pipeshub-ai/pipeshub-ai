@@ -717,6 +717,9 @@ class SlackConnector(BaseConnector):
         self.user_id_to_internal_id_cache.clear()
         self.user_id_to_name_cache.clear()
         self._non_guest_app_users: list[AppUser] = []
+        # Set when a page fails: the caches above then miss users, and every
+        # permission list built from them would be short (see _sync_channels).
+        self._users_read_failed = False
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
@@ -730,6 +733,7 @@ class SlackConnector(BaseConnector):
                 # The workspace_member role is written from these pages: with one
                 # missing it is left out or short, and must not be unlinked as unseen.
                 self._full_sync_read_failed = True
+                self._users_read_failed = True
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
@@ -858,6 +862,11 @@ class SlackConnector(BaseConnector):
         users (owners, admins, regular members).  This role is referenced in
         channel permissions so that public channels don't need per-user edges.
         """
+        if getattr(self, "_users_read_failed", False):
+            # Written from a short user list, the role would drop every member
+            # not yet read, and with it their access to every public channel.
+            self.logger.warning("ℹ️ User list was not read in full; workspace role left as it is")
+            return
         non_guests = getattr(self, "_non_guest_app_users", [])
         if not non_guests:
             self.logger.info("ℹ️ No non-guest users to sync workspace role for")
@@ -1070,6 +1079,18 @@ class SlackConnector(BaseConnector):
                 if not cid:
                     continue
                 if include_ids and cid not in include_ids:
+                    continue
+                if (
+                    getattr(self, "_users_read_failed", False)
+                    and (cd.get("is_im") or cd.get("is_private") or cd.get("is_mpim"))
+                ):
+                    # Its permission list is built from the user caches, which
+                    # this sync could not fill: members would be dropped, a DM
+                    # left with nobody. Leave it as it is until a sync reads the
+                    # users in full; the sync is already marked incomplete.
+                    self.logger.warning(
+                        f"User list was not read in full; channel {cd.get('name') or cid} left as it is"
+                    )
                     continue
                 try:
                     rg = self._to_channel_record_group(cd)

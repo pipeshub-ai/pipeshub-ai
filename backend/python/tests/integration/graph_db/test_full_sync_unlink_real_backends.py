@@ -630,3 +630,53 @@ async def test_a_moved_record_gets_its_fetched_grants_in_a_full_sync(sync: _Sync
     assert await sync.can_read(sync.alice, "m1-renamed")
     assert not await sync.can_read(sync.bob, "m1-renamed"), "bob's grant was revoked at the source"
     assert await sync.can_read(sync.alice, "m2-renamed") and await sync.can_read(sync.bob, "m2-renamed")
+
+
+async def _department_grant(sync: _Sync) -> set[str]:
+    """Who holds a grant on the channel (the department is shared it, as a
+    knowledge base shares articles with ServiceNow's organisational groups)."""
+    channel = await sync.graph.get_record_group_by_external_id(sync.connector_id, f"C-{sync.connector_id}")
+    edges = await sync.graph.get_edges_to_node(
+        f"{RECORD_GROUPS}/{channel.id}", CollectionNames.PERMISSION.value
+    )
+    return {(e.get("_from") or e.get("from_id") or "").split("/")[-1] for e in edges or []}
+
+
+def _channel_shared_with_department(s: _Sync) -> tuple[RecordGroup, list[Permission]]:
+    channel, _ = s.channel(readers=())
+    return channel, [Permission(external_id="dept-1", entity_type=EntityType.GROUP, type=PermissionType.READ)]
+
+
+async def test_a_department_that_lost_its_last_member_keeps_its_grants(sync: _Sync) -> None:
+    """No membership call names it this sync; it must not be unlinked as unseen,
+    which would also take the grants written to it this sync."""
+    department, members = await _department(sync)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.on_new_record_groups([_channel_shared_with_department(s)])
+
+    task, _ = await sync.full_sync(script)
+    await asyncio.wait_for(task, timeout=60)
+
+    group = await sync.graph.get_user_group_by_external_id(sync.connector_id, "dept-1")
+    assert group.id in await _department_grant(sync)
+    assert await members() == set(), "nobody is in it any more"
+
+
+async def test_a_department_that_never_had_users_keeps_its_grants(sync: _Sync) -> None:
+    def department() -> AppUserGroup:
+        return AppUserGroup(id=f"dept-{sync.connector_id}", app_name=Connectors.SERVICENOW,
+                            connector_id=sync.connector_id, source_user_group_id="dept-1",
+                            name="Sales", org_id=sync.org_id)
+
+    async def script(s: _Sync) -> None:
+        await s.processor.batch_upsert_user_groups([department()])
+        await s.processor.on_new_record_groups([_channel_shared_with_department(s)])
+
+    for _ in range(2):  # the first sync writes it, the second must not unlink it
+        task, _lease = await sync.full_sync(script)
+        await asyncio.wait_for(task, timeout=60)
+
+    group = await sync.graph.get_user_group_by_external_id(sync.connector_id, "dept-1")
+    assert group.id in await _department_grant(sync)

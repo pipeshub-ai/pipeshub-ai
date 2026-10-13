@@ -52,6 +52,10 @@ GROUP_MEMBERSHIP = "groupMembership"
 #: writes did not land, so its member list from this sync is not complete.
 GROUP_MEMBERS_UNSURE = "groupMembersUnsure"
 
+#: Not a collection: the external id of a user group written without members
+#: (batch_upsert_user_groups), whose members come one at a time afterwards.
+GROUP_WRITTEN_WITHOUT_MEMBERS = "groupWrittenWithoutMembers"
+
 
 @dataclass
 class FullSyncSeen:
@@ -64,6 +68,7 @@ class FullSyncSeen:
     #: group external id -> {user id: (user source id, email)} from membership writes.
     group_memberships: dict[str, dict[str, tuple[str, str]]] = field(default_factory=dict)
     groups_members_unsure: set[str] = field(default_factory=set)
+    groups_written_without_members: set[str] = field(default_factory=set)
 
     def add(self, collection: str, node_id: object) -> None:
         if not node_id:
@@ -75,6 +80,8 @@ class FullSyncSeen:
             self.group_memberships.setdefault(group_external_id, {})[user_id] = (source_id, email)
         elif collection == GROUP_MEMBERS_UNSURE:
             self.groups_members_unsure.add(node_id)
+        elif collection == GROUP_WRITTEN_WITHOUT_MEMBERS:
+            self.groups_written_without_members.add(node_id)
         elif collection in self.by_collection:
             self.by_collection[collection].add(node_id)
 
@@ -84,4 +91,8 @@ class FullSyncSeen:
         return node_id in self.by_collection.get(collection, ())
 
     def count(self) -> int:
-        return sum(len(ids) for ids in self.by_collection.values()) + len(self.group_memberships)
+        return (
+            sum(len(ids) for ids in self.by_collection.values())
+            + len(self.group_memberships)
+            + len(self.groups_written_without_members)
+        )

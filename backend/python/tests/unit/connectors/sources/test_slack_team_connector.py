@@ -9927,3 +9927,39 @@ class TestUnbuildableChannel:
             assert await c._sync_channels() == []
 
         assert c.full_sync_coverage().complete is False
+
+
+class TestUserListNotReadInFull:
+    @pytest.mark.asyncio
+    async def test_channels_built_from_the_user_caches_are_left_as_they_are(self) -> None:
+        """A private channel, group DM or DM gets its members' emails from the user
+        list; written from a list that was not read in full, they would lose them."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c._users_read_failed = True
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [
+                {"id": "Cpub", "name": "general", "is_private": False},
+                {"id": "Cpriv", "name": "secret", "is_private": True},
+                {"id": "Dim", "name": "dm", "is_im": True, "user": "U2"},
+                {"id": "Gmp", "name": "mpdm", "is_mpim": True},
+            ], "response_metadata": {"next_cursor": ""}},
+        ))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            rgs = await c._sync_channels()
+
+        assert [rg.external_group_id for rg in rgs] == ["Cpub"]
+
+    @pytest.mark.asyncio
+    async def test_the_workspace_role_is_not_rewritten(self) -> None:
+        c = _make_connector()
+        c._users_read_failed = True
+        c._non_guest_app_users = [MagicMock()]
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+
+        await c._sync_workspace_roles()
+
+        c.data_entities_processor.on_new_app_roles.assert_not_awaited()
