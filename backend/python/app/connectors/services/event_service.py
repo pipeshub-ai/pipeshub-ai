@@ -925,11 +925,15 @@ class EventService:
         None when the read failed. That is neither answer: dropping the event
         would lose a resume that is owed (nothing publishes it again until the
         next boot), and running it could start a sync someone stopped. Callers
-        return False for it, which redelivers the event.
+        return False for it, which redelivers the event. raise_on_error: by
+        default a failed read answers None, which would read as "no such
+        connector" and drop the resume.
         """
         try:
             doc = await self.graph_provider.get_document(
-                document_key=connector_id, collection=CollectionNames.APPS.value
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+                raise_on_error=True,
             )
         except Exception as e:
             self.logger.warning(
@@ -955,9 +959,14 @@ class EventService:
         """
         # A disabled, signed-out or deleting connector must not be parked: no
         # start would ever run it, and every drain would publish it again.
+        # raise_on_error so a failed read is told apart from a missing doc: a
+        # boot resume is redelivered on the first and dropped on the second.
+        # Other requests treat both as before (queued on a doc of None).
         try:
             doc = await self.graph_provider.get_document(
-                document_key=connector_id, collection=CollectionNames.APPS.value
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+                raise_on_error=True,
             )
         except Exception as e:
             self.logger.warning(f"Could not read {connector_id} before queueing it: {e}")

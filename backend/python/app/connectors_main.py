@@ -437,7 +437,12 @@ async def _current_app(
     if graph_provider is None:
         return snapshot
     try:
-        return await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        # raise_on_error: by default a failed read answers None, which reads as
+        # "no such connector" and would skip a resume that is owed. None from
+        # here means the doc is gone, and nothing is resumed.
+        return await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
     except Exception as e:
         logger.warning(
             f"Could not re-read {connector_id} before resuming it; publishing the "

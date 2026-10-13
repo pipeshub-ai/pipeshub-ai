@@ -330,6 +330,36 @@ class TestTheBootSweep:
         assert _OWED not in written["incr"]
 
 
+_GONE = object()
+
+
+def _app_reads(reads: list[object], default: object) -> AsyncMock:
+    """An app-doc reader that fails the way the real providers do.
+
+    Each scripted read is a doc, ``_GONE`` (no such document: None) or an
+    exception. A failed query answers None, exactly like a missing doc, unless
+    the caller passes raise_on_error=True; only then does it raise
+    (graph_db_provider.get_document). Once the script runs out, every read
+    returns ``default``.
+    """
+    script = list(reads)
+
+    async def get_document(*_args: object, raise_on_error: bool = False, **_kw: object) -> object:
+        item = script.pop(0) if script else default
+        if isinstance(item, Exception):
+            if raise_on_error:
+                raise item
+            return None
+        return None if item is _GONE else item
+
+    return AsyncMock(side_effect=get_document)
+
+
+def _asked_to_raise(graph: AsyncMock, n: int) -> bool:
+    """Whether the n-th app-doc read passed raise_on_error=True."""
+    return graph.get_document.await_args_list[n].kwargs.get("raise_on_error") is True
+
+
 async def _published_payload(*, boot_resume: bool) -> dict:
     """What the real dispatcher puts on the sync topic for this spec."""
     producer = AsyncMock()
@@ -352,7 +382,7 @@ async def _consume(
 ) -> tuple[AsyncMock, MagicMock]:
     """Run the real start handler on one event, against the app doc as it is now.
 
-    ``reads`` scripts successive app-doc reads (an exception raises); by default
+    ``reads`` scripts successive app-doc reads (see ``_app_reads``); by default
     every read returns ``doc``. ``acked`` is what the handler must return: False
     asks the consumer to redeliver. Returns the graph (whose sync-point and edge
     deletes are the full-sync prep, and whose update_node holds the queue
@@ -361,9 +391,7 @@ async def _consume(
     from app.connectors.services.event_service import EventService
 
     graph = AsyncMock()
-    graph.get_document = AsyncMock(
-        side_effect=list(reads) if reads is not None else None, return_value=doc
-    )
+    graph.get_document = _app_reads(reads or [], doc)
     graph.update_node = AsyncMock()
     graph.batch_upsert_nodes = AsyncMock()
     graph.delete_sync_points_by_connector_id = AsyncMock(return_value=(1, True))
@@ -496,6 +524,19 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
             reads=[RuntimeError("db blip")],
             acked=False,
         )
+        assert _asked_to_raise(graph, 0)
+        coordinator.begin.assert_not_awaited()
+        graph.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_gone_before_admission_is_dropped(self) -> None:
+        """None still means "no such document": nothing to resume, nothing to
+        redeliver."""
+        graph, coordinator = await _consume(
+            await _published_payload(boot_resume=True),
+            _app(**_INTERRUPTED),
+            reads=[_GONE],
+        )
         coordinator.begin.assert_not_awaited()
         graph.update_node.assert_not_awaited()
 
@@ -509,6 +550,7 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
             reads=[owed, owed, RuntimeError("db blip")],
             acked=False,
         )
+        assert _asked_to_raise(graph, 2)
         graph.delete_sync_points_by_connector_id.assert_not_awaited()
         coordinator.spawn.assert_not_awaited()
         coordinator.end.assert_awaited_once()
@@ -523,15 +565,12 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
             reads=[owed, RuntimeError("db blip")],
             acked=False,
         )
+        assert _asked_to_raise(graph, 1)
         assert _queue_writes(graph) == []
 
 
-class TestAFailedReadAtBootStillPublishes:
-    @pytest.mark.asyncio
-    async def test_the_resume_is_published_marked_for_the_handler_to_check(self) -> None:
-        """Not publishing would leave both marks set and nothing to act on them
-        until the next boot. The event is marked, so the start handler reads
-        the doc again before it queues or deletes anything."""
+class TestAFailedReadAtBoot:
+    async def _boot_with_reread(self, reread: object) -> tuple[AsyncMock, AsyncMock]:
         from app.connectors_main import resume_sync_services
 
         app = _app(**_INTERRUPTED)
@@ -539,7 +578,7 @@ class TestAFailedReadAtBootStillPublishes:
         graph.get_all_orgs = AsyncMock(return_value=[{"_key": "o1"}])
         graph.get_org_apps = AsyncMock(return_value=[app])
         graph.get_users = AsyncMock(return_value=[{"id": "u1"}])
-        graph.get_document = AsyncMock(side_effect=RuntimeError("db blip"))
+        graph.get_document = _app_reads([reread], app)
         data_store = MagicMock()
         data_store.graph_provider = graph
         config_service = AsyncMock()
@@ -559,6 +598,19 @@ class TestAFailedReadAtBootStillPublishes:
             "app.connectors_main.sync_executor_enabled", return_value=False
         ):
             await resume_sync_services(container, data_store)
+        return graph, dispatcher
 
+    @pytest.mark.asyncio
+    async def test_the_resume_is_still_published_marked_for_the_handler_to_check(self) -> None:
+        """Not publishing would leave both marks set and nothing to act on them
+        until the next boot. The event is marked, so the start handler reads
+        the doc again before it queues or deletes anything."""
+        graph, dispatcher = await self._boot_with_reread(RuntimeError("db blip"))
+        assert _asked_to_raise(graph, 0)
         dispatcher.submit.assert_awaited_once()
         assert dispatcher.submit.await_args.args[0].boot_resume is True
+
+    @pytest.mark.asyncio
+    async def test_a_connector_gone_since_the_traversal_is_not_resumed(self) -> None:
+        _, dispatcher = await self._boot_with_reread(_GONE)
+        dispatcher.submit.assert_not_awaited()
