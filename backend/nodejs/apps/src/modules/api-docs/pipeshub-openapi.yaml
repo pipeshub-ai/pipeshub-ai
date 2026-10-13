@@ -5034,15 +5034,29 @@ components:
 
         For `TICKET` records (e.g. Jira) the metadata header is refreshed with
         live ticket fields (status, assignee, comments) at request time rather
-        than the last-indexed snapshot. `content` may be empty for records with
-        no extractable text (e.g. image-only or not-yet-parsed records).
+        than the last-indexed snapshot. `content` may be empty for an indexed
+        record with no extractable text (e.g. image-only).
+
+        A record that exists and that the caller may read, but whose content
+        is not indexed yet (`indexingStatus` other than `COMPLETED`), has no
+        parsed text. `content` is then a description of the record instead:
+        its metadata header (name, link, dates, type-specific fields) followed
+        by a paragraph that starts `Not indexed:` and names the status, e.g.
+        `(status: AUTO_INDEX_OFF)`. It is not the record's text.
+
+        `content` is the literal `No record found` when the caller may read
+        an indexed record but its stored content could not be loaded. An id
+        that does not exist, a record in the trash, and a record the caller
+        may not read all answer `403` instead.
       required:
         - content
       properties:
         content:
           type: string
           description: >-
-            The record's full parsed content as a single plain-text string.
+            The record's full parsed content as a single plain-text string;
+            for a record whose content is not indexed yet, a description of
+            the record and its indexing status instead (see above).
 
     KnowledgeGraphNodeRefSchema:
       type: object
@@ -6841,6 +6855,7 @@ components:
         where:
           description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
           not: {}
+          x-speakeasy-ignore: true
 
     AppliedFilterNode:
       type: object
@@ -36192,9 +36207,13 @@ paths:
       responses:
         '200':
           description: |
-            Successful operation. When the record has no available content
-            (e.g. not indexed), `content` is the literal `No record found`
-            rather than an error status.
+            Successful operation. When the record exists but its content is
+            not indexed yet, `content` describes the record (name, link,
+            dates) and ends with a `Not indexed:` paragraph naming its
+            indexing status. When the record is indexed but its stored
+            content could not be loaded, `content` is the literal
+            `No record found`. Neither is an error status. An id that does
+            not exist, or a record the caller may not read, answers `403`.
           content:
             application/json:
               schema:

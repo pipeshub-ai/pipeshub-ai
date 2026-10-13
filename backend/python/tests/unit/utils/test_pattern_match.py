@@ -32,6 +32,8 @@ from app.utils.pattern_match import (
     check_pattern_match_eligible,
     execute_pattern_match_pipeline,
     generate_grep_command_via_llm,
+    grep_hits_on_loaded_records,
+    grep_hits_within,
     merge_pattern_match_results,
     render_pattern_match_hint,
     resolve_connector_ids_for_search,
@@ -751,6 +753,47 @@ class TestMergePatternMatchResults:
         assert (metadata["recordName"], metadata["mimeType"]) == ("msa.pdf", "application/pdf")
         assert (metadata["recordId"], metadata["virtualRecordId"], metadata["orgId"]) == ("rec-1", "vr-1", "org-1")
         assert "record_name" not in vr_map["vr-1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("best_first", [True, False])
+    async def test_a_preview_survives_when_the_best_hit_has_none(self, best_first: bool) -> None:
+        best = {"virtual_record_id": "vr-1", "matched_terms": 2, "match_count": 5}
+        other = {"virtual_record_id": "vr-1", "matched_terms": 1, "match_count": 1, "match_preview": "INV-1 total"}
+        graph_rec = {"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"}
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[graph_rec])
+        vr_map: dict[str, dict] = {}
+
+        await merge_pattern_match_results(
+            raw_records=[best, other] if best_first else [other, best],
+            virtual_record_id_to_result=vr_map, user_id="user-1", org_id="org-1",
+            blob_store=AsyncMock(), graph_provider=graph_provider,
+            is_multimodal_llm=False, logger_instance=MagicMock(),
+        )
+
+        assert (vr_map["vr-1"]["_match_count"], vr_map["vr-1"]["_match_snippet"]) == (5, "INV-1 total")
+
+    @pytest.mark.asyncio
+    async def test_the_record_cap_keeps_records_by_their_best_hit(self) -> None:
+        raw = [
+            {"virtual_record_id": "vr-1", "matched_terms": 1},
+            {"virtual_record_id": "vr-2", "matched_terms": 2},
+            {"virtual_record_id": "vr-1", "matched_terms": 3},
+        ]
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(
+            return_value=[{"_key": "rec-1", "indexingStatus": "COMPLETED", "recordName": "a.pdf"}],
+        )
+
+        await merge_pattern_match_results(
+            raw_records=raw, virtual_record_id_to_result={}, user_id="user-1", org_id="org-1",
+            blob_store=AsyncMock(), graph_provider=graph_provider,
+            is_multimodal_llm=False, logger_instance=MagicMock(), max_records=1,
+        )
+
+        assert graph_provider.filter_accessible_virtual_record_ids.call_args[0][0] == ["vr-1"]
 
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_graph_records_found(self):
@@ -3638,3 +3681,79 @@ def test_a_grep_hit_never_replaces_a_record_loaded_from_the_blob() -> None:
     assert live["vr-1"] is loaded
     assert live["vr-2"] is reloaded
     assert live["vr-3"]["recordName"] == "nda.pdf"
+
+
+class TestGrepHitsOnLoadedRecords:
+    """Grep hits on records semantic search loaded, as hint entries for when
+    the size fit leaves the record out."""
+
+    @staticmethod
+    def _loaded(vrid: str) -> dict:
+        return {"id": f"rec-{vrid}", "record_name": f"Doc {vrid}", "context_metadata": f"Record ID: rec-{vrid}\nName: Doc {vrid}",
+                "block_containers": {"blocks": [], "block_groups": []}}
+
+    def test_only_records_in_the_map_best_rank_first(self) -> None:
+        raw = [
+            {"virtual_record_id": "a", "matched_terms": 1, "match_count": 9},
+            {"virtual_record_id": "gone", "matched_terms": 5, "match_count": 5},
+            {"virtual_record_id": "b", "matched_terms": 2, "match_count": 1},
+            {"virtual_record_id": None},
+        ]
+        entries = grep_hits_on_loaded_records(raw, {"a": self._loaded("a"), "b": self._loaded("b")})
+        assert [e["virtual_record_id"] for e in entries] == ["b", "a"]
+        assert all(e["source"] == "pattern_match" and e["score"] == 0.0 for e in entries)
+
+    def test_one_entry_per_record_with_its_best_count_and_preview(self) -> None:
+        raw = [
+            {"virtual_record_id": "a", "matched_terms": 1, "match_count": 1, "match_preview": "weak"},
+            {"virtual_record_id": "a", "matched_terms": 2, "match_count": 4, "match_preview": "INV-1 total"},
+        ]
+        (entry,) = grep_hits_on_loaded_records(raw, {"a": self._loaded("a")})
+        assert (entry["_match_count"], entry["_match_snippet"]) == (4, "INV-1 total")
+
+    def test_a_record_that_failed_to_load_is_skipped(self) -> None:
+        assert grep_hits_on_loaded_records([{"virtual_record_id": "a"}], {"a": None}) == []
+        assert grep_hits_on_loaded_records([], {"a": self._loaded("a")}) == []
+
+    def test_the_hint_shows_a_loaded_record_as_semantic_search_does(self) -> None:
+        loaded = self._loaded("a")
+        (entry,) = grep_hits_on_loaded_records(
+            [{"virtual_record_id": "a", "match_count": 3, "match_preview": "INV-1"}], {"a": loaded},
+        )
+        hint = render_pattern_match_hint([entry], {"a": loaded})
+        assert "<record>\nRecord ID: rec-a\nName: Doc a\nKeyword Matches: 3\nMatched Text: INV-1\n</record>" in hint
+        assert "_match" not in str(loaded)
+
+    def test_a_loaded_record_without_metadata_still_names_its_id(self) -> None:
+        loaded = {"id": "rec-a", "record_name": "Doc a", "block_containers": {}}
+        hint = render_pattern_match_hint([{"virtual_record_id": "a"}], {"a": loaded})
+        assert "Record ID: rec-a\nName: Doc a" in hint
+
+    @pytest.mark.parametrize("best_first", [True, False])
+    def test_a_preview_survives_when_the_best_hit_has_none(self, best_first: bool) -> None:
+        best = {"virtual_record_id": "a", "matched_terms": 2, "match_count": 5}
+        other = {"virtual_record_id": "a", "matched_terms": 1, "match_count": 1, "match_preview": "INV-1 total"}
+        raw = [best, other] if best_first else [other, best]
+
+        (entry,) = grep_hits_on_loaded_records(raw, {"a": self._loaded("a")})
+
+        assert (entry["_match_count"], entry["_match_snippet"]) == (5, "INV-1 total")
+
+    def test_within_a_budget_the_best_ranked_lead(self) -> None:
+        loaded = {v: self._loaded(v) for v in "abc"}
+        entries = grep_hits_on_loaded_records([{"virtual_record_id": v} for v in "abc"], loaded)
+        one = len("<record>\nRecord ID: rec-a\nName: Doc a\n</record>") + 1
+
+        assert grep_hits_within(entries, loaded, one * 2) == entries[:2]
+        assert grep_hits_within(entries, loaded, one * 3) == entries
+        assert grep_hits_within(entries, loaded, one - 1) == []
+        assert grep_hits_within(entries, {}, 10_000) == []
+
+    def test_a_record_ranks_by_its_best_hit_not_its_first(self) -> None:
+        raw = [
+            {"virtual_record_id": "a", "matched_terms": 1, "match_count": 1},
+            {"virtual_record_id": "b", "matched_terms": 2, "match_count": 1},
+            {"virtual_record_id": "a", "matched_terms": 3, "match_count": 1},
+        ]
+        entries = grep_hits_on_loaded_records(raw, {v: self._loaded(v) for v in "ab"})
+        assert [e["virtual_record_id"] for e in entries] == ["a", "b"]

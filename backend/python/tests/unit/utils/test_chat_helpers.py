@@ -309,6 +309,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {
@@ -3027,34 +3037,9 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_from_tool_no_adjacent_chunks(self):
-        """With from_tool=True, adjacent chunks should not be added."""
-        block0 = _make_text_block(index=0, data="Main text")
-        block1 = _make_text_block(index=1, data="Adjacent text")
-        record = _make_record_blob()
-        record["block_containers"]["blocks"] = [block0, block1]
-
-        blob_store = self._make_blob_store(record)
-        vr_map = {"vr-1": record}
-
-        result_set = [
-            {
-                "content": "Main text",
-                "score": 0.9,
-                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
-            },
-        ]
-        results = await get_flattened_results(
-            result_set, blob_store, "org-1", False, vr_map,
-            from_tool=True,
-        )
-        # block_index=1 should not appear as adjacent chunk
-        adjacent_results = [r for r in results if r.get("block_index") == 1]
-        assert len(adjacent_results) == 0
-
-    @pytest.mark.asyncio
-    async def test_adjacent_chunks_added_for_regular_call(self):
-        """Without from_tool/from_retrieval_service, adjacent text blocks should be added."""
+    async def test_no_adjacent_chunks_are_added(self):
+        """Neighbours are added after ranking, around the units kept
+        (`modules/retrieval/context`), never here."""
         block0 = _make_text_block(index=0, data="Adjacent before")
         block1 = _make_text_block(index=1, data="Main text")
         block2 = _make_text_block(index=2, data="Adjacent after")
@@ -3074,11 +3059,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map,
         )
-        # Should contain the main block plus adjacent text blocks
-        block_indices = {r.get("block_index") for r in results}
-        assert 1 in block_indices  # main
-        assert 0 in block_indices  # adjacent before
-        assert 2 in block_indices  # adjacent after
+        assert [r.get("block_index") for r in results] == [1]
 
     @pytest.mark.asyncio
     async def test_config_service_error_graceful(self):

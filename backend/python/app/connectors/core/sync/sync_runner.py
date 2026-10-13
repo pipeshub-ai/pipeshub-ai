@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
 from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -154,11 +155,11 @@ async def _finalize(
     tidy.
 
     ``full_sync_cut_short``: a full sync that stopped before it finished — a
-    restart, a stop, a crash in ``run_sync``. Its prep already deleted the
-    connector's sync points and permission edges, and only the records it got
-    through were linked again, so the rest stay unreadable until a full sync
-    runs to the end. The flag that asks for one goes in the same write as IDLE:
-    the connector is never seen IDLE without it.
+    restart, a stop, a crash in ``run_sync`` — or whose removal of what it did
+    not see failed. Its prep already deleted the connector's sync points, and the
+    links of whatever it did not see are only removed once a full sync runs to
+    the end. The flag that asks for one goes in the same write as IDLE: the
+    connector is never seen IDLE without it.
     """
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
     if full_sync_cut_short:
@@ -506,6 +507,64 @@ async def _reissue_pending_resync(
         logger.error(f"Could not re-issue pending resync for {connector_id}: {e}")
 
 
+def _begin_full_sync_run(
+    connector: "BaseConnector", connector_id: str
+) -> tuple[Any, FullSyncSeen | None]:
+    """Have the connector's processor note what this full sync writes."""
+    processor = getattr(connector, "data_entities_processor", None)
+    begin = getattr(processor, "begin_full_sync_run", None)
+    run = begin(connector_id) if callable(begin) else None
+    return (processor, run) if isinstance(run, FullSyncSeen) else (None, None)
+
+
+async def _unlink_what_full_sync_missed(
+    connector: "BaseConnector",
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    seen: FullSyncSeen,
+) -> bool:
+    """After a full sync ran to the end, unlink the nodes it did not see.
+
+    This is the removal the full sync used to do before it started: stale links
+    and revoked access go, but only once the sync has seen everything it is
+    going to see. Returns False when the removal failed, so another full sync
+    is owed.
+    """
+    coverage = getattr(connector, "full_sync_coverage", None)
+    coverage = coverage() if callable(coverage) else None
+    if not isinstance(coverage, FullSyncCoverage):
+        coverage = FullSyncCoverage()
+    if not coverage.complete:
+        logger.warning(
+            f"Full sync of {connector_id} skipped part of the source after an error; "
+            "nothing it did not see is unlinked this time"
+        )
+        return True
+    if seen.count() == 0:
+        # A sync that wrote nothing at all most likely failed without saying so.
+        logger.warning(f"Full sync of {connector_id} wrote nothing; leaving every link in place")
+        return True
+    try:
+        # Groups whose members came one at a time get the full list now, in one
+        # write each; only now is that list known to be complete.
+        finish = getattr(getattr(connector, "data_entities_processor", None), "finish_full_sync_memberships", None)
+        if callable(finish):
+            await finish(connector_id, seen)
+        deleted, ok = await graph_provider.unlink_nodes_missed_by_full_sync(
+            connector_id,
+            seen.by_collection,
+            window_start_ms=coverage.window_start_ms,
+            windowed_group_types=coverage.windowed_group_types,
+        )
+    except Exception as e:
+        logger.error(f"Could not unlink what the full sync of {connector_id} missed: {e}")
+        return False
+    if ok:
+        logger.info(f"Full sync of {connector_id}: removed {deleted} edge(s) of nodes it did not see")
+    return bool(ok)
+
+
 async def run_sync_task(
     connector: "BaseConnector",
     connector_id: str,
@@ -522,8 +581,15 @@ async def run_sync_task(
     stopped = False
     failed = False
     finished = False
+    unlink_failed = False
     skipped_code: str | None = None
+    full_sync = start_status == AppStatus.FULL_SYNCING.value
+    processor, seen = None, None
     try:
+        # Inside the try: if it raised before it, the finalizer below would never
+        # write IDLE or release the lease.
+        if full_sync:
+            processor, seen = _begin_full_sync_run(connector, connector_id)
         await write_app_status(graph_provider, logger, connector_id, start_status)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
@@ -551,6 +617,14 @@ async def run_sync_task(
         else:
             await _run_until_aborted(connector, lease)
         finished = True
+        # Only for a sync that ran to the end: one cut off partway saw only part
+        # of the source, and everything it had not reached keeps its links.
+        if seen is not None and not (
+            lease is not None and (lease.stop_requested.is_set() or lease.lost.is_set())
+        ):
+            unlink_failed = not await _unlink_what_full_sync_missed(
+                connector, connector_id, graph_provider, logger, seen
+            )
     except asyncio.CancelledError:
         stopped = True
         raise
@@ -562,6 +636,12 @@ async def run_sync_task(
         failed = True
         raise
     finally:
+        if seen is not None:
+            try:
+                processor.end_full_sync_run(connector_id, seen)
+            except Exception as e:
+                # Logged, not raised: the finalizer below must still run.
+                logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():
@@ -603,11 +683,14 @@ async def run_sync_task(
                 ),
                 # A stop or a lost lease returns from _run_until_aborted without
                 # raising, so `finished` alone would call that run complete.
+                # A failed unlink owes one too: what the sync did not see is
+                # still linked, revoked access included.
                 full_sync_cut_short=(
-                    start_status == AppStatus.FULL_SYNCING.value
+                    full_sync
                     and (
                         not finished
                         or stopped
+                        or unlink_failed
                         or (lease is not None and lease.lost.is_set())
                     )
                 ),

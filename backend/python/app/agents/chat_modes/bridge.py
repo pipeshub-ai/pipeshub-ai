@@ -36,6 +36,11 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agents.agent_loop.answer_rules import (
+    READ_RECORDS_IN_FULL_STATE_KEY,
+    answer_composition_rules_enabled,
+    thorough_retrieval_enabled,
+)
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
@@ -60,6 +65,7 @@ from app.agents.chat_modes.attachments import resolve_attachments
 from app.agents.chat_modes.custom_instructions import (
     resolve_custom_instructions as _resolve_custom_instructions,
 )
+from app.agents.chat_modes.internal_search_prompt import internal_search_instructions
 from app.agents.chat_modes.policy import (
     INTERNAL_SEARCH_POLICY,
     ChatModePolicy,
@@ -76,7 +82,9 @@ from app.modules.demo_data.chat import (
 from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
+from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -93,20 +101,9 @@ _DONE = object()
 # `get_model_config_for_mode()["system_prompt"]` per-mode framing, kept
 # short since the agent loop's own system prompt already covers tool usage,
 # citation rules, and the "Internal Knowledge First" section in detail.
+# `internal_search` is built by `internal_search_instructions`, whose text
+# depends on the answer-rule switches.
 _MODE_INSTRUCTIONS: dict[str, str] = {
-    "internal_search": (
-        "Answer ONLY from the organization's internal knowledge base / provided context and "
-        "attachments. Do not use your own training knowledge to answer factual questions. If the "
-        "answer is not present in the retrieved context, say so explicitly rather than guessing.\n\n"
-        "The context you are given contains the most relevant BLOCKS from each document — not "
-        "the full documents. For questions that can be answered by locating the right passage "
-        "(a date, a name, a number, a status), the blocks are sufficient. For questions that "
-        "need whole-document content — a summary, what the risks or key points are, a review, "
-        "a comparison, anything covering all of something — a handful of blocks cannot support "
-        "the answer. When a candidate list appears below the context blocks showing how much of "
-        "each record you hold (\"you have N of M blocks\"), call `knowledgegraph__fetch_record` "
-        "with those record IDs before answering."
-    ),
     "web_search": (
         "Use web search for this conversation. Do not use internal company knowledge or tools -- "
         "answer using publicly available information found via web_search/fetch_url."
@@ -120,13 +117,43 @@ _MODE_INSTRUCTIONS: dict[str, str] = {
 }
 
 
-def _with_mode_instructions(base_instructions: str | None, policy: ChatModePolicy) -> str:
-    addendum = _MODE_INSTRUCTIONS.get(policy.system_prompt_key, "")
+def _with_mode_instructions(
+    base_instructions: str | None,
+    policy: ChatModePolicy,
+    *,
+    composition: bool = False,
+    thorough: bool = False,
+    entity_tools: bool = False,
+) -> str:
+    if policy.system_prompt_key == "internal_search":
+        addendum = internal_search_instructions(
+            composition=composition, thorough=thorough, entity_tools=entity_tools,
+        )
+    else:
+        addendum = _MODE_INSTRUCTIONS.get(policy.system_prompt_key, "")
     if not addendum:
         return base_instructions or ""
     if base_instructions and base_instructions.strip():
         return f"{base_instructions.strip()}\n\n{addendum}"
     return addendum
+
+
+def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy) -> None:
+    """Fold the mode text into `chat_state["instructions"]`, and tell the
+    prompt builder whether its fetch policy must ask for full reads to match.
+
+    Reads each switch once, so the mode text and the fetch policy can never
+    disagree within a request. Entity tools are granted exactly when an
+    entity store is wired (`factory._initial_entity_tool_grant`)."""
+    internal_search = policy.system_prompt_key == "internal_search"
+    thorough = internal_search and thorough_retrieval_enabled()
+    chat_state["instructions"] = _with_mode_instructions(
+        chat_state.get("instructions"), policy,
+        composition=internal_search and answer_composition_rules_enabled(),
+        thorough=thorough,
+        entity_tools=bool(chat_state.get("entity_vector_store")),
+    )
+    chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
 
 
 async def _resolve_web_search_config(config_service: Any, logger: logging.Logger) -> dict[str, Any] | None:
@@ -287,13 +314,21 @@ async def _run_no_tools_degradation(
     blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
 
     yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-    prefetch = await prefetch_retrieval(
-        query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
-        retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
-        filters=query_info.get("filters"), limit=query_info.get("limit"),
-        is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
-        logger=log, force=True,
-    )
+    # The prefetch renders the record headers, so it runs in the user's time
+    # zone like the tool-calling path (see `_produce`). Set and restored
+    # around this one await, with no `yield` between, so the generator never
+    # leaves the zone set in its consumer's context.
+    zone_token = set_llm_time_zone(query_info.get("timezone"))
+    try:
+        prefetch = await prefetch_retrieval(
+            query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
+            retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
+            filters=query_info.get("filters"), limit=query_info.get("limit"),
+            is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
+            logger=log, force=True,
+        )
+    finally:
+        reset_llm_time_zone(zone_token)
     ref_mapper = prefetch.citation_ref_mapper if prefetch else CitationRefMapper()
     context_text = prefetch.formatted_context if prefetch else ""
     if prefetch and prefetch.filter_notice:
@@ -449,7 +484,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state, policy, web_search_config,
             sql_connector_ids=sql_connector_instance_ids(connector_instances, user_info["orgId"]),
         )
-        chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
+        _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
         # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
@@ -481,6 +516,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     )
 
     async def _produce() -> None:
+        # Record headers rendered by tools show dates in the user's zone,
+        # weekday included. Set inside this task so it reaches every tool
+        # call of the run and nothing outside it.
+        set_llm_time_zone(context.timezone)
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
@@ -503,6 +542,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
+                        image_admission=admission_from_state(context.tool_state),
                     )
                 )
                 if policy.prefetch_retrieval else None
@@ -598,9 +638,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
                 candidate_suffix = ""
                 coverage_note = ""
+                read_in_full = bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY))
                 if plan.has_candidates:
                     candidate_suffix = render_candidate_table(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                     # Leads the constraint: the table lands after the whole
                     # prefetched context, far enough down that the model may
@@ -608,6 +650,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # reads how little of each record it holds.
                     coverage_note = render_coverage_note(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                 log.info(
                     "prefetch: needs_whole_document=%s | candidates=%s",

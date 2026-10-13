@@ -42,6 +42,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -491,7 +492,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s", request.method, request.url, errors
+        "Request validation failed for %s %s: %s",
+        request.method,
+        redact_sensitive_query_params(str(request.url)),
+        errors,
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})

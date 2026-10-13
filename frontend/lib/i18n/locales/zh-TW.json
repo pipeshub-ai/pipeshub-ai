@@ -2644,6 +2644,7 @@
         "add": "新增篩選條件",
         "incomplete": "請為下方每個篩選條件填入運算子與數值，此處才會顯示摘要。",
         "empty": "尚無篩選條件。請使用「新增篩選條件」從支援的篩選條件中選擇一個。",
+        "unsetFallback": "{{field}}：{{value}}（預設）",
         "operator": "運算子",
         "chooseOperator": "選擇運算子…",
         "value": "數值",

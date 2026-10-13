@@ -2644,6 +2644,7 @@
         "add": "添加筛选条件",
         "incomplete": "请为下方每个筛选条件填写运算符和取值，此处才会显示摘要。",
         "empty": "尚无筛选条件。请使用「添加筛选条件」从支持的筛选条件中选择一个。",
+        "unsetFallback": "{{field}}：{{value}}（默认）",
         "operator": "运算符",
         "chooseOperator": "选择运算符…",
         "value": "取值",

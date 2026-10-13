@@ -60,10 +60,11 @@ def _user(login: str = "octocat") -> SimpleNamespace:
 class CountingGitHub:
     """A data source that answers like GitHub and counts each request."""
 
-    def __init__(self, *, files: int, commits: int = 2, comments: int = 1) -> None:
+    def __init__(self, *, files: int, commits: int = 2, comments: int = 1, files_without_diff: int = 0) -> None:
         self.calls: Counter[str] = Counter()
         self.repo = make_repo(repo_id=10)
         self._files = files
+        self._files_without_diff = files_without_diff
         self._commits = commits
         self._comments = comments
 
@@ -104,9 +105,13 @@ class CountingGitHub:
         return self._ok("get_pull_review_comments", [])
 
     async def get_pull_file_changes(self, owner: str, repo: str, number: int, fetch_full_content: bool = True) -> GitHubResponse:
+        # GitHub omits ``patch`` when a file's diff is too large to show.
         return self._ok("get_pull_file_changes", [
             SimpleNamespace(filename=f"src/f{i}.py", status="modified", patch="@@ -1 +1 @@\n-a\n+b")
             for i in range(self._files)
+        ] + [
+            SimpleNamespace(filename=f"gen/big{i}.py", status="modified", patch=None)
+            for i in range(self._files_without_diff)
         ])
 
     async def get_file_contents(self, owner: str, repo: str, path: str, ref: str | None = None) -> GitHubResponse:
@@ -165,14 +170,17 @@ def _code_record(path: str) -> CodeFileRecord:
 
 
 class TestPullRequestCallBudget:
-    async def test_one_pull_request_costs_seven_calls_plus_one_per_changed_file(self) -> None:
+    async def test_one_pull_request_costs_seven_calls_whatever_its_diffed_files(self) -> None:
         # The breakdown, for anyone wondering where a PR's calls go. Every
         # listing is one page here; each extra 100 items costs one more call.
+        # A changed file with a diff costs nothing more: the diff is in the
+        # file listing, and the file itself is not fetched.
         gh = CountingGitHub(files=5)
         c = _connector(gh)
 
-        await c.pull_requests.build_pull_request_blocks(_pr_record(1))
+        payload = (await c.pull_requests.build_pull_request_blocks(_pr_record(1))).decode()
 
+        assert "Full File Content" not in payload
         assert gh.calls == Counter({
             "get_repo_by_id": 1,
             "get_pull": 1,
@@ -181,9 +189,20 @@ class TestPullRequestCallBudget:
             "get_pull_reviews": 1,
             "get_pull_review_comments": 1,
             "get_pull_file_changes": 1,
-            # The full text of every changed file is indexed, one request each.
-            "get_file_contents": 5,
         })
+
+    async def test_a_file_without_a_diff_costs_one_request_and_keeps_its_text(self) -> None:
+        # With no diff to show, the file's text at the PR head is fetched and
+        # indexed instead, one request per such file.
+        gh = CountingGitHub(files=5, files_without_diff=2)
+        c = _connector(gh)
+
+        payload = (await c.pull_requests.build_pull_request_blocks(_pr_record(1))).decode()
+
+        assert gh.calls["get_file_contents"] == 2
+        assert sum(gh.calls.values()) == 7 + 2
+        assert payload.count("Full File Content:") == 2
+        assert "print('hi')" in payload
 
     async def test_pull_requests_in_one_repository_look_it_up_once(self) -> None:
         gh = CountingGitHub(files=5)
@@ -195,7 +214,7 @@ class TestPullRequestCallBudget:
         assert gh.calls["get_repo_by_id"] == 1
         # Nothing else changed: each PR still fetches its own content.
         assert gh.calls["get_pull"] == 10
-        assert gh.calls["get_file_contents"] == 50
+        assert gh.calls["get_pull_file_changes"] == 10
 
 
 class TestIssueCallBudget:

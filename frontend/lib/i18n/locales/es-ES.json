@@ -2524,6 +2524,7 @@
         "add": "Añadir filtro",
         "incomplete": "Complete el operador y el valor de cada filtro de abajo para ver aquí un resumen.",
         "empty": "Aún no hay filtros. Use \"Añadir filtro\" para elegir uno de los filtros admitidos.",
+        "unsetFallback": "{{field}}: {{value}} (predeterminado)",
         "operator": "Operador",
         "chooseOperator": "Elija un operador…",
         "value": "Valor",

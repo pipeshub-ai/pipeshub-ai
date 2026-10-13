@@ -112,10 +112,7 @@ import {
 } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import {
-  validateNoXSS,
-  validateNoFormatSpecifiers,
-} from '../../../utils/xss-sanitization';
+import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
   applyProjectScope,
@@ -4565,9 +4562,11 @@ export const search =
     try {
       const { query, limit, filters } = req.body;
 
-      // Validate query parameter for XSS and format specifiers
+      // The query is free text, like a chat question, so text in angle
+      // brackets such as "<id>" is allowed here as it is in chat. It is not
+      // rendered as HTML; see findQuestionField in
+      // libs/middlewares/xss-sanitization.middleware.ts.
       if (query && typeof query === 'string') {
-        validateNoXSS(query, 'search query');
         validateNoFormatSpecifiers(query, 'search query');
       }
 

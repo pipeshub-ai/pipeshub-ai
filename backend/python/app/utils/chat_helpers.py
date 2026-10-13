@@ -634,6 +634,14 @@ class CitationRefMapper:
         self._ref_to_url[ref] = full_url
         return ref
 
+    def copy(self) -> "CitationRefMapper":
+        """An independent mapper that continues numbering from this one."""
+        clone = CitationRefMapper()
+        clone._counter = self._counter
+        clone._url_to_ref = dict(self._url_to_ref)
+        clone._ref_to_url = dict(self._ref_to_url)
+        return clone
+
     @property
     def ref_to_url(self) -> dict[str, str]:
         """Snapshot of ref→URL mapping (safe to pass downstream without exposing mutability)."""
@@ -680,6 +688,14 @@ class RecordIdShortener:
         self._full_to_short[full_id] = short
         self._short_to_full[short] = full_id
         return short
+
+    def copy(self) -> "RecordIdShortener":
+        """An independent shortener that continues numbering from this one."""
+        clone = RecordIdShortener()
+        clone._counter = self._counter
+        clone._full_to_short = dict(self._full_to_short)
+        clone._short_to_full = dict(self._short_to_full)
+        return clone
 
     def shorten_if_known(self, full_id: str) -> str:
         """Return the short label if already mapped, otherwise the full ID unchanged."""
@@ -913,6 +929,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             specific_args = {
                 "record_type": RecordType.TICKET,
                 "status": graph_doc.get("status"),
+                "source_status": graph_doc.get("sourceStatus"),
                 "priority": graph_doc.get("priority"),
                 "type": graph_doc.get("type"),
                 "delivery_status": graph_doc.get("deliveryStatus"),
@@ -2316,13 +2333,17 @@ def _raise_group_score(unit: dict[str, Any], score: float) -> None:
                 child["score"] = score
 
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_tool: bool = False,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+    """Resolve search hits into renderable units: blocks, list and section groups, tables.
+
+    Neighbouring context blocks are not added here: they are added after
+    ranking, around the units kept (``app/modules/retrieval/context``).
+    """
     flattened_results = []
     image_index = 0
     seen_chunks = set()
     # Hits arrive in query order, not score order, on the multi-query /search path.
     emitted_groups: dict[str, dict[str, Any]] = {}
-    adjacent_chunks = {}
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2460,9 +2481,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
             })
             continue
 
-        if virtual_record_id not in adjacent_chunks:
-            adjacent_chunks[virtual_record_id] = []
-
         index = None
         is_block_group = meta.get("isBlockGroup")
         block_id = meta.get("blockId")
@@ -2592,15 +2610,11 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
 
         if block_type == BlockType.TEXT.value and block.get("parent_index") is None:
             result["content"] = block.get("data","")
-            adjacent_chunks[virtual_record_id].append(index-1)
-            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.CODE.value and block.get("parent_index") is None:
             # Without this a top-level code hit is dropped here and never reaches
             # build_message_content_array, however well it scored.
             result["content"] = _safe_stringify_content(block.get("data", ""))
             result["qualified_name"] = block_qualified_name(block)
-            adjacent_chunks[virtual_record_id].append(index-1)
-            adjacent_chunks[virtual_record_id].append(index+1)
         elif block_type == BlockType.IMAGE.value:
             data = block.get("data")
             if data:
@@ -2633,9 +2647,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     else:
                         if result.get("content") and is_base64_image(result.get("content")):
                             continue
-
-                    adjacent_chunks[virtual_record_id].append(index-1)
-                    adjacent_chunks[virtual_record_id].append(index+1)
             else:
                 continue
         elif block_type == BlockType.TABLE_ROW.value:
@@ -2656,7 +2667,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     # New range-based format
                     block_ranges = children.get('block_ranges', [])
                     first_block_index = block_ranges[0].get('start') if block_ranges else None
-                    last_block_index = block_ranges[-1].get('end') if block_ranges else None
                     # Get all block indices from ranges
                     all_block_indices = []
                     for range_obj in block_ranges:
@@ -2667,18 +2677,13 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 else:
                     # Old format (list of BlockContainerIndex)
                     first_block_index = children[0].get("block_index") if len(children) > 0 else None
-                    last_block_index = children[-1].get("block_index") if len(children) > 0 else None
                     all_block_indices = [child.get("block_index") for child in children if child.get("block_index") is not None]
             else:
                 first_block_index = None
-                last_block_index = None
                 all_block_indices = []
 
             result["block_index"] = first_block_index
             if first_block_index is not None:
-                adjacent_chunks[virtual_record_id].append(first_block_index-1)
-                adjacent_chunks[virtual_record_id].append(last_block_index+1)
-
                 num_of_cells = table_metadata.get("num_of_cells", None) if isinstance(table_metadata, dict) else None
                 if num_of_cells is None:
                     is_large_table = True
@@ -2920,16 +2925,10 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                     "citationType": "vectordb",
                     "score": row_score,
                 })
-        if sorted_rows_tuple:
-            first_child_block_index = sorted_rows_tuple[0][0]
-            adjacent_chunks[virtual_record_id].append(first_child_block_index-1)
-            if len(sorted_rows_tuple) > 1:
-                last_child_block_index = sorted_rows_tuple[-1][0]
-                adjacent_chunks[virtual_record_id].append(last_child_block_index+1)
-
         # Skip creating table_result if no rows were found
         if not sorted_rows_tuple:
             continue
+        first_child_block_index = sorted_rows_tuple[0][0]
 
         table_result = {
             "content":(table_summary,child_results),
@@ -2942,32 +2941,6 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         flattened_results.append(table_result)
 
 
-
-    if not from_tool and not from_retrieval_service:
-        for virtual_record_id,adjacent_chunks_list in adjacent_chunks.items():
-            for index in adjacent_chunks_list:
-                chunk_id = f"{virtual_record_id}-{index}"
-                if chunk_id in seen_chunks:
-                    continue
-                seen_chunks.add(chunk_id)
-                record = virtual_record_id_to_result[virtual_record_id]
-                if record is None:
-                    continue
-                blocks  = record.get("block_containers",{}).get("blocks",[])
-                if index < len(blocks) and index >= 0:
-                    block = blocks[index]
-                    block_type = block.get("type")
-                    if block_type == BlockType.TEXT.value:
-                        block_text = block.get("data","")
-                        enhanced_metadata = get_enhanced_metadata(record,block,{})
-                        flattened_results.append({
-                            "content": block_text,
-                            "block_type": block_type,
-                            "metadata": enhanced_metadata,
-                            "virtual_record_id": virtual_record_id,
-                            "block_index": index,
-                            "citationType": "vectordb|document",
-                        })
 
     # Store point_id_to_blockIndex mappings separately for old type results
     # This mapping is used to convert point_id from search results to block index
@@ -3676,6 +3649,7 @@ def _render_blocks_with_images(
     collected_images: list[dict[str, Any]] | None = None,
     allow_inline_images: bool = True,
     image_admission: "ImageAdmission | None" = None,
+    image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
 ) -> list[dict[str, Any]]:
     """Render a list of block entries (with possible IMAGE types) into LLM content entries.
 
@@ -3740,7 +3714,7 @@ def _render_blocks_with_images(
                                 admission.admit([ImageCandidate(
                                     ref=item_ref,
                                     data_uri=img_uri,
-                                    origin=ImageOrigin.FETCHED_RECORD,
+                                    origin=image_origin,
                                     block_index=int(item.get("block_index") or 0),
                                     virtual_record_id=item.get("virtual_record_id"),
                                 )])
@@ -4271,7 +4245,7 @@ def record_to_message_content(
                                 })
                                 content.extend(_render_blocks_with_images(
                                     child_results, is_multimodal_llm, image_budget, collected_images,
-                                    image_admission=admission,
+                                    image_admission=admission, image_origin=image_origin,
                                 ))
                             _renderable_rendered += 1
                             render_budget.count_block()
@@ -4324,7 +4298,7 @@ def record_to_message_content(
                     content.append({"type": "text", "text": emitted})
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, collected_images,
-                        image_admission=admission,
+                        image_admission=admission, image_origin=image_origin,
                     ))
                 _renderable_rendered += 1
                 # A group is one renderable unit, the same as a table or a
@@ -4880,6 +4854,7 @@ def build_message_content_array(
                     content.extend(_render_blocks_with_images(
                         child_results, is_multimodal_llm, image_budget, _group_collected_images,
                         allow_inline_images=not from_tool, image_admission=admission,
+                        image_origin=ImageOrigin.SEARCH_HIT,
                     ))
             elif block_type == BlockType.TEXT.value:
                 current_record_has_blocks = True
@@ -4941,6 +4916,7 @@ def build_message_content_array(
                     content.extend(_render_blocks_with_images(
                         group_blocks, is_multimodal_llm, image_budget, _group_collected_images,
                         allow_inline_images=not from_tool, image_admission=admission,
+                        image_origin=ImageOrigin.SEARCH_HIT,
                     ))
             else:
                 continue

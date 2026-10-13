@@ -2507,6 +2507,7 @@
         "add": "Filter hinzufügen",
         "incomplete": "Vervollständigen Sie unten für jeden Filter den Operator und den Wert, um hier eine Zusammenfassung zu sehen.",
         "empty": "Noch keine Filter. Wählen Sie über „Filter hinzufügen“ einen der unterstützten Filter aus.",
+        "unsetFallback": "{{field}}: {{value}} (Standard)",
         "operator": "Operator",
         "chooseOperator": "Operator auswählen…",
         "value": "Wert",

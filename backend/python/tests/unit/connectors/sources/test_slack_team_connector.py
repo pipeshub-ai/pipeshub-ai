@@ -4347,12 +4347,14 @@ class TestSlackConnectorCoverageExtended:
         ds = MagicMock()
         ds.conversations_members = AsyncMock(return_value=MagicMock(success=False, error="channel_not_found"))
         with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cx") == []
+            assert await c._fetch_channel_members("Cx") == []  # unreadable: fail closed
 
+        # Any other failure leaves the list short, so it is raised, not returned.
         ds2 = MagicMock()
         ds2.conversations_members = AsyncMock(side_effect=RuntimeError("x"))
-        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds2):
-            assert await c._fetch_channel_members("Cy") == []
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds2), \
+                pytest.raises(RuntimeError):
+            await c._fetch_channel_members("Cy")
 
     @pytest.mark.asyncio
     async def test_sync_user_groups_branches(self):
@@ -5072,8 +5074,9 @@ class TestSlackTeamConnectorCoverageBoost:
         ds.conversations_members = AsyncMock(
             return_value=MagicMock(success=False, error="internal_error"),
         )
-        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
-            assert await c._fetch_channel_members("Cz") == []
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
+                pytest.raises(RuntimeError, match="internal_error"):
+            await c._fetch_channel_members("Cz")
         c.logger.warning.assert_called()
 
     def test_to_channel_record_group_channel_updated_ms_not_doubled(self):
@@ -6403,7 +6406,8 @@ class TestSyncChannelsBranches:
         assert c.channel_id_to_name_cache.get("CN") == "named"
 
     @pytest.mark.asyncio
-    async def test_permission_exception_logs_and_continues(self):
+    async def test_permission_exception_leaves_the_channel_unchanged(self) -> None:
+        """Written with no permissions, an existing channel would lose every member."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -6425,7 +6429,9 @@ class TestSyncChannelsBranches:
             patch.object(SlackConnector, "_channel_permissions", new_callable=AsyncMock, side_effect=RuntimeError("perm fail")),
         ):
             rgs = await c._sync_channels()
-        assert len(rgs) == 1
+        assert rgs == []
+        c.data_entities_processor.on_new_record_groups.assert_not_awaited()
+        assert c.full_sync_coverage().complete is False
         c.logger.error.assert_called()
 
     @pytest.mark.asyncio
@@ -9742,3 +9748,218 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
         c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+
+
+class TestFullSyncCoverage:
+    """What a full sync tells the runner it read, so that only what it did not
+    read for a reason other than the window loses its links afterwards."""
+
+    def test_the_window_and_the_thread_groups_it_applies_to(self) -> None:
+        import time
+
+        from app.models.entities import RecordGroupType
+
+        c = _make_connector()
+        coverage = c.full_sync_coverage()
+
+        assert coverage.complete is True
+        assert abs(coverage.window_start_ms - (time.time() - 30 * 86400) * 1000) < 60_000
+        assert coverage.windowed_group_types == frozenset({RecordGroupType.SLACK_THREAD.value})
+
+    @pytest.mark.asyncio
+    async def test_a_channel_whose_history_failed_part_way_makes_it_incomplete(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache["C1"] = "rg"
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_failure("ratelimited"),
+        )
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c.sync_channel_messages("C1")
+
+        assert c.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_channel_read_to_the_end_leaves_it_complete(self) -> None:
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache["C1"] = "rg"
+        ds = MagicMock()
+        ds.conversations_history = _pages(_slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}]))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c.sync_channel_messages("C1")
+
+        assert c.full_sync_coverage().complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_users_list_makes_it_incomplete(self) -> None:
+        """No workspace_member role gets written; unlinked as unseen, it would take
+        the Role -> public channel grants with it."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.rate_limiter.acquire = AsyncMock()
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        ds = MagicMock()
+        ds.users_list = AsyncMock(return_value=_slack_failure("ratelimited"))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_users()
+
+        assert c.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("error", "complete"), [("ratelimited", False), (None, False), ("missing_scope", True)])
+    async def test_a_failed_usergroups_list(self, error: str | None, complete: bool) -> None:
+        """A missing scope is the workspace's setup, read the same way every time;
+        any other failure leaves the groups unread this time."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _make_connector()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.usergroups_list = AsyncMock(return_value=_slack_failure(error))
+
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            await c._sync_user_groups()
+
+        assert c.full_sync_coverage().complete is complete
+
+
+class TestChannelMembersReadPartWay:
+    @pytest.mark.asyncio
+    async def test_a_members_page_that_fails_after_the_first_is_raised(self) -> None:
+        """Returned, the members read so far would replace the channel's grants."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_members = _pages(
+            MagicMock(success=True, data={"members": ["U1"], "response_metadata": {"next_cursor": "c2"}}),
+            _slack_failure("ratelimited"),
+        )
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
+                pytest.raises(RuntimeError, match="ratelimited"):
+            await c._fetch_channel_members("Cpriv")
+
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
+    async def test_a_skip_error_after_the_first_page_is_raised(self, error: str) -> None:
+        """On a later page these leave the list short, like any other failure."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_members = _pages(
+            MagicMock(success=True, data={"members": ["U1"], "response_metadata": {"next_cursor": "c2"}}),
+            _slack_failure(error),
+        )
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds), \
+                pytest.raises(RuntimeError, match=error):
+            await c._fetch_channel_members("Cpriv")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", ["channel_not_found", "not_in_channel", "missing_scope"])
+    async def test_a_skip_error_on_the_first_page_fails_closed(self, error: str) -> None:
+        """The members cannot be read with this token: nobody is granted the
+        channel, so a member removed from it never keeps access unseen."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_members = AsyncMock(return_value=_slack_failure(error))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            assert await c._fetch_channel_members("Cpriv") == []
+            assert await c._channel_permissions({"id": "Cpriv", "is_private": True}) == []
+
+    @pytest.mark.asyncio
+    async def test_a_channel_with_unreadable_members_is_written_with_no_grants(self) -> None:
+        """Written with an empty list (fail closed), so seen; and, as the answer
+        repeats every sync, not an incomplete read that would stop all unlinking."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "Cpriv", "name": "secret", "is_private": True}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_channel_permissions", new_callable=AsyncMock, return_value=[]),
+        ):
+            rgs = await c._sync_channels()
+
+        assert len(rgs) == 1
+        (written,) = c.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert written[1] == []
+        assert c.full_sync_coverage().complete is True
+
+
+class TestUnbuildableChannel:
+    @pytest.mark.asyncio
+    async def test_a_channel_that_could_not_be_built_makes_it_incomplete(self) -> None:
+        """_to_channel_record_group logs and answers None; the channel goes unwritten."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "C1", "name": "general", "is_private": False}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_to_channel_record_group", return_value=None),
+        ):
+            assert await c._sync_channels() == []
+
+        assert c.full_sync_coverage().complete is False
+
+
+class TestUserListNotReadInFull:
+    @pytest.mark.asyncio
+    async def test_channels_built_from_the_user_caches_are_left_as_they_are(self) -> None:
+        """A private channel, group DM or DM gets its members' emails from the user
+        list; written from a list that was not read in full, they would lose them."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c._users_read_failed = True
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [
+                {"id": "Cpub", "name": "general", "is_private": False},
+                {"id": "Cpriv", "name": "secret", "is_private": True},
+                {"id": "Dim", "name": "dm", "is_im": True, "user": "U2"},
+                {"id": "Gmp", "name": "mpdm", "is_mpim": True},
+            ], "response_metadata": {"next_cursor": ""}},
+        ))
+        with patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            rgs = await c._sync_channels()
+
+        assert [rg.external_group_id for rg in rgs] == ["Cpub"]
+
+    @pytest.mark.asyncio
+    async def test_the_workspace_role_is_not_rewritten(self) -> None:
+        c = _make_connector()
+        c._users_read_failed = True
+        c._non_guest_app_users = [MagicMock()]
+        c.data_entities_processor.on_new_app_roles = AsyncMock()
+
+        await c._sync_workspace_roles()
+
+        c.data_entities_processor.on_new_app_roles.assert_not_awaited()

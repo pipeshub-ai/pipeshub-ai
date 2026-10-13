@@ -14,6 +14,10 @@ No I/O, no LLM.
 from __future__ import annotations
 
 from app.modules.agents.record_escalation.models import FetchPlan
+from app.modules.agents.record_escalation.policy import (
+    FULL_READ_SKIP,
+    ONE_BLOCK_IS_NOT_ENOUGH,
+)
 
 _LOW_COVERAGE_THRESHOLD = 30  # percent — below this, use a stronger header
 
@@ -38,7 +42,9 @@ def _min_coverage_pct(plan: FetchPlan) -> int:
     return min(0 if pct is None else pct for pct in pcts)
 
 
-def render_coverage_note(plan: FetchPlan, *, needs_whole_document: bool = False) -> str:
+def render_coverage_note(
+    plan: FetchPlan, *, needs_whole_document: bool = False, read_in_full: bool = False,
+) -> str:
     """
     One-line coverage-gap flag meant to sit at the TOP of a retrieval
     result, before the record blocks — `render_candidate_table` (the full
@@ -59,6 +65,12 @@ def render_coverage_note(plan: FetchPlan, *, needs_whole_document: bool = False)
     min_pct = _min_coverage_pct(plan)
     if not needs_whole_document and min_pct >= _LOW_COVERAGE_THRESHOLD:
         return ""
+    if read_in_full:
+        return (
+            f"Note: your coverage of these records is incomplete (as low as "
+            f"{min_pct}%) — see the candidate list at the end, and read in full "
+            f"the records your answer rests on before answering.\n\n"
+        )
     return (
         f"Note: your coverage of these records is incomplete (as low as "
         f"{min_pct}%) — see the candidate list at the end before answering "
@@ -76,6 +88,7 @@ def render_candidate_table(
     tool_ref: str = "knowledgegraph__fetch_record",
     *,
     needs_whole_document: bool = False,
+    read_in_full: bool = False,
 ) -> str:
     """
     Render the inline candidate list appended to the retrieval tool result.
@@ -98,6 +111,10 @@ def render_candidate_table(
     paths ask for: when the intent system already decided this request
     needs whole-document content, asking "is it relevant" again only gives
     the model another point at which to opt out.
+
+    `read_in_full` (enterprise search under THOROUGH_RETRIEVAL) drops the
+    "a single visible fact is enough" exits, so the list agrees with the
+    full-read policy the prompt states.
 
     Returns "" when the plan has no candidates.
     """
@@ -135,11 +152,25 @@ def render_candidate_table(
 
     if min_pct < _LOW_COVERAGE_THRESHOLD:
         header = f"Coverage is incomplete (as low as {min_pct}%) for these records:"
+        exit_clause = (
+            f"{ONE_BLOCK_IS_NOT_ENOUGH} Skip the call only when {FULL_READ_SKIP}." if read_in_full else
+            "— unless the answer needs only a single specific fact already "
+            "visible in the blocks above."
+        )
         footer = (
             f"\nDrop any record above that isn't relevant to the question, "
             f"then call `{tool_ref}` ONCE with every record_id that is left "
-            f"and answer from what it returns — unless the answer needs only "
-            f"a single specific fact already visible in the blocks above."
+            f"and answer from what it returns{'.' if read_in_full else ''} {exit_clause}"
+        )
+        return "\n\n" + header + "\n" + rows + "\n" + footer
+
+    if read_in_full:
+        header = "Records your answer may rest on, with how much of each you hold:"
+        footer = (
+            f"\nFor each record above, decide: (1) is it relevant to the question? "
+            f"If not, skip it. (2) Call `{tool_ref}` ONCE with the relevant "
+            f"record_ids, then answer, unless {FULL_READ_SKIP}. "
+            f"{ONE_BLOCK_IS_NOT_ENOUGH}"
         )
         return "\n\n" + header + "\n" + rows + "\n" + footer
 
