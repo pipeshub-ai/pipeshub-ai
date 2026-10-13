@@ -120,6 +120,17 @@ class TestThorough:
         assert "no such folder or entity, keep searching" in with_store
 
 
+class TestSecondValue:
+    def test_a_different_persons_value_in_one_record_is_a_version(self) -> None:
+        """A question about what different people said needs each person's
+        value, even when both are in one meeting or thread."""
+        paragraph = _text(composition=True).split("\n\n")[-1]
+        allowed, excluded = paragraph.split(" The same source's looser or partial mention", 1)
+        assert "a different person in the same thread, meeting or email" in allowed
+        assert "is not a rival version" in excluded
+        assert "a day or time without the date" in excluded
+
+
 class TestBothOn:
     def test_seeks_other_versions_instead_of_only_reporting_them(self) -> None:
         text = _text(composition=True, thorough=True)

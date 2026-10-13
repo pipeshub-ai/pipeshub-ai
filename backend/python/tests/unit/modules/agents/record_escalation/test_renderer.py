@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from app.modules.agents.record_escalation.models import FetchCandidate, FetchPlan
+from app.modules.agents.record_escalation.policy import FULL_READ_SKIP
 from app.modules.agents.record_escalation.renderer import (
     _coverage_pct,
     _min_coverage_pct,
@@ -214,13 +215,14 @@ class TestFullReadPolicy:
     def test_low_coverage_footer_drops_the_single_fact_exit(self) -> None:
         out = render_candidate_table(self._LOW, read_in_full=True)
         assert "single specific fact" not in out
-        assert out.endswith(f"answer from what it returns. {self._ONE_BLOCK}: the rest can revise, qualify or complete it.")
+        assert f"answer from what it returns. {self._ONE_BLOCK}: the rest can revise, qualify or complete it." in out
+        assert out.endswith(f"Skip the call only when {FULL_READ_SKIP}.")
         assert "1 of 10 blocks" in out
 
     def test_high_coverage_footer_asks_whether_the_record_is_held_in_full(self) -> None:
         out = render_candidate_table(self._HIGH, read_in_full=True)
         assert "already visible in the blocks" not in out
-        assert "Do you already hold it in full or nearly so?" in out
+        assert f"then answer, unless {FULL_READ_SKIP}." in out
         assert self._ONE_BLOCK in out
         assert "9 of 10 blocks" in out
 
@@ -234,3 +236,34 @@ class TestFullReadPolicy:
         assert render_candidate_table(self._LOW, needs_whole_document=True, read_in_full=True) == (
             render_candidate_table(self._LOW, needs_whole_document=True)
         )
+
+
+def test_every_full_read_text_keeps_the_same_exits() -> None:
+    """The mode text, the fetch policy, the candidate list and the fetch tool
+    each state when a full read may be skipped; under the full-read policy
+    they must all give the same exits, metadata included."""
+    from unittest.mock import MagicMock
+
+    from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+    from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.hooks.citations import (
+        CitationCollector,
+        _FetchFullRecordTool,
+    )
+    from app.agents.chat_modes.internal_search_prompt import (
+        internal_search_instructions,
+    )
+    from app.modules.agents.record_escalation.policy import policy_text
+
+    assert "metadata alone (status, assignee)" in FULL_READ_SKIP
+    context = AgentContext(org_id="o", user_id="u", user_email="u@example.com", logger=MagicMock())
+    context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+    texts = {
+        "mode text": internal_search_instructions(composition=False, thorough=True, entity_tools=False),
+        "fetch policy": policy_text("knowledgegraph__fetch_record", read_in_full=True),
+        "low-coverage list": render_candidate_table(_plan(_candidate(blocks_held=1)), read_in_full=True),
+        "high-coverage list": render_candidate_table(_plan(_candidate(blocks_held=9)), read_in_full=True),
+        "fetch tool": _FetchFullRecordTool(CitationCollector(context), context).description,
+    }
+    for name, text in texts.items():
+        assert FULL_READ_SKIP in text, name

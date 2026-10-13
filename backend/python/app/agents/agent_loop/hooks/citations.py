@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
-from app.modules.agents.record_escalation.policy import ONE_BLOCK_IS_NOT_ENOUGH
+from app.modules.agents.record_escalation.policy import FULL_READ_SKIP, ONE_BLOCK_IS_NOT_ENOUGH
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
@@ -111,11 +111,7 @@ _SKIP_CASE = (
     "metadata alone settles the question outright, e.g. a ticket's status "
     "or assignee.)"
 )
-_FULL_READ_SKIP_CASE = (
-    "(Skip only when you already hold the record in full or nearly so, or "
-    "metadata alone settles the question outright, e.g. a ticket's status or "
-    f"assignee. {ONE_BLOCK_IS_NOT_ENOUGH})"
-)
+_FULL_READ_SKIP_CASE = f"(Skip only when {FULL_READ_SKIP}. {ONE_BLOCK_IS_NOT_ENOUGH})"
 
 
 class CitationCollector:

@@ -218,6 +218,13 @@ ONE_BLOCK_IS_NOT_ENOUGH = (
 )
 
 
+# The only exits a full-read policy leaves; every text that states one uses this.
+FULL_READ_SKIP = (
+    "you already hold the record in full or nearly so, or its metadata alone "
+    "(status, assignee) settles the question"
+)
+
+
 def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
@@ -240,8 +247,7 @@ def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     of the record would have revised or completed.
     """
     skip_case = (
-        "you already hold the record in full or nearly so, or metadata alone "
-        "(status, assignee) settles the goal."
+        f"{FULL_READ_SKIP}."
         if read_in_full else
         "the exact fact needed is already visible in a block you hold, or "
         "metadata alone (status, assignee) settles the goal."

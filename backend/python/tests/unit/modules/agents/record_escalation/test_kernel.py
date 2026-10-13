@@ -529,9 +529,11 @@ class TestPolicyText:
         """"This covers ..." must scope the call itself and name the single
         fact; placed right after a one-block sentence it read as narrowing
         that sentence to empty lookups and whole-document questions."""
+        from app.modules.agents.record_escalation.policy import FULL_READ_SKIP
+
         text = policy_text("dynamic_fetch_full_record", read_in_full=True)
         skip, scope = text.split("UNLESS ", 1)[1].split(" This covers both", 1)
-        assert skip == "you already hold the record in full or nearly so, or metadata alone (status, assignee) settles the goal."
+        assert skip == f"{FULL_READ_SKIP}."
         scope_sentence = scope.split(". Never infer", 1)[0]
         assert "a single fact seen in one block that your answer rests on" in scope_sentence
         assert "the rest of the record can revise, qualify or complete it" in scope_sentence

@@ -14,7 +14,10 @@ No I/O, no LLM.
 from __future__ import annotations
 
 from app.modules.agents.record_escalation.models import FetchPlan
-from app.modules.agents.record_escalation.policy import ONE_BLOCK_IS_NOT_ENOUGH
+from app.modules.agents.record_escalation.policy import (
+    FULL_READ_SKIP,
+    ONE_BLOCK_IS_NOT_ENOUGH,
+)
 
 _LOW_COVERAGE_THRESHOLD = 30  # percent — below this, use a stronger header
 
@@ -150,7 +153,7 @@ def render_candidate_table(
     if min_pct < _LOW_COVERAGE_THRESHOLD:
         header = f"Coverage is incomplete (as low as {min_pct}%) for these records:"
         exit_clause = (
-            ONE_BLOCK_IS_NOT_ENOUGH if read_in_full else
+            f"{ONE_BLOCK_IS_NOT_ENOUGH} Skip the call only when {FULL_READ_SKIP}." if read_in_full else
             "— unless the answer needs only a single specific fact already "
             "visible in the blocks above."
         )
@@ -165,9 +168,9 @@ def render_candidate_table(
         header = "Records your answer may rest on, with how much of each you hold:"
         footer = (
             f"\nFor each record above, decide: (1) is it relevant to the question? "
-            f"If not, skip it. (2) Do you already hold it in full or nearly so? "
-            f"If not, call `{tool_ref}` ONCE with the relevant record_ids, then "
-            f"answer. {ONE_BLOCK_IS_NOT_ENOUGH}"
+            f"If not, skip it. (2) Call `{tool_ref}` ONCE with the relevant "
+            f"record_ids, then answer, unless {FULL_READ_SKIP}. "
+            f"{ONE_BLOCK_IS_NOT_ENOUGH}"
         )
         return "\n\n" + header + "\n" + rows + "\n" + footer
 

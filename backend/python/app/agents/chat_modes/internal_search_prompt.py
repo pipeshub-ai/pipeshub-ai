@@ -9,6 +9,7 @@ switches and on whether the entity tools are granted, never on the question.
 from __future__ import annotations
 
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.modules.agents.record_escalation.policy import FULL_READ_SKIP
 
 _GROUNDING = (
     "Answer ONLY from the organization's internal knowledge base / provided context and "
@@ -37,7 +38,7 @@ _READ_IN_FULL = (
     "about the specific thing the question asks (usually one to three; skip records "
     "that only share words with it). Do this for a single fact too: a block can hold an "
     "outdated value, part of a list, or a step without its conditions, and the rest of the "
-    "record settles which. Skip it only for a record you already hold in full or nearly so "
+    f"record settles which. Skip it only when {FULL_READ_SKIP} "
     "(the candidate list below the context shows \"you have N of M blocks\"). If a fetched "
     "record comes back with blocks not shown and the part you need could be among them, read "
     "on with `start_block` before answering. A record listed in results with no blocks shown "
@@ -118,14 +119,15 @@ _RESOLVE_CONFLICTS = (
 )
 
 # A looser mention in the same record (a weekday beside a dated deadline) was
-# being reported as a rival value, which reads as an unresolved contradiction.
+# being reported as a rival value, which reads as an unresolved contradiction;
+# a different person's value in the same thread or meeting is still a version.
 _SECOND_VALUE = (
-    "Present a second value for what was asked only when another record, or an explicit "
-    "revision within one (updated, corrected, replaced), states a different value for the "
-    "same item and scope. A looser or partial mention elsewhere in the same record — a day "
-    "or time without the date, another label in a table, a later aside — is not a rival "
-    "version: answer with the value the record states precisely and leave the other "
-    "mention out."
+    "Present a second value for what was asked only when another record, a different person "
+    "in the same thread, meeting or email, or an explicit revision within one record "
+    "(updated, corrected, replaced) states a different value for the same item and scope. "
+    "The same source's looser or partial mention elsewhere in the record — a day or time "
+    "without the date, another label in a table, a later aside — is not a rival version: "
+    "answer with the value the record states precisely and leave the other mention out."
 )
 
 
