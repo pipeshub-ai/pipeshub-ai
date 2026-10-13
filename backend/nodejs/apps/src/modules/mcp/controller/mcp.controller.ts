@@ -14,6 +14,7 @@ import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
 import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
+import { registerCodeGraphTools, ToolRegistrar } from '../code-graph.tools';
 
 const logger = Logger.getInstance({
   service: 'MCPController',
@@ -135,6 +136,13 @@ export const handleMCPRequest =
             security: { bearerAuth: token },
             serverURL,
           }),
+      });
+
+      // The package's McpServer is typed against its own zod 4; comparing that
+      // generic signature to ToolRegistrar's exceeds tsc's instantiation depth.
+      registerCodeGraphTools(mcpServer as unknown as ToolRegistrar, {
+        aiBackend: appConfig.aiBackend,
+        authorization: req.headers.authorization ?? '',
       });
 
       await mcpServer.connect(transport);

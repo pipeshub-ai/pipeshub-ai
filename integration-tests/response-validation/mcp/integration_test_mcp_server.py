@@ -39,6 +39,12 @@ CURATED_TOOLS = {
     "pipeshub_get_record_content",
     "pipeshub_directory",
     "pipeshub_agents",
+    # Registered by PipesHub itself (modules/mcp/code-graph.tools.ts), not the package.
+    "pipeshub_code_repos",
+    "pipeshub_code_symbols",
+    "pipeshub_code_neighbours",
+    "pipeshub_code_read",
+    "pipeshub_code_path",
 }
 
 # The mcp-server repo caps every description so hosts keep room for their own
