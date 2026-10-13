@@ -195,3 +195,19 @@ class TestGrepGenerationUsage:
         assert grep_generation_usage_reporter({"usage_ledger": None}) is None
         assert grep_generation_usage_reporter({}) is None
         assert grep_generation_usage_reporter(None) is None
+
+
+@pytest.mark.asyncio
+async def test_a_failing_stream_write_never_reaches_the_answer_path() -> None:
+    """A client gone mid-run makes the sink raise; that must cost the frame only."""
+
+    class _BrokenSink:
+        async def write(self, _event: dict[str, Any]) -> None:
+            raise ConnectionResetError("client went away")
+
+    context = make_context(protocol="agui", run_id="run-1")
+    context.include_retrieval_context = True
+    context.event_sink = _BrokenSink()
+    agent = SimpleNamespace(usage=_usage(1, 10, 1), spec=SimpleNamespace(max_turns=15))
+
+    await emit_run_usage(context, agent, SimpleNamespace(turns=[], error=None), model="m")

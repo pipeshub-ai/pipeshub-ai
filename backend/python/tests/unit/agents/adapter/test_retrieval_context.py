@@ -487,6 +487,18 @@ class TestEmitNeverRaises:
 
         assert context.event_sink.events == []
 
+    async def test_a_failing_stream_write_drops_the_frame(self) -> None:
+        class _BrokenSink:
+            async def write(self, _event: dict[str, Any]) -> None:
+                raise ConnectionResetError("client went away")
+
+        context = make_context(
+            protocol="agui", run_id="run-1", include_retrieval_context=True, event_sink=_BrokenSink(),
+        )
+        context.tool_state["final_results"] = [_block("vr-1", 0)]
+
+        await emit_retrieval_context(context, source="tool")
+
     async def test_cancellation_is_not_swallowed(self) -> None:
         context = TestFrameBounds()._context()
 

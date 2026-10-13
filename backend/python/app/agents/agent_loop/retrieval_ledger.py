@@ -334,14 +334,12 @@ async def emit_retrieval_context(
             errorMessage=error_message[:_MAX_ERROR_MESSAGE_CHARS] if error_message else None,
             truncated=(truncated or seq >= MAX_FRAMES_PER_RUN) or None,
         )
-        events = list(context.formatter.retrieval_context(context, payload=payload))
+        for event in context.formatter.retrieval_context(context, payload=payload):
+            await context.event_sink.write(event)
     except Exception:
         logger.exception(
             "retrieval_context: dropping frame for run %s", getattr(context, "run_id", None),
         )
-        return
-    for event in events:
-        await context.event_sink.write(event)
 
 
 def _bounded_records(

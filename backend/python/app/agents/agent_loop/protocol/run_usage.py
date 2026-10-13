@@ -168,8 +168,7 @@ async def emit_run_usage(
         error = getattr(result, "error", None)
         payload.agentError = str(error)[:_MAX_AGENT_ERROR_CHARS] if error else None
         events = list(context.formatter.run_usage(context, payload=payload))
+        for event in events:
+            await context.event_sink.write(event)
     except Exception:
         logger.exception("run_usage: dropping usage frame for run %s", getattr(context, "run_id", None))
-        return
-    for event in events:
-        await context.event_sink.write(event)
