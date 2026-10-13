@@ -23,6 +23,9 @@ from app.connectors.sources.google.drive.individual.connector import (
     GoogleDriveIndividualConnector,
 )
 
+# Importing a connector registers its OAuth fields (which are required) by its type name.
+from app.connectors.sources.servicenow.servicenow import connector as _servicenow  # noqa: F401
+
 CONNECTOR_ID = "drive-conn-1"
 ORG_ID = "org-1"
 USER_ID = "user-1"
@@ -82,10 +85,10 @@ def _request(body: dict[str, Any], *, role: str = "admin") -> MagicMock:
     return request
 
 
-def _instance() -> dict[str, Any]:
+def _instance(connector_type: str = "Drive") -> dict[str, Any]:
     return {
         "_key": CONNECTOR_ID,
-        "type": "DRIVE",
+        "type": connector_type,
         "name": "My Drive",
         "isActive": False,
         "authType": "OAUTH",
@@ -94,10 +97,14 @@ def _instance() -> dict[str, Any]:
     }
 
 
-async def _save(store: InMemoryConfigService, body: dict[str, Any], *, role: str = "admin") -> dict[str, Any]:
+async def _save(
+    store: InMemoryConfigService, body: dict[str, Any], *, role: str = "admin", connector_type: str = "Drive"
+) -> dict[str, Any]:
     request = _request(body, role=role)
     with (
-        patch.object(router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance())),
+        patch.object(
+            router_module, "get_validated_connector_instance", AsyncMock(return_value=_instance(connector_type))
+        ),
         patch.object(router_module, "resolve_config_service", return_value=store),
     ):
         return await update_connector_instance_config(CONNECTOR_ID, request)
@@ -138,7 +145,7 @@ class TestInlineCredentialsLinkAnOAuthApp:
         assert len(apps) == 1
         app = apps[0]
         assert app["orgId"] == ORG_ID
-        assert app["connectorType"] == "DRIVE"
+        assert app["connectorType"] == "Drive"
         assert app["oauthInstanceName"] == "My Drive"
         assert app["config"]["clientId"] == CLIENT_ID
         assert app["config"]["clientSecret"] == CLIENT_SECRET
@@ -233,7 +240,7 @@ class TestOtherSavesAreUnchanged:
             "_id": "app-1",
             "orgId": ORG_ID,
             "oauthInstanceName": "Shared Drive app",
-            "connectorType": "DRIVE",
+            "connectorType": "Drive",
             "config": {"clientId": "app-client", "clientSecret": "app-secret"},
         }
         store = InMemoryConfigService(
@@ -296,3 +303,37 @@ class TestOtherSavesAreUnchanged:
 
         assert caught.value.status_code == 500
         assert store.values[CONFIG_PATH] == {"auth": {"connectorScope": "personal"}}
+
+
+@pytest.mark.asyncio
+class TestAPartialSaveLinksNothingUntilEveryRequiredFieldIsThere:
+    async def test_a_client_id_alone_creates_no_app_and_its_secret_later_creates_one(self) -> None:
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        await _save(store, {"auth": {"clientId": CLIENT_ID}})
+
+        assert store.apps() == []
+        assert "oauthConfigId" not in store.values[CONFIG_PATH]["auth"]
+        assert store.values[CONFIG_PATH]["auth"]["clientId"] == CLIENT_ID
+
+        await _save(store, {"auth": {"clientSecret": CLIENT_SECRET}})
+
+        apps = store.apps()
+        assert len(apps) == 1
+        assert apps[0]["config"] == {"clientId": CLIENT_ID, "clientSecret": CLIENT_SECRET}
+        assert store.values[CONFIG_PATH]["auth"]["oauthConfigId"] == apps[0]["_id"]
+        store.values[CONFIG_PATH]["credentials"] = {"access_token": "access", "refresh_token": "refresh"}
+        assert await _start_drive(store) is True
+
+    async def test_a_servicenow_instance_url_alone_is_stored_and_creates_no_app(self) -> None:
+        store = InMemoryConfigService({CONFIG_PATH: {"auth": {"connectorScope": "personal"}}})
+
+        await _save(
+            store, {"auth": {"instanceUrl": "https://acme.service-now.com"}}, connector_type="ServiceNow"
+        )
+
+        assert store.values.get("/services/oauth/servicenow") is None
+        assert store.apps() == []
+        auth = store.values[CONFIG_PATH]["auth"]
+        assert auth["instanceUrl"] == "https://acme.service-now.com"
+        assert "oauthConfigId" not in auth

@@ -3694,6 +3694,18 @@ def _has_oauth_credentials(auth_config: dict[str, Any], connector_type: str) -> 
     )
 
 
+def _has_required_oauth_credentials(auth_config: dict[str, Any], connector_type: str) -> bool:
+    """Whether ``auth_config`` has a value for every OAuth app field the registry marks required.
+
+    An app built from fewer would be linked half-filled, and the connector could still not start.
+    """
+    return all(
+        auth_config.get(field_name) or
+        auth_config.get(field_name.replace("Id", "_id").replace("Secret", "_secret"))
+        for field_name in _get_required_oauth_field_names_from_registry(connector_type)
+    )
+
+
 async def _handle_oauth_config_creation(
     connector_type: str,
     auth_config: dict[str, Any],
@@ -5417,7 +5429,9 @@ async def update_connector_instance_config(
                 # Client credentials written on a connector that has no OAuth app: create the
                 # app and link it, as creating the connector and the auth-only save do. An
                 # OAUTH connector reads its client ID and secret from its linked app, so without
-                # one it can sign in but never start. A connector already linked is left alone.
+                # one it can sign in but never start. A connector already linked is left alone,
+                # and so is one still missing a required field (a client ID sent without its
+                # secret): a half-filled app would be linked and never completed.
                 linked_inline_credentials = False
                 if (
                     is_admin
@@ -5427,6 +5441,7 @@ async def update_connector_instance_config(
                     and isinstance(new_config.get(OAuthConfigKeys.AUTH), dict)
                     and not new_config[OAuthConfigKeys.AUTH].get(OAuthConfigKeys.OAUTH_CONFIG_ID)
                     and _has_oauth_credentials(_incoming_auth, connector_type)
+                    and _has_required_oauth_credentials(new_config[OAuthConfigKeys.AUTH], connector_type)
                 ):
                     created_oauth_app_id = await _handle_oauth_config_creation(
                         connector_type=connector_type,
@@ -8731,6 +8746,21 @@ def _get_oauth_field_names_from_registry(connector_type: str) -> list[str]:
         return [field.name for field in oauth_config.auth_fields]
     except Exception:
         # Fallback to common OAuth fields if registry lookup fails
+        return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
+
+
+def _get_required_oauth_field_names_from_registry(connector_type: str) -> list[str]:
+    """OAuth auth-field names the registry marks ``required`` (client ID and secret if unknown)."""
+    try:
+        from app.connectors.core.registry.oauth_config_registry import (
+            get_oauth_config_registry,
+        )
+
+        oauth_config = get_oauth_config_registry().get_config(connector_type)
+        if not oauth_config or not oauth_config.auth_fields:
+            return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
+        return [field.name for field in oauth_config.auth_fields if field.required]
+    except Exception:
         return [AuthFieldKeys.CLIENT_ID, AuthFieldKeys.CLIENT_SECRET]
 
 
