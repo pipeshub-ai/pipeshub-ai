@@ -209,7 +209,7 @@ def build_candidates(
     )
 
 
-def policy_text(tool_ref: str) -> str:
+def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
 
@@ -224,7 +224,21 @@ def policy_text(tool_ref: str) -> str:
     equal billing reads as permission to stop after step 1.
 
     `tool_ref` is the tool name the model should call.
+
+    ``read_in_full`` (enterprise search under THOROUGH_RETRIEVAL) narrows the
+    skip case to a record already held in full: an answer resting on a fact
+    seen in one block used an outdated value or half a list, which the rest
+    of the record would have revised or completed.
     """
+    skip_case = (
+        "you already hold the record in full or nearly so, or metadata alone "
+        "(status, assignee) settles the goal. A fact seen in one block still "
+        "needs the rest of the record when your answer rests on it: the rest "
+        "can revise, qualify or complete it."
+        if read_in_full else
+        "the exact fact needed is already visible in a block you hold, or "
+        "metadata alone (status, assignee) settles the goal."
+    )
     return (
         f"## Reading Records in Full\n\n"
         f"Search results are ranked fragments, not complete documents. "
@@ -233,9 +247,7 @@ def policy_text(tool_ref: str) -> str:
         f"each record the question is actually about:\n\n"
         f"1. Is the record relevant? If not, skip it.\n"
         f"2. If it is relevant, call `{tool_ref}` with those record_ids in "
-        f"ONE call, then answer — UNLESS the exact fact needed is already "
-        f"visible in a block you hold, or metadata alone (status, assignee) "
-        f"settles the goal. This covers both no content yet from lookup/"
+        f"ONE call, then answer — UNLESS {skip_case} This covers both no content yet from lookup/"
         f"navigate/list_files, and incomplete coverage for a whole-document "
         f"property (a summary, risks or key points, a comparison, whether it "
         f"mentions something anywhere). Never infer content from a title.\n\n"
