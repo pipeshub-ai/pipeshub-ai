@@ -259,6 +259,17 @@ class TestExactArithmetic:
             ("(-10**400) ** log(1)", 1),
             ("(-1e-400) ** sin(0)", 1),
             ("(10**400) ** log(1)", 1),
+            # An exact trig argument is reduced by 2*pi in decimal, not after
+            # rounding it to a double: 10**300 as a double is off by about
+            # 10**284 radians, and 100000.1 by 7e-12.
+            ("sin(10**300)", -0.985750425160377),
+            ("cos(10**300)", -0.168214444374245),
+            ("tan(10**300)", 5.8600819259449),
+            ("sin(-10**300)", 0.985750425160377),
+            ("sin(100000.1)", -0.0641994009836506),
+            ("cos(10**300 / 12.5)", -0.296129482721992),
+            ("sin(10**499 + 1/3)", -0.0124529466817837),
+            ("tan(10**22)", -1.6287782256069),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -344,6 +355,10 @@ class TestRefusedExpressions:
             ("sin(0) ** (-1e-400)", "Division by zero"),
             ("(-10**400) ** (-log(e))", "too small"),
             ("(-1e-400) ** (-log(e))", "too large"),
+            ("(-10**400) ** floor(exp(10))", "too large"),
+            ("(2e-400) ** -floor(exp(10))", "too large"),
+            ("(2e-400) ** floor(exp(10))", "too small"),
+            ("(2*10**400) ** exp(10)", "too large"),
             ("atan2(1e-400, 1)", "too small"),
             ("asin(1e-400)", "too small"),
             ("(2e-400) ** 2.5", "too small"),
@@ -418,6 +433,7 @@ class TestNoUnexpectedErrors:
         "0", "1", "-1", "2", "0.5", "1e-400", "-1e-400", "2e-400", "1e-310", "1e-300", "1e300",
         "10**400", "-10**400", "1 + 1e-20", "1 - 1e-20", "1/3", "pi", "e", "sqrt(2)", "7**-300",
         "(10**499 - 1)/(10**498 + 7)", 'hms("1:02:03.5")', "-pi", "-8", "1/7", "2 + 1e-400",
+        "floor(exp(10))", "-floor(exp(10))",
     )
     _UNARY = (
         "abs", "floor", "ceil", "round", "sqrt", "exp", "log", "log10", "sin", "cos", "tan",
@@ -440,7 +456,7 @@ class TestNoUnexpectedErrors:
         return expressions
 
     def test_random_combinations_compute_or_refuse_cleanly(self) -> None:
-        for expression in self._expressions(4000):
+        for expression in self._expressions(6000):
             try:
                 payload = evaluate(expression).to_dict()
             except CalculationError:

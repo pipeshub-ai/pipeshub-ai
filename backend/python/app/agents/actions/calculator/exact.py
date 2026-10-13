@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import ast
 import calendar
+import functools
 import math
 import re
 import sys
@@ -22,6 +23,7 @@ import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import date
 from decimal import Context, Decimal, localcontext
+from decimal import Overflow as DecimalOverflow
 from fractions import Fraction
 from typing import TYPE_CHECKING
 
@@ -418,8 +420,12 @@ def _decimal_power(base: Fraction, exponent: Value) -> float:
     """A positive exact base outside a double's range to a fractional power,
     as exp(exponent * ln(base)) in decimal: (2e-400) ** 0.5 is 1.4e-200."""
     exact = Fraction(exponent)
-    with localcontext(Context(prec=_LOG_GUARD_DIGITS)):
-        result = (Decimal(exact.numerator) / Decimal(exact.denominator) * _decimal_log(base, base10=False)).exp()
+    try:
+        with localcontext(Context(prec=_LOG_GUARD_DIGITS)):
+            result = (Decimal(exact.numerator) / Decimal(exact.denominator) * _decimal_log(base, base10=False)).exp()
+    except DecimalOverflow as exc:
+        # Past even the decimal context's exponent range.
+        raise CalculationError("The result is too large.") from exc
     return _bounded(float(result), nonzero=True)
 
 
@@ -491,6 +497,9 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         return _logarithm(name, values), 0
     if name in ("asin", "acos"):
         return _arc(name, values[0]), 0
+    if name in ("sin", "cos", "tan") and isinstance(values[0], Fraction) and abs(values[0]) > 1:
+        angle = _reduced_angle(values[0])
+        return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
     if name == "atan" and isinstance(values[0], Fraction) and abs(values[0]) > 1:
         # atan(x) = ±pi/2 - atan(1/x): fits for any x, 10**400 included.
         inverse = math.atan(_as_float(1 / values[0], flush=True))
@@ -559,6 +568,32 @@ def _atan2(y: Value, x: Value) -> float:
     if scale == 0:
         return 0.0
     return _float_function("atan2", math.atan2, [Fraction(y) / scale, Fraction(x) / scale])
+
+
+def _reduced_angle(value: Fraction) -> float:
+    """An exact angle reduced by a whole number of turns in decimal before it
+    is rounded to a double: 10**300 as a double is off by about 10**284
+    radians, and even 100000.1 by 7e-12, which a sine would carry."""
+    integer_digits = len(str(abs(value.numerator) // value.denominator))
+    with localcontext(Context(prec=integer_digits + _LOG_GUARD_DIGITS)):
+        angle = Decimal(value.numerator) / Decimal(value.denominator)
+        turn = 2 * _decimal_pi()
+        return float(angle - turn * (angle / turn).to_integral_value())
+
+
+@functools.cache
+def _decimal_pi() -> Decimal:
+    """pi to more digits than any exact value can have (the series from the
+    decimal module's documentation), computed once."""
+    with localcontext(Context(prec=MAX_DIGITS + 2 * _LOG_GUARD_DIGITS)):
+        last, term, total, n, n_step, d, d_step = Decimal(0), Decimal(3), Decimal(3), 1, 0, 0, 24
+        while total != last:
+            last = total
+            n, n_step = n + n_step, n_step + 8
+            d, d_step = d + d_step, d_step + 32
+            term = term * n / d
+            total += term
+        return total
 
 
 def _sqrt_of_exact(value: Fraction) -> float:
