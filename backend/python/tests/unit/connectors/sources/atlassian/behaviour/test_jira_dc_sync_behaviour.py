@@ -1259,8 +1259,10 @@ class TestUnreadApplicationRoles:
         "answer",
         [
             pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(json_response({"errorMessages": ["timeout"]}, status=408), id="408"),
             pytest.param(httpx.ConnectError("reset"), id="network"),
             pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(json_response({"roles": []}), id="wrong-shape"),
         ],
     )
     async def test_an_unread_application_role_list_keeps_the_project_access(self, jira, db, store, search, answer) -> None:
@@ -1299,6 +1301,19 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert [p.external_id for p in db.record_group_permissions["10000"]] == ["jira-software-users"]
+
+    async def test_a_first_sync_with_unread_application_roles_saves_the_grants_that_were_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding the project back would leave it with no access.
+        groups = {p.external_id for p in db.record_group_permissions["10000"] if p.entity_type == EntityType.GROUP}
+        assert groups == {"devs"}
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, jira, db, store, search) -> None:
         stub_site(jira, search)

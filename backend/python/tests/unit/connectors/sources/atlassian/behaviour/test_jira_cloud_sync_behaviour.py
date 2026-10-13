@@ -892,8 +892,10 @@ class TestUnreadApplicationRoles:
         "answer",
         [
             pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(json_response({"errorMessages": ["timeout"]}, status=408), id="408"),
             pytest.param(httpx.ConnectError("reset"), id="network"),
             pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(json_response({"roles": []}), id="wrong-shape"),
         ],
     )
     async def test_an_unread_application_role_list_keeps_the_project_access(self, api, site_db, checkpoints, search, answer) -> None:
@@ -929,6 +931,18 @@ class TestUnreadApplicationRoles:
         await connector.run_sync()
 
         assert acl(site_db) == [("EntityType.GROUP", "grp-qa")]
+
+    async def test_a_first_sync_with_unread_application_roles_saves_the_grants_that_were_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding the project back would leave it with no access.
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
 
     async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
         self._stub_application_role(api)

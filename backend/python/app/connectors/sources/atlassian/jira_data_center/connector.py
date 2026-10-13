@@ -66,6 +66,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
+from app.connectors.sources.atlassian.core.read_outcome import is_inconclusive_status
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -411,6 +412,10 @@ class JiraDataCenterConnector(BaseConnector):
         # 5xx, a network error, an unparseable body). Projects granted through an application
         # role then keep their stored access this sync instead of losing those groups.
         self._app_roles_unread: bool = False
+        # Whether this sync started with a sync checkpoint, so earlier syncs have stored
+        # grants worth keeping. A first sync has none, and a full sync's prep deletes them
+        # along with the checkpoints.
+        self._had_sync_checkpoint: bool = False
         self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
         # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
         # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
@@ -671,6 +676,8 @@ class JiraDataCenterConnector(BaseConnector):
             if not users:
                 self.logger.info("ℹ️ No users found")
                 return
+
+            self._had_sync_checkpoint = await self._get_issues_sync_checkpoint() is not None
 
             # Fetch and sync users
             jira_users = await self._fetch_users()
@@ -1594,11 +1601,9 @@ class JiraDataCenterConnector(BaseConnector):
                         ),
                     )
                 else:
-                    # 400/404 answer the same way on every sync, so they map to nothing as before.
-                    self._app_roles_unread = response.status in (
-                        HttpStatusCode.UNAUTHORIZED.value,
-                        HttpStatusCode.TOO_MANY_REQUESTS.value,
-                    ) or response.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+                    # 400/404 answer the same way on every sync, so they map to nothing as before;
+                    # anything else (401, 408, 429, 5xx, ...) leaves the mapping unknown.
+                    self._app_roles_unread = is_inconclusive_status(response.status)
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
                     )
@@ -1606,7 +1611,12 @@ class JiraDataCenterConnector(BaseConnector):
 
             roles_data = response.json()
             if not isinstance(roles_data, list):
-                roles_data = []
+                # A 200 of the wrong shape says nothing about which groups the roles hold.
+                self.logger.warning(
+                    "⚠️ Application roles response is a %s, not a list", type(roles_data).__name__
+                )
+                self._app_roles_unread = True
+                return {}
 
             for role in roles_data:
                 if not isinstance(role, dict):
@@ -1859,8 +1869,10 @@ class JiraDataCenterConnector(BaseConnector):
                                 "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
                                 role_key, self.creator_email, project_key
                             )
-                    elif self._app_roles_unread:
+                    elif self._app_roles_unread and self._had_sync_checkpoint:
                         # Saving the project now would drop the role's groups from its access.
+                        # With nothing stored (a first or full sync) the grants that were read
+                        # are saved instead, below.
                         self.logger.warning(
                             "Keeping the stored access of project %s: it grants applicationRole '%s', "
                             "and the application roles could not be read",
