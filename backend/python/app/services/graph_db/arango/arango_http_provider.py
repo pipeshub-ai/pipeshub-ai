@@ -871,7 +871,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         async with session.post(url, json=payload) as resp:
             if resp.status in (200, 201, 202):
                 self.logger.info("Added edge definition '%s' to graph '%s'", edge_col, graph_name)
-                # Deletes find edge collections through this cache; a stale list keeps the new one's edges.
+                # Deletes find edge collections through this cache;
+                # a stale list keeps the new one's edges.
                 self._edge_collections_by_graph.pop(graph_name, None)
             else:
                 self.logger.warning(
