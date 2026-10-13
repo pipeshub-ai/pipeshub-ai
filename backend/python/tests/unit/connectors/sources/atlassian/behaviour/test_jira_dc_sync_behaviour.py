@@ -1649,3 +1649,53 @@ class TestUnfinishedUserRead:
         assert acl_summary(db.record_group_permissions["10000"]) == before, (
             "the project is known by its id, so its saved access is kept"
         )
+
+    @pytest.mark.parametrize(
+        ("holder", "grant"),
+        [
+            pytest.param({"type": "projectRole", "parameter": "10002"}, "ENG_10002", id="role"),
+            pytest.param({"type": "projectLead"}, "ENG_projectLead", id="lead"),
+        ],
+    )
+    async def test_a_renamed_project_granted_through_a_role_or_its_lead_keeps_its_access_on_a_short_read(
+        self, jira, db, store, search, holder, grant
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": holder},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == [grant]
+
+        # The same project (id 10000) now has the key NEW; its roles under NEW are not synced on a short read.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == [grant], (
+            "the access list saved under the old key, whose roles have members, is kept"
+        )
+
+    async def test_a_renamed_project_is_saved_under_its_new_key_on_a_complete_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/project", json_response([{"id": "10000", "key": "NEW", "name": "Engineering"}]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {"Developers": f"{BASE}{API}/project/NEW/role/10002"})
+        jira.on("GET", f"{API}/project/NEW/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-group-role-actor", "name": "devs"},
+        ]})
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == ["NEW_10002"]
+        assert (store.values_for("stored_access") or {}).get("project_key_by_id") == ["10000:NEW"]

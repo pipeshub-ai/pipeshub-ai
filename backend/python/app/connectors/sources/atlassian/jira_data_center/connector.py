@@ -455,6 +455,9 @@ class JiraDataCenterConnector(BaseConnector):
         # change), and projects whose lead role they saved, by key (the lead role's id is
         # built from the key, so a renamed project gets a new lead role).
         self._stored_project_ids: set[str] = set()
+        # Project id -> the key its access list was saved under. Its grants name roles and
+        # the lead by key, so a renamed project's saved list names roles under the old key.
+        self._stored_project_key_by_id: dict[str, str] = {}
         self._stored_lead_project_keys: set[str] = set()
         # Project key -> id for the projects this sync has listed.
         self._project_id_by_key: dict[str, str] = {}
@@ -803,7 +806,9 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            await self._note_stored_projects("project_ids", [group.external_group_id for group, _ in readable_projects])
+            await self._note_stored_project_access(
+                [(group.external_group_id, group.short_name) for group, _ in readable_projects]
+            )
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # Sync issues for all projects
@@ -897,6 +902,9 @@ class JiraDataCenterConnector(BaseConnector):
         # "projects" or "leads" set to True is the note for every project (from the checkpoint).
         self._stored_access_kinds = frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind) is True)
         self._stored_project_ids = set(noted.get("project_ids") or [])
+        self._stored_project_key_by_id = dict(
+            entry.split(":", 1) for entry in noted.get("project_key_by_id") or [] if ":" in entry
+        )
         self._stored_lead_project_keys = set(noted.get("lead_project_keys") or [])
 
     def _project_access_stored(self, project_key: str) -> bool:
@@ -904,6 +912,20 @@ class JiraDataCenterConnector(BaseConnector):
             "projects" in self._stored_access_kinds
             or self._project_id_by_key.get(project_key) in self._stored_project_ids
         )
+
+    def _project_renamed_since_saved(self, project_key: str) -> bool:
+        """Whether this project's saved access list was saved under another key.
+
+        The list's grants name project roles and the lead by key (``{key}_{roleId}``,
+        ``{key}_projectLead``). After a rename, a short read neither syncs the roles nor
+        keeps the lead under the new key, so saving the new list would swap roles that have
+        members for roles that do not exist yet. A saved list with no key noted counts as
+        renamed: holding it back is the safe side.
+        """
+        project_id = self._project_id_by_key.get(project_key)
+        if project_id is None or project_id not in self._stored_project_ids:
+            return False
+        return self._stored_project_key_by_id.get(project_id) != project_key
 
     def _project_lead_stored(self, project_key: str) -> bool:
         return "leads" in self._stored_access_kinds or project_key in self._stored_lead_project_keys
@@ -916,6 +938,26 @@ class JiraDataCenterConnector(BaseConnector):
         only makes a later short read hold back, which keeps access rather than dropping it.
         """
         await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
+
+    async def _note_stored_project_access(self, projects: list[tuple[str, str]]) -> None:
+        """Note, just before saving them, the projects whose access lists are stored and the
+        key each is saved under (``(project id, key)`` pairs)."""
+        ids = self._stored_project_ids | {project_id for project_id, _ in projects if project_id}
+        key_by_id = {
+            **self._stored_project_key_by_id,
+            **{project_id: key for project_id, key in projects if project_id and key},
+        }
+        if ids == self._stored_project_ids and key_by_id == self._stored_project_key_by_id:
+            return
+        await self.issues_sync_point.update_sync_point(
+            STORED_ACCESS_SYNC_POINT,
+            {
+                "project_ids": sorted(ids),
+                "project_key_by_id": sorted(f"{project_id}:{key}" for project_id, key in key_by_id.items()),
+            },
+        )
+        self._stored_project_ids = ids
+        self._stored_project_key_by_id = key_by_id
 
     async def _note_stored_projects(self, field: str, values: list[str]) -> None:
         """Note, just before saving them, the projects whose access lists or lead roles are stored."""
@@ -2856,6 +2898,17 @@ class JiraDataCenterConnector(BaseConnector):
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_key
             )
+            if (
+                project_permissions is not None
+                and self._user_read_unfinished
+                and self._project_renamed_since_saved(project_key)
+            ):
+                self.logger.warning(
+                    "Keeping the stored access of project %s: it was saved under another key, and its "
+                    "roles and lead under the new key are not saved while the user list is read in part",
+                    project_key,
+                )
+                project_permissions = None
 
             record_groups.append((record_group, project_permissions))
 
