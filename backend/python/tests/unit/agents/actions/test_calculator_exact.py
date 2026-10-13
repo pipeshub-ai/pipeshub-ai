@@ -270,6 +270,11 @@ class TestExactArithmetic:
             ("cos(10**300 / 12.5)", -0.296129482721992),
             ("sin(10**499 + 1/3)", -0.0124529466817837),
             ("tan(10**22)", -1.6287782256069),
+            # Scaled on the exact value: the angle need not fit, the result does.
+            ("radians(10**309)", 1.74532925199433e307),
+            ("radians(-10**309)", -1.74532925199433e307),
+            ("radians(10**310)", 1.74532925199433e308),
+            ("degrees(1e-309)", 5.72957795130823e-308),
         ],
     )
     def test_real_results_outside_the_plain_float_path(self, expression: str, expected: float) -> None:
@@ -359,6 +364,13 @@ class TestRefusedExpressions:
             ("(2e-400) ** -floor(exp(10))", "too large"),
             ("(2e-400) ** floor(exp(10))", "too small"),
             ("(2*10**400) ** exp(10)", "too large"),
+            ("radians(10**311)", "too large"),
+            # An approximate angle this large cannot tell whole radians apart.
+            ("sin(10**22 + sin(1))", "no accurate digits"),
+            ("sin(10**22 * pi)", "no accurate digits"),
+            ("cos((10**22 + 1/2) * pi)", "no accurate digits"),
+            ("tan(2**53 * pi)", "no accurate digits"),
+            ("sin(10**400 * pi)", "too large"),
             ("atan2(1e-400, 1)", "too small"),
             ("asin(1e-400)", "too small"),
             ("(2e-400) ** 2.5", "too small"),

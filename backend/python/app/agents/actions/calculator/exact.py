@@ -497,9 +497,21 @@ def _call(name: str, args: list[Quantity]) -> Quantity:
         return _logarithm(name, values), 0
     if name in ("asin", "acos"):
         return _arc(name, values[0]), 0
-    if name in ("sin", "cos", "tan") and isinstance(values[0], Fraction) and abs(values[0]) > 1:
-        angle = _reduced_angle(values[0])
-        return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
+    if name in ("sin", "cos", "tan"):
+        if isinstance(values[0], Fraction) and abs(values[0]) > 1:
+            angle = _reduced_angle(values[0])
+            return _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos"), 0
+        if isinstance(values[0], float) and abs(values[0]) >= 2.0**53:
+            # Neighbouring doubles here are 2 or more apart: an approximate
+            # angle cannot even tell whole radians apart, so any result is noise.
+            raise CalculationError(
+                f"{name}(): this angle is approximate and so large that the result has no "
+                "accurate digits. Write the angle exactly (without pi or a function of it).",
+            )
+    if name in ("radians", "degrees") and isinstance(values[0], Fraction):
+        # Scaled on the exact value, so only the result has to fit a double.
+        scale = Fraction(math.pi) / 180 if name == "radians" else 180 / Fraction(math.pi)
+        return _as_float(values[0] * scale), 0
     if name == "atan" and isinstance(values[0], Fraction) and abs(values[0]) > 1:
         # atan(x) = ±pi/2 - atan(1/x): fits for any x, 10**400 included.
         inverse = math.atan(_as_float(1 / values[0], flush=True))
