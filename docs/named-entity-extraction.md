@@ -370,8 +370,8 @@ match again once it holds a lock, so its delete locks each candidate and then
 checks it again. Writers and the sweep retry deadlocks and conflicts, and every
 writer links and unlinks entities in node-key order, so two records never lock
 the same nodes in opposite orders. On Neo4j an alias node can name several
-entities; a delete removes only the swept node's alias links, and the alias
-once nothing else uses it.
+entities; a delete removes only the swept node's alias links, and deletes the
+alias node itself once no other entity uses it.
 
 One indexing replica sweeps at a time, under a Redis leader lease
 (`named_entity_sweep:leader`); without Redis no replica sweeps. The grace period
