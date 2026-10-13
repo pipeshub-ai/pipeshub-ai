@@ -408,9 +408,13 @@ class JiraConnector(BaseConnector):
         # must not replace from a read that was cut short. Empty on a first sync and after a
         # full sync's prep, which deletes the stored edges along with every sync point.
         self._stored_access_kinds: frozenset[str] = frozenset()
-        # Keys of the projects whose access list, and whose lead role, earlier syncs saved.
-        self._stored_project_keys: set[str] = set()
+        # Projects whose access list earlier syncs saved, by project id (a project key can
+        # change), and projects whose lead role they saved, by key (the lead role's id is
+        # built from the key, so a renamed project gets a new lead role).
+        self._stored_project_ids: set[str] = set()
         self._stored_lead_project_keys: set[str] = set()
+        # Project key -> id for the projects this sync has listed.
+        self._project_id_by_key: dict[str, str] = {}
         # True when /users/search returned 401/403 — bulk user listing is unavailable, so user
         # resolution degrades to the PipesHub-directory reverse lookup.
         self._user_bulk_forbidden: bool = False
@@ -629,7 +633,7 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            await self._note_stored_project_keys("project_keys", [group.short_name for group, _ in readable_projects])
+            await self._note_stored_projects("project_ids", [group.external_group_id for group, _ in readable_projects])
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
@@ -1027,7 +1031,7 @@ class JiraConnector(BaseConnector):
     async def _load_stored_access(self) -> None:
         """Load which access earlier syncs saved, so a short read does not replace it.
 
-        Project access lists are noted by project key, just before they are saved, so a
+        Project access lists are noted by project id, just before they are saved, so a
         sync cut short after a save still counts it. A full sync's prep deletes every sync
         point along with the stored edges, so after it, and on a first sync, nothing is
         noted. A connector last synced before these notes existed has only its issues
@@ -1047,25 +1051,28 @@ class JiraConnector(BaseConnector):
         noted = noted or {}
         # "projects" or "leads" set to True is the note for every project (from the checkpoint).
         self._stored_access_kinds = frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind) is True)
-        self._stored_project_keys = set(noted.get("project_keys") or [])
+        self._stored_project_ids = set(noted.get("project_ids") or [])
         self._stored_lead_project_keys = set(noted.get("lead_project_keys") or [])
 
     def _project_access_stored(self, project_key: str) -> bool:
-        return "projects" in self._stored_access_kinds or project_key in self._stored_project_keys
+        return (
+            "projects" in self._stored_access_kinds
+            or self._project_id_by_key.get(project_key) in self._stored_project_ids
+        )
 
-    async def _note_stored_project_keys(self, field: str, project_keys: list[str]) -> None:
+    async def _note_stored_projects(self, field: str, values: list[str]) -> None:
         """Note, just before saving them, the projects whose access lists or lead roles are stored.
 
         Noted first so that a save is never left without its note: if the note cannot be
         written the error stops the sync before the save, and a save that fails after it
         only makes a later short read hold back, which keeps access rather than dropping it.
         """
-        stored = self._stored_project_keys if field == "project_keys" else self._stored_lead_project_keys
-        keys = {key for key in project_keys if key}
-        if keys <= stored:
+        stored = self._stored_project_ids if field == "project_ids" else self._stored_lead_project_keys
+        new = {value for value in values if value}
+        if new <= stored:
             return
-        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | keys)})
-        stored.update(keys)
+        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {field: sorted(stored | new)})
+        stored.update(new)
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """
@@ -1853,15 +1860,13 @@ class JiraConnector(BaseConnector):
                 self._app_roles_unread = True
                 return {}
 
-            if any(not isinstance(role, dict) for role in roles_data):
-                # An entry that is not a role object may be a role a project grants; the list
-                # cannot be taken as complete. (A role object without a key matches no grant.)
-                self.logger.warning("⚠️ Application roles response has an entry that is not a role")
-                self._app_roles_unread = True
-                return {}
-
             for role in roles_data:
-                role_key = role.get("key")
+                role_key = role.get("key") if isinstance(role, dict) else None
+                if not role_key:
+                    # Unreadable, or no key: it may be a role a project grants, so the roles
+                    # missing from this mapping are unknown, not "no groups".
+                    self._app_roles_unread = True
+                    continue
                 group_details = role.get("groupDetails", [])
 
                 if role_key and group_details:
@@ -1872,6 +1877,8 @@ class JiraConnector(BaseConnector):
                     ]
                     self.logger.debug(f"ApplicationRole '{role_key}' → {len(mapping[role_key])} groups")
 
+            if self._app_roles_unread:
+                self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
@@ -2917,6 +2924,8 @@ class JiraConnector(BaseConnector):
                 web_url=project.get("url"),
             )
 
+            if project_key and project_id:
+                self._project_id_by_key[project_key] = str(project_id)
             project_permissions = await self._fetch_project_permission_scheme(
                 project_key, app_roles_mapping, perm_user_by_account_id
             )

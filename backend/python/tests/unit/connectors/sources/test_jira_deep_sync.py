@@ -80,7 +80,7 @@ def _make_connector():
     # The graph store is a mock here; the stored-access read is covered by the behaviour tests.
     connector._load_stored_access = AsyncMock()
     connector._note_stored_access = AsyncMock()
-    connector._note_stored_project_keys = AsyncMock()
+    connector._note_stored_projects = AsyncMock()
     return connector
 
 

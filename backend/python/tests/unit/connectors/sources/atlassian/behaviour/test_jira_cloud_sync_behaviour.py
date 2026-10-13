@@ -926,6 +926,7 @@ class TestUnreadApplicationRoles:
             pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
             pytest.param(json_response({"roles": []}), id="wrong-shape"),
             pytest.param(json_response(["jira-software"]), id="malformed-entry"),
+            pytest.param(json_response([{"groupDetails": [{"groupId": "grp-sw"}]}]), id="role-without-key"),
         ],
     )
     async def test_an_unread_application_role_list_keeps_the_project_access(self, api, site_db, checkpoints, search, answer) -> None:
