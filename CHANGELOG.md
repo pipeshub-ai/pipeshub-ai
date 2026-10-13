@@ -6,8 +6,8 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 | Version | Date | Channel | Theme |
 |---|---|---|---|
-| [0.9.1](#091--2026-09-28) | Sep 28, 2026 | Stable | OAuth and PKCE hardening, Kafka consumer fix |
-| [0.9.0](#090--2026-09-28) | Sep 28, 2026 | Stable | Projects, service accounts, SMB connectors, SDK 1.7.0 |
+| [0.9.1](#091--2026-09-28) | Sep 28, 2026 | Stable | OAuth and PKCE hardening, Kafka fix, SDK 1.7.0 |
+| [0.9.0](#090--2026-09-28) | Sep 28, 2026 | Stable | Projects, service accounts, SMB and Drupal Wiki connectors |
 | [0.8.0](#080--2026-09-14) | Sep 14, 2026 | Stable | Fair connector scheduling, indexing under load, Redis Cluster |
 | [0.7.0](#070--2026-08-26) | Aug 26, 2026 | Stable | PATs, GitHub connector, Bedrock, one-command installer |
 | [0.6.0](#060--2026-08-10) | Aug 10, 2026 | Stable | New agent loop ships stable; query service ~1.8× faster |
@@ -60,36 +60,36 @@ Changes merged to `main` since the last release: [`v0.7.0...HEAD`](https://githu
 
 ## 0.9.1 — 2026-09-28
 
-**OAuth and PKCE hardening, a path-traversal fix, and a Kafka consumer that stops losing messages** · Stable · [`v0.9.1`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.1) · [Full changelog](changelog/0.9.1.md)
+**OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0** · Stable · [`v0.9.1`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.1) · [Full changelog](changelog/0.9.1.md)
 
-A 20-PR security and reliability patch on top of 0.9.0, published the same day. Upgrade from 0.9.0 is recommended.
+A 20-PR security and reliability patch on top of 0.9.0, published the same day, together with the 1.7.0 SDKs, which are compatible with 0.9.1. Upgrade from 0.9.0 is recommended.
 
 ### Fixed
 - The Kafka consumer used by the connectors and query services no longer loses messages after a temporary failure ([#3515](https://github.com/pipeshub-ai/pipeshub-ai/pull/3515))
 - Graph enrichment permission-checks the related records it adds to a chat prompt ([#3590](https://github.com/pipeshub-ai/pipeshub-ai/pull/3590))
 
 ### Security
-- OAuth app, personal access token and consent routes require a user's sign-in session ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- OAuth app, personal access token, consent and device-flow routes require a user's sign-in session ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
 - PKCE is enforced where the authorization code is issued and redeemed; only `S256` is accepted ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
 - The record convert API no longer writes files outside its temp folder ([#3628](https://github.com/pipeshub-ai/pipeshub-ai/pull/3628))
 
 ### Breaking changes & upgrade notes
-- OAuth access tokens and personal access tokens get `403` on the OAuth app, PAT and consent routes ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- OAuth access tokens and personal access tokens get `403` on the OAuth app, PAT, consent and device-flow routes ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
 - PKCE `plain` is rejected, and public clients must send an `S256` challenge on the consent `POST` ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
+- **SDK 1.7.0 is a minor version with breaking changes** for TypeScript, Python and Go. The fix for each change, in each language, is in the [full changelog](changelog/0.9.1.md#sdks--170-typescript-python-go)
 
 ---
 
 ## 0.9.0 — 2026-09-28
 
-**Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors, plus SDK 1.7.0** · Stable · [`v0.9.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.0) · [Full changelog](changelog/0.9.0.md)
+**Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors** · Stable · [`v0.9.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.0) · [Full changelog](changelog/0.9.0.md)
 
-About 290 PRs since 0.8.0. Projects, identities for automation and three new connectors arrive; the rest makes failures visible instead of silent, and the 1.7.0 SDKs ship with breaking changes.
+About 290 PRs since 0.8.0. Projects, identities for automation and three new connectors arrive; the rest makes failures visible instead of silent.
 
 ### Added
 - **Projects**: a shared workspace for chats with members, its own knowledge base, pinning and archiving ([#3304](https://github.com/pipeshub-ai/pipeshub-ai/pull/3304), [#3426](https://github.com/pipeshub-ai/pipeshub-ai/pull/3426))
 - **Service accounts and service tokens**, so automation reads with its own permissions, and a **device-code login** for coding agents ([#3420](https://github.com/pipeshub-ai/pipeshub-ai/pull/3420), [#3422](https://github.com/pipeshub-ai/pipeshub-ai/pull/3422), [#3197](https://github.com/pipeshub-ai/pipeshub-ai/pull/3197))
 - **SMB 2/3, SMB1/CIFS and Drupal Wiki connectors**; PAT setup for GitHub Teams and GitLab; a "Folders" filter for the object stores ([#3533](https://github.com/pipeshub-ai/pipeshub-ai/pull/3533), [#3466](https://github.com/pipeshub-ai/pipeshub-ai/pull/3466), [#3325](https://github.com/pipeshub-ai/pipeshub-ai/pull/3325), [#3340](https://github.com/pipeshub-ai/pipeshub-ai/pull/3340))
-- **SDK 1.7.0** (TypeScript, Python, Go): a `projects` namespace, non-streaming chat and stream cancel methods ([typescript#40](https://github.com/pipeshub-ai/pipeshub-sdk-typescript/pull/40), [python#43](https://github.com/pipeshub-ai/pipeshub-sdk-python/pull/43), [go#26](https://github.com/pipeshub-ai/pipeshub-sdk-go/pull/26))
 
 ### Changed
 - Search filters on the user's accessible containers inside the vector query instead of listing every visible record, and BM25 keyword scoring applies IDF ([#3230](https://github.com/pipeshub-ai/pipeshub-ai/pull/3230), [#3488](https://github.com/pipeshub-ai/pipeshub-ai/pull/3488))
@@ -101,7 +101,6 @@ About 290 PRs since 0.8.0. Projects, identities for automation and three new con
 - Each GitHub and GitLab connector instance syncs exactly one repository; split an instance that syncs several ([#3251](https://github.com/pipeshub-ai/pipeshub-ai/pull/3251))
 - Each organization is limited to 5 admins, counting pending invites ([#3284](https://github.com/pipeshub-ai/pipeshub-ai/pull/3284))
 - Sign-in no longer reveals whether an email has an account; clients that matched on the old answers need to change ([#3529](https://github.com/pipeshub-ai/pipeshub-ai/pull/3529))
-- **SDK 1.7.0 is a minor version with breaking changes**: renaming a conversation no longer returns `messages`, some type names changed, two errors have a new class, and Go needs `1.26.8`. Fixes for each are in the [full changelog](changelog/0.9.0.md#sdks--170-typescript-python-go)
 
 ---
 
