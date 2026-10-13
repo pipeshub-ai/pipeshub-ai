@@ -517,6 +517,18 @@ class TestFindingInformation:
 
         assert ("Query text for `retrieval__search_internal_knowledge`: keyword-dense" in section) is expected
 
+    def test_keyword_query_rule_not_given_to_a_parent_that_delegates_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The exploration delegate takes a self-contained goal; keyword text
+        there would drop the task. Its child gets the rule instead."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        result = _build(make_context(has_knowledge=True), tool_names=["internal_exploration_agent"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert "internal_exploration_agent" in section
+        assert "keyword-dense" not in section
+
     def test_keyword_query_rule_needs_a_granted_search_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
         context = make_context()

@@ -23,6 +23,9 @@ except ImportError:  # pragma: no cover
         return False
 
 
+_EXPLORATION_DELEGATE = "internal_exploration_agent"
+
+
 @dataclass(frozen=True)
 class ToolSurfaces:
     """What capability surfaces are available for one agent turn.
@@ -78,6 +81,15 @@ class ToolSurfaces:
     has_service_tools: bool
     """Convenience — True iff `live_api_apps` is non-empty."""
 
+    @property
+    def search_tool(self) -> str | None:
+        """`retrieval` when this agent writes the search query itself; None
+        when retrieval goes through the exploration delegate, which takes a
+        goal and writes the queries in its own child run."""
+        if self.retrieval is None or self.retrieval == _EXPLORATION_DELEGATE:
+            return None
+        return self.retrieval
+
     @classmethod
     def resolve(
         cls,
@@ -99,7 +111,7 @@ class ToolSurfaces:
         # Prefer the composed exploration delegate; fall back to the flat tool
         # (new name first, then legacy for backward-compat with old sessions).
         retrieval = (
-            granted("internal_exploration_agent", names_set)
+            granted(_EXPLORATION_DELEGATE, names_set)
             or granted("knowledgegraph.search", names_set)
             or granted("retrieval.search_internal_knowledge", names_set)
         )

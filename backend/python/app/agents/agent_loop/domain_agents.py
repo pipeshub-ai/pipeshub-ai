@@ -48,6 +48,7 @@ from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.agents.agent_loop.sub_agent_prompt import build_sub_agent_prompt
 
 if TYPE_CHECKING:
@@ -163,6 +164,9 @@ def _internal_exploration_instructions(context: "AgentContext | None") -> str | 
     duplicated in _EXPLORATION_PLAYBOOK's prose."""
     fetch_policy = _fetch_record_policy_for_exploration()
     base = _EXPLORATION_PLAYBOOK + fetch_policy
+    query_rule = keyword_search_query_rule("knowledgegraph__search")
+    if query_rule:
+        base += f"\n\n{query_rule}"
     if context is None or not context.agent_knowledge:
         return base
     source_table = context.get_source_catalog().render()

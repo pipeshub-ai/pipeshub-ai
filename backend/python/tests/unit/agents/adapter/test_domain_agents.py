@@ -9,6 +9,8 @@ import json
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
+
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
@@ -279,6 +281,20 @@ class TestInternalExplorationAgent:
         assert "Exploration Playbook" in internal.system_prompt
         # No connector inventory was configured, so no routing-rules block.
         assert "Retrieval Routing" not in internal.system_prompt
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_keyword_query_rule_reaches_the_explorer_that_writes_the_queries(
+        self, monkeypatch: pytest.MonkeyPatch, enabled: bool,
+    ) -> None:
+        """With retrieval delegated, the child writes every knowledge-search
+        query, so the opt-in query wording belongs in its prompt."""
+        monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true" if enabled else "false")
+        registry = _full_registry()
+        _compose(registry)
+
+        internal = registry.resolve_by_name("internal_exploration_agent")._spec
+        assert ("Query text for `knowledgegraph__search`: keyword-dense" in internal.system_prompt) is enabled
 
     def test_full_record_fetch_policy_names_the_dynamic_tool(self) -> None:
         """Regression guard — the policy must name the dynamic tool and
