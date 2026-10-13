@@ -1302,6 +1302,35 @@ class TestUnfinishedUserRead:
         assert connector.full_sync_coverage().complete is True
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
 
+    async def test_a_renamed_project_keeps_its_old_key_roles_through_a_full_sync_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert before == [("EntityType.GROUP", "grp-dev"), ("EntityType.ROLE", "ENG_10002"), ("EntityType.ROLE", "ENG_projectLead")]
+
+        # The same project (id 10000) now has the key NEW; a full sync (#4119) with a short read.
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/NEW/permissionscheme", {"id": 1})
+        api.on("GET", f"{JIRA}/project/NEW/role", {"Developers": f"{SITE}{JIRA}/project/NEW/role/10002"})
+        checkpoints.sync_points.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, site_db)
+
+        assert acl(site_db) == before, "the project still grants the old-key roles"
+        assert [m.email for m in site_db.app_roles["ENG_10002"]] == ["bo@acme.com"], "the old-key role keeps its members"
+        assert [m.email for m in site_db.app_roles["ENG_projectLead"]] == ["bo@acme.com"]
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__

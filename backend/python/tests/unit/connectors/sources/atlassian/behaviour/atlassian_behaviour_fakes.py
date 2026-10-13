@@ -216,6 +216,14 @@ class FakeRecordsDb:
         seen = getattr(self, "full_sync_seen", None)
         if stored and keep and seen is not None:
             seen.add(collection, external_id)
+            if entity == "record_group":
+                # The groups and roles its kept grants name are kept with it.
+                for permission in self.record_group_permissions.get(external_id) or []:
+                    kind = str(getattr(permission, "entity_type", ""))
+                    if kind.endswith("ROLE"):
+                        seen.add(CollectionNames.ROLES.value, permission.external_id)
+                    elif kind.endswith("GROUP"):
+                        seen.add(CollectionNames.GROUPS.value, permission.external_id)
         return stored
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
@@ -330,6 +338,19 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
             if external_id not in by_collection[CollectionNames.RECORD_GROUPS.value]:
                 db.record_group_permissions[external_id] = []
                 removed += 1
+        # The edges of an unseen node go in both directions, so a seen record group also
+        # loses its grants from an unseen group or role.
+        unseen = {
+            "ROLE": {r for r in getattr(db, "app_roles", {}) if r not in by_collection[CollectionNames.ROLES.value]},
+            "GROUP": {g for g in groups if g not in by_collection[CollectionNames.GROUPS.value]},
+        }
+        for external_id, grants in db.record_group_permissions.items():
+            kept = [
+                p for p in grants
+                if p.external_id not in unseen.get(str(getattr(p, "entity_type", "")).rsplit(".", 1)[-1], set())
+            ]
+            removed += len(grants) - len(kept)
+            db.record_group_permissions[external_id] = kept
         return removed, True
 
     graph = AsyncMock()
