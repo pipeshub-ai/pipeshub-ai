@@ -126,10 +126,16 @@ The Ingress is an internal ALB. AWS still requires its subnets in two zones. The
 | Chart-owned Redis | Same restart window. The app talks only to the master, so the replica is not used until the master pod is back. |
 | ElastiCache | Failover is automatic and does not wait on a Kubernetes node. |
 
-Kubernetes waits for the node object to disappear before it reschedules the pod, which is why the restart takes that long. Node auto-repair or Karpenter node repair shortens it. On a node you already know is dead, this label lets the pod move immediately:
+Kubernetes waits for the node object to disappear before it reschedules the pod, which is why the restart takes that long. Node auto-repair or Karpenter node repair shortens it. On a node you already know is dead, this taint lets the pod and its volume move immediately:
 
 ```bash
-kubectl label node <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+```
+
+Remove it once the node is replaced or back, or nothing will schedule there:
+
+```bash
+kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute-
 ```
 
 ### Redis on ElastiCache

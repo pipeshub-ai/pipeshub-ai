@@ -980,7 +980,19 @@ if $BACKUPS; then
     PLAN_ID="$(aws backup create-backup-plan --query BackupPlanId --output text --backup-plan \
       "{\"BackupPlanName\":\"${CLUSTER}-daily\",\"Rules\":[{\"RuleName\":\"daily\",\"TargetBackupVaultName\":\"${CLUSTER}\",\"ScheduleExpression\":\"cron(0 3 * * ? *)\",\"StartWindowMinutes\":60,\"CompletionWindowMinutes\":240,\"Lifecycle\":{\"DeleteAfterDays\":30}}]}")"
   fi
-  if [[ "$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" --query 'length(BackupSelectionsList)' --output text)" == 0 ]]; then
+  # Earlier runs created this selection on pipeshub-backup=true alone, which
+  # matches every cluster's volumes in the account.
+  SELECTION_ID="$(aws backup list-backup-selections --backup-plan-id "$PLAN_ID" \
+    --query "BackupSelectionsList[?SelectionName=='${CLUSTER}-ebs'].SelectionId | [0]" --output text)"
+  [[ "$SELECTION_ID" != None ]] || SELECTION_ID=""
+  if [[ -n "$SELECTION_ID" && "$(aws backup get-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID" \
+    --query "length(BackupSelection.Conditions.StringEquals[?ConditionKey=='aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}' && ConditionValue=='owned'] || \`[]\`)" \
+    --output text)" == 0 ]]; then
+    aws backup delete-backup-selection --backup-plan-id "$PLAN_ID" --selection-id "$SELECTION_ID"
+    note "replaced backup selection ${CLUSTER}-ebs, which was not limited to this cluster's volumes"
+    SELECTION_ID=""
+  fi
+  if [[ -z "$SELECTION_ID" ]]; then
     # A new IAM role takes a few seconds to become usable by AWS Backup.
     # ListOfTags entries are ORed; Conditions are ANDed, which keeps other
     # clusters' pipeshub-backup volumes out of this vault.

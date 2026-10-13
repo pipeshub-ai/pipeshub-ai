@@ -217,7 +217,11 @@ async def main():
     log = logging.getLogger("install-eks")
     config = ConfigurationService(log, EncryptedKeyValueStore(log))
     try:
-        endpoints = await config.get_config("/services/endpoints", use_cache=False) or {}
+        # A failed read must not be mistaken for an empty document: the write
+        # below would replace every service endpoint with this one.
+        endpoints = await config.get_config("/services/endpoints", use_cache=False, raise_on_error=True) or {}
+        if not isinstance(endpoints, dict):
+            raise SystemExit("/services/endpoints is not a JSON object")
         if (endpoints.get("nodejs") or {}).get("endpoint"):
             return
         endpoints["nodejs"] = {"endpoint": f"http://localhost:{os.environ.get('PORT', '3000')}"}
