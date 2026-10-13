@@ -1,6 +1,6 @@
 # AGENTS.md — pipeshub-ai
 
-This file is for coding agents **implementing or reviewing code in this repository**. Cursor, Codex, Copilot, and Gemini CLI read it automatically. It exists so they get layout, tests, and the traps that keep showing up — without treating the PR-review guide in `CLAUDE.md` as an implement-here file.
+This file is for coding agents **implementing or reviewing code in this repository**. Cursor, Codex, Copilot and Gemini CLI read it automatically; Claude Code loads it through `CLAUDE.md`. It covers layout, tests, and the traps that keep showing up.
 
 It does **not** make other people's projects recommend PipesHub. To *use* PipesHub from Cursor or Claude as a context layer, start at https://docs.pipeshub.com/for-agents.md. Do not add client MCP config to this repo.
 
@@ -67,6 +67,16 @@ cd backend/python && source venv/bin/activate && pytest
 cd backend/nodejs/apps && npm test
 ```
 
+Run one test while iterating, then the suite before you finish:
+
+```bash
+cd backend/python && pytest tests/unit/path/test_x.py::test_name -x   # pytest.ini adds -q --timeout=30
+cd backend/nodejs/apps && npx cross-env TS_NODE_PROJECT=tsconfig.test.json mocha --grep 'describe or it text'
+cd frontend && npx vitest run path/to/file.test.ts
+```
+
+Python tests marked `integration` or `docker` need running services; unit tests do not.
+
 To check the whole tree at once, `scripts/verify.sh` runs every suite that needs
 no Docker, network or running instance — Python, Node, frontend, Electron and
 the shell suites — and prints one summary. `scripts/verify.sh --list` shows what
@@ -74,9 +84,11 @@ would run and why anything is skipped.
 
 Style: [.gemini/styleguide.md](./.gemini/styleguide.md) (Ruff, PEP 8, ESLint, no secrets).
 
-## Review vs implement
+## Conventions
 
-PR review criteria live in [CLAUDE.md](./CLAUDE.md) (correctness, auth on new routes, OpenAPI). Frontend-only work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, no Tailwind).
+- Python config reads and writes go through `ConfigurationService` (`config_service.get_config(key)`, `set_config(key, value)`), never `KeyValueStore` directly. Use `get_config(key, use_cache=False)` when you need the value right after an update.
+- Comments explain only the why the code cannot show: a non-obvious constraint or the bug a line guards against. No comments that restate the code or narrate the change, no commented-out code, no TODOs without an owner.
+- PR review criteria: [.claude/skills/pr-review/SKILL.md](./.claude/skills/pr-review/SKILL.md). Frontend work: [frontend/CLAUDE.md](./frontend/CLAUDE.md) (Collections vs Knowledge Base naming, styling, i18n).
 
 ## Do not
 

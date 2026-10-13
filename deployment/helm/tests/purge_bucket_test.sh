@@ -45,6 +45,8 @@ note() { printf 'NOTE %s\n' "$*"; }
 ACCOUNT_ID=111111111111
 REGION=us-east-1
 CLUSTER=pipeshub
+# shellcheck disable=SC2034
+EXISTING_CLUSTER=false NAMESPACE=pipeshub RELEASE=pipeshub-ai
 EXPECTED="pipeshub-${CLUSTER}-${ACCOUNT_ID}-${REGION}"
 OTHER="pipeshub-pipeshub-sandbox-${ACCOUNT_ID}-${REGION}"
 
@@ -96,6 +98,57 @@ if grep -q 'delete-bucket' "$TMP/confirm.out" "$TMP/confirm.err"; then
   fail "confirmation path deleted a bucket"
 else
   pass "confirmation path does not delete the bucket"
+fi
+
+# --- destroy never deletes a cluster it did not create ------------------------
+destroy_with_stubs() { # node groups the stubbed cluster reports
+  (
+    set -euo pipefail
+    nodegroups="$1"
+    confirm() { :; }
+    cluster_exists() { return 0; }
+    find_hosted_zone() { return 1; }
+    aws() {
+      printf 'aws %s\n' "$*"
+      if [[ "$*" == *list-nodegroups* ]]; then printf '%s\n' "$nodegroups"; fi
+    }
+    eksctl() { printf 'eksctl %s\n' "$*"; }
+    helm() { printf 'helm %s\n' "$*"; }
+    kubectl() { printf 'kubectl %s\n' "$*"; }
+    sleep() { :; }
+    BUCKET=""
+    # shellcheck disable=SC2034
+    PURGE=false DOMAIN="" HOSTED_ZONE_ID="" CLUSTER_CONFIG="$TMP/none.yaml"
+    destroy
+  )
+}
+
+(EXISTING_CLUSTER=true destroy_with_stubs "") >"$TMP/existing.out" 2>&1
+existing_status=$?
+if [[ "$existing_status" -eq 0 ]] && grep -q '^helm uninstall pipeshub-ai' "$TMP/existing.out" \
+  && ! grep -q 'delete cluster' "$TMP/existing.out" && ! grep -q 'delete pvc' "$TMP/existing.out"; then
+  pass "--existing-cluster removes the release and keeps the cluster and volume claims"
+else
+  fail "--existing-cluster destroy (exit ${existing_status})"
+  sed 's/^/         /' "$TMP/existing.out"
+fi
+
+(destroy_with_stubs "default-workers") >"$TMP/foreign.out" 2>&1 && fail "destroy accepted a cluster it did not create" || {
+  if grep -q 'Pass --existing-cluster' "$TMP/foreign.out" \
+    && ! grep -q '^helm uninstall' "$TMP/foreign.out" && ! grep -q 'delete cluster' "$TMP/foreign.out"; then
+    pass "destroy refuses a cluster without the data and app node groups"
+  else
+    fail "foreign cluster refusal"
+    sed 's/^/         /' "$TMP/foreign.out"
+  fi
+}
+
+(destroy_with_stubs "system	data	app") >"$TMP/own.out" 2>&1
+if grep -q '^eksctl delete cluster' "$TMP/own.out"; then
+  pass "destroy deletes a cluster with the data and app node groups"
+else
+  fail "own cluster destroy"
+  sed 's/^/         /' "$TMP/own.out"
 fi
 
 # --- empty a versioned bucket ----------------------------------------------

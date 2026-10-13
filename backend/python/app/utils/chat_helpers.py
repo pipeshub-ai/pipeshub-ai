@@ -1,12 +1,18 @@
 import asyncio
 import base64
+import bisect
 import logging
+import math
 import re
 from collections import defaultdict
 from collections.abc import Iterable
+from dataclasses import dataclass
 from itertools import groupby
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Optional
 from uuid import uuid4
+
+if TYPE_CHECKING:
+    from jinja2 import Template
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -43,7 +49,7 @@ from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.vector_db.collection_registry import CollectionRegistry
+from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
 from app.services.vector_db.strategy import QueryContext
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
@@ -66,7 +72,14 @@ valid_group_labels = [
         GroupType.CONVERSATION.value
     ]
 
-from app.utils.record_block_selection import describe_gaps  # noqa: E402
+from app.utils.record_block_selection import (  # noqa: E402
+    RECORD_CLOSE,
+    continuation_hint,
+    describe_gaps,
+    no_fit_hint,
+    record_trailer_reserve,
+    selection_hint,
+)
 from app.utils.render_budget import RenderBudget  # noqa: E402
 
 # Larger than any record: what a caller that passes no budget gets, so its
@@ -89,7 +102,7 @@ def _renderable_block_indices(record: dict[str, Any]) -> list[int]:
 
 # Re-exported from `image_admission`, which owns the image-selection rules;
 # this module is where the codebase has always imported them from.
-from app.utils.image_admission import (
+from app.utils.image_admission import (  # noqa: E402
     MAX_IMAGES_IN_CONVERSATION,
     DegradeReason,
     ImageAdmission,
@@ -99,7 +112,7 @@ from app.utils.image_admission import (
 )
 
 
-def image_dict_to_part(image: dict[str, Any]) -> Any | None:
+def image_dict_to_part(image: dict[str, Any]) -> Any | None:  # noqa: ANN401
     """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
     into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
     every tool (`retrieval.py`, `citations.py`) and hook
@@ -157,7 +170,7 @@ def group_child_results(doc: dict[str, Any]) -> list[dict[str, Any]] | None:
         return children if isinstance(children, list) else []
     return None
 
-def _safe_stringify_content(value: Any) -> str:
+def _safe_stringify_content(value: Any) -> str:  # noqa: ANN401
     """Convert citation content to string without raising.
 
     A code block's ``data`` is a dict; stringifying it whole would put the
@@ -201,6 +214,15 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
+def table_summary_text(group_data: object) -> str:
+    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+    if not isinstance(group_data, dict):
+        return ""
+    summary = group_data.get("table_summary", "") or ""
+    ddl = group_data.get("ddl", "") or ""
+    return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
 def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
     """Sort flattened search results; None block_index (e.g. record summaries) sorts before block 0."""
     block_index = result.get("block_index")
@@ -215,7 +237,7 @@ def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
 def is_base64_image(s: str) -> bool:
     """
     Check if a string is a valid base64-encoded image.
-    
+
     Accepts both:
     - Data URLs: "data:image/png;base64,iVBORw0KGgo..."
     - Raw base64 strings: "iVBORw0KGgo..."
@@ -227,7 +249,7 @@ def is_base64_image(s: str) -> bool:
     data_url_pattern = r'^data:image/(png|jpeg|jpg|gif|webp|bmp|svg\+xml|tiff);base64,(.+)$'
     match = re.match(data_url_pattern, s.strip(), re.IGNORECASE)
 
-    if match:
+    if match:  # noqa: SIM108
         b64_data = match.group(2)
     else:
         b64_data = s.strip()
@@ -259,7 +281,7 @@ def is_base64_image(s: str) -> bool:
         b'MM\x00*': 'TIFF',
     }
 
-    for signature, fmt in image_signatures.items():
+    for signature, fmt in image_signatures.items():  # noqa: B007, PERF102
         if decoded.startswith(signature):
             return True
 
@@ -574,7 +596,7 @@ async def build_multimodal_user_content(
         if vrid:
             fetch_tasks.append((vrid, att))
 
-    for vrid, att in fetch_tasks:
+    for vrid, att in fetch_tasks:  # noqa: B007
         try:
             record = await blob_store.get_record_from_storage(vrid, org_id)
             if not record:
@@ -607,7 +629,7 @@ async def build_multimodal_user_content(
 
     content_parts: list[dict] = [{"type": "text", "text": text_content}]
     for url in image_urls:
-        content_parts.append({"type": "image_url", "image_url": {"url": url}})
+        content_parts.append({"type": "image_url", "image_url": {"url": url}})  # noqa: PERF401
     return content_parts
 
 
@@ -619,7 +641,7 @@ class CitationRefMapper:
     retrieval tool calls, respond nodes, and tool execution hops.
     """
 
-    def __init__(self):
+    def __init__(self):  # noqa: ANN204
         self._counter: int = 0
         self._url_to_ref: dict[str, str] = {}
         self._ref_to_url: dict[str, str] = {}
@@ -633,6 +655,10 @@ class CitationRefMapper:
         self._url_to_ref[full_url] = ref
         self._ref_to_url[ref] = full_url
         return ref
+
+    def peek_ref(self, full_url: str) -> str:
+        """The ref `get_or_create_ref` would return, without minting it."""
+        return self._url_to_ref.get(full_url) or f"ref{self._counter + 1}"
 
     def copy(self) -> "CitationRefMapper":
         """An independent mapper that continues numbering from this one."""
@@ -753,7 +779,7 @@ class RecordIdShortener:
         text = self.shorten_record_ids_in_text(text)
         text = self.shorten_record_id_assigns_in_text(text)
         text = self.shorten_node_id_assigns_in_text(text)
-        return text
+        return text  # noqa: RET504
 
 
 def get_record_id_shortener_if_enabled(state: dict[str, Any]) -> "RecordIdShortener | None":
@@ -1308,7 +1334,7 @@ async def _build_linked_record_context_metadata(
     frontend_url: str | None,
     *,
     vrid: str | None = None,
-    blob_store: Any = None,
+    blob_store: Any = None,  # noqa: ANN401
     org_id: str = "",
     lookup_result: dict[str, Any] | None = None,
     type_doc: dict[str, Any] | None = None,
@@ -1361,7 +1387,7 @@ async def _build_linked_record_context_metadata(
 
 # Graph context enrichment (dependent parents + record relations)
 
-def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:
+def _relation_display_label(relation: RecordRelations, outgoing: bool) -> str:  # noqa: FBT001
     if relation == RecordRelations.ATTACHMENT:
         return "ATTACHMENT" if outgoing else "PARENT"
     if relation == RecordRelations.PARENT_CHILD:
@@ -1541,7 +1567,7 @@ async def _resolve_target_metadata(
     graph_provider: IGraphDBProvider,
     in_context_ids: set[str],
     frontend_url: str | None,
-    blob_store: Any,
+    blob_store: Any,  # noqa: ANN401
     org_id: str,
     *,
     full_metadata_ids: set[str] | None = None,
@@ -1614,7 +1640,7 @@ async def _resolve_target_metadata(
     if ids_needing_docs and not isinstance(doc_results, Exception):
         for rid, doc in doc_results.items():
             if doc and isinstance(doc, dict):
-                doc_index[rid] = doc
+                doc_index[rid] = doc  # noqa: PERF403
 
     # Build id -> vrid mapping
     id_to_vrid: dict[str, str] = {}
@@ -1672,7 +1698,7 @@ async def _resolve_target_metadata(
         )
         for rid, ctx in zip(out_of_context_ids, ctx_results):
             if not isinstance(ctx, Exception) and ctx:
-                context_map[rid] = ctx
+                context_map[rid] = ctx  # noqa: PERF403
 
     return context_map
 
@@ -1766,7 +1792,7 @@ async def enrich_records_with_graph_context(
     flattened_results: list[dict[str, Any]] | None = None,
     virtual_to_record_map: dict[str, dict[str, Any]] | None = None,
     doc_index: dict[str, dict[str, Any]] | None = None,
-    blob_store: Any = None,
+    blob_store: Any = None,  # noqa: ANN401
     org_id: str = "",
     config_service: "ConfigurationService | None" = None,
     *,
@@ -1906,7 +1932,7 @@ def build_parent_info(result: dict[str, Any]) -> str:
         lines.append(f"  Record ID: {record_id} | Name: {record_name}")
 
     parent_info = "\n".join(lines) + "\n"
-    return parent_info
+    return parent_info  # noqa: RET504
 
 def build_record_relations_info(record: dict[str, Any]) -> str:
     """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
@@ -1976,18 +2002,18 @@ async def live_record_ids(
 
 
 async def enrich_virtual_record_id_to_result_with_fk_children(
-    virtual_record_id_to_result: Dict[str, Dict[str, Any]],
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
     blob_store: BlobStorage,
     org_id: str,
     graph_provider: IGraphDBProvider | None = None,
-    flattened_results: List[Dict[str, Any]] | None = None,
+    flattened_results: list[dict[str, Any]] | None = None,
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
-    (FK-related tables) or parent tables (via FK edges), fetch their full blob and add 
+    (FK-related tables) or parent tables (via FK edges), fetch their full blob and add
     to virtual_record_id_to_result. Also adds DDL block_group to flattened_results
     so the agent context includes DDL for FK-related tables.
-    
+
     Additionally, enriches flattened_results with fk_parent_relations and fk_child_relations
     (each containing record_id, table name, source column, and target column metadata)
     so the agent knows which related tables it can fetch via tools.
@@ -2001,13 +2027,13 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     if not graph_provider:
         logger.debug("FK enrichment skipped: no graph_provider provided")
         return
-    
+
     from app.config.constants.arangodb import RecordRelations
-    
+
     related_record_ids = set()
     sql_table_record_ids = []
-    record_id_to_fk_relations: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
-    
+    record_id_to_fk_relations: dict[str, dict[str, list[dict[str, Any]]]] = {}
+
     flattened_len_before = len(flattened_results) if flattened_results is not None else 0
     logger.debug(
         "FK enrichment: checking %d records; flattened_results=%d items",
@@ -2019,7 +2045,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     # Build mapping of vrid -> record_id for existing SQL_TABLE records
     # Records come from get_record() which normalizes to snake_case via graphDb_record merge
-    vrid_to_record_id: Dict[str, str] = {}
+    vrid_to_record_id: dict[str, str] = {}
     for vrid, record in virtual_record_id_to_result.items():
         if not record or not isinstance(record, dict):
             continue
@@ -2029,16 +2055,16 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
         if record_id:
             sql_table_record_ids.append(record_id)
             vrid_to_record_id[vrid] = record_id
-            logger.debug("FK enrichment: found SQL_TABLE record_id=%s, vrid=%s, name=%s", 
+            logger.debug("FK enrichment: found SQL_TABLE record_id=%s, vrid=%s, name=%s",
                         record_id, vrid, record.get("record_name"))
-    
+
     logger.debug("FK enrichment: found %d SQL_TABLE records to check for FK relations", len(sql_table_record_ids))
-    
+
     # Query both child and parent tables via FK edges
     for record_id in sql_table_record_ids:
         child_relations = []
         parent_relations = []
-        
+
         try:
             child_relations = await graph_provider.get_child_record_ids_by_relation_type(
                 record_id, RecordRelations.FOREIGN_KEY.value
@@ -2049,7 +2075,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     related_record_ids.add(rel["record_id"])
         except Exception as e:
             logger.warning("Could not fetch child record IDs for %s: %s", record_id, str(e))
-        
+
         try:
             parent_relations = await graph_provider.get_parent_record_ids_by_relation_type(
                 record_id, RecordRelations.FOREIGN_KEY.value
@@ -2060,7 +2086,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     related_record_ids.add(rel["record_id"])
         except Exception as e:
             logger.warning("Could not fetch parent record IDs for %s: %s", record_id, str(e))
-        
+
         record_id_to_fk_relations[record_id] = {
             "children": list(child_relations) if not isinstance(child_relations, list) else child_relations,
             "parents": list(parent_relations) if not isinstance(parent_relations, list) else parent_relations,
@@ -2080,9 +2106,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     for fk_relations in record_id_to_fk_relations.values():
         fk_relations["children"] = await live_relations_only(fk_relations["children"])
         fk_relations["parents"] = await live_relations_only(fk_relations["parents"])
-    
+
     logger.debug("FK enrichment: total %d related records to fetch", len(related_record_ids))
-    
+
     # Enrich existing flattened_results with FK relations
     if flattened_results is not None:
         for result in flattened_results:
@@ -2095,21 +2121,21 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
             fk_relations = record_id_to_fk_relations[record_id]
             result["fk_parent_relations"] = fk_relations["parents"]
             result["fk_child_relations"] = fk_relations["children"]
-    
+
     if not related_record_ids:
         return
-    
+
     record_id_to_vrid = await graph_provider.get_virtual_record_ids_for_record_ids(list(related_record_ids))
     logger.debug("FK enrichment: resolved %d record_ids to virtual_record_ids", len(record_id_to_vrid))
-    
+
     # Build set of vrids already in flattened_results
     vrids_in_flattened = set()
     if flattened_results is not None:
         vrids_in_flattened = {r.get("virtual_record_id") for r in flattened_results if r.get("virtual_record_id")}
-    
+
     for record_id, vrid in record_id_to_vrid.items():
         already_in_flattened = vrid in vrids_in_flattened
-        
+
         if vrid in virtual_record_id_to_result:
             rec = virtual_record_id_to_result[vrid]
             if already_in_flattened:
@@ -2130,7 +2156,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                     if graph_rec and isinstance(graph_rec, dict):
                         rec["id"] = record_id
                         rec["org_id"] = graph_rec.get("orgId")
-                        rec["record_name"] = graph_rec.get("recordName") 
+                        rec["record_name"] = graph_rec.get("recordName")
                         rec["record_type"] = graph_rec.get("recordType")
                         rec["version"] = graph_rec.get("version")
                         rec["origin"] = graph_rec.get("origin")
@@ -2151,10 +2177,10 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                 logger.debug("Could not fetch blob for FK related vrid %s: %s", vrid, str(e))
                 virtual_record_id_to_result[vrid] = None
                 continue
-        
+
         if not rec:
             continue
-        
+
         # Add DDL block_group to flattened_results so it appears in agent context.
         # After graph_rec merge above, all rec keys are snake_case.
         # Blob uses: block_containers -> block_groups, blocks (snake_case).
@@ -2177,7 +2203,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
                 else:
                     table_summary = str(data or "")
-                
+
                 # Extract first 2 sample rows
                 blocks = block_containers.get("blocks", [])
                 sample_rows = []
@@ -2188,10 +2214,10 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                             row_text = block_data.get("row_natural_language_text", "")
                             if row_text:
                                 sample_rows.append(row_text)
-                
+
                 if sample_rows:
                     table_summary = f"{table_summary}\n\nSample Rows:\n" + "\n".join(sample_rows)
-                
+
                 # Get FK relations for this record if available, otherwise fetch them
                 fk_parent_relations = []
                 fk_child_relations = []
@@ -2219,8 +2245,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         "children": fk_child_relations,
                         "parents": fk_parent_relations,
                     }
-                    
-                
+
+
                 # Build flattened result entry
                 # rec keys are snake_case; metadata dict uses camelCase for frontend
                 enhanced_metadata = get_enhanced_metadata(rec, bg, {})
@@ -2255,9 +2281,9 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
 
     if flattened_results is not None:
         fk_count = sum(1 for r in flattened_results if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT")
-        logger.info(f"FK enrichment:complete for SQL tables")
+        logger.info("FK enrichment:complete for SQL tables")
         logger.debug(
-            f"FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
+            "FK enrichment: done. flattened_results len before=%d after=%d (FK_ENRICHMENT blocks=%d)",
             flattened_len_before,
             len(flattened_results),
             fk_count,
@@ -2276,7 +2302,7 @@ def _point_position(meta: dict[str, Any]) -> int | None:
     return index
 
 
-def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
+def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:  # noqa: FBT001
     containers = record.get("block_containers") or {}
     items = containers.get("block_groups" if group else "blocks") or []
     if 0 <= index < len(items) and isinstance(items[index], dict):
@@ -2285,7 +2311,7 @@ def _id_at(record: dict[str, Any], index: int, group: bool) -> str | None:
 
 
 def _slot_check(
-    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,
+    record: dict[str, Any] | None, block_id: str | None, index: int, is_block_group: bool | None,  # noqa: FBT001
 ) -> tuple[bool, bool] | None:
     """Check that ``index`` holds ``block_id``: ``(is_group, confirmed)``, or ``None`` if it holds another id.
 
@@ -2333,7 +2359,7 @@ def _raise_group_score(unit: dict[str, Any], score: float) -> None:
                 child["score"] = score
 
 
-async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: Dict[str, Dict[str, Any]],virtual_to_record_map: Dict[str, Dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> List[Dict[str, Any]]:
+async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: BlobStorage, org_id: str, is_multimodal_llm: bool, virtual_record_id_to_result: dict[str, dict[str, Any]],virtual_to_record_map: dict[str, dict[str, Any]]=None,from_retrieval_service: bool = False,graph_provider: IGraphDBProvider | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     """Resolve search hits into renderable units: blocks, list and section groups, tables.
 
     Neighbouring context blocks are not added here: they are added after
@@ -2347,9 +2373,9 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
-    virtual_record_id_to_recon_metadata: Dict[str, Dict[str, Any] | None] = {}
+    virtual_record_id_to_recon_metadata: dict[str, dict[str, Any] | None] = {}
     # Cache for fragment maps per virtual_record_id (container_index → fragment children)
-    fragment_maps: Dict[str, Dict[int, list]] = {}
+    fragment_maps: dict[str, dict[int, list]] = {}
     if from_retrieval_service:
         new_type_results = result_set
     else:
@@ -2440,7 +2466,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
         ):
             vrids_needing_recon.add(vrid)
 
-    async def _prefetch_recon(vrid: str):
+    async def _prefetch_recon(vrid: str):  # noqa: ANN202
         try:
             recon = await blob_store.get_reconciliation_metadata(vrid, org_id)
             virtual_record_id_to_recon_metadata[vrid] = recon
@@ -2514,7 +2540,7 @@ async def get_flattened_results(result_set: List[Dict[str, Any]], blob_store: Bl
                 f"full metadata: {meta}"
             )
             continue
-            
+
         if is_block_group:
             chunk_id = f"{virtual_record_id}-{index}-block_group"
         else:
@@ -3130,7 +3156,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
         except Exception as e:
             raise e
 
-def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:
+def extract_bounding_boxes(citation_metadata) -> list[dict[str, float]]:  # noqa: ANN001
         """Safely extract bounding box data from citation metadata"""
         if not citation_metadata or not citation_metadata.get("bounding_boxes"):
             return None
@@ -3644,10 +3670,10 @@ def _build_fragment_map(blocks: list[dict[str, Any]]) -> dict[int, list[dict[str
 
 def _render_blocks_with_images(
     blocks_list: list[dict[str, Any]],
-    is_multimodal_llm: bool,
+    is_multimodal_llm: bool,  # noqa: FBT001
     image_budget: "ImageBudget | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
-    allow_inline_images: bool = True,
+    allow_inline_images: bool = True,  # noqa: FBT001, FBT002
     image_admission: "ImageAdmission | None" = None,
     image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
 ) -> list[dict[str, Any]]:
@@ -3773,7 +3799,7 @@ def _render_blocks_with_images(
     return content
 
 
-def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:
+def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str, Any]], parent_index: int, virtual_record_id: str = None, record: dict[str, Any] = None, result: dict[str, Any] = None, is_multimodal_llm: bool = False, fragment_map: dict[int, list[dict[str, Any]]] | None = None) -> list[dict[str, Any]]:  # noqa: FBT001, FBT002
     if parent_index < 0 or parent_index >= len(block_groups):
         return None
     parent_block = block_groups[parent_index]
@@ -3869,10 +3895,283 @@ def build_group_blocks(block_groups: list[dict[str, Any]], blocks: list[dict[str
     return child_results
 
 
+class _TableFraming:
+    """What `table_prompt` adds around a table's rows, measured from the
+    template itself so the charge follows any change to its wording."""
+
+    def __init__(self, block_group_index: object, summary: str) -> None:
+        self._template = compiled_template(table_prompt)
+        self._group_index = block_group_index
+        self._summary = summary
+        # "\n\n" is what the renderer appends after the table.
+        self.header = len(self.render([])) + 2
+        empty_row = {"block_index": "", "citation_ref": "", "content": ""}
+        self._per_row = len(self.render([empty_row])) - (self.header - 2)
+
+    def render(self, rows: list[dict[str, Any]]) -> str:
+        return self._template.render(
+            block_group_index=self._group_index,
+            block_group_web_url="",
+            table_summary=self._summary,
+            table_rows=rows,
+        )
+
+    def row(self, block_index: object, ref: str, content: str) -> int:
+        return self._per_row + len(str(block_index)) + len(ref) + len(content)
+
+
+_TABLE_CONTINUED = "continued"
+_TABLE_SUMMARY_OMITTED = "summary omitted to fit"
+
+
+def _table_row_children(
+    block: dict[str, Any],
+    row_index: int,
+    block_web_url: str,
+    fragment_map: dict[int, list[dict[str, Any]]],
+    *,
+    is_multimodal_llm: bool,
+) -> list[dict[str, Any]]:
+    """What one table row renders as, before a citation ref is minted: its
+    natural-language text, or -- for a row split around images -- each
+    fragment in reading order under the row's index."""
+    block_data = block.get("data", {})
+    row_text = (
+        block_data.get("row_natural_language_text", "")
+        if isinstance(block_data, dict) else str(block_data)
+    )
+    if row_text:
+        return [{
+            "content": row_text,
+            "block_type": BlockType.TABLE_ROW.value,
+            "block_index": row_index,
+            "block_web_url": block_web_url,
+        }]
+    container_idx = block.get("index")
+    if container_idx is None or container_idx not in fragment_map:
+        return []
+    children: list[dict[str, Any]] = []
+    for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
+        frag_type = frag.get("type")
+        if frag_type == BlockType.TEXT.value:
+            frag_data = frag.get("data", "")
+            if frag_data:
+                children.append({"content": _safe_stringify_content(frag_data), "block_type": BlockType.TEXT.value})
+        elif frag_type == BlockType.IMAGE.value:
+            uri = (frag.get("data") or {}).get("uri")
+            if is_multimodal_llm and uri:
+                children.append({"content": uri, "block_type": BlockType.IMAGE.value})
+            else:
+                frag_text = image_block_text(frag)
+                if frag_text:
+                    children.append({"content": frag_text, "block_type": BlockType.TEXT.value})
+    for child in children:
+        child["block_index"] = row_index
+        child["block_web_url"] = block_web_url
+    return children
+
+
+@dataclass(frozen=True)
+class _PendingImage:
+    """An image block rendered during a record walk, awaiting admission."""
+
+    position: int
+    block_index: int
+    ref: str
+    description: str
+    image_uri: str
+    candidate: "ImageCandidate"
+
+
+def _max_image_text_chars(ref: str, description: str) -> int:
+    """Longest text an image block can end up as, whatever admission decides."""
+    marker = f"[{ref}]"
+    forms = [
+        image_marker_text(marker, description),
+        f"{marker} {description}" if description else marker,
+        *(image_marker_text(marker, description, reason=reason) for reason in DegradeReason),
+    ]
+    return max(len(form) for form in forms)
+
+
+def _resolve_pending_images(
+    content: list[dict[str, Any]],
+    pending: list[_PendingImage],
+    admission: "ImageAdmission",
+    collected_images: list[dict[str, Any]] | None,
+    virtual_record_id: str | None,
+) -> list[dict[str, Any]]:
+    """Admit the images whose blocks rendered and put each one's final form
+    in place of its placeholder."""
+    decisions = admit_record_images(admission, [p.candidate for p in pending])
+    replacements: dict[int, list[dict[str, Any]]] = {}
+    for image in pending:
+        marker = f"[{image.ref}]"
+        admitted = image.block_index in decisions and decisions[image.block_index] is None
+        if not admitted:
+            replacements[image.position] = [{
+                "type": "text",
+                "text": image_marker_text(
+                    marker, image.description, reason=decisions.get(image.block_index),
+                ),
+            }]
+            continue
+        # What goes on the wire: admission downscales an image over the
+        # model's per-image limits, so the bytes are looked up, not re-read.
+        wire_uri = admission.rendered_uri(image.image_uri)
+        if collected_images is not None:
+            collected_images.append({
+                "ref": image.ref,
+                "block_index": image.block_index,
+                "image_url": {"url": wire_uri},
+                "virtual_record_id": virtual_record_id,
+            })
+            replacements[image.position] = [
+                {"type": "text", "text": image_marker_text(marker, image.description)},
+            ]
+        else:
+            label = f"{marker} {image.description}" if image.description else marker
+            replacements[image.position] = [
+                {"type": "text", "text": label},
+                {"type": "image_url", "image_url": {"url": wire_uri}},
+            ]
+    resolved: list[dict[str, Any]] = []
+    for position, item in enumerate(content):
+        resolved.extend(replacements.get(position, [item]))
+    return resolved
+
+
+def _image_item_bound(ref: str) -> int:
+    """Longest line `_render_blocks_with_images` prints for one image item."""
+    marker = f"[{ref}]"
+    forms = [f"    {marker} (image)\n"]
+    forms += [
+        "    " + image_marker_text(marker, reason=reason).rstrip() + "\n"
+        for reason in (None, *DegradeReason)
+    ]
+    return max(len(form) for form in forms)
+
+
+def _images_render_bound(blocks_list: list[dict[str, Any]]) -> int:
+    """An upper bound on the text `_render_blocks_with_images` prints for these
+    entries, whatever admission decides for their images. Mirrors its layout:
+    one `[idx|ref]` line per block index, then each fragment indented."""
+    total = 0
+    for _block_idx, group_iter in groupby(blocks_list, key=lambda b: b.get("block_index")):
+        group = list(group_iter)
+        first = group[0]
+        label = f"[{first.get('block_index')}|{first.get('citation_ref', '')}]"
+        if len(group) == 1 and first.get("block_type") != BlockType.IMAGE.value:
+            total += len(f"{label} {first.get('content')}\n")
+            continue
+        total += len(f"{label}\n")
+        for item in group:
+            if item.get("block_type") == BlockType.IMAGE.value:
+                total += _image_item_bound(item.get("citation_ref", ""))
+            else:
+                total += len(f"    {item.get('content')}\n")
+    return total
+
+
+def _without_pixels(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Entries with each image replaced by a text placeholder: the form a unit
+    takes when it must be clipped to fit, where its pixels cannot go."""
+    return [
+        {**entry, "block_type": BlockType.TEXT.value, "content": "(image, not shown)"}
+        if entry.get("block_type") == BlockType.IMAGE.value else entry
+        for entry in entries
+    ]
+
+
+def _group_text(
+    template: "Template", group_index: object, label: object, entries: list[dict[str, Any]], file_path: str,
+) -> str:
+    """A group's children in `block_group_prompt`'s form."""
+    return template.render(
+        block_group_index=group_index,
+        block_group_web_url="",
+        label=label,
+        blocks=entries,
+        file_path=file_path,
+    )
+
+
+def _mint_refs(
+    entries: list[dict[str, Any]], ref_mapper: "CitationRefMapper", frontend_url: str, record_id: str,
+) -> None:
+    """Give rendered group entries their block URL and citation ref, and only
+    those: a ref minted for a child that is not shown cites nothing."""
+    for entry in entries:
+        if isinstance(entry.get("block_index"), int):
+            entry["block_web_url"] = build_block_web_url(frontend_url, record_id, entry["block_index"])
+            entry["citation_ref"] = ref_mapper.get_or_create_ref(entry["block_web_url"])
+
+
+_METADATA_TRUNCATED = "\n[…metadata truncated to fit]"
+_FK_TRUNCATED = "\n[…foreign keys truncated to fit]\n"
+# A frame that leaves less than this for the body is cut, to leave
+# `_MIN_BODY_CHARS` (or half the room), so a read whose metadata fills the
+# room still shows (a clipped prefix of) a block and advances. The first
+# `_MIN_METADATA_CHARS` of the metadata, the record's id and name, are kept.
+_MIN_PROGRESS_CHARS = 64
+_MIN_BODY_CHARS = 1_000
+_MIN_METADATA_CHARS = 200
+
+
+def _fit_text(text: str, room: int, marker: str) -> str:
+    """`text` cut to `room` characters with `marker` saying so, or "" when not
+    even the marker fits."""
+    if len(text) <= room:
+        return text
+    if room < len(marker):
+        return ""
+    return text[:room - len(marker)] + marker
+
+
+def _record_header(context_metadata: str) -> str:
+    return f"<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"
+
+
+def _carries_content(block: dict[str, Any], fragment_map: dict[int, list[dict[str, Any]]]) -> bool:
+    """Whether a top-level block has something to show, so a read that did
+    not show it cannot count as reading the record in full."""
+    block_type = block.get("type")
+    data = block.get("data")
+    if block.get("index") in fragment_map:
+        return True
+    if block_type == BlockType.IMAGE.value:
+        return bool(image_block_text(block)) or (isinstance(data, dict) and bool(data.get("uri")))
+    if block_type == BlockType.TABLE_ROW.value:
+        return bool(data.get("row_natural_language_text")) if isinstance(data, dict) else bool(data)
+    if block_type in (BlockType.TEXT.value, BlockType.CODE.value):
+        return bool(_safe_stringify_content(data).strip()) if data else False
+    return False
+
+
+def _fk_lines_text(record: dict[str, Any]) -> str:
+    """The foreign-key tables a SQL table record points to, or ""."""
+    fk_parent = record.get("fk_parent_record_ids")
+    fk_child = record.get("fk_child_record_ids")
+    if not (fk_parent or fk_child):
+        return ""
+    fk_lines = ["\nForeign Key Related Tables:"]
+    fk_lines.extend(
+        f"  - Parent Table: {fk.get('parentTable', '')} (Record ID: {fk.get('record_id', '')}, "
+        f"FK: {fk.get('sourceColumn', '')} -> {fk.get('targetColumn', '')})"
+        for fk in fk_parent or []
+    )
+    fk_lines.extend(
+        f"  - Child Table: {fk.get('childTable', '')} (Record ID: {fk.get('record_id', '')}, "
+        f"FK: {fk.get('sourceColumn', '')} -> {fk.get('targetColumn', '')})"
+        for fk in fk_child or []
+    )
+    return "\n".join(fk_lines) + "\n"
+
+
 def record_to_message_content(
     record: dict[str, Any],
     ref_mapper: CitationRefMapper | None = None,
-    is_multimodal_llm: bool = False,
+    is_multimodal_llm: bool = False,  # noqa: FBT001, FBT002
     *,
     start_block: int = 0,
     max_blocks: int | None = None,
@@ -3908,6 +4207,12 @@ def record_to_message_content(
             50-image cap across all sources. Defaults to a fresh
             (unbounded-in-practice) per-call budget when not shared by the
             caller.
+        budget: The fetch's `RenderBudget`. The record header, gap markers,
+            the trailing hint and the closing tag are charged to it with the
+            blocks, so what it reports is what the model receives.
+        include_blocks: A relevance selection; blocks outside it are skipped
+            and the gaps announced. A table entered through a selected row
+            reads its rows in order from that row.
 
     Returns:
         Tuple of (content list, ref_mapper)
@@ -3922,69 +4227,95 @@ def record_to_message_content(
     render_budget = budget if budget is not None else RenderBudget(
         max_chars=_UNBOUNDED_RENDER_CHARS, max_blocks=max_blocks,
     )
-    render_budget.begin_record(str(record.get("id") or record.get("virtual_record_id") or ""))
-    _all_block_indices = _renderable_block_indices(record) if include_blocks is not None else []
+    record_key = str(record.get("id") or record.get("virtual_record_id") or "")
+    render_budget.begin_record(record_key)
+    _all_block_indices = _renderable_block_indices(record)
     gap_markers = (
         describe_gaps(include_blocks, _all_block_indices) if include_blocks is not None else {}
     )
-    # Blocks left out by relevance selection, in document order. A record
-    # rendered this way is never "read in full", however far the walk got.
-    _excluded_blocks = (
-        [i for i in _all_block_indices if i not in include_blocks]
-        if include_blocks is not None else []
-    )
+    gaps_emitted = False
 
     try:
         content = []
-        context_metadata = record.get("context_metadata", "")
-        content.append({
-            "type": "text",
-            "text": f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n"""
-        })
+        context_metadata = record.get("context_metadata", "") or ""
+        fk_text = _fk_lines_text(record)
+        trailer_reserve = record_trailer_reserve(record, selection=include_blocks is not None)
+        # A frame that leaves no room to show a block is cut, not overrun:
+        # what is printed has to be what was charged. The cut leaves room for
+        # one (clipped) block so the read advances, keeps the start of the
+        # metadata (the record's id and name), and FK lines yield after it.
+        available = render_budget.chars_remaining
+        fixed = len(_record_header("")) + trailer_reserve
+        if fixed + len(context_metadata) + len(fk_text) + _MIN_PROGRESS_CHARS > available:
+            body_room = min(_MIN_BODY_CHARS, available // 2)
+            kept_metadata = min(len(context_metadata), _MIN_METADATA_CHARS, max(0, available - fixed))
+            fk_text = _fit_text(fk_text, available - fixed - body_room - kept_metadata, _FK_TRUNCATED)
+            context_metadata = _fit_text(
+                context_metadata,
+                min(available - fixed, max(kept_metadata, available - fixed - body_room - len(fk_text))),
+                _METADATA_TRUNCATED,
+            )
+        record_header = _record_header(context_metadata)
+        render_budget.charge_framing(record_header)
+        content.append({"type": "text", "text": record_header})
+        # Held back before the walk so the hint and closing tag cannot push
+        # the result past what the budget reported.
+        render_budget.charge_framing_chars(trailer_reserve + len(fk_text))
         # Process blocks
         block_containers = record.get("block_containers", {})
         blocks = block_containers.get("blocks", [])
         block_groups = block_containers.get("block_groups", [])
         fragment_map = _build_fragment_map(blocks)
 
-        seen_block_groups = set()
+        # Per table or group, the last block index its render covered. A unit
+        # renders its children only up to the next block it does not own (a
+        # figure parented to it, a nested list), which the walk prints in
+        # place before re-entering the unit after it.
+        covered_until: dict[str, float] = {}
+
+        def _next_foreign(after: int, owned: set[int]) -> int | None:
+            if not owned:
+                return None
+            last = max(owned)
+            for index in _all_block_indices[bisect.bisect_right(_all_block_indices, after):]:
+                if index >= last:
+                    return None
+                if index not in owned:
+                    return index
+            return None
+
         blocks_by_index = {b.get("index", 0): b for b in blocks if isinstance(b, dict)}
         rec_frontend_url = record.get("frontend_url", "")
         rec_record_id = record.get("id", "")
         record_file_path = record.get("file_path", "") or ""
 
-        # Decide which of this record's images get pixels BEFORE walking it:
-        # the walk emits in document order, but ranking needs the whole set.
         record_vrid = record.get("virtual_record_id")
-        image_candidates = [
-            candidate
-            for b in blocks
-            if b.get("type") == BlockType.IMAGE.value
-            and b.get("parent_block_index") is None
-            and (b.get("index", 0) >= start_block)
-            and (candidate := image_candidate_from_block(
-                b,
-                ref=ref_mapper.get_or_create_ref(
-                    build_block_web_url(rec_frontend_url, rec_record_id, b.get("index", 0)),
-                ),
-                origin=image_origin,
-                virtual_record_id=record_vrid,
-            )) is not None
-        ]
-        image_decisions: dict[int, DegradeReason | None] = (
-            admit_record_images(admission, image_candidates) if is_multimodal_llm
-            else {c.block_index: DegradeReason.TEXT_ONLY_MODEL for c in image_candidates}
-        )
+        # Admitted after the walk, and only for image blocks that rendered:
+        # deciding up front spent image slots on blocks a budget stop never reached.
+        pending_images: list[_PendingImage] = []
 
-        # Windowing: track how many renderable (non-fragment) blocks we have
-        # rendered so we can truncate at max_blocks and emit a continuation hint.
         _renderable_rendered = 0
         _truncated_at: int | None = None  # first block_index not rendered due to cap
 
         # Index order, not list order: the walk compares `block.index` against
         # the window, and nothing guarantees the stored list is sorted.
         # `blocks` itself stays untouched — group expansion indexes into it.
+        pending_gap: tuple[int, int] | None = None
+
+        def _settle_gap() -> None:
+            nonlocal pending_gap, gaps_emitted
+            if pending_gap is None:
+                return
+            position, chars = pending_gap
+            if len(content) - 1 == position:
+                content.pop()
+                render_budget.refund_framing_chars(chars)
+            else:
+                gaps_emitted = True
+            pending_gap = None
+
         for block in sorted(blocks, key=lambda b: b.get("index", 0)):
+            _settle_gap()
             block_index = block.get("index", 0)
             block_type = block.get("type")
 
@@ -4001,19 +4332,44 @@ def record_to_message_content(
             # knows it is not reading a contiguous document.
             if include_blocks is not None and block_index not in include_blocks:
                 continue
-            if block_index in gap_markers:
-                content.append({"type": "text", "text": gap_markers[block_index]})
+            # A row or child of a table or group already rendered (or one
+            # that ran out of room) was covered by it; announcing a gap before
+            # it would describe blocks the model did read.
+            # Images are the exception: a group's render leaves them out, and
+            # the image branch below is what prints a figure parented to it.
+            if block.get("parent_index") is not None and block_type != BlockType.IMAGE.value and (
+                block_index <= covered_until.get(
+                    f"{record.get('virtual_record_id', '')}-{block.get('parent_index')}", -1,
+                )
+            ):
+                continue
 
-            # Stop on either ceiling: the block count (unchanged meaning) or
-            # the character allowance, which is what actually bounds size.
+            # Stop on either ceiling: the block count or the character
+            # allowance, which is what actually bounds size.
             if render_budget.blocks_exhausted or render_budget.exhausted:
                 if _truncated_at is None:
                     _truncated_at = block_index
-                render_budget.stop_at(block_index)
+                render_budget.stop_at(
+                    block_index, "blocks" if render_budget.blocks_exhausted else "chars",
+                )
                 break
 
+            if block_index in gap_markers:
+                # Printed tentatively: taken back below if the block it
+                # introduces prints nothing, so no gap ever dangles.
+                if not render_budget.can_afford(gap_markers[block_index]):
+                    if _truncated_at is None:
+                        _truncated_at = block_index
+                    render_budget.stop_at(block_index)
+                    break
+                render_budget.charge_framing(gap_markers[block_index])
+                content.append({"type": "text", "text": gap_markers[block_index]})
+                pending_gap = (len(content) - 1, len(gap_markers[block_index]))
+
             block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, block_index)
-            ref = ref_mapper.get_or_create_ref(block_web_url)
+            # Minted only once the block is printed: a ref for a block that is
+            # not shown cites nothing.
+            ref = ref_mapper.peek_ref(block_web_url)
             data = block.get("data", "")
 
             if block_type == BlockType.IMAGE.value:
@@ -4023,57 +4379,48 @@ def record_to_message_content(
                 description = image_block_text(block)
                 image_uri = data.get("uri", "") if isinstance(data, dict) else ""
                 has_image = bool(image_uri) and is_base64_image(image_uri)
-                # What actually goes on the wire: admission downscales an image
-                # that exceeds the model's per-image limits, and the decision
-                # map carries only the verdict, so the bytes have to be looked
-                # up rather than re-read from the block.
-                wire_uri = admission.rendered_uri(image_uri) if has_image else image_uri
-                admitted = has_image and block_index in image_decisions and (
-                    image_decisions[block_index] is None
-                )
-                reason = (
-                    image_decisions.get(block_index)
-                    if has_image and is_multimodal_llm
-                    else (DegradeReason.TEXT_ONLY_MODEL if has_image else None)
-                )
-
-                if admitted and collected_images is not None:
-                    collected_images.append({
-                        "ref": ref,
-                        "block_index": block_index,
-                        "image_url": {"url": wire_uri},
-                        "virtual_record_id": record.get("virtual_record_id"),
-                    })
-                    marker = render_budget.take(image_marker_text(f"[{ref}]", description))
-                    if marker is None:
-                        _truncated_at = _truncated_at or block_index
-                        render_budget.stop_at(block_index)
-                        break
-                    content.append({"type": "text", "text": marker})
-                    _renderable_rendered += 1
-                    render_budget.count_block()
-                    render_budget.note_shown((block_index,))
-                elif admitted:
-                    label = render_budget.take(
-                        f"[{ref}] {description}" if description else f"[{ref}]"
+                candidate = (
+                    image_candidate_from_block(
+                        block, ref=ref, origin=image_origin, virtual_record_id=record_vrid,
                     )
-                    if label is None:
-                        _truncated_at = _truncated_at or block_index
+                    if has_image and is_multimodal_llm else None
+                )
+                if candidate is not None and not render_budget.can_afford_chars(
+                    _max_image_text_chars(ref, description),
+                ) and _renderable_rendered == 0:
+                    # The first unit of a read must make progress: its text is
+                    # clipped like a text block's, and its pixels are not sent.
+                    candidate = None
+                if candidate is not None:
+                    # Which marker it gets is known only after admission, so the
+                    # longest one is charged now and the plan cannot overrun.
+                    reserve = _max_image_text_chars(ref, description)
+                    if not render_budget.can_afford_chars(reserve):
+                        if _truncated_at is None:
+                            _truncated_at = block_index
                         render_budget.stop_at(block_index)
                         break
-                    content.append({"type": "text", "text": label})
-                    content.append({"type": "image_url", "image_url": {"url": wire_uri}})
+                    render_budget.charge_chars(reserve)
+                    ref_mapper.get_or_create_ref(block_web_url)
+                    pending_images.append(_PendingImage(
+                        position=len(content), block_index=block_index, ref=ref,
+                        description=description, image_uri=image_uri, candidate=candidate,
+                    ))
+                    content.append({"type": "text", "text": ""})
                     _renderable_rendered += 1
                     render_budget.count_block()
                     render_budget.note_shown((block_index,))
                 elif has_image or description:
+                    reason = DegradeReason.TEXT_ONLY_MODEL if has_image else None
                     marker = render_budget.take(
                         image_marker_text(f"[{ref}]", description, reason=reason)
                     )
                     if marker is None:
-                        _truncated_at = _truncated_at or block_index
+                        if _truncated_at is None:
+                            _truncated_at = block_index
                         render_budget.stop_at(block_index)
                         break
+                    ref_mapper.get_or_create_ref(block_web_url)
                     content.append({"type": "text", "text": marker})
                     _renderable_rendered += 1
                     render_budget.count_block()
@@ -4082,9 +4429,11 @@ def record_to_message_content(
             elif block_type == BlockType.TEXT.value and block.get("parent_index") is None:
                 emitted = render_budget.take(f"[{ref}] {data}\n\n")
                 if emitted is None:
-                    _truncated_at = _truncated_at or block_index
+                    if _truncated_at is None:
+                        _truncated_at = block_index
                     render_budget.stop_at(block_index)
                     break
+                ref_mapper.get_or_create_ref(block_web_url)
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
@@ -4098,9 +4447,11 @@ def record_to_message_content(
                 header = f"[{ref}] {locator}\n" if locator else f"[{ref}] "
                 emitted = render_budget.take(f"{header}{_safe_stringify_content(data)}\n\n")
                 if emitted is None:
-                    _truncated_at = _truncated_at or block_index
+                    if _truncated_at is None:
+                        _truncated_at = block_index
                     render_budget.stop_at(block_index)
                     break
+                ref_mapper.get_or_create_ref(block_web_url)
                 content.append({"type": "text", "text": emitted})
                 _renderable_rendered += 1
                 render_budget.count_block()
@@ -4108,9 +4459,8 @@ def record_to_message_content(
             elif block_type == BlockType.TABLE_ROW.value:
                 block_group_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{block_group_index}"
-                if block_group_id in seen_block_groups:
-                    continue
-                seen_block_groups.add(block_group_id)
+                reentered = block_group_id in covered_until
+                covered_until[block_group_id] = math.inf
                 # A row whose table is missing is skipped like a row with no table at all.
                 if block_group_index is not None and 0 <= block_group_index < len(block_groups):
                     corresponding_block_group = block_groups[block_group_index]
@@ -4130,6 +4480,10 @@ def record_to_message_content(
                                         rows_to_be_included_list.extend(range(start, end + 1))
                             elif isinstance(children, list):
                                 rows_to_be_included_list = [child.get("block_index") for child in children if child.get("block_index") is not None]
+                        rows_to_be_included_list = sorted(set(rows_to_be_included_list))
+                        barrier = _next_foreign(block_index, set(rows_to_be_included_list))
+                        if barrier is not None:
+                            covered_until[block_group_id] = barrier - 1
 
                         child_results = []
                         rows_rendered: list[int] = []
@@ -4138,81 +4492,133 @@ def record_to_message_content(
                         rows_shown = 0
                         rows_exhausted = False
                         # Resuming inside a table: skip the rows already read.
+                        # A selection enters a table at its first selected row
+                        # and reads on from there, after the gap it announced.
+                        first_row = start_block if include_blocks is None else max(start_block, block_index)
+                        # A continuation into the middle of a table already
+                        # showed its summary (a SQL table's DDL) with the first
+                        # rows; repeating it can leave no room for the cells.
+                        continuing = reentered or (
+                            include_blocks is None and bool(rows_to_be_included_list)
+                            and min(rows_to_be_included_list) < start_block
+                        )
+                        # A selection reads only its own rows of the table; the rows
+                        # between are announced inside the table, where the walk
+                        # will not reach them again.
                         rows_to_be_included_list = [
-                            r for r in rows_to_be_included_list if r >= start_block
+                            r for r in rows_to_be_included_list
+                            if r >= first_row and (include_blocks is None or r in include_blocks)
+                            and (barrier is None or r < barrier)
                         ]
+                        # The header (a SQL table's DDL included) and each row's
+                        # `[index|ref]` prefix are part of what the model reads,
+                        # so they are charged with the rows, along with room for
+                        # the "rest did not fit" line should the rows run out.
+                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        framing = _TableFraming(block_group_index, summary)
+                        image_table_header = f"[Table #{block_group_index}: {summary}]\n"
+                        truncation_reserve = framing.row(
+                            block_index, "",
+                            f"[… showing {rows_total} of {rows_total} rows; the rest did not fit …]",
+                        )
+                        table_charged = 0
+                        unfit_row: tuple[int, list[dict[str, Any]], str] | None = None
+                        last_row = rows_to_be_included_list[-1] if rows_to_be_included_list else None
                         for row_index in rows_to_be_included_list:
                             row_block = blocks_by_index.get(row_index)
-                            if row_block is not None:
-                                block = row_block
-                                block_data = block.get("data", {})
-                                if isinstance(block_data, dict):
-                                    row_text = block_data.get("row_natural_language_text", "")
-                                else:
-                                    row_text = str(block_data)
-                                if row_text:
-                                    if not render_budget.can_afford(row_text):
-                                        rows_exhausted = True
-                                        render_budget.stop_at(row_index)
-                                        break
-                                    render_budget.charge(row_text)
-                                    rows_shown += 1
-                                    rows_rendered.append(row_index)
-                                    child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
-                                    child_results.append({
-                                        "content": row_text,
-                                        "block_type": BlockType.TABLE_ROW.value,
-                                        "block_index": row_index,
-                                        "block_web_url": child_block_web_url,
-                                        "citation_ref": ref_mapper.get_or_create_ref(child_block_web_url),
-                                    })
-                                else:
-                                    # Container TABLE_ROW with image-split fragments:
-                                    # emit each fragment in reading order under the container's block_index.
-                                    container_idx = block.get("index")
-                                    if container_idx is not None and container_idx in fragment_map:
-                                        rows_rendered.append(row_index)
-                                        child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
-                                        child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
-                                        for frag in sorted(fragment_map[container_idx], key=lambda b: b.get("index", 0)):
-                                            frag_type = frag.get("type")
-                                            if frag_type == BlockType.TEXT.value:
-                                                frag_data = frag.get("data", "")
-                                                if frag_data:
-                                                    child_results.append({
-                                                        "content": _safe_stringify_content(frag_data),
-                                                        "block_type": BlockType.TEXT.value,
-                                                        "block_index": row_index,
-                                                        "block_web_url": child_block_web_url,
-                                                        "citation_ref": child_citation_ref,
-                                                    })
-                                            elif frag_type == BlockType.IMAGE.value:
-                                                uri = (frag.get("data") or {}).get("uri")
-                                                if is_multimodal_llm and uri:
-                                                    has_row_images = True
-                                                    child_results.append({
-                                                        "content": uri,
-                                                        "block_type": BlockType.IMAGE.value,
-                                                        "block_index": row_index,
-                                                        "block_web_url": child_block_web_url,
-                                                        "citation_ref": child_citation_ref,
-                                                    })
-                                                else:
-                                                    frag_text = image_block_text(frag)
-                                                    if frag_text:
-                                                        child_results.append({
-                                                            "content": frag_text,
-                                                            "block_type": BlockType.TEXT.value,
-                                                            "block_index": row_index,
-                                                            "block_web_url": child_block_web_url,
-                                                            "citation_ref": child_citation_ref,
-                                                        })
+                            if row_block is None:
+                                continue
+                            child_block_web_url = build_block_web_url(rec_frontend_url, rec_record_id, row_index)
+                            row_children = _table_row_children(
+                                row_block, row_index, child_block_web_url, fragment_map,
+                                is_multimodal_llm=is_multimodal_llm,
+                            )
+                            if not row_children:
+                                continue
+                            peeked_ref = ref_mapper.peek_ref(child_block_web_url)
+                            cost = sum(
+                                framing.row(row_index, peeked_ref, child["content"])
+                                if child["block_type"] != BlockType.IMAGE.value
+                                else framing.row(row_index, peeked_ref, "")
+                                for child in row_children
+                            )
+                            if is_multimodal_llm:
+                                # A table with an image row prints every row in
+                                # the image form, so a row costs the larger of
+                                # the two.
+                                cost = max(cost, _images_render_bound(
+                                    [{**child, "citation_ref": peeked_ref} for child in row_children],
+                                ))
+                            if table_charged == 0:
+                                cost += max(framing.header, len(image_table_header))
+                            gap_row = None
+                            if rows_rendered and row_index in gap_markers:
+                                gap_row = {
+                                    "content": gap_markers[row_index].strip(),
+                                    "block_type": BlockType.TABLE_ROW.value,
+                                    "block_index": "…",
+                                    "block_web_url": "",
+                                    "citation_ref": "",
+                                }
+                                cost += framing.row("…", "", gap_row["content"])
+                            reserve = 0 if row_index == last_row else truncation_reserve
+                            if not render_budget.can_afford_chars(cost + reserve):
+                                rows_exhausted = True
+                                unfit_row = (row_index, row_children, child_block_web_url)
+                                break
+                            render_budget.charge_chars(cost)
+                            table_charged += cost
+                            if gap_row is not None:
+                                child_results.append(gap_row)
+                                gaps_emitted = True
+                            child_citation_ref = ref_mapper.get_or_create_ref(child_block_web_url)
+                            for child in row_children:
+                                child["citation_ref"] = child_citation_ref
+                                has_row_images = has_row_images or child["block_type"] == BlockType.IMAGE.value
+                            child_results.extend(row_children)
+                            rows_rendered.append(row_index)
+                            rows_shown += 1
 
                         if rows_exhausted:
                             render_budget.note_table_truncation(
                                 block_group_index or 0, rows_shown, rows_total,
                             )
-                            _truncated_at = _truncated_at or block_index
+                            if _truncated_at is None:
+                                _truncated_at = block_index
+                            if rows_shown == 0 and _renderable_rendered > 0:
+                                # Not even the first row fits after earlier blocks:
+                                # the table waits for the continuation instead of
+                                # arriving as a header with no rows.
+                                render_budget.stop_at(unfit_row[0])
+                                break
+                            if rows_shown == 0 and unfit_row is not None:
+                                # The first unit of this read: waiting would send
+                                # every retry back to this row, so it is clipped
+                                # like a text block and reading resumes after it.
+                                row_index, row_children, row_url = unfit_row
+                                row_ref = ref_mapper.get_or_create_ref(row_url)
+                                row_text = [
+                                    {**child, "citation_ref": row_ref, "content": (
+                                        "(image)" if child["block_type"] == BlockType.IMAGE.value
+                                        else child["content"]
+                                    )}
+                                    for child in row_children
+                                ]
+                                # Without the summary, so the clip keeps the cells.
+                                clip_framing = _TableFraming(block_group_index, _TABLE_SUMMARY_OMITTED)
+                                clipped = render_budget.take(f"{clip_framing.render(row_text)}\n\n")
+                                if not clipped:
+                                    render_budget.stop_at(row_index)
+                                    break
+                                render_budget.stop_at(row_index + 1)
+                                content.append({"type": "text", "text": clipped})
+                                _renderable_rendered += 1
+                                render_budget.count_block()
+                                # A no-op when the row was actually clipped.
+                                render_budget.note_shown((row_index,))
+                                break
+                            if unfit_row is not None:
+                                render_budget.stop_at(unfit_row[0])
                             child_results.append({
                                 "content": (
                                     f"[… showing {rows_shown} of {rows_total} rows; "
@@ -4226,35 +4632,30 @@ def record_to_message_content(
 
                         if child_results:
                             if not has_row_images:
-                                template = compiled_template(table_prompt)
-                                rendered_form = template.render(
-                                    block_group_index=block_group_index,
-                                    block_group_web_url="",
-                                    table_summary="",
-                                    table_rows=child_results,
-                                )
-                                content.append({
-                                    "type": "text",
-                                    "text": f"{rendered_form}\n\n"
-                                })
+                                table_text = f"{framing.render(child_results)}\n\n"
+                                if len(table_text) > table_charged:
+                                    render_budget.charge_framing_chars(len(table_text) - table_charged)
+                                content.append({"type": "text", "text": table_text})
                             else:
-                                header = f"[Table #{block_group_index}]\n"
-                                content.append({
-                                    "type": "text",
-                                    "text": header,
-                                })
-                                content.extend(_render_blocks_with_images(
+                                printed = [{"type": "text", "text": image_table_header}]
+                                printed.extend(_render_blocks_with_images(
                                     child_results, is_multimodal_llm, image_budget, collected_images,
                                     image_admission=admission, image_origin=image_origin,
                                 ))
+                                printed_chars = sum(len(item.get("text", "")) for item in printed)
+                                if printed_chars > table_charged:
+                                    render_budget.charge_framing_chars(printed_chars - table_charged)
+                                content.extend(printed)
                             _renderable_rendered += 1
                             render_budget.count_block()
                             render_budget.note_shown(rows_rendered)
+                        if rows_exhausted:
+                            # Nothing after a table that ran out of room may
+                            # render: the continuation resumes at its next row.
+                            break
             elif(block.get("parent_index") is not None):
                 parent_index = block.get("parent_index")
                 block_group_id = f"{record.get('virtual_record_id', '')}-{parent_index}"
-                if block_group_id in seen_block_groups:
-                    continue
                 template = compiled_template(block_group_prompt)
                 if parent_index >= len(block_groups):
                     continue
@@ -4268,38 +4669,96 @@ def record_to_message_content(
 
                 if not group_blocks:
                     continue
-                seen_block_groups.add(block_group_id)
+                barrier = _next_foreign(block_index, {
+                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
+                })
+                covered_until[block_group_id] = barrier - 1 if barrier is not None else math.inf
                 has_images = any(gb.get("block_type") == BlockType.IMAGE.value for gb in group_blocks)
-                for gb in group_blocks:
-                    gb["block_web_url"] = build_block_web_url(rec_frontend_url, rec_record_id, gb.get("block_index", 0))
-                    gb["citation_ref"] = ref_mapper.get_or_create_ref(gb["block_web_url"])
-
-                if not has_images:
-                    rendered_form = template.render(
-                        block_group_index=parent_index,
-                        block_group_web_url="",
-                        label=block_group.get("type"),
-                        blocks=group_blocks,
-                        file_path=record_file_path,
+                label = block_group.get("type")
+                # A group renders child by child, like a table: a continuation
+                # resumes at its child, and a selection reads its own children
+                # with the ones between announced inside the group.
+                first_child = max(start_block, block_index)
+                units = [
+                    list(entries)
+                    for index, entries in groupby(group_blocks, key=lambda gb: gb.get("block_index"))
+                    if isinstance(index, int) and index >= first_child
+                    and (include_blocks is None or index in include_blocks)
+                    and (barrier is None or index < barrier)
+                ]
+                units.sort(key=lambda unit: unit[0]["block_index"])
+                if not units:
+                    continue
+                widest_ref = f"ref{len(ref_mapper.ref_to_url) + len(group_blocks)}"
+                empty_text = _group_text(template, parent_index, label, [], record_file_path)
+                image_header = f"[{label} #{parent_index}]\n"
+                spent = len(image_header) if has_images else len(empty_text) + 2
+                kept: list[dict[str, Any]] = []
+                kept_indices: list[int] = []
+                unfit_unit: list[dict[str, Any]] | None = None
+                for unit in units:
+                    unit_index = unit[0]["block_index"]
+                    gap_entry = None
+                    if kept_indices and unit_index in gap_markers:
+                        gap_entry = {"block_index": "…", "citation_ref": "", "block_type": BlockType.TEXT.value,
+                                     "content": gap_markers[unit_index].strip()}
+                    priced = [{**entry, "citation_ref": widest_ref} for entry in unit]
+                    if gap_entry is not None:
+                        priced = [gap_entry, *priced]
+                    cost = (
+                        _images_render_bound(priced) if has_images
+                        else len(_group_text(template, parent_index, label, priced, record_file_path))
+                        - len(empty_text)
                     )
-                    emitted = render_budget.take(f"{rendered_form}\n\n")
-                    if emitted is None:
-                        _truncated_at = _truncated_at or block_index
-                        render_budget.stop_at(block_index)
+                    if not render_budget.can_afford_chars(spent + cost):
+                        unfit_unit = unit
+                        break
+                    spent += cost
+                    if gap_entry is not None:
+                        kept.append(gap_entry)
+                        gaps_emitted = True
+                    kept.extend(unit)
+                    kept_indices.append(unit_index)
+
+                if not kept_indices:
+                    if unfit_unit is None or _renderable_rendered > 0:
+                        if _truncated_at is None:
+                            _truncated_at = block_index
+                        render_budget.stop_at(unfit_unit[0]["block_index"] if unfit_unit else block_index)
+                        break
+                    # The first unit of a read must make progress: its text is
+                    # clipped like a text block's, its pixels are not sent, and
+                    # reading resumes at the child after it.
+                    _mint_refs(unfit_unit, ref_mapper, rec_frontend_url, rec_record_id)
+                    clipped_text = _group_text(
+                        template, parent_index, label, _without_pixels(unfit_unit), record_file_path,
+                    )
+                    emitted = render_budget.take(f"{clipped_text}\n\n")
+                    if not emitted:
+                        if _truncated_at is None:
+                            _truncated_at = unfit_unit[0]["block_index"]
+                        render_budget.stop_at(unfit_unit[0]["block_index"])
                         break
                     content.append({"type": "text", "text": emitted})
-                else:
-                    header = f"[{block_group.get('type')} #{parent_index}]\n"
-                    emitted = render_budget.take(header)
-                    if emitted is None:
-                        _truncated_at = _truncated_at or block_index
-                        render_budget.stop_at(block_index)
-                        break
-                    content.append({"type": "text", "text": emitted})
-                    content.extend(_render_blocks_with_images(
-                        group_blocks, is_multimodal_llm, image_budget, collected_images,
+                    _renderable_rendered += 1
+                    render_budget.count_block()
+                    # A no-op when the child was actually clipped.
+                    render_budget.note_shown((unfit_unit[0]["block_index"],))
+                    render_budget.stop_at(unfit_unit[0]["block_index"] + 1)
+                    break
+
+                _mint_refs(kept, ref_mapper, rec_frontend_url, rec_record_id)
+                if has_images:
+                    printed = [{"type": "text", "text": image_header}]
+                    printed.extend(_render_blocks_with_images(
+                        kept, is_multimodal_llm, image_budget, collected_images,
                         image_admission=admission, image_origin=image_origin,
                     ))
+                else:
+                    group_text = _group_text(template, parent_index, label, kept, record_file_path)
+                    printed = [{"type": "text", "text": f"{group_text}\n\n"}]
+                render_budget.charge_chars(sum(len(item.get("text", "")) for item in printed))
+                content.extend(printed)
                 _renderable_rendered += 1
                 # A group is one renderable unit, the same as a table or a
                 # top-level block. Without this it cost nothing against
@@ -4308,78 +4767,83 @@ def record_to_message_content(
                 # found nothing, so it appended "no blocks at offset N" under
                 # the group it had just rendered.
                 render_budget.count_block()
-                render_budget.note_shown(
-                    gb["block_index"] for gb in group_blocks if isinstance(gb.get("block_index"), int)
-                )
+                render_budget.note_shown(kept_indices)
+                if unfit_unit is not None:
+                    # Nothing after a group that ran out of room may render:
+                    # the continuation resumes at its next child.
+                    if _truncated_at is None:
+                        _truncated_at = block_index
+                    render_budget.stop_at(unfit_unit[0]["block_index"])
+                    break
             else:
                 continue
 
-        # Windowing continuation hint — appended when truncation happened. It
-        # names its record: a result carrying several records cannot be
-        # continued from an anonymous "start_block=138".
+        _settle_gap()
+        if pending_images:
+            content = _resolve_pending_images(
+                content, pending_images, admission, collected_images, record_vrid,
+            )
+
         record_label = record.get("id") or record.get("virtual_record_id") or ""
+        if include_blocks is None:
+            walked = render_budget.outcome(record_key)
+            if walked.stopped_at_block is None and any(
+                index >= start_block and index not in walked.shown_blocks
+                and _carries_content(blocks_by_index.get(index, {}), fragment_map)
+                for index in _all_block_indices
+            ):
+                # A block of a shape the renderer cannot show (a row of a group
+                # that is not a table, a child of an unknown group type) is
+                # missing from this read, so it must not count as complete.
+                render_budget.note_unshown()
+        outcome = render_budget.outcome(record_key)
+        # The budget knows the first block not shown -- inside a table, the
+        # first row that did not fit -- which is where reading resumes.
+        next_start = outcome.stopped_at_block if outcome.stopped_at_block is not None else _truncated_at
+        unshown = [
+            i for i in _all_block_indices if i >= start_block and i not in outcome.shown_blocks
+        ] if include_blocks is not None else []
 
-        if _excluded_blocks:
-            # Selection, not a window: the blocks shown are not contiguous, so
-            # a "next slice" offset would be the wrong instruction.
-            render_budget.stop_at(_excluded_blocks[0])
-            shown = len(_all_block_indices) - len(_excluded_blocks)
+        if unshown and gaps_emitted:
+            # A selection that ran out of room before its last block says
+            # where it stopped, so the rest can still be read.
+            resume = (
+                outcome.stopped_at_block
+                if outcome.stop_reason in ("chars", "blocks") and outcome.stopped_at_block in include_blocks
+                else None
+            )
+            render_budget.note_selection(unshown[0])
             content.append({
                 "type": "text",
-                "text": (
-                    f"\n[Record {record_label}: showed the {shown} block(s) most relevant "
-                    f"to the question, of {len(_all_block_indices)}. To read it in order "
-                    f"instead, call knowledgegraph__fetch_record with "
-                    f"record_ids=[\"{record_label}\"] and start_block=0.]\n"
+                "text": selection_hint(
+                    record_label, len(outcome.shown_blocks), len(_all_block_indices), resume,
                 ),
             })
-        elif _truncated_at is not None:
-            total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
-            end_block = _truncated_at - 1
-            content.append({
-                "type": "text",
-                "text": (
-                    f"\n[Record {record_label}: showing blocks {start_block}–{end_block} of "
-                    f"approximately {total_blocks} renderable blocks. To read on, call "
-                    f"knowledgegraph__fetch_record with record_ids=[\"{record_label}\"] and "
-                    f"start_block={_truncated_at} — one record at a time when continuing.]\n"
-                ),
-            })
+        else:
+            if unshown and next_start is None:
+                # A selection that came out contiguous is an in-order read
+                # cut short, and is continued like one.
+                render_budget.stop_at(unshown[0], "chars")
+                next_start = unshown[0]
+            if next_start is not None and _renderable_rendered == 0:
+                content.append({"type": "text", "text": no_fit_hint(record_label, next_start)})
+            elif next_start is not None:
+                total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
+                content.append({
+                    "type": "text",
+                    "text": continuation_hint(
+                        record_label, start_block, next_start - 1, total_blocks, next_start,
+                    ),
+                })
 
-        fk_parent = record.get("fk_parent_record_ids")
-        fk_child = record.get("fk_child_record_ids")
-        if fk_parent or fk_child:
-            fk_lines = ["\nForeign Key Related Tables:"]
-            if fk_parent:
-                for fk in fk_parent:
-                    parent_table = fk.get("parentTable", "")
-                    src_col = fk.get("sourceColumn", "")
-                    tgt_col = fk.get("targetColumn", "")
-                    rid = fk.get("record_id", "")
-                    fk_lines.append(
-                        f"  - Parent Table: {parent_table} (Record ID: {rid}, "
-                        f"FK: {src_col} -> {tgt_col})"
-                    )
-            if fk_child:
-                for fk in fk_child:
-                    child_table = fk.get("childTable", "")
-                    src_col = fk.get("sourceColumn", "")
-                    tgt_col = fk.get("targetColumn", "")
-                    rid = fk.get("record_id", "")
-                    fk_lines.append(
-                        f"  - Child Table: {child_table} (Record ID: {rid}, "
-                        f"FK: {src_col} -> {tgt_col})"
-                    )
-            content.append({
-                "type": "text",
-                "text": "\n".join(fk_lines) + "\n"
-            })
+        if fk_text:
+            content.append({"type": "text", "text": fk_text})
 
         # Closes the tag opened at the top. Without it a result carrying
         # several records is a run of unbalanced `<record>` openings and the
         # model has to guess where one ends — the search-path renderer has
         # always closed its own.
-        content.append({"type": "text", "text": "\n</record>\n"})
+        content.append({"type": "text", "text": RECORD_CLOSE})
 
         return content, ref_mapper
     except Exception as e:
@@ -4459,7 +4923,7 @@ def record_to_text(record: dict[str, Any]) -> str:
                         child_results = []
                         for row_index in rows_to_be_included_list:
                             if row_index < len(blocks):
-                                block = blocks[row_index]
+                                block = blocks[row_index]  # noqa: PLW2901
                                 block_data = block.get("data", {})
                                 if isinstance(block_data, dict):
                                     row_text = block_data.get("row_natural_language_text", "")
@@ -4614,9 +5078,9 @@ def get_message_content(
 def build_message_content_array(
     flattened_results: list[dict[str, Any]],
     virtual_record_id_to_result: dict[str, Any],
-    is_multimodal_llm: bool = False,
+    is_multimodal_llm: bool = False,  # noqa: FBT001, FBT002
     ref_mapper: CitationRefMapper | None = None,
-    from_tool: bool = True,
+    from_tool: bool = True,  # noqa: FBT001, FBT002
     record_id_shortener: "RecordIdShortener | None" = None,
     collected_images: list[dict[str, Any]] | None = None,
     image_budget: "ImageBudget | None" = None,
@@ -4963,7 +5427,7 @@ def build_fk_info(result: dict[str, Any]) -> str:
 
 
 
-def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
+def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:  # noqa: ANN001
     total_tokens = 0
     for item in content:
         if item.get("type") == "text":
@@ -4976,7 +5440,7 @@ def count_tokens_in_content_list(content: list[dict[str, Any]],enc) -> int:
 _DEFAULT_VISION_IMAGE_TOKEN_ESTIMATE = 1700
 
 
-def count_tokens_in_messages(messages: list[Any],enc) -> int:
+def count_tokens_in_messages(messages: list[Any],enc) -> int:  # noqa: ANN001
     """
     Count the total number of tokens in a messages array.
     Supports both dict messages and LangChain message objects.
@@ -5026,7 +5490,7 @@ def count_tokens_in_messages(messages: list[Any],enc) -> int:
     return total_tokens
 
 
-def count_tokens_text(text: str,enc) -> int:
+def count_tokens_text(text: str,enc) -> int:  # noqa: ANN001
     """Count tokens in text using tiktoken or fallback heuristic"""
     if not text:
         return 0

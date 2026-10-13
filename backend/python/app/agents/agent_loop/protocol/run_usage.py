@@ -35,6 +35,7 @@ _MAX_AGENT_ERROR_CHARS = 500
 MAX_CALLS_PER_FRAME = 200
 
 GREP_GENERATION_SOURCE = "grep_generation"
+ENTITY_LINKING_SOURCE = "entity_linking"
 
 
 @dataclass
@@ -42,9 +43,9 @@ class UsageLedger:
     """Every model call one request made, in the order they finished, each
     labelled by its source: `main`, `sub_agent:<name>`, `single_shot:<name>`,
     `auto_compact`, `plan_critic`, `result_critic`, `planner`, `replanner`
-    (from the request's transports, see `UsageReportingTransport`) and
-    `grep_generation`. Only wired when the request opted in, so a normal
-    request records nothing."""
+    (from the request's transports, see `UsageReportingTransport`),
+    `grep_generation` and `entity_linking`. Only wired when the request opted
+    in, so a normal request records nothing."""
 
     entries: list[tuple[str, TokenUsage]] = field(default_factory=list)
 
@@ -52,11 +53,12 @@ class UsageLedger:
         self.entries.append((source, usage))
 
 
-def grep_generation_usage_reporter(
-    state: Mapping[str, Any] | None,
+def llm_usage_reporter(
+    state: Mapping[str, Any] | None, source: str,
 ) -> Callable[[BaseMessage], None] | None:
-    """The `on_llm_usage` callback for grep-command generation: reports into
-    the request's `UsageLedger`, or None when the request did not opt in."""
+    """The `on_llm_usage` callback for a model call a tool makes itself:
+    reports into the request's `UsageLedger` under `source`, or None when the
+    request did not opt in."""
     ledger = state.get("usage_ledger") if state else None
     if not isinstance(ledger, UsageLedger):
         return None
@@ -65,9 +67,16 @@ def grep_generation_usage_reporter(
         from app.agents.agent_loop.converters import token_usage_from_ai_message
 
         if isinstance(message, AIMessage):
-            ledger.add(GREP_GENERATION_SOURCE, token_usage_from_ai_message(message))
+            ledger.add(source, token_usage_from_ai_message(message))
 
     return _report
+
+
+def grep_generation_usage_reporter(
+    state: Mapping[str, Any] | None,
+) -> Callable[[BaseMessage], None] | None:
+    """The `on_llm_usage` callback for grep-command generation."""
+    return llm_usage_reporter(state, GREP_GENERATION_SOURCE)
 
 
 class RunUsagePayload(BaseModel):

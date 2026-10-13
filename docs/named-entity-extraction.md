@@ -4,7 +4,9 @@ Indexing can extract typed entities from a record and store them beside the
 taxonomy graph. Extraction, and the agent tools that read it, are on when the
 Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION` is on or the deployment sets
 `HIGH_ACCURACY_MODE=true`; both are off by default, and under
-`HIGH_ACCURACY_MODE` the flag cannot turn it off. Records indexed before it
+`HIGH_ACCURACY_MODE` the flag cannot turn it off. `search_by_entities` is the
+exception among the tools: it also needs `ENTITY_SEARCH_TOOL=true` (see below).
+Records indexed before it
 was on gain entities when they are indexed again. Turning it off does not
 delete nodes other records still mention; it removes the mention edges for
 records indexed while it is off.
@@ -246,6 +248,9 @@ Agent tools, when extraction is on:
 - `search` can scope by those ids
 - `find_records_by_value` filters by a typed value
 - `fetch_record` lists entities on records it already returned
+- `search_by_entities` searches the records that mention named people,
+  organizations, products or places, by name, when the deployment sets
+  `ENTITY_SEARCH_TOOL=true` (see below)
 
 An entity is visible only when the caller can read a record that mentions it.
 Records in the trash never come back from an entity filter; the entities on
@@ -257,6 +262,59 @@ knowledge-graph searches. Browsing (`navigate`, `lookup_record`,
 `fetch_record`) is not filtered, as with app filters. A filter that is refused
 (too broad for what the user can read) is not "nothing found": the answer, or
 the agent's tool result, says why and how to narrow it.
+
+## Searching by name (`search_by_entities`)
+
+`ENTITY_SEARCH_TOOL=true` offers the agent `knowledgegraph__search_by_entities`.
+It is off unless set, also under `HIGH_ACCURACY_MODE`, and it is offered only
+where extraction is on and the entity vector store is wired. The decision is
+made once per request, before tools load, so the tool list and the system
+prompt stay the same for every question and turn of a deployment, and the
+provider's prompt cache keeps hitting. The tool is left out of the count that
+decides lazy tool disclosure, so turning it on never hides web search or
+connector tools behind `fetch_tools`. With it off, the tools and the prompt are
+the ones the deployment had before.
+
+Each name the agent passes is linked to stored entities
+(`app/modules/named_entities/linking`):
+
+- **Candidates.** The node ids indexing would write for the name under each
+  kind (`merge.entity_identity`, so the keys match), nodes whose key is the
+  name followed by more words (people, organizations, products; "Sam" finds
+  "Sam Lee", never "Samsung"), and the entity vector search.
+- **Access first.** Every candidate passes `probe_permitted_entities` before
+  anything is decided about it, so a node the caller cannot read changes no
+  output; a name whose check ran out of time reads like a name with no entity.
+  The prefix read takes at most 21 nodes per name before that check, so a
+  readable "Sam Lee" behind 21 unreadable "Sam ..." nodes is missed, never
+  shown.
+- **Check.** An exact readable match of the kind asked is always taken. Every
+  other name, and an exact one that also starts longer readable names ("Sam"
+  beside "Sam Lee"), goes to one model call that picks the candidates that are
+  the same thing, or none; for an exact name the check can only add to it. It uses the `query` model role at low effort (the default
+  model when the role is unassigned, the chat's model when none can be built),
+  with an 8-second limit; a failed or late call uses nothing it could not
+  check, and the result says so. Its tokens are reported as `entity_linking` in
+  the request's usage. Shown names are the spellings on readable records.
+- **Records.** Readable records per name (`list_accessible_entity_records`,
+  the newest 100 per entity; the result says when a name has more). With
+  `match="all"`, the names are intersected from the one with the fewest
+  records (`get_records_for_named_entities(within=...)`); every record that
+  mentions them all is searched, those where they appear within two blocks of
+  each other (mention-edge `blockIndexes`) first. A name that links to no
+  entity has no records, so `match="all"` with it searches nothing and says so. The passages come from `search` inside that scope, which
+  still applies the agent's sources and the caller's permissions.
+
+Only records indexed while extraction was on have entities, so a name the tool
+does not find may still be written in older records; the result says so and
+the agent is told to confirm a miss with `search`.
+
+Where it is offered, `search_entities` also takes several `queries` in one
+call, returns each hit's kind, and explains in `kindNotes` the kinds it cannot
+serve (people and addresses are not embedded, values are found with
+`find_records_by_value`); the descriptions of `search`, `search_entities`,
+`find_records_by_entity` and `find_records_by_value` then mention named
+entities.
 
 ## Configuration
 

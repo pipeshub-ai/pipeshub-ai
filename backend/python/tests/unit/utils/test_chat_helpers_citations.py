@@ -46,7 +46,7 @@ class _Config:
     def __init__(self, fail: bool = False) -> None:
         self.fail = fail
 
-    async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:
+    async def get_config(self, key: str, default: Any = None, **_: Any) -> Any:  # noqa: ANN401
         if self.fail:
             raise RuntimeError("etcd unavailable")
         return {"frontend": {"publicEndpoint": FRONTEND}}
@@ -66,7 +66,7 @@ class InMemoryBlobStore:
             raise RuntimeError("mongo timeout")
         return {v: {"documentId": f"doc-{v}"} for v in vrids if v in self.records}
 
-    async def get_record_from_storage(self, virtual_record_id: str, org_id: str, lookup_result: Any = None) -> dict | None:
+    async def get_record_from_storage(self, virtual_record_id: str, org_id: str, lookup_result: Any = None) -> dict | None:  # noqa: ANN401
         self.downloads.append((virtual_record_id, lookup_result))
         rec = self.records.get(virtual_record_id)
         return None if rec is None else {**rec, "block_containers": {
@@ -88,7 +88,7 @@ class InMemoryTypeDocs:
         self.docs = docs
         self.batches: list[tuple[str, list[str]]] = []
 
-    async def get_nodes_by_field_in(self, collection: str, field: str, values: list[str], **_: Any) -> list[dict]:
+    async def get_nodes_by_field_in(self, collection: str, field: str, values: list[str], **_: Any) -> list[dict]:  # noqa: ANN401
         self.batches.append((collection, list(values)))
         return [{**d, "id": k} for k, d in self.docs.get(collection, {}).items() if k in values]
 
@@ -96,22 +96,22 @@ class InMemoryTypeDocs:
         return self.docs.get(collection, {}).get(document_key)
 
 
-def text(i: int, data: str, **extra: Any) -> dict[str, Any]:
+def text(i: int, data: str, **extra: Any) -> dict[str, Any]:  # noqa: ANN401
     return {"index": i, "type": "text", "data": data, **extra}
 
 
-def blob(vrid: str, blocks: list[dict], groups: list[dict] | None = None, **fields: Any) -> dict[str, Any]:
+def blob(vrid: str, blocks: list[dict], groups: list[dict] | None = None, **fields: Any) -> dict[str, Any]:  # noqa: ANN401
     return {"virtual_record_id": vrid, "block_containers": {"blocks": blocks, "block_groups": groups or []}, **fields}
 
 
-def graph_record(key: str, **fields: Any) -> dict[str, Any]:
+def graph_record(key: str, **fields: Any) -> dict[str, Any]:  # noqa: ANN401
     return {"_key": key, "recordName": f"{key}.pdf", "recordType": "FILE", "origin": "CONNECTOR",
             "connectorName": "DRIVE", "connectorId": "conn-1", "version": 1,
             "webUrl": f"https://drive.test/{key}", "mimeType": "application/pdf", **fields}
 
 
 def hit(vrid: str, index: int | None = None, *, group: bool = False, score: float = 0.5,
-        content: str = "", **meta: Any) -> dict:
+        content: str = "", **meta: Any) -> dict:  # noqa: ANN401
     metadata = {"virtualRecordId": vrid, "isBlockGroup": group, **meta}
     if index is not None:
         metadata["blockIndex"] = index
@@ -119,7 +119,7 @@ def hit(vrid: str, index: int | None = None, *, group: bool = False, score: floa
 
 
 async def flatten(store: InMemoryBlobStore, hits: list[dict], vmap: dict | None = None, *,
-                  multimodal: bool = False, graph: Any = None, **kwargs: Any) -> tuple[list[dict], dict]:
+                  multimodal: bool = False, graph: Any = None, **kwargs: Any) -> tuple[list[dict], dict]:  # noqa: ANN401
     vr_to_result: dict[str, Any] = {}
     results = await get_flattened_results(
         hits, store, "org-1", multimodal, vr_to_result, vmap or {}, graph_provider=graph, **kwargs,
@@ -371,12 +371,12 @@ class TestEnhancedMetadataMissingFields:
         assert get_enhanced_metadata({"id": "r1"}, partial, {})["bounding_box"] is None
 
 
-def _record(vrid: str, rid: str, blocks: list[dict], groups: list[dict] | None = None, **fields: Any) -> dict:
+def _record(vrid: str, rid: str, blocks: list[dict], groups: list[dict] | None = None, **fields: Any) -> dict:  # noqa: ANN401
     return {"virtual_record_id": vrid, "id": rid, "frontend_url": FRONTEND, "context_metadata": f"Record ID: {rid}",
             "block_containers": {"blocks": blocks, "block_groups": groups or []}, **fields}
 
 
-def _flat(vrid: str, index: int | None, content: Any, block_type: str = "text", **extra: Any) -> dict:
+def _flat(vrid: str, index: int | None, content: Any, block_type: str = "text", **extra: Any) -> dict:  # noqa: ANN401
     return {"virtual_record_id": vrid, "block_index": index, "content": content, "block_type": block_type,
             "metadata": {}, **extra}
 
@@ -469,7 +469,7 @@ class TestRecordToMessageContent:
         collected: list[dict] = []
         content, _ = record_to_message_content(record, is_multimodal_llm=True, collected_images=collected)
         joined = "".join(p.get("text", "") for p in content)
-        assert "[Table #0]" in joined and "cell" in joined
+        assert "[Table #0: T]" in joined and "cell" in joined
         assert len(collected) == 1
         text_only, _ = record_to_message_content(record)
         assert "cell" in "".join(p.get("text", "") for p in text_only)

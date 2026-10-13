@@ -12,7 +12,7 @@ to touch this file (see the "Prompt consolidation" plan, Part 4).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,7 +67,7 @@ class FakeTool(Tool):
     def parameters(self) -> list[ToolParameter]:
         return self._parameters
 
-    async def execute(self, **kwargs: Any) -> ToolOutput:
+    async def execute(self, **kwargs: object) -> ToolOutput:
         return ToolOutput(success=True, data="ok")
 
 
@@ -496,15 +496,15 @@ class TestFindingInformation:
         ("high_accuracy", "feature", "expected"),
         [
             (None, None, False),
-            ("true", None, True),
-            ("true", "", True),
+            ("true", None, False),
+            ("true", "", False),
             ("true", "false", False),
             (None, "true", True),
             ("false", "TRUE", True),
             (None, "1", False),
         ],
     )
-    def test_keyword_query_rule_follows_its_switch_then_high_accuracy_mode(
+    def test_keyword_query_rule_follows_only_its_own_switch(
         self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
     ) -> None:
         for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("KEYWORD_SEARCH_QUERIES", feature)):
