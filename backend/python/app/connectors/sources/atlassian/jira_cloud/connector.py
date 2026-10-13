@@ -643,9 +643,8 @@ class JiraConnector(BaseConnector):
                     "Keeping the stored members of every group: the Jira user list could not be read in full"
                 )
             else:
+                await self._note_stored_access("groups")
                 groups_members_map = await self._sync_user_groups(jira_users)
-                if groups_members_map is not None:
-                    await self._note_stored_access("groups")
 
             # 5. Resolve project filter, then fetch projects
             projects, raw_projects = await self._fetch_filtered_projects(jira_users)
@@ -662,10 +661,10 @@ class JiraConnector(BaseConnector):
                     "Keeping the stored members of every project role: the group list could not be read in full"
                 )
             else:
-                await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
                 await self._note_stored_access("roles")
-            await self._sync_project_lead_roles(raw_projects, jira_users)
+                await self._sync_project_roles(project_keys_for_roles, jira_users, groups_members_map)
             await self._note_stored_access("leads")
+            await self._sync_project_lead_roles(raw_projects, jira_users)
             # Saving a project replaces its access list, so projects whose scheme could not
             # be read are left as stored; their issues are still synced below.
             readable_projects = [(group, perms) for group, perms in projects if perms is not None]
@@ -675,9 +674,9 @@ class JiraConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
-            await self.data_entities_processor.on_new_record_groups(readable_projects)
             if readable_projects:
                 await self._note_stored_access("projects")
+            await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # 7. Sync issues (incremental via checkpoint), then deletions
             last_sync_time = await self._get_issues_sync_checkpoint()
@@ -1075,28 +1074,36 @@ class JiraConnector(BaseConnector):
     async def _stored_access_at_start(self) -> frozenset[str]:
         """Which kinds of access earlier syncs saved, so a short read must not replace them.
 
-        Each save notes its kind in the ``stored_access`` sync point right after it lands,
-        so a sync cut short after saving groups still counts its groups. A full sync's prep
+        Each kind is noted in the ``stored_access`` sync point just before it is saved, so
+        a sync cut short after saving groups still counts its groups. A full sync's prep
         deletes every sync point along with the stored edges, so after it, and on a first
-        sync, nothing is noted. A connector last synced before these notes existed has only
-        its issues checkpoint, which counts for every kind.
+        sync, nothing is noted. A connector last synced before these notes existed has
+        only its issues checkpoint: every kind counts once, and is noted, so from then on
+        the notes alone decide.
 
-        A read that fails is raised, so the sync stops before any write that replaces
-        stored access. Carrying on could save nothing now and then write the checkpoint,
-        which would make an empty store look like a kept one on the next sync.
+        A read or write that fails is raised, so the sync stops before any write that
+        replaces stored access. Carrying on could save nothing now and then write the
+        checkpoint, which would make an empty store look like a kept one on the next sync.
         """
         noted = await self.issues_sync_point.read_sync_point(STORED_ACCESS_SYNC_POINT)
+        if noted:
+            return frozenset(kind for kind in STORED_ACCESS_KINDS if noted.get(kind))
         checkpoint = await self.issues_sync_point.read_sync_point("issues_global")
         if checkpoint and checkpoint.get("last_sync_time") is not None:
+            await self.issues_sync_point.update_sync_point(
+                STORED_ACCESS_SYNC_POINT, dict.fromkeys(STORED_ACCESS_KINDS, True)
+            )
             return STORED_ACCESS_KINDS
-        return frozenset(kind for kind in STORED_ACCESS_KINDS if (noted or {}).get(kind))
+        return frozenset()
 
     async def _note_stored_access(self, kind: str) -> None:
-        """Note that a save of ``kind`` landed, for ``_stored_access_at_start`` on later syncs."""
-        try:
-            await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
-        except Exception as e:
-            self.logger.warning("⚠️ Could not note the saved %s access: %s", kind, e)
+        """Note, before saving ``kind``, that it is stored, for ``_stored_access_at_start`` later.
+
+        Noted first so that a save is never left without its note: if the note cannot be
+        written the error stops the sync before the save, and a save that fails after it
+        only makes a later short read hold back, which keeps access rather than dropping it.
+        """
+        await self.issues_sync_point.update_sync_point(STORED_ACCESS_SYNC_POINT, {kind: True})
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, int], project_count: int) -> None:
         """
