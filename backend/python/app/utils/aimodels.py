@@ -1480,11 +1480,15 @@ _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
 _BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
 
 # OpenAI's closed GPT-5+ models on Bedrock (GPT-5.x, GPT-6 Sol/Luna/Astra).
-# Bedrock IDs are dot-delimited (``us.openai.gpt-6-luna``) so the prefix must
-# also allow ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50``
-# and mid-token names like ``my-gpt-5-compatible``. The major is a single
-# digit on purpose; ``gpt-oss`` never matches.
-_BEDROCK_OPENAI_GPT_RE = re.compile(r"(?:^|[./])gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+# Bedrock IDs are dot-delimited (``us.openai.gpt-6-luna``), so the name must be
+# bare, follow a ``/`` (an inference-profile ARN), or sit under the ``openai.``
+# namespace -- another provider's ``amazon.gpt-6-model`` is not OpenAI. A
+# substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and mid-token names
+# like ``my-gpt-5-compatible``. The major is a single digit on purpose;
+# ``gpt-oss`` never matches.
+_BEDROCK_OPENAI_GPT_RE = re.compile(
+    r"(?:^|/|\bopenai\.)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE,
+)
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {

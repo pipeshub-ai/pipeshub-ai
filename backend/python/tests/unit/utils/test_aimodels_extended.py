@@ -287,6 +287,8 @@ class TestGetGeneratorModelBedrock:
             "global.openai.gpt-6-sol",
             "global.openai.gpt-6-astra",
             "openai.gpt-6.1-sol",
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/gpt-6-luna",
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.openai.gpt-6-luna",
         ):
             assert _bedrock_is_openai_gpt(model_id), model_id
             assert _detect_bedrock_provider(model_id) == "openai", model_id
@@ -295,6 +297,9 @@ class TestGetGeneratorModelBedrock:
         assert not _bedrock_is_openai_gpt("amazon.gpt-50-future")
         assert not _bedrock_is_openai_gpt("vendor.my-gpt-5-compatible")
         assert not _bedrock_is_openai_gpt("vendor.my-gpt-6-compatible")
+        assert not _bedrock_is_openai_gpt("amazon.gpt-6-model")
+        assert not _bedrock_is_openai_gpt("us.amazon.gpt-5.6-model")
+        assert _detect_bedrock_provider("amazon.gpt-6-model") == "amazon"
         assert not _bedrock_is_openai_gpt("vendor.gpt5-model")
         assert not _bedrock_is_openai_gpt("openai.gpt-oss-120b-1:0")
         assert _detect_bedrock_provider("amazon.gpt-50-future") == "amazon"
