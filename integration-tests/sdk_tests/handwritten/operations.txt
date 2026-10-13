@@ -13,3 +13,9 @@ deleteConversationById
 updateConversationTitle
 archiveConversation
 unarchiveConversation
+uploadRecords
+streamRecordBuffer
+updateRecord
+moveRecord
+reindexRecord
+deleteRecord
