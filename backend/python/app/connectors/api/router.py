@@ -5759,8 +5759,18 @@ async def update_connector_instance_config(
                 # instance's own endpoints), as the auth-only save does.
                 saved_auth = new_config.get(OAuthConfigKeys.AUTH) or {}
                 if shared_oauth_config:
-                    authorize_url = shared_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "") or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
-                    token_url = shared_oauth_config.get(AuthFieldKeys.TOKEN_URL, "") or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                    # The app's own values first, as sign-in and token refresh read them.
+                    app_config = shared_oauth_config.get(OAuthConfigKeys.CONFIG) or {}
+                    authorize_url = (
+                        app_config.get(AuthFieldKeys.AUTHORIZE_URL)
+                        or shared_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+                        or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
+                    )
+                    token_url = (
+                        app_config.get(AuthFieldKeys.TOKEN_URL)
+                        or shared_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                        or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
+                    )
                 elif auth_type == AuthType.OAUTH and not saved_auth.get(OAuthConfigKeys.OAUTH_CONFIG_ID):
                     authorize_url = saved_auth.get(AuthFieldKeys.AUTHORIZE_URL) or registry_oauth_config.get(AuthFieldKeys.AUTHORIZE_URL, "")
                     token_url = saved_auth.get(AuthFieldKeys.TOKEN_URL) or registry_oauth_config.get(AuthFieldKeys.TOKEN_URL, "")
@@ -9188,6 +9198,10 @@ async def _create_or_update_oauth_config(
                             # Update field if value is provided (including empty strings for clearing)
                             if value is not None:
                                 oauth_cfg[OAuthConfigKeys.CONFIG][field_name] = value
+                                # The app's top-level provider URLs, which some readers use,
+                                # follow a new value; the fill-in below keeps an existing one.
+                                if value and field_name in (AuthFieldKeys.AUTHORIZE_URL, AuthFieldKeys.TOKEN_URL):
+                                    oauth_cfg[field_name] = value
                             # If value is None and field exists, keep existing value
 
                         # Ensure OAuth infrastructure fields (prefer config URLs, then registry)

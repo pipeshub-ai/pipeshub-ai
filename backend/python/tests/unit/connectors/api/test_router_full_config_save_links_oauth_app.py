@@ -649,3 +649,60 @@ class TestTheConnectorAndItsAppAgree:
         auth = store.values[CONFIG_PATH]["auth"]
         assert "clientSecret" not in auth
         assert "client_secret" not in auth
+
+
+NEW_SN_URLS = {
+    "authorizeUrl": "https://acme-new.service-now.com/oauth_auth.do",
+    "tokenUrl": "https://acme-new.service-now.com/oauth_token.do",
+}
+
+
+def _linked_servicenow_store(top_level_urls: dict[str, str]) -> InMemoryConfigService:
+    app = {
+        "_id": "sn-app",
+        "orgId": ORG_ID,
+        "oauthInstanceName": "ServiceNow app",
+        "connectorType": "ServiceNow",
+        **top_level_urls,
+        "config": {**SN_URLS, "clientId": "sn-client", "clientSecret": "sn-secret"},
+    }
+    return InMemoryConfigService(
+        {
+            CONFIG_PATH: {
+                "auth": {"connectorScope": "team", "oauthConfigId": "sn-app", **SN_URLS, "clientId": "sn-client"}
+            },
+            SERVICENOW_APPS_PATH: [app],
+        }
+    )
+
+
+@pytest.mark.asyncio
+class TestNewProviderUrlsForTheNamedServiceNowApp:
+    @pytest.mark.parametrize("old_top_level", ["instance", "placeholder"])
+    async def test_new_urls_reach_the_app_and_the_connector_and_stay_there(self, old_top_level: str) -> None:
+        top_level = (
+            {key: SN_URLS[key] for key in ("authorizeUrl", "tokenUrl")}
+            if old_top_level == "instance"
+            else router_module._placeholder_oauth_urls("ServiceNow")
+        )
+        store = _linked_servicenow_store(top_level)
+
+        await _save(
+            store, {"auth": {"oauthConfigId": "sn-app", **NEW_SN_URLS}}, connector_type="ServiceNow"
+        )
+
+        def check() -> None:
+            (app,) = store.values[SERVICENOW_APPS_PATH]
+            auth = store.values[CONFIG_PATH]["auth"]
+            for key, url in NEW_SN_URLS.items():
+                assert app["config"][key] == url
+                assert app[key] == url
+                assert auth[key] == url
+
+        check()
+
+        # Saved again as GET returns it: the app stays on the new host.
+        sent = router_module._config_for_response(store.values[CONFIG_PATH], frozenset({"clientSecret"}))
+        await _save(store, {"auth": sent["auth"]}, connector_type="ServiceNow")
+
+        check()
