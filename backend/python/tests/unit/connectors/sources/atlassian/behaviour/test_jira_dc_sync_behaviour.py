@@ -1403,3 +1403,54 @@ class TestUnfinishedUserRead:
         await connector._fetch_users()
 
         assert connector._user_read_unfinished is unfinished
+
+    async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding back would leave everyone without access.
+        access = self._access(db)
+        assert access["devs"] == ["alice@example.com"]
+        assert access["developers"] == ["alice@example.com"]
+        assert access["lead"] == []
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in access["project"], (
+            "the grants that were read are saved"
+        )
+
+    async def test_a_full_sync_with_a_short_user_read_saves_what_was_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+
+        # A full sync's prep deletes the sync points and every stored grant before the connector runs.
+        store.sync_points.clear()
+        db.groups_saved.clear()
+        db.app_roles.clear()
+        db.record_group_permissions.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        access = self._access(db)
+        assert access["devs"] == ["alice@example.com"]
+        assert access["developers"] == ["alice@example.com"]
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in access["project"]
+
+    async def test_a_failed_lookup_after_the_user_list_is_refused_outright_still_fails_closed(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+
+        jira.on("GET", f"{API}/user/list", json_response({"errorMessages": ["denied"]}, status=403))
+        jira.on("GET", f"{API}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert db.groups_saved["devs"] == [], "a refused user list is not kept open by a lookup that failed"
