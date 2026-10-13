@@ -39,13 +39,13 @@ jobs:
         run: |
           git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
+          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed TypeScript files:"
             echo "$CHANGED_FILES"
             RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
             cd backend/nodejs/apps
-            echo "$RELATIVE_FILES" | xargs npx eslint || echo "::warning::ESLint found linting issues (non-fatal)"
+            echo "$RELATIVE_FILES" | xargs npx eslint
           else
             echo "No TypeScript files changed in backend, skipping ESLint."
           fi
@@ -141,7 +141,7 @@ jobs:
             echo "$CHANGED_FILES"
             echo "---"
             cd backend/python
-            echo "$CHANGED_FILES" | xargs ruff check || echo "::warning::Ruff found linting issues (non-fatal)"
+            echo "$CHANGED_FILES" | xargs ruff check
           else
             echo "No Python files changed, skipping ruff."
           fi
