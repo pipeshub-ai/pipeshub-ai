@@ -64,7 +64,9 @@ from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
+from app.utils import indexing_timing as timing
 from app.utils.cpu_offload import offload_if_large
+from app.utils.loop_lag_monitor import LoopLagMonitor, loop_lag_monitor_from_env
 from app.utils.request_context import (
     context_from_envelope,
     reset_context,
@@ -187,6 +189,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # One renewer for every lease this process holds, started on the
         # worker loop beside the records it guards (see lease.LeaseRenewer).
         self.lease_renewer: LeaseRenewer | None = None
+        self.loop_lag_monitor: LoopLagMonitor | None = None
         self.message_handler: IndexingMessageHandler | None = None
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
@@ -423,12 +426,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     interval_seconds=messaging_env.concurrency_renew_interval_seconds,
                 )
                 self.worker_loop.call_soon(self.lease_renewer.start)
+            self.loop_lag_monitor = loop_lag_monitor_from_env(self.logger, "indexing-worker")
+            if self.loop_lag_monitor is not None:
+                self.worker_loop.call_soon(self.loop_lag_monitor.start)
             # Set from inside the loop, not before run_forever(): initialize()
             # checks is_running() as soon as this fires.
             self.worker_loop.call_soon(self.worker_loop_ready.set)
             try:
                 self.worker_loop.run_forever()
             finally:
+                if self.loop_lag_monitor is not None:
+                    self.loop_lag_monitor.stop()
                 pending = asyncio.all_tasks(self.worker_loop)
                 for task in pending:
                     task.cancel()
@@ -2458,6 +2466,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # lease limit and the lease pool name all have to agree on that.
         index_tier = concurrency.dispatch_tier(self, parsed_message)
         index_lease_pool = concurrency.index_lease_pool(index_tier)
+        # Set where an exit is neither a success nor a failure; the
+        # timing summary falls back to indexing_complete/shutting_down.
+        outcome: str | None = None
+        timeline, timeline_token = timing.begin_record(
+            parsed_message.payload.get("recordId"),
+            parsed_message.eventType,
+            index_tier.value,
+        )
 
         try:
             # The active-pipeline bound. Without this outer permit, parsed
@@ -2465,6 +2481,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # every one can remain IN_PROGRESS in the DB.
             index_admission = await concurrency.acquire_index_slot(self, index_tier)
             indexing_held = True
+            timeline.mark(timing.ADMITTED)
             if waiter_token is not None:
                 waiter_token.admit()
 
@@ -2472,24 +2489,31 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # Taken only once the local permit is held: stale-record
                 # recovery reads this lease as proof of active processing, so
                 # a task still queued on the gate must not own one.
-                if not await self._acquire_distributed_slot(
-                    index_lease_pool,
-                    lease_owner,
-                    concurrency.index_ceiling(self, index_tier),
-                    leases=distributed_leases,
-                ):
+                with timing.stage("lease.index"):
+                    index_lease_held = await self._acquire_distributed_slot(
+                        index_lease_pool,
+                        lease_owner,
+                        concurrency.index_ceiling(self, index_tier),
+                        leases=distributed_leases,
+                    )
+                if not index_lease_held:
+                    # Capacity leases only give up when self.running flips.
+                    outcome = "stopped"
                     return False
                 lease_handle, renewal_task = concurrency.start_lease_guard(
                     self, lease_owner
                 )
 
-                if not await self._acquire_distributed_slot(
-                    record_pool,
-                    lease_owner,
-                    1,
-                    deadline_seconds=messaging_env.record_lease_wait_seconds,
-                    leases=distributed_leases,
-                ):
+                with timing.stage("lease.record"):
+                    record_lease_held = await self._acquire_distributed_slot(
+                        record_pool,
+                        lease_owner,
+                        1,
+                        deadline_seconds=messaging_env.record_lease_wait_seconds,
+                        leases=distributed_leases,
+                    )
+                if not record_lease_held:
+                    outcome = "contended" if self.running else "stopped"
                     if self.running:
                         self.logger.debug(
                             "Record lease contended for %s; another in-flight "
@@ -2528,6 +2552,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                     and not parsing_held
                                 ):
                                     parse_tier = event.data.tier if event.data else None
+                                    timeline.mark(timing.PARSE_REQUESTED)
                                     if self.governor is not None:
                                         parse_lease_pool = concurrency.parse_lease_pool(parse_tier)
                                     # Node-local gate first, cluster lease
@@ -2572,10 +2597,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         # burning a retry attempt.
                                         shutting_down = True
                                         return
+                                    timeline.mark(timing.PARSE_ADMITTED)
                                 elif (
                                     event.event == IndexingEvent.PARSING_COMPLETE
                                     and parsing_held
                                 ):
+                                    timeline.mark(timing.PARSED)
                                     distributed_leases.discard(parse_lease_pool)
                                     await self._release_distributed_slot(
                                         parse_lease_pool, lease_owner
@@ -2681,6 +2708,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         except concurrency.ParseAdmissionTimeout as e:
             # Queue time, not a failure: hand the record back with no attempt
             # counted, so a queue behind long parses cannot dead-letter it.
+            outcome = "requeued"
             self.logger.warning(
                 "%s waited %.0fs for a %s parse slot without being admitted; "
                 "re-queuing without counting an attempt",
@@ -2811,39 +2839,53 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # process.
             if record_claim_held:
                 self._release_record(record_lock_id)
-            if renewal_task is not None:
-                renewal_task.cancel()
-                await asyncio.gather(renewal_task, return_exceptions=True)
-            # Before the releases below, not after: every one of them awaits,
-            # so a cancellation landing in this block would skip the
-            # unregister and leave the renewer refreshing this owner's leases
-            # forever. Unregistering first means the worst case is a lease
-            # that outlives the record until its TTL expires, which is what
-            # the TTL is for.
-            if self.lease_renewer is not None:
-                self.lease_renewer.unregister(lease_owner)
-            # Leases lost to the renewal deadline are gone from Redis
-            # already; releasing them is doomed traffic against a Redis that
-            # is still failing, and it arrives from every record at once.
-            release_leases = not (
-                lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
-            )
-            if not release_leases:
-                self.logger.debug(
-                    "Skipping distributed lease release for %s: leases expired with the renewal deadline",
-                    lease_owner,
+            try:
+                if renewal_task is not None:
+                    renewal_task.cancel()
+                    await asyncio.gather(renewal_task, return_exceptions=True)
+                # Before the releases below, not after: every one of them awaits,
+                # so a cancellation landing in this block would skip the
+                # unregister and leave the renewer refreshing this owner's leases
+                # forever. Unregistering first means the worst case is a lease
+                # that outlives the record until its TTL expires, which is what
+                # the TTL is for.
+                if self.lease_renewer is not None:
+                    self.lease_renewer.unregister(lease_owner)
+                # Leases lost to the renewal deadline are gone from Redis
+                # already; releasing them is doomed traffic against a Redis that
+                # is still failing, and it arrives from every record at once.
+                release_leases = not (
+                    lease_handle is not None and getattr(lease_handle, "lost_to_deadline", False)
                 )
-            if parsing_held:
-                if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
-                    await self._release_distributed_slot(parse_lease_pool, lease_owner)
-                concurrency.release_admission(parsing_admission)
-                parsing_admission = None
-            if indexing_held:
-                if distributed_leases.discard(index_lease_pool) is not None and release_leases:
-                    await self._release_distributed_slot(index_lease_pool, lease_owner)
-                concurrency.release_admission(index_admission)
+                if not release_leases:
+                    self.logger.debug(
+                        "Skipping distributed lease release for %s: leases expired with the renewal deadline",
+                        lease_owner,
+                    )
+                if parsing_held:
+                    if distributed_leases.discard(parse_lease_pool) is not None and release_leases:
+                        await self._release_distributed_slot(parse_lease_pool, lease_owner)
+                    concurrency.release_admission(parsing_admission)
+                    parsing_admission = None
+                if indexing_held:
+                    if distributed_leases.discard(index_lease_pool) is not None and release_leases:
+                        await self._release_distributed_slot(index_lease_pool, lease_owner)
+                    concurrency.release_admission(index_admission)
 
-            for pool, owner in distributed_leases.snapshot():
-                distributed_leases.discard(pool)
-                if release_leases:
-                    await self._release_distributed_slot(pool, owner)
+                for pool, owner in distributed_leases.snapshot():
+                    distributed_leases.discard(pool)
+                    if release_leases:
+                        await self._release_distributed_slot(pool, owner)
+            finally:
+                # After the releases, so slow cleanup counts toward the hold;
+                # in a finally, so a release that raises or is cancelled
+                # still leaves a summary.
+                timeline.mark(timing.RELEASED)
+                timing.end_record(
+                    timeline,
+                    timeline_token,
+                    outcome=outcome or (
+                        "ok" if indexing_complete else ("stopped" if shutting_down else "failed")
+                    ),
+                    logger=self.logger,
+                )

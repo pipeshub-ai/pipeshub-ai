@@ -936,6 +936,117 @@ class TestNormalizeBracketRefs:
         assert "[[source]" not in out
 
 
+class TestRefWrappedInsideLinkTarget:
+    """A link whose target is a citation ref wrapped in stray brackets, quotes
+    or a nested link must become one numbered citation, not a link nested in
+    another link's URL."""
+
+    URL1 = _url(REC1, 0)
+    URL2 = _url(REC1, 6)
+
+    def _normalize(self, answer: str) -> tuple[str, list]:
+        docs = [
+            _make_doc(REC1, 0, "intro", block_web_url=self.URL1),
+            _make_doc(REC1, 6, "height row", block_web_url=self.URL2),
+        ]
+        return normalize_citations_and_chunks(
+            answer, docs, records=[], ref_to_url={"ref1": self.URL1, "ref2": self.URL2},
+        )
+
+    def test_bracketed_ref_target_with_mismatched_closer(self) -> None:
+        normalized, cites = self._normalize("He is 1.95 m tall [source]([ref2]].")
+        assert normalized == f"He is 1.95 m tall [1]({self.URL2})."
+        assert len(cites) == 1
+
+    def test_wrapped_ref_targets_become_plain_citations(self) -> None:
+        for target in ("[ref2]", " ref2 ", "<ref2>", "`ref2`", '"ref2"', "(ref2)", "ref2."):
+            normalized, _ = self._normalize(f"Tall [source]({target}).")
+            assert normalized == f"Tall [1]({self.URL2}).", target
+
+    def test_link_nested_as_target(self) -> None:
+        normalized, _ = self._normalize("Tall [source]([source](ref2)).")
+        assert normalized == f"Tall [1]({self.URL2})."
+
+    def test_citation_wrapped_in_outer_brackets(self) -> None:
+        normalized, _ = self._normalize("Tall [[source](ref2)].")
+        assert normalized == f"Tall [1]({self.URL2})."
+
+    def test_mixed_bracketed_ref_list(self) -> None:
+        normalized, cites = self._normalize("Tall [source](ref1, [ref2]).")
+        assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2})."
+        assert len(cites) == 2
+
+    def test_sentence_paren_after_wrapped_ref_is_kept(self) -> None:
+        normalized, _ = self._normalize("Tall (see [source]([ref2])).")
+        assert normalized == f"Tall (see [1]({self.URL2}))."
+
+    def test_punctuation_between_closers_keeps_one_paren(self) -> None:
+        for answer, expected in (
+            ("Tall [source]([ref2].).", f"Tall [1]({self.URL2})."),
+            ("Tall (see [source]([ref2].)).", f"Tall (see [1]({self.URL2}))."),
+            ("Tall [source](<ref2>.).", f"Tall [1]({self.URL2})."),
+        ):
+            normalized, _ = self._normalize(answer)
+            assert normalized == expected, answer
+
+    def test_target_that_only_starts_with_a_ref_is_untouched(self) -> None:
+        for text in ("See [notes](ref2's-page).", 'See [source](ref2 "title").'):
+            assert normalize_malformed_citations(text) == text
+
+    def test_doubly_wrapped_targets_are_fully_unwrapped(self) -> None:
+        for answer in ("Tall [source]([source]([ref2])).", "Tall [[[source](ref2)]]."):
+            normalized, _ = self._normalize(answer)
+            assert normalized == f"Tall [1]({self.URL2}).", answer
+
+    def test_deeply_nested_link_targets_are_fully_unwrapped(self) -> None:
+        normalized, _ = self._normalize("Tall " + "[source](" * 6 + "ref2" + ")" * 6 + ".")
+        assert normalized == f"Tall [1]({self.URL2})."
+
+    def test_deep_outer_brackets_are_fully_unwrapped(self) -> None:
+        normalized, _ = self._normalize("Tall [[[[source](ref2)]]].")
+        assert normalized == f"Tall [1]({self.URL2})."
+
+    def test_mixed_ref_and_link_lists_become_one_citation_each(self) -> None:
+        for answer in (
+            "Tall [source](ref1, [source](ref2)).",
+            "Tall [source]([source](ref1), ref2).",
+            "Tall [source]([source](ref1), [ref2]).",
+            "Tall [source]([ref1], [source](ref2)).",
+            "Tall [source]([source](ref1), [source]([ref2])).",
+        ):
+            normalized, cites = self._normalize(answer)
+            assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2}).", answer
+            assert len(cites) == 2, answer
+
+    def test_wrapper_left_open_at_end_of_line(self) -> None:
+        normalized, _ = self._normalize("Tall [source]([ref2]\nNext line.")
+        assert normalized == f"Tall [1]({self.URL2})\nNext line."
+
+    def test_list_of_links_nested_as_target(self) -> None:
+        normalized, cites = self._normalize("Tall [source]([source](ref1), [source](ref2)).")
+        assert normalized == f"Tall [1]({self.URL1}) [2]({self.URL2})."
+        assert len(cites) == 2
+
+    def test_ref_inside_ordinary_link_url_is_not_rewritten(self) -> None:
+        text = "Read [the notes](/docs/ref2/intro) and [ref2 spec](https://example.com/ref2)."
+        assert normalize_malformed_citations(text) == text
+
+    def test_an_unclosed_link_does_not_hide_refs_on_later_lines(self) -> None:
+        normalized = normalize_malformed_citations("Draft [note](see below\nTall ref2 (approx).")
+        assert normalized.endswith("Tall [source](ref2) (approx).")
+
+    def test_ordinary_links_untouched_next_to_citation(self) -> None:
+        answer = (
+            "See [guide](https://example.com/guide_(v2)) and "
+            "[ref site](https://ref2.xyz.example.com/a) [source](ref1)."
+        )
+        normalized, cites = self._normalize(answer)
+        assert "[guide](https://example.com/guide_(v2))" in normalized
+        assert "[ref site](https://ref2.xyz.example.com/a)" in normalized
+        assert f"[1]({self.URL1})" in normalized
+        assert len(cites) == 1
+
+
 class TestResolveRef:
     def test_ref_resolved_via_mapping(self):
         """Tiny ref present in mapping returns the full URL."""
@@ -2352,3 +2463,27 @@ class TestDeadRefLinksWithNonNumericIds:
         )
         assert "[Refund policy](refund-policy)" in normalized
         assert f"[1]({url})" in normalized
+
+    def test_wrapped_dead_uuid_ref_is_unwrapped_then_stripped(self) -> None:
+        for answer in (
+            f"Fixed later [source]([{self.DEAD}]).",
+            f"Fixed later [source](<{self.DEAD}>).",
+            f"Fixed later [source]([source]({self.DEAD})).",
+            f"Fixed later [[source]({self.DEAD})].",
+            f"Fixed later [source]([{self.DEAD_DIGIT_PREFIX}]).",
+        ):
+            normalized, _ = normalize_citations_and_chunks(answer, [], records=[], ref_to_url={})
+            assert normalized == "Fixed later .", answer
+
+    def test_dead_uuid_ref_in_a_list_with_a_real_ref(self) -> None:
+        url = _url(REC1, 0)
+        docs = [_make_doc(REC1, 0, "release notes", block_web_url=url)]
+        for answer in (
+            f"Shipped [source](ref1, {self.DEAD}).",
+            f"Shipped [source]([source](ref1), [source]({self.DEAD})).",
+        ):
+            normalized, cites = normalize_citations_and_chunks(
+                answer, docs, records=[], ref_to_url={"ref1": url},
+            )
+            assert normalized == f"Shipped [1]({url}) .", answer
+            assert len(cites) == 1

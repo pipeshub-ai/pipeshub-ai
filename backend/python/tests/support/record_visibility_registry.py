@@ -72,6 +72,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "get_records_for_named_entities": (Rule.LIVE, "entity filters and find_records_by_value list these records to users"),
     "filter_nodes_with_permission_role": (
         Rule.LIVE, "the Location trail's ancestor check: a trashed folder ends the trail, unnamed",
     ),
@@ -122,6 +123,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         _STRUCTURE + "; search_entities passes only records the user can open, and the label "
         "repair restores a trashed record's labels too, so a restore shows its own",
+    ),
+    "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_named_entity_mentions_in_records": (
+        Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
     ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",

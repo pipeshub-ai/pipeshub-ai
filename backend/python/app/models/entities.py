@@ -27,7 +27,7 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.utils.jinja_templates import compiled_template
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import format_epoch_ms_for_llm, get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
@@ -320,7 +320,9 @@ class Record(BaseModel):
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
-        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # UTC as before, then the user's local time with its weekday, which
+        # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
+        return format_epoch_ms_for_llm(epoch_ms)
 
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
@@ -1278,8 +1280,22 @@ class CommentRecord(Record):
             **Record.delete_state_from_arango(record_doc),
         )
 
+# How a ticket's source is named beside its own status name ("Status: NEW
+# (Jira: Backlog)"). Only the Jira connectors store `source_status` today.
+_SOURCE_STATUS_LABELS: dict[Connectors, str] = {
+    Connectors.JIRA: "Jira",
+    Connectors.JIRA_PERSONAL: "Jira",
+    Connectors.JIRA_CLOUD_PERSONAL: "Jira",
+    Connectors.JIRA_DATA_CENTER: "Jira",
+    Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+}
+
+
 class TicketRecord(Record):
     status: Status | str | None = None
+    # The status name as the source tool shows it (Jira's "Backlog"), kept
+    # beside `status`, which the value mapper normalises ("Backlog" -> NEW).
+    source_status: str | None = None
     priority: Priority | str | None = None
     type: ItemType | str | None = None
     delivery_status: DeliveryStatus | str | None = None
@@ -1306,7 +1322,7 @@ class TicketRecord(Record):
         specific_lines = []
         if self.status:
             status_val = self.status.value if isinstance(self.status, Enum) else self.status
-            specific_lines.append(f"* Status: {status_val}")
+            specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
@@ -1337,6 +1353,26 @@ class TicketRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def _source_status_suffix(self, status_val: str) -> str:
+        """`` (Jira: Backlog)`` when the source's own status name says more.
+
+        The normalised status alone misleads: Jira's "Backlog" and "To Do" are
+        both stored as NEW, and "In Review" and "Testing" both as QA, so a
+        reader asked for an issue's status would answer "NEW" where Jira says
+        "Backlog". Left out when the two differ only in case or spacing
+        ("In Progress" / IN_PROGRESS).
+        """
+        if not self.source_status:
+            return ""
+
+        def _norm(value: str) -> str:
+            return " ".join(value.replace("_", " ").replace("-", " ").lower().split())
+
+        if _norm(self.source_status) == _norm(status_val):
+            return ""
+        source = _SOURCE_STATUS_LABELS.get(self.connector_name, "source")
+        return f" ({source}: {self.source_status})"
 
     async def to_llm_context_with_live_fields(
         self,
@@ -1371,6 +1407,7 @@ class TicketRecord(Record):
             "_key": self.id,
             "orgId": self.org_id,
             "status": _get_value(self.status),
+            "sourceStatus": self.source_status,
             "priority": _get_value(self.priority),
             "type": _get_value(self.type),
             "deliveryStatus": _get_value(self.delivery_status),
@@ -1441,6 +1478,7 @@ class TicketRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
+            source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
             delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),
@@ -3414,6 +3452,7 @@ class EntityType(str, Enum):
     LANGUAGE = "language"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
+    NAMED_ENTITY = "named_entity"
 
 
 class EntityTypeCategory(str, Enum):
@@ -3456,6 +3495,7 @@ class EntityRecord(BaseModel):
     connector_ids: list[str] = Field(default_factory=list, description="Connector instances that reference this entity; used for targeted disconnect cleanup")
     record_group_ids: list[str] = Field(default_factory=list, description="Record groups (e.g. folders, Jira projects) of records that reference this entity")
     level: str | None = Field(default=None, description="Subcategory level (\"1\", \"2\" or \"3\"); None for every other entity type. Subcategories only resolve against their own level.")
+    kind: str | None = Field(default=None, description="Named-entity kind. Set only for entity_type named_entity.")
 
     @property
     def embedding_text(self) -> str:
@@ -3512,7 +3552,7 @@ class EntityRecord(BaseModel):
         it), matching the records collection's ``VectorChunkPayload`` — see
         ``EntityVectorStore.upsert_entities_batch``.
         """
-        return {
+        payload = {
             "entityId": self.entity_id,
             "entityType": self.entity_type.value,
             "orgId": self.org_id,
@@ -3523,6 +3563,9 @@ class EntityRecord(BaseModel):
             "aliases": self.aliases,
             "level": self.level,
         }
+        if self.kind:
+            payload["kind"] = self.kind
+        return payload
 
 
 # Rebuild models to resolve forward references after all imports are complete

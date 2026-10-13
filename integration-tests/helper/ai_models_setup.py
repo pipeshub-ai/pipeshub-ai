@@ -490,7 +490,7 @@ def _active_embedding_entry(entries: List[Dict[str, Any]]) -> Optional[Dict[str,
 
 
 def _entry_matches(entry: Dict[str, Any], candidate: _ProviderCandidate) -> bool:
-    """Whether ``entry`` embeds with the model ``candidate`` would add.
+    """Whether ``entry`` is the model ``candidate`` would add.
 
     Provider and model only. The list response keeps only the public config keys
     (``AI_PUBLIC_CONFIG_KEYS`` in maskConfigSecrets.ts), so the endpoint and
@@ -656,12 +656,39 @@ def setup_test_llm_model(
     Tries providers in env order (OpenAI, Azure OpenAI, Gemini, Groq) until one
     passes the backend health check. Set ``TEST_AI_MODEL_PROVIDER`` to force one.
 
+    When the org's default LLM already is the wanted model (same provider and
+    model name, with every capability asked for), it is reused and teardown
+    leaves it: the stack's own default
+    stays in place, and a model the provider only accepts with the stack's
+    settings (a reasoning-only deployment) is not added again with others.
+
     Raises ``RuntimeError`` if no provider credentials are available or all fail.
     """
     candidates = _llm_provider_candidates(
         is_reasoning=is_reasoning,
         model_name=model_name,
     )
+    if is_default:
+        configured = list_configured_llm_models(client)
+        default = next((entry for entry in configured if entry.get("isDefault")), None)
+        capable = default is not None and (
+            (not is_reasoning or bool(default.get("isReasoning")))
+            and (not is_multimodal or bool(default.get("isMultimodal")))
+        )
+        if capable and isinstance(default.get("modelKey"), str):
+            for candidate in candidates:
+                if _entry_matches(default, candidate):
+                    logger.info(
+                        "Reusing the org's default LLM: provider=%s model=%s modelKey=%s",
+                        candidate.provider, candidate.model_name, default["modelKey"],
+                    )
+                    return SeededAIModel(
+                        model_type=_DEFAULT_LLM_MODEL_TYPE,
+                        provider=candidate.provider,
+                        model_name=candidate.model_name,
+                        model_key=default["modelKey"],
+                        owned=False,
+                    )
     return _seed_model_with_fallback(
         client,
         candidates=candidates,

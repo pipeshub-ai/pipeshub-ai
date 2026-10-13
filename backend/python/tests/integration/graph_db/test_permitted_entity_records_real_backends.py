@@ -65,6 +65,9 @@ logger = logging.getLogger("permitted-entity-records-it")
 def _keys(org_id: str) -> dict[str, Any]:
     return {
         "topic": f"{org_id}-topic",
+        # Mentioned by a readable and a denied record / by the denied record only.
+        "named_seen": f"{org_id}-ne-seen",
+        "named_hidden": f"{org_id}-ne-hidden",
         "user": f"{org_id}-user",
         "group": f"{org_id}-group",
         "rg": f"{org_id}-rg",
@@ -134,6 +137,18 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
                     "direct": r["direct"], "viaGroup": r["group"], "inherited": r["inherited"],
                     "anyone": r["anyone"], "anyoneOff": r["anyone-off"]},
     )
+    await provider.client.execute_query(
+        """
+        MATCH (direct:Record {id: $direct}), (denied:Record {id: $denied})
+        CREATE (seen:NamedEntity {id: $seen, orgId: $org, kind: 'organization', name: 'Acme', normKey: 'acme'})
+        CREATE (hidden:NamedEntity {id: $hidden, orgId: $org, kind: 'organization', name: 'Initech', normKey: 'initech'})
+        CREATE (direct)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(seen)
+        CREATE (denied)-[:MENTIONS_ENTITY {orgId: $org, mentionCount: 1, createdAtTimestamp: 1}]->(hidden)
+        """,
+        parameters={"org": org_id, "direct": r["direct"], "denied": r["denied"],
+                    "seen": keys["named_seen"], "hidden": keys["named_hidden"]},
+    )
 
 
 async def _close_neo4j(provider: Neo4jProvider, org_id: str) -> None:
@@ -202,11 +217,27 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         {"file_key": r["anyone"], "organization": org_id, "active": True},
         {"file_key": r["anyone-off"], "organization": org_id, "active": False},
     ])
+    await _insert(provider, CollectionNames.NAMED_ENTITIES.value, [
+        {"_key": keys["named_seen"], "orgId": org_id, "kind": "organization", "name": "Acme", "normKey": "acme"},
+        {"_key": keys["named_hidden"], "orgId": org_id, "kind": "organization", "name": "Initech",
+         "normKey": "initech"},
+    ])
+    named = CollectionNames.NAMED_ENTITIES.value
+    await _insert(provider, CollectionNames.MENTIONS_ENTITY.value, [
+        {"_from": f"records/{source}", "_to": f"{named}/{target}", "orgId": org_id,
+         "mentionCount": 1, "createdAtTimestamp": 1}
+        for source, target in (
+            (r["direct"], keys["named_seen"]),
+            (r["denied"], keys["named_seen"]),
+            (r["denied"], keys["named_hidden"]),
+        )
+    ])
 
 
 async def _close_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
     edge_cleanup = {
         CollectionNames.BELONGS_TO_TOPIC.value: "e._from",
+        CollectionNames.MENTIONS_ENTITY.value: "e._from",
         CollectionNames.PERMISSION.value: "e._from",
         CollectionNames.INHERIT_PERMISSIONS.value: "e._from",
     }
@@ -219,6 +250,7 @@ async def _close_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
     for collection in (
         CollectionNames.TOPICS.value, CollectionNames.RECORDS.value, CollectionNames.USERS.value,
         CollectionNames.GROUPS.value, CollectionNames.RECORD_GROUPS.value,
+        CollectionNames.NAMED_ENTITIES.value,
     ):
         await provider.http_client.execute_aql(
             f"FOR d IN {collection} FILTER d.orgId == @org REMOVE d IN {collection}", {"org": org_id},
@@ -333,6 +365,24 @@ class TestThroughThePermissionLayer:
         assert [h.entity_id for h in hits] == [keys["topic"]]
         assert [r["_key"] for r in hits[0].records] == [keys["records"][n] for n in READABLE[:3]]
         assert hits[0].more_records is True
+
+    async def test_search_hides_named_entities_only_unreadable_records_mention(self, backend) -> None:
+        provider, org_id = backend
+        keys = _keys(org_id)
+        store = MagicMock()
+        store.search_entities_passes = AsyncMock(side_effect=lambda q, org, passes, **kw: [
+            [
+                {"entityId": keys["named_hidden"], "entityType": "named_entity", "name": "Initech", "score": 0.95},
+                {"entityId": keys["named_seen"], "entityType": "named_entity", "name": "Acme", "score": 0.9},
+            ],
+            *([] for _ in passes[1:]),
+        ])
+        hits = await search_entities_for_user(
+            store, provider, _context(org_id), "acme", entity_types=["named_entity"], kinds=["organization"],
+        )
+        assert [h.entity_id for h in hits] == [keys["named_seen"]]
+        assert [r["_key"] for r in hits[0].records] == [keys["records"]["direct"]]
+        assert store.search_entities_passes.await_args.kwargs["kinds"] == ["organization"]
 
     async def test_listing_returns_the_readable_records_with_a_cursor(self, backend) -> None:
         provider, org_id = backend

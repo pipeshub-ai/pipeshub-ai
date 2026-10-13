@@ -2567,7 +2567,7 @@ class TestFetchGroupsEdgeCases:
         _, members = user_groups[0]
         assert bob_user in members
 
-    async def test_get_group_api_failure(self, connector):
+    async def test_get_group_api_failure_keeps_stored_members(self, connector):
         connector.sync_filters = MagicMock()
         connector._is_group_allowed_by_filter = MagicMock(return_value=True)
 
@@ -2581,9 +2581,8 @@ class TestFetchGroupsEdgeCases:
 
         record_groups, user_groups = await connector._fetch_groups({})
         assert len(record_groups) == 1
-        assert len(user_groups) == 1
-        _, members = user_groups[0]
-        assert len(members) == 0
+        # Saving the group would replace its stored members with none.
+        assert user_groups == []
 
     async def test_non_list_groups_data(self, connector):
         connector.sync_filters = MagicMock()

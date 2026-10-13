@@ -179,6 +179,10 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Opt-in measurement surface for evaluation clients: streams CUSTOM
+    # `retrieval_context` frames naming the records and blocks that reached
+    # the model, plus a `run_usage` frame. No effect on the answer.
+    includeRetrievalContext: bool = False
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
     # both assistant and agent runs) can target it.
@@ -4064,6 +4068,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "webSearchConfig": web_search_tool_config,
                     "attachments": chat_query.attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
+                    "includeRetrievalContext": chat_query.includeRetrievalContext,
                     "runId": chat_query.runId,
                 }
 

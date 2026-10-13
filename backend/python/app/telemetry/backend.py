@@ -10,7 +10,13 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Protocol, Sequence
 
-from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, generate_latest
+from prometheus_client import (
+    CollectorRegistry,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 
 class CounterHandle(Protocol):

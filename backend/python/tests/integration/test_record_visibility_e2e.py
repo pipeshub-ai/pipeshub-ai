@@ -67,6 +67,11 @@ from app.connectors.sources.github_teams.models import blob_external_id
 from app.connectors.sources.github_teams.repos import ReposSync
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord, RecordType
+from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.models import Mention, NamedEntity
+from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
+from app.modules.named_entities.keys import named_entity_key
+from app.modules.named_entities.resolution import ResolvedEntity
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -484,6 +489,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
+    "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -628,6 +634,29 @@ async def test_permitted_entity_records(world: _World) -> None:
     )
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert list(got[("record", world.ids["trashed"])]) == []
+
+
+async def test_named_entity_records(world: _World) -> None:
+    g = world.graph
+    entity = NamedEntity(
+        kind=EntityKind.ORGANIZATION, display_name="Globex", norm_key="globex",
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Globex", extractor="agent")],
+    )
+    key = named_entity_key(world.org_id, entity.kind.value, entity.norm_key)
+    writer = NamedEntityGraphWriter(g, GraphDataStore(logger, g), logger)
+    try:
+        for name in ("live", "trashed"):
+            await writer.write(
+                world.org_id, world.ids[name], [ResolvedEntity(entity=entity, graph_key=key)],
+            )
+        got = await g.get_records_for_named_entities(world.org_id, entity_ids=[key])
+        assert {hit["recordId"] for hit in got["hits"]} == {world.ids["live"]}
+        # The trash stays reachable from the record itself: it is graph structure, not a listing.
+        assert [row["name"] for row in await g.get_named_entities_for_record(world.ids["trashed"])] == ["Globex"]
+    finally:
+        for name in ("live", "trashed"):
+            await writer.clear_for_record(world.ids[name])
+        await g.delete_orphan_named_entities(world.org_id)
 
 
 @pytest.mark.parametrize("grant", ["app", "role"])

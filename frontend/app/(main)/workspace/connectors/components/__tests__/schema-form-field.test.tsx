@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach, beforeAll, afterAll } from 'vitest';
 import { screen, fireEvent, cleanup, waitFor } from '@testing-library/react';
+import { Theme } from '@radix-ui/themes';
 import '@/lib/__tests__/test-i18n';
 
 // Icons render their ligature name as text, which would leak into accessible names.
@@ -76,6 +77,28 @@ describe('SchemaFormField: secrets', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide password' }));
     expect(input.type).toBe('password');
+  });
+
+  it('shows the value once the form reveals it and masks it again when the reveal ends', () => {
+    const onChange = vi.fn<ChangeFn>();
+    const view = renderInTheme(
+      <SchemaFormField field={secretField} value="tok_live_123" onChange={onChange} revealed={false} />
+    );
+    expect(inputByLabel('API token').type).toBe('password');
+
+    view.rerender(
+      <Theme>
+        <SchemaFormField field={secretField} value="tok_live_123" onChange={onChange} revealed />
+      </Theme>
+    );
+    expect(inputByLabel('API token').type).toBe('text');
+
+    view.rerender(
+      <Theme>
+        <SchemaFormField field={secretField} value="" onChange={onChange} revealed={false} />
+      </Theme>
+    );
+    expect(inputByLabel('API token').type).toBe('password');
   });
 
   it('does not write the secret to the console while typing it', () => {

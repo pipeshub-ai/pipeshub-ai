@@ -568,10 +568,12 @@ class TestAFailedReadNeitherDropsNorStartsTheResume:
             reads=[owed, RuntimeError("db blip"), owed],
         )
         assert not _asked_to_raise(graph, 1)
+        # The prep runs in full: it deletes sync points. Since #4119 it no longer
+        # deletes edges up front; the full sync unlinks what it missed at the end.
         graph.delete_sync_points_by_connector_id.assert_awaited_once()
-        graph.delete_connector_sync_edges.assert_awaited_once()
+        graph.delete_connector_sync_edges.assert_not_awaited()
         coordinator.spawn.assert_awaited_once()
-        # Consumed, so the next sync does not delete sync points and edges again.
+        # Consumed, so the next sync does not run the full-sync prep again.
         assert {_FULL: False} in [c.args[2] for c in graph.update_node.await_args_list]
 
     @pytest.mark.asyncio

@@ -5,6 +5,8 @@ import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
+  assignAgentCapabilitiesToPayload,
+  assignRetrievalContextToPayload,
   createConversation,
   getAllConversations,
   getConversationById,
@@ -8063,6 +8065,58 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
+  // search - the query is free text, like a chat question
+  // -----------------------------------------------------------------------
+  describe('search (query in angle brackets)', () => {
+    it('passes a query containing <id> to the search service unchanged', async () => {
+      const handler = search(createMockAppConfig())
+      const query = 'cite [Summary of <id>]'
+
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: [], records: [] },
+      } as any)
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
+        _id: new mongoose.Types.ObjectId(),
+      } as any)
+
+      const req = createMockRequest({
+        body: { query, limit: 5 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(executeStub.calledOnce).to.be.true
+      const sent = JSON.parse((executeStub.firstCall.thisValue as any).body)
+      expect(sent.query).to.equal(query)
+    })
+
+    it('still refuses format specifiers in the query', async () => {
+      const handler = search(createMockAppConfig())
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
+
+      const req = createMockRequest({
+        body: { query: 'show %n records' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // shareConversationById - invalid user ID format
   // -----------------------------------------------------------------------
   describe('shareConversationById (invalid user ID format)', () => {
@@ -13989,4 +14043,35 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+})
+
+describe('assignRetrievalContextToPayload', () => {
+  it('forwards the flag when true', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: true })
+    expect(payload.includeRetrievalContext).to.equal(true)
+  })
+
+  it('omits the key entirely when absent or false', () => {
+    for (const body of [{}, { includeRetrievalContext: false }]) {
+      const payload: Record<string, unknown> = {}
+      assignRetrievalContextToPayload(payload, body)
+      expect(payload).to.not.have.property('includeRetrievalContext')
+    }
+  })
+
+  it('ignores non-boolean truthy values', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: 'yes' })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
+
+  it('is independent of agentCapabilities forwarding', () => {
+    // Regression: this used to live inside assignAgentCapabilitiesToPayload,
+    // which streamChat only calls in agent mode — so `internal_search`, the
+    // mode evaluations measure, silently never received the flag.
+    const payload: Record<string, unknown> = {}
+    assignAgentCapabilitiesToPayload(payload, { includeRetrievalContext: true })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
 })

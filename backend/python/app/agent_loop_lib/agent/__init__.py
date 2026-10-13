@@ -29,6 +29,7 @@ from app.agent_loop_lib.core.messages import (
     ThinkingPart,
     ToolMessage,
     UserMessage,
+    add_loop_note,
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
@@ -78,6 +79,13 @@ def _content_to_json(content: Any) -> str:
 
 
 _PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+_FINAL_ANSWER_NOTE = (
+    "[loop: You have reached the maximum number of steps for this request. "
+    "Do not call any more tools. Reply now with your final answer to the "
+    "user's question, using only the information you have already gathered. "
+    "If something could not be determined, say so briefly.]"
+)
 
 
 def _tool_result_content_to_message_content(content: Any) -> str | list[Part]:
@@ -639,7 +647,9 @@ class Agent:
         `final_answer_only=True` is the wrap-up turn after `max_turns` (see
         `loops.py::_finish_after_max_turns`): only calls to tools that end
         the run are executed (see `_drop_non_terminal_tool_calls`), so the
-        reply's text or a terminal call is the answer. A failed model call
+        reply's text or a terminal call is the answer. The request for that
+        answer rides on the latest tool result's loop footer, this call's
+        copy only (see `add_loop_note`). A failed model call
         or a reply with no answer returns `continue` instead of failing the
         run, so the caller can fall back to what it already has.
         """
@@ -696,6 +706,8 @@ class Agent:
         messages = await hooks.dispatch_pre_model(
             self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )
+        if final_answer_only:
+            add_loop_note(messages, _FINAL_ANSWER_NOTE)
 
         cut_off_parts = self._cut_off_reply_parts()
 

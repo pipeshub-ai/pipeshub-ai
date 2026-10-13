@@ -309,6 +309,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {
@@ -2707,6 +2717,44 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
+        """Each list-item hit expands to its whole list; a second hit on the same
+        list must not add a duplicate unit that takes another ranked slot."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.9), (1, "ItemB", 0.8))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert [r.get("block_group_index") for r in results] == [0]
+
+    @pytest.mark.asyncio
+    async def test_a_list_hit_twice_keeps_its_best_score(self) -> None:
+        """/search flattens before it sorts, and its query batches are not in score order."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.4), (1, "ItemB", 0.9))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+
+    @pytest.mark.asyncio
     async def test_one_unreadable_record_does_not_fail_the_rest(self):
         """A storage 404 for one hit must drop that record, not the whole search."""
         good = _make_record_blob()
@@ -2989,34 +3037,9 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_from_tool_no_adjacent_chunks(self):
-        """With from_tool=True, adjacent chunks should not be added."""
-        block0 = _make_text_block(index=0, data="Main text")
-        block1 = _make_text_block(index=1, data="Adjacent text")
-        record = _make_record_blob()
-        record["block_containers"]["blocks"] = [block0, block1]
-
-        blob_store = self._make_blob_store(record)
-        vr_map = {"vr-1": record}
-
-        result_set = [
-            {
-                "content": "Main text",
-                "score": 0.9,
-                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
-            },
-        ]
-        results = await get_flattened_results(
-            result_set, blob_store, "org-1", False, vr_map,
-            from_tool=True,
-        )
-        # block_index=1 should not appear as adjacent chunk
-        adjacent_results = [r for r in results if r.get("block_index") == 1]
-        assert len(adjacent_results) == 0
-
-    @pytest.mark.asyncio
-    async def test_adjacent_chunks_added_for_regular_call(self):
-        """Without from_tool/from_retrieval_service, adjacent text blocks should be added."""
+    async def test_no_adjacent_chunks_are_added(self):
+        """Neighbours are added after ranking, around the units kept
+        (`modules/retrieval/context`), never here."""
         block0 = _make_text_block(index=0, data="Adjacent before")
         block1 = _make_text_block(index=1, data="Main text")
         block2 = _make_text_block(index=2, data="Adjacent after")
@@ -3036,11 +3059,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map,
         )
-        # Should contain the main block plus adjacent text blocks
-        block_indices = {r.get("block_index") for r in results}
-        assert 1 in block_indices  # main
-        assert 0 in block_indices  # adjacent before
-        assert 2 in block_indices  # adjacent after
+        assert [r.get("block_index") for r in results] == [1]
 
     @pytest.mark.asyncio
     async def test_config_service_error_graceful(self):
@@ -6360,7 +6379,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6371,7 +6390,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]

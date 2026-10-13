@@ -9,7 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -1183,7 +1183,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
@@ -1194,6 +1196,9 @@ class IGraphDBProvider(ABC):
             node_id (str): Full node ID (e.g., "records/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of logging it and
+                returning ``[]``, for callers that must tell "no edges" from
+                "could not look".
 
         Returns:
             List[Dict]: List of edge documents
@@ -2396,7 +2401,9 @@ class IGraphDBProvider(ABC):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by their source system ID.
@@ -2405,6 +2412,8 @@ class IGraphDBProvider(ABC):
             source_user_id (str): User ID in source system
             connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed query instead of returning
+                None, so a caller can tell "not found" from "could not read".
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -2554,7 +2563,9 @@ class IGraphDBProvider(ABC):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users for a specific connector in an organization.
@@ -2562,6 +2573,8 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
+            raise_on_error (bool): Raise a failed query instead of returning
+                ``[]``, so a caller can tell "no users" from "could not read".
 
         Returns:
             List[Dict]: List of app users
@@ -4217,7 +4230,11 @@ class IGraphDBProvider(ABC):
         """
         Delete only sync-created edges for a connector (belongsTo, recordRelations,
         permission, inheritPermissions, userAppRelation). Does not delete nodes or
-        isOfType/indexing data. Used for full sync reset.
+        isOfType/indexing data.
+
+        A full sync no longer calls this before it starts: a sync cut off partway
+        left every node it had not reached yet unlinked. It removes what it did
+        not see after it finishes instead (``unlink_nodes_missed_by_full_sync``).
 
         Args:
             connector_id: The connector ID (app _key).
@@ -4225,6 +4242,41 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
+    @abstractmethod
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        """
+        After a full sync ran to the end, remove the sync edges of the connector's
+        records, record groups, groups and roles that it did not see.
+
+        Call this only for a full sync that finished: one cut off partway saw only
+        part of the source, and must unlink nothing.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            seen: Per collection (records, recordGroups, groups, roles), the keys
+                of the nodes the sync wrote. A node not listed is unseen.
+            window_start_ms: When set, the sync read only items created at or
+                after this time. An unseen record created before it, an unseen
+                group of a type in ``windowed_group_types`` created before it, and
+                the unseen records in such a group keep their links: they were
+                not read, not deleted. They lose only their permission edges,
+                which the sync could not check.
+            windowed_group_types: Record group types the window applies to.
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (deleted_edges_count, success_flag).
         """
         pass
 
@@ -6836,3 +6888,150 @@ class IGraphDBProvider(ABC):
             Exception: on write failure.
         """
         pass
+
+    @abstractmethod
+    async def create_named_entities_if_absent(self, nodes: list[dict]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_key_prefix(
+        self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
+    ) -> list[dict]:
+        """Nodes whose key is a ``(kind, key)`` pair's key followed by more words,
+        at most ``limit`` per pair, each row tagged with that ``key``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str]
+    ) -> list[dict]:
+        """Mention edges between ``record_ids`` (records the caller already resolved)
+        and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_named_entity_aliases(
+        self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def query_named_entities(self, org_id: str, query) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_records_for_named_entities(
+        self,
+        org_id: str,
+        entity_ids: list[str] | None = None,
+        query=None,
+        limit: int = 5000,
+        within: list[str] | None = None,
+    ) -> dict:
+        """Records matching every constraint. With ``within``, only those record ids
+        are considered, so a caller's answer never depends on records it cannot read."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_for_record(self, record_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def copy_named_entity_mentions(self, source_key: str, target_key: str) -> int:
+        raise NotImplementedError
+
+    def is_named_entity_write_retryable(self, error: BaseException) -> bool:
+        return False
+
+    @abstractmethod
+    async def find_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        skip_kinds: list[str] | None = None,
+    ) -> list[str]:
+        """Keys :meth:`delete_orphan_named_entities` would delete now, without deleting
+        them, leaving out ``skip_kinds``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Delete entities no record mentions. With ``marked_before_ms``, only those
+        marked orphaned at or before it, so a node written a moment ago and not yet
+        linked is not removed. With ``entity_ids``, only those of them still orphaned."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_orphan_named_entities(self, org_id: str, now_ms: int, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_orphan_named_entity_marks(self, org_id: str, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_mentions(self, entity_ids: list[str]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_persist_retry(
+        self, org_id: str, record_id: str, error: str, attempts_so_far: int = 0,
+    ) -> int:
+        """Record that ``record_id``'s named-entity write failed: due again after a
+        backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
+        when its marker is already gone (its claim committed before the failure).
+        Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
+        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``.
+        ``reextract`` selects the re-extraction jobs instead of the write retries."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
+        """Queue ``record_id`` to have its named entities extracted again from its
+        stored blocks, due now. A normal write of the record drops it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_named_entity_persist_retry(
+        self, record_id: str, due_at: int | None, transaction: str | None = None,
+    ) -> bool:
+        """Drop the retry, only while its due time is still ``due_at``; with no
+        ``due_at``, whatever is pending. Returns whether one was dropped."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def resolve_named_entity_redirects(self, org_id: str, ids: list[str]) -> dict[str, str]:
+        """Each named-entity id mapped to the node it was finally merged into."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def replace_named_entity_values(
+        self, record_id: str, docs: list[dict], transaction: str | None = None,
+    ) -> None:
+        """Make ``docs`` the typed values (dates, amounts, quantities…) the record mentions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_values(self, org_id: str, batch_size: int = 200) -> int:
+        """Remove value rows whose record no longer exists; returns how many."""
+        raise NotImplementedError

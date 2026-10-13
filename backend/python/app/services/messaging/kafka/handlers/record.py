@@ -79,6 +79,7 @@ from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -963,6 +964,9 @@ class RecordEventHandler(BaseEventService):
 
         try:
             await sink.index(ctx)
+            # The stored extraction rebuilds the record's named entities and their
+            # vector points too, so a re-embed never drops them or calls a model.
+            await sink.reproject_named_entities(ctx)
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -1250,7 +1254,7 @@ class RecordEventHandler(BaseEventService):
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message like the delete path
                 # does instead of retrying it three times.
-                self.logger.error(f"❌ Record {record_id} not found in database")
+                self.logger.warning(f"Record {record_id} not found in database; dropping its event")
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -1606,9 +1610,10 @@ class RecordEventHandler(BaseEventService):
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
-                    response = await self._download_from_signed_url(
-                        signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
-                    )
+                    with stage("download"):
+                        response = await self._download_from_signed_url(
+                            signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                        )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
@@ -1653,9 +1658,10 @@ class RecordEventHandler(BaseEventService):
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
                     try:
-                        response = await make_api_call(
-                            route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
-                        )
+                        with stage("download"):
+                            response = await make_api_call(
+                                route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
+                            )
                     except Exception as fetch_exc:
                         if resuming_enrichment or not await self._defer_rate_limited_record(
                             fetch_exc, record_id=record_id, record=record, source=source_name
