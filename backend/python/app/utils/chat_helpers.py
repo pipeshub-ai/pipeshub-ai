@@ -3915,6 +3915,10 @@ class _TableFraming:
         return self._per_row + len(str(block_index)) + len(ref) + len(content)
 
 
+_TABLE_CONTINUED = "continued; its summary is shown with its first rows"
+_TABLE_SUMMARY_OMITTED = "summary omitted to fit"
+
+
 def _table_row_children(
     block: dict[str, Any],
     row_index: int,
@@ -4352,6 +4356,13 @@ def record_to_message_content(
                         # A selection enters a table at its first selected row
                         # and reads on from there, after the gap it announced.
                         first_row = start_block if include_blocks is None else max(start_block, block_index)
+                        # A continuation into the middle of a table already
+                        # showed its summary (a SQL table's DDL) with the first
+                        # rows; repeating it can leave no room for the cells.
+                        continuing = (
+                            include_blocks is None and bool(rows_to_be_included_list)
+                            and min(rows_to_be_included_list) < start_block
+                        )
                         # A selection reads only its own rows of the table; the rows
                         # between are announced inside the table, where the walk
                         # will not reach them again.
@@ -4363,8 +4374,9 @@ def record_to_message_content(
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
-                        framing = _TableFraming(block_group_index, table_summary_text(data))
-                        image_table_header = f"[Table #{block_group_index}: {table_summary_text(data)}]\n"
+                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        framing = _TableFraming(block_group_index, summary)
+                        image_table_header = f"[Table #{block_group_index}: {summary}]\n"
                         truncation_reserve = framing.row(
                             block_index, "",
                             f"[… showing {rows_total} of {rows_total} rows; the rest did not fit …]",
@@ -4452,7 +4464,9 @@ def record_to_message_content(
                                     )}
                                     for child in row_children
                                 ]
-                                clipped = render_budget.take(f"{framing.render(row_text)}\n\n")
+                                # Without the summary, so the clip keeps the cells.
+                                clip_framing = _TableFraming(block_group_index, _TABLE_SUMMARY_OMITTED)
+                                clipped = render_budget.take(f"{clip_framing.render(row_text)}\n\n")
                                 render_budget.stop_at(row_index + 1)
                                 if clipped:
                                     content.append({"type": "text", "text": clipped})

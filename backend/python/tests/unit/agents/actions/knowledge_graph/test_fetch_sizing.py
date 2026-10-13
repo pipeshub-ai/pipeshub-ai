@@ -672,3 +672,39 @@ class TestImageFormsAreCharged:
 
         assert len(_records_part(text)) <= resolve_render_budget(128_000).max_chars
         assert _outcome(context, "rec-ti")["complete"] is False
+
+
+class TestALargeTableHeader:
+    """A SQL table's DDL can be larger than the room. A clip spent the room
+    on the DDL and dropped the cells, every continuation repeated the DDL,
+    and a read past the end marked the record fully fetched."""
+
+    @staticmethod
+    def _record() -> dict[str, Any]:
+        return TestAFirstUnitThatDoesNotFitStillMakesProgress._sql_table(rows=4, ddl_chars=60_000)
+
+    @pytest.mark.asyncio
+    async def test_a_clipped_first_row_shows_its_cells(self) -> None:
+        context = _context(query="")
+        text = await _fetch(context, [self._record()])
+
+        assert "row 0:" in text
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_does_not_repeat_the_ddl(self) -> None:
+        context = _context(query="")
+        await _fetch(context, [self._record()])
+
+        text = await _fetch(context, [self._record()], start_block=1, start_block_sent=True)
+
+        assert "CREATE TABLE" not in text
+        assert "row 1:" in text
+
+    @pytest.mark.asyncio
+    async def test_a_read_past_the_end_does_not_mark_the_record_read(self) -> None:
+        context = _context(query="")
+
+        await _fetch(context, [self._record()], start_block=4, start_block_sent=True)
+
+        assert _outcome(context, "rec-d")["complete"] is False
+        assert "rec-d" not in context.full_records_fetched

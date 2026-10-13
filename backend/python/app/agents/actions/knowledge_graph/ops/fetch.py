@@ -448,7 +448,10 @@ async def execute_fetch_record(
                 )
                 if record_key in unread else budget.outcome(record_key)
             )
-            if outcome.complete:
+            # A continuation that rendered nothing (an offset past the end)
+            # read nothing, so it cannot finish a record.
+            complete = outcome.complete and (outcome.blocks_rendered > 0 or start_block == 0)
+            if complete:
                 context.full_records_fetched.add(rid)
                 context.tool_state.setdefault("full_records_fetched", set()).add(rid)
             if getattr(context, "include_retrieval_context", False):
@@ -461,7 +464,7 @@ async def execute_fetch_record(
                     "virtualRecordId": record.get("virtual_record_id"),
                     "startBlock": start_block,
                     "blocksRendered": outcome.blocks_rendered,
-                    "complete": outcome.complete,
+                    "complete": complete,
                     "truncatedBy": (
                         None if outcome.complete else (outcome.stop_reason or "chars")
                     ),
