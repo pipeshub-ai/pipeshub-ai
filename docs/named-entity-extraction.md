@@ -286,9 +286,10 @@ Each name the agent passes is linked to stored entities
   The prefix read takes at most 21 nodes per name before that check, so a
   readable "Sam Lee" behind 21 unreadable "Sam ..." nodes is missed, never
   shown.
-- **Check.** An exact readable match of the kind asked settles a name. Every
-  other name goes to one model call that picks the candidates that are the same
-  thing, or none. It uses the `query` model role at low effort (the default
+- **Check.** An exact readable match of the kind asked is always taken. Every
+  other name, and an exact one that also starts longer readable names ("Sam"
+  beside "Sam Lee"), goes to one model call that picks the candidates that are
+  the same thing, or none; for an exact name the check can only add to it. It uses the `query` model role at low effort (the default
   model when the role is unassigned, the chat's model when none can be built),
   with an 8 second limit; a failed or late call uses nothing it could not
   check, and the result says so. Its tokens are reported as `entity_linking` in
@@ -296,9 +297,10 @@ Each name the agent passes is linked to stored entities
 - **Records.** Readable records per name (`list_accessible_entity_records`,
   the newest 100 per entity; the result says when a name has more). With
   `match="all"`, the names are intersected from the one with the fewest
-  records (`get_records_for_named_entities(within=...)`), and records where
-  they appear within two blocks of each other (mention-edge `blockIndexes`) are
-  searched first. The passages come from `search` inside that scope, which
+  records (`get_records_for_named_entities(within=...)`); every record that
+  mentions them all is searched, those where they appear within two blocks of
+  each other (mention-edge `blockIndexes`) first. A name that links to no
+  entity has no records, so `match="all"` with it searches nothing and says so. The passages come from `search` inside that scope, which
   still applies the agent's sources and the caller's permissions.
 
 Only records indexed while extraction was on have entities, so a name the tool

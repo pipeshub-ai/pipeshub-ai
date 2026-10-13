@@ -175,31 +175,48 @@ async def test_linked_names_are_searched_inside_their_records(wired: dict[str, A
 
 
 @pytest.mark.asyncio
-async def test_all_with_a_name_that_did_not_link_says_it_was_not_checked(wired: dict[str, Any]) -> None:
-    wired["linking"] = _linking(
-        _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e", "Acme")]),
-        _result("Initech", LinkStatus.NOT_FOUND),
-    )
-    wired["scope"] = RecordScope(per_name=[NameRecords("Acme", ["r1"], True)], record_ids=["r1"], virtual_record_ids=["v1"])
-    text = await entity_search.execute_search_by_entities(_state(), mentions=["Acme", "Initech"], match="all")
-    assert "Together:" not in text
-    assert "'Initech' matched no readable entity" in text and "was not checked" in text
-    assert wired["search"][0][0] == "Acme Initech", "the unlinked name may still be in the text"
+@pytest.mark.parametrize("unlinked", [
+    _result("Initech", LinkStatus.NOT_FOUND),
+    _result("Initech", LinkStatus.UNVERIFIED, unchecked=[_candidate("e-i", "Initech Labs")]),
+    _result("Initech", LinkStatus.AMBIGUOUS),
+], ids=["not-found", "unverified", "ambiguous"])
+async def test_all_with_a_name_that_did_not_link_searches_nothing(
+    monkeypatch: pytest.MonkeyPatch, unlinked: LinkResult,
+) -> None:
+    """The real records stage: a name with no entity has no records, so no
+    record mentions every name; the linked names keep their counts."""
+    from app.modules.named_entities.linking import records as records_module
+    from app.modules.retrieval.entity_permissions import EntityRecordPage
 
+    async def _list(graph: object, context: object, *, entity_id: str, entity_type: str, limit: int) -> EntityRecordPage:
+        return EntityRecordPage(records=[{"_key": f"r-{entity_id}", "virtualRecordId": f"v-{entity_id}"}], next_cursor=None)
 
-@pytest.mark.asyncio
-async def test_all_with_two_linked_names_and_one_unlinked_keeps_the_together_line(wired: dict[str, Any]) -> None:
-    wired["linking"] = _linking(
+    monkeypatch.setattr(records_module, "list_accessible_entity_records", _list)
+    searches: list[Any] = []
+    monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
+    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org")))
+    monkeypatch.setattr(entity_search, "execute_search", AsyncMock(side_effect=lambda *a, **k: searches.append(k)))
+    linking = _linking(
         _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e1", "Acme")]),
+        unlinked,
         _result("Globex", LinkStatus.MATCHED, accepted=[_candidate("e2", "Globex")]),
-        _result("Initech", LinkStatus.NOT_FOUND),
     )
-    wired["scope"] = RecordScope(
-        per_name=[NameRecords("Acme", ["r1"], True), NameRecords("Globex", ["r1"], True)],
-        record_ids=["r1"], virtual_record_ids=["v1"], together={"r1": (SAME_RECORD, -1)},
+
+    class _Linker:
+        def __init__(self, *args: object) -> None:
+            pass
+
+        async def link(self, *args: object, **kwargs: object) -> Linking:
+            return linking
+
+    monkeypatch.setattr(entity_search, "EntityLinker", _Linker)
+    ok, text = await entity_search.execute_search_by_entities(
+        _state(), mentions=["Acme", "Initech", "Globex"], match="all",
     )
-    text = await entity_search.execute_search_by_entities(_state(), mentions=["Acme", "Globex", "Initech"], match="all")
-    assert "Together: 1 readable record(s) searched." in text and "'Initech' matched no readable entity" in text
+    assert ok and searches == []
+    assert "Together:" not in text and "matched no readable entity" not in text
+    assert "Acme (organization); exact match; mentioned in 1 readable records." in text
+    assert text.endswith('No readable record mentions all of them; try match="any" or fewer names.')
 
 
 @pytest.mark.asyncio
@@ -411,7 +428,9 @@ class TestPermissions:
             record_group_ids=frozenset(), app_names={"kb-1": "Legal KB", "kb-2": "Sales KB"},
         )
 
-    async def _run(self, monkeypatch: pytest.MonkeyPatch, context: Any) -> tuple[Any, dict[str, Any], list[Any]]:  # noqa: ANN401
+    async def _run(
+        self, monkeypatch: pytest.MonkeyPatch, context: Any, match: str = "any",  # noqa: ANN401
+    ) -> tuple[Any, dict[str, Any], list[Any]]:
         searches: list[Any] = []
 
         async def _search(state: dict[str, Any], query: str, **kwargs: Any) -> str:  # noqa: ANN401
@@ -423,7 +442,7 @@ class TestPermissions:
         monkeypatch.setattr(entity_search, "execute_search", _search)
         state = _state(org_id=context.org_id, graph_provider=self._graph())
         result = await entity_search.execute_search_by_entities(
-            state, mentions=[{"name": "Contoso", "kind": "organization"}, {"name": "Initech"}], match="all",
+            state, mentions=[{"name": "Contoso", "kind": "organization"}, {"name": "Initech"}], match=match,
         )
         return result, state, searches
 
@@ -432,6 +451,16 @@ class TestPermissions:
         result, _state_after, searches = await self._run(monkeypatch, self._context(org=self.ORG, apps=frozenset({"kb-1"})))
         assert searches == [["v-msa"]]
         assert '"Contoso" (organization): Contoso (organization); exact match; mentioned in 1 readable records.' in result
+
+    @pytest.mark.asyncio
+    async def test_a_reader_asking_for_all_with_a_name_nobody_has_gets_no_search(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        (ok, text), _state_after, searches = await self._run(
+            monkeypatch, self._context(org=self.ORG, apps=frozenset({"kb-1"})), match="all",
+        )
+        assert ok and searches == []
+        assert "mentioned in 1 readable records" in text and "No readable record mentions all of them" in text
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("org", "apps"), [

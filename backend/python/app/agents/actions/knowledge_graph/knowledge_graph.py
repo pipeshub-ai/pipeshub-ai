@@ -1317,6 +1317,10 @@ def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") 
         return "Entity search failed" if result.is_error else None
     if result.is_error or parsed.get("status") == "error":
         return parsed.get("message") or "Entity search failed"
+    if isinstance(parsed.get("queries"), list):
+        groups = [q for q in parsed["queries"] if isinstance(q, dict)]
+        found = sum(len(q.get("results") or []) for q in groups)
+        return f"Found {found} entit{'y' if found == 1 else 'ies'} across {len(groups)} queries"
     results = parsed.get("results") or []
     if not results:
         return parsed.get("message") or "No matching entities found"

@@ -125,3 +125,10 @@ async def test_a_scope_also_narrowed_by_entity_ids_keeps_only_their_overlap() ->
         stack.enter_context(patch(f"{_SEARCH}.unresolved_entity_ids", return_value=[]))
         await execute_search(state, "renewal", entity_ids=["rg-1"], scope_virtual_record_ids=["vr-1", "vr-2"])
     assert retrieval.search_with_filters.call_args.kwargs["virtual_record_ids_from_tool"] == ["vr-2"]
+
+
+def test_a_result_with_images_is_left_as_it_is() -> None:
+    from app.agent_loop_lib.core.messages import TextPart
+
+    parts = [TextPart(text="Entities:\n\nTop 1 block")]
+    assert with_json_preamble(parts, "Entities:\n\n") is parts

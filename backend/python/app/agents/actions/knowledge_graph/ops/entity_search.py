@@ -225,15 +225,8 @@ def render_preamble(
     counts = {name.mention: name.count_label for name in scope.per_name}
     lines = ["Entities:"]
     lines.extend(_line(result, linking.names, counts.get(result.mention.name, "0")) for result in linking.results)
-    unlinked = [result.mention.name for result in linking.results if not result.accepted]
-    if match_all and len(linking.results) - len(unlinked) > 1:
+    if match_all and scope.virtual_record_ids:
         lines.append(_together_line(scope, shortener))
-    if match_all and unlinked and scope.virtual_record_ids:
-        lines.append(
-            f"Note: {', '.join(repr(_trunc(name)) for name in unlinked)} matched no readable entity, so the "
-            "records searched mention the other names only; whether they also mention "
-            f"{'it' if len(unlinked) == 1 else 'them'} was not checked."
-        )
     if linking.timed_out:
         lines.append("Note: access checks were cut short for this call, so results may be incomplete; retry.")
     if scope.note:
@@ -276,8 +269,6 @@ def _entities(candidates: list[Candidate], names: dict[str, str]) -> str:
 
 
 def _together_line(scope: RecordScope, shortener: RecordIdShortener | None) -> str:
-    if not scope.record_ids:
-        return "Together: no readable record mentions all of them."
     nearby = _together_records(scope)
     line = f"Together: {len(scope.record_ids)} readable record(s) searched"
     if not nearby:

@@ -1,9 +1,11 @@
 """From mentions to the entities they name: candidates, then one check for
 the names no exact match settles.
 
-A name is settled when a readable node carries exactly the key indexing gives
-it under the kind asked for (any kind, when none was asked). Every other name
-with candidates goes to the verifier in one call. Names are shown from the
+A readable node carrying exactly the key indexing gives the name, under the
+kind asked for (any kind, when none was asked), is always taken. Every other
+name with candidates, and an exact one that also starts longer readable names
+("Sam" beside "Sam Lee"), goes to the verifier in one call; the check can add
+to an exact match but never drop it. Names are shown from the
 records the user can read (the spellings on their mention edges), never from
 whichever record first created the node.
 """
@@ -102,7 +104,9 @@ class EntityLinker:
         names = await readable_names(self._graph, self._org_id, every) if every else {}
 
         results: list[LinkResult | None] = []
-        to_check: list[tuple[int, Mention, list[Candidate], list[Candidate]]] = []
+        # (position, mention, offered, refused, settled): ``settled`` is an exact
+        # match kept whatever the check says; the check only adds to it.
+        to_check: list[tuple[int, Mention, list[Candidate], list[Candidate], list[Candidate]]] = []
         for entry in found.per_mention:
             mention = entry.mention
             exact = [
@@ -110,7 +114,18 @@ class EntityLinker:
                 if c.source is CandidateSource.EXACT and mention.hinted(c.kind)
             ]
             if exact:
-                results.append(LinkResult(mention, LinkStatus.MATCHED, accepted=exact))
+                # A first name stored on its own ("Sam") must not hide the full
+                # names it starts ("Sam Lee"): those go to the check.
+                longer = [
+                    c for c in entry.candidates
+                    if c.source is CandidateSource.PREFIX and mention.hinted(c.kind) and c not in exact
+                ]
+                offered = [c for c in longer if offerable(mention.name, names.get(c.entity_id, c.name))]
+                if offered:
+                    to_check.append((len(results), mention, offered, [c for c in longer if c not in offered], exact))
+                    results.append(None)
+                else:
+                    results.append(LinkResult(mention, LinkStatus.MATCHED, accepted=exact))
             elif entry.ambiguous:
                 results.append(LinkResult(mention, LinkStatus.AMBIGUOUS))
             elif not entry.candidates:
@@ -121,7 +136,7 @@ class EntityLinker:
                 if not offered:
                     results.append(LinkResult(mention, LinkStatus.NOT_FOUND, rejected=refused))
                 else:
-                    to_check.append((len(results), mention, offered, refused))
+                    to_check.append((len(results), mention, offered, refused, []))
                     results.append(None)
 
         decided: dict[int, list[int]] | None = {}
@@ -135,18 +150,24 @@ class EntityLinker:
                         for c in offered
                     ],
                 )
-                for _, mention, offered, _ in to_check
+                for _, mention, offered, _, _ in to_check
             ]
             decided = await self._verifier.verify(question, items) if self._verifier else None
-        for number, (position, mention, offered, refused) in enumerate(to_check):
+        for number, (position, mention, offered, refused, settled) in enumerate(to_check):
             chosen = None if decided is None else decided.get(number)
             if chosen is None:
-                results[position] = LinkResult(mention, LinkStatus.UNVERIFIED, rejected=refused, unchecked=offered)
+                results[position] = (
+                    LinkResult(mention, LinkStatus.MATCHED, accepted=settled) if settled
+                    else LinkResult(mention, LinkStatus.UNVERIFIED, rejected=refused, unchecked=offered)
+                )
                 continue
-            accepted = [offered[index] for index in chosen]
-            rejected = [*(c for c in offered if c not in accepted), *refused]
-            status = LinkStatus.CHECKED if accepted else LinkStatus.NOT_FOUND
-            results[position] = LinkResult(mention, status, accepted=accepted, rejected=rejected)
+            picked = [offered[index] for index in chosen]
+            rejected = [*(c for c in offered if c not in picked), *refused]
+            if settled:
+                status = LinkStatus.CHECKED if picked else LinkStatus.MATCHED
+            else:
+                status = LinkStatus.CHECKED if picked else LinkStatus.NOT_FOUND
+            results[position] = LinkResult(mention, status, accepted=[*settled, *picked], rejected=rejected)
 
         return Linking(
             results=[result for result in results if result is not None],

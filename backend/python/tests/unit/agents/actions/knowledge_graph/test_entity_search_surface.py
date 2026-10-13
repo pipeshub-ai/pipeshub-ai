@@ -106,3 +106,34 @@ def test_an_edit_whose_anchor_is_gone_fails_loudly() -> None:
     reworded = replace(declared, description="Find records by a typed value.")
     with pytest.raises(ValueError, match="no longer reads"):
         surface.variant_meta("knowledgegraph__find_records_by_value", reworded)
+
+
+def test_the_offered_search_entities_names_every_query_in_its_activity_line() -> None:
+    _, served = _tools(True)
+    (tool,) = [t for t in served if t.name == "knowledgegraph__search_entities"]
+    assert tool.summarize_args({"queries": ["Contoso", "Initech"]}) == 'Searched entities for "Contoso", "Initech"'
+    assert tool.summarize_args({"query": "Acme"}) == 'Searched entities for "Acme"'
+    assert tool.summarize_args({}) is None
+
+
+@pytest.mark.parametrize(("payload", "expected"), [
+    (
+        {"status": "success", "queries": [
+            {"query": "Contoso", "results": [{"name": "Contoso"}, {"name": "Contoso Ltd"}]},
+            {"query": "Nobody", "message": "No accessible entities matched", "results": []},
+            {"query": "Down", "error": "Entity search failed"},
+        ]},
+        "Found 2 entities across 3 queries",
+    ),
+    ({"status": "success", "queries": [{"query": "A", "results": [{"name": "A"}]}]}, "Found 1 entity across 1 queries"),
+])
+def test_a_grouped_result_is_summarized_across_its_queries(payload: dict[str, Any], expected: str) -> None:
+    import json
+    from types import SimpleNamespace
+
+    from app.agents.actions.knowledge_graph.knowledge_graph import (
+        _search_entities_result_summary,
+    )
+
+    result = SimpleNamespace(content=json.dumps(payload), is_error=False)
+    assert _search_entities_result_summary({}, result) == expected

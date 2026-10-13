@@ -9,7 +9,6 @@ from app.modules.named_entities.linking import records as records_module
 from app.modules.named_entities.linking.candidates import Candidate, CandidateSource
 from app.modules.named_entities.linking.mentions import parse_mentions
 from app.modules.named_entities.linking.records import (
-    MIN_NEARBY_RECORDS,
     NEARBY,
     SAME_BLOCK,
     SAME_RECORD,
@@ -113,16 +112,36 @@ async def test_all_starts_from_the_rarest_name_and_matches_the_others_inside_it(
     assert graph.within_calls == [(["northwind"], ["r1", "r2", "r9"])]
     assert sorted(scope.record_ids) == ["r1", "r2"]
     assert scope.together == {"r1": (NEARBY, 4), "r2": (SAME_RECORD, -1)}
-    assert "Only 1 readable record" in scope.note
+    assert scope.record_ids == ["r1", "r2"], "nearest first"
 
 
 @pytest.mark.asyncio
-async def test_all_searches_only_nearby_co_mentions_when_there_are_enough(listings: dict[str, Any]) -> None:
-    near = {f"n{i}": [i] for i in range(MIN_NEARBY_RECORDS)}
-    graph = _Graph({"a": {**near, "far": [0]}, "b": {**{k: [v[0] + 1] for k, v in near.items()}, "far": [50]}})
+async def test_all_keeps_every_record_that_mentions_them_all_nearest_first(listings: dict[str, Any]) -> None:
+    near = {f"n{i}": [i * 10] for i in range(4)}
+    graph = _Graph({
+        "a": {**near, "far": [0], "no-blocks": []},
+        "b": {**{k: [v[0] + 1] for k, v in near.items()}, "far": [50], "no-blocks": []},
+    })
     scope = await readable_records(graph, CONTEXT, [_link("A", "a"), _link("B", "b")], match_all=True)
-    assert sorted(scope.record_ids) == sorted(near)
+    assert sorted(scope.record_ids[:4]) == sorted(near)
+    assert set(scope.record_ids[4:]) == {"far", "no-blocks"}, "farther co-mentions are searched too"
     assert scope.note == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unlinked", [LinkStatus.NOT_FOUND, LinkStatus.UNVERIFIED, LinkStatus.AMBIGUOUS])
+async def test_all_with_a_name_that_did_not_link_selects_nothing_but_keeps_the_counts(
+    listings: dict[str, Any], unlinked: LinkStatus,
+) -> None:
+    graph = _Graph({"a": {"r1": [0]}, "b": {"r1": [0], "r2": [0]}})
+    (mention,) = parse_mentions([{"name": "Initech", "kind": "organization"}]).mentions
+    links = [_link("A", "a"), LinkResult(mention, unlinked), _link("B", "b")]
+    scope = await readable_records(graph, CONTEXT, links, match_all=True)
+    assert scope.record_ids == [] and scope.virtual_record_ids == []
+    assert [(n.mention, n.count_label) for n in scope.per_name] == [("A", "1"), ("B", "2")]
+    assert graph.within_calls == []
+    any_scope = await readable_records(graph, CONTEXT, links, match_all=False)
+    assert any_scope.record_ids == ["r1", "r2"], "any still searches the names that linked"
 
 
 @pytest.mark.asyncio

@@ -87,6 +87,31 @@ async def test_an_exact_match_of_the_asked_kind_settles_the_name_without_a_check
 
 
 @pytest.mark.asyncio
+async def test_an_exact_first_name_lets_the_check_add_the_full_names_it_starts() -> None:
+    verifier = _Verifier({0: [0]})
+    sam = _c("e1", "Sam", "person", CandidateSource.EXACT)
+    sam_lee, sam_park = _c("e2", "Sam Lee", "person", CandidateSource.PREFIX), _c("e3", "Sam Park", "person", CandidateSource.PREFIX)
+    mentions = _mentions({"name": "Sam", "kind": "person"})
+    linking = await _link([([sam, sam_lee, sam_park], False)], verifier, mentions=mentions)
+    (result,) = linking.results
+    assert result.status is LinkStatus.CHECKED
+    assert result.accepted == [sam, sam_lee] and result.rejected == [sam_park]
+    ((_, items),) = verifier.calls
+    assert [c.name for c in items[0].candidates] == ["Sam Lee", "Sam Park"], "the exact node is not offered"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [None, {0: []}])
+async def test_a_failed_or_empty_check_never_drops_the_exact_match(answer: dict[int, list[int]] | None) -> None:
+    sam = _c("e1", "Sam", "person", CandidateSource.EXACT)
+    sam_lee = _c("e2", "Sam Lee", "person", CandidateSource.PREFIX)
+    mentions = _mentions({"name": "Sam", "kind": "person"})
+    linking = await _link([([sam, sam_lee], False)], _Verifier(answer), mentions=mentions)
+    (result,) = linking.results
+    assert result.status is LinkStatus.MATCHED and result.accepted == [sam]
+
+
+@pytest.mark.asyncio
 async def test_an_exact_match_of_another_kind_goes_to_the_check() -> None:
     verifier = _Verifier({0: []})
     product = _c("e1", "Atlas", "product", CandidateSource.EXACT)

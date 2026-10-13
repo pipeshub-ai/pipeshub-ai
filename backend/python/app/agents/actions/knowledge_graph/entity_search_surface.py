@@ -51,6 +51,7 @@ class _Variant:
     extra_parameters: tuple[ToolParameter, ...] = ()
     optional: tuple[str, ...] = ()
     """Parameters the variant no longer requires."""
+    args_summary: Callable[[dict[str, Any]], str | None] | None = None
 
 
 _NAMED_ENTITY_IDS = _Edit(
@@ -115,6 +116,7 @@ _VARIANTS: dict[str, _Variant] = {
             ),
         ),
         optional=("query",),
+        args_summary=lambda args: _searched_entities_for(args),
     ),
     FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
         description=(
@@ -184,7 +186,13 @@ def variant_meta(tool_name: str, declared: ToolMeta) -> ToolMeta:
         declared,
         description=_edited(declared.description, variant.description, tool_name),
         parameters=[*parameters, *variant.extra_parameters],
+        args_summary=variant.args_summary or declared.args_summary,
     )
+
+
+def _searched_entities_for(args: dict[str, Any]) -> str | None:
+    asked = [q for q in [args.get("query"), *(args.get("queries") or [])] if isinstance(q, str) and q.strip()]
+    return "Searched entities for " + ", ".join(f'"{q}"' for q in dict.fromkeys(asked)) if asked else None
 
 
 def _edited(text: str, edits: tuple[_Edit, ...], where: str) -> str:

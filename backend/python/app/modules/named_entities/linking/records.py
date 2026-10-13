@@ -28,7 +28,6 @@ NAMED_ENTITY = "named_entity"
 RECORDS_PER_ENTITY = 100
 MAX_SCOPE_RECORDS = 500
 NEARBY_BLOCKS = 2
-MIN_NEARBY_RECORDS = 3
 LISTING_CONCURRENCY = 4
 
 SAME_BLOCK, NEARBY, SAME_RECORD = 0, 1, 2
@@ -108,7 +107,9 @@ async def readable_records(
         per_name.append(NameRecords(mention=link.mention.name, record_ids=ordered, complete=all(done for _, done in pages)))
 
     scope = RecordScope(per_name=per_name)
-    if not per_name:
+    if not per_name or (match_all and len(linked) < len(links)):
+        # A name with no entity has no records, so no record mentions every name;
+        # the names that did link keep their counts.
         return scope
     if not match_all or len(per_name) == 1:
         # Round-robin over the names, so the scope cap below never drops a whole name.
@@ -132,16 +133,10 @@ async def readable_records(
                 "intersected; add a rarer name or a query to narrow it. "
             )
         if selected:
+            # Every record that mentions them all is searched; the nearest come
+            # first, so they are the ones the scope cap keeps.
             scope.together = await _together(graph, context.org_id, linked, selected)
-            nearby = [key for key in selected if scope.together.get(key, (SAME_RECORD, -1))[0] <= NEARBY]
-            if len(nearby) >= MIN_NEARBY_RECORDS:
-                selected = sorted(nearby, key=lambda key: scope.together[key][0])
-            else:
-                scope.note += (
-                    f"Only {len(nearby)} readable record(s) mention them within {NEARBY_BLOCKS} blocks of "
-                    "each other; searching every readable record that mentions them all."
-                )
-                selected = sorted(selected, key=lambda key: scope.together.get(key, (SAME_RECORD, -1))[0])
+            selected = sorted(selected, key=lambda key: scope.together.get(key, (SAME_RECORD, -1))[0])
     if len(selected) > MAX_SCOPE_RECORDS:
         scope.note += f"Only {MAX_SCOPE_RECORDS} of the {len(selected)} readable records were searched. "
         selected = selected[:MAX_SCOPE_RECORDS]
