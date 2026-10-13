@@ -209,6 +209,7 @@ class IndexingPipeline:
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
         import asyncio
+        import contextlib
 
         ner_task = asyncio.create_task(self.sink_orchestrator.extract_named_entities(ctx))
         try:
@@ -217,6 +218,9 @@ class IndexingPipeline:
         finally:
             if not ner_task.done():
                 ner_task.cancel()
+                # Its own failure must not replace the one propagating here.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await ner_task
 
         record = ctx.record
         if record.semantic_metadata:

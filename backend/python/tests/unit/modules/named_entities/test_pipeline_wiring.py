@@ -111,6 +111,30 @@ async def test_pipeline_cancels_extraction_when_classify_fails():
     await asyncio.wait_for(cancelled.wait(), timeout=1)
 
 
+async def test_the_cancelled_extraction_has_finished_when_enrich_raises() -> None:
+    """Awaited, not just cancelled: a task left pending is destroyed with a warning."""
+    started = asyncio.Event()
+    unwound = []
+
+    async def extract(ctx: object) -> None:
+        started.set()
+        try:
+            await asyncio.sleep(10)
+        finally:
+            unwound.append(True)
+
+    async def classify(ctx: object) -> None:
+        await started.wait()
+        raise RuntimeError("classify down")
+
+    sink = MagicMock()
+    sink.extract_named_entities = AsyncMock(side_effect=extract)
+    pipeline = IndexingPipeline(MagicMock(apply=AsyncMock(side_effect=classify)), sink)
+    with pytest.raises(RuntimeError, match="classify down"):
+        await pipeline._enrich(MagicMock())
+    assert unwound == [True]
+
+
 async def test_extraction_failure_returns_failed_and_does_not_raise(caplog):
     sink = _sink()
     ctx = SimpleNamespace(record=_record())
