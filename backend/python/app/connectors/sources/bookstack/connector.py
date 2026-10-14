@@ -136,6 +136,10 @@ class ReadOutcome(Enum):
     REFUSED = "refused"
 
 
+# In the role sync point: a role was kept through a refusal, so the next sync reads
+# every role again instead of only the audit log.
+ROLE_REBUILD_OWED = "rebuildOwed"
+
 # Client errors that pass with time, unlike the rest of 4xx.
 RETRYABLE_CLIENT_ERRORS = frozenset({408, HttpStatusCode.TOO_MANY_REQUESTS.value})
 
@@ -319,6 +323,10 @@ class BookStackConnector(BaseConnector):
         # Whether this run left stored roles or record groups unwritten without noting
         # them as seen, so the unlink after a full sync must leave everything alone.
         self._kept_unnoted_access = False
+        # Whether this role sync kept a refused role as stored, and whether it read
+        # every role (_sync_user_roles_full). A kept role is read again next sync.
+        self._refused_roles_kept = False
+        self._roles_rebuilt = False
 
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
@@ -947,21 +955,31 @@ class BookStackConnector(BaseConnector):
         bookstack_user_role_sync_key = generate_record_sync_point_key("bookstack", "user_role_logs", "global")
         bookstack_user_role_sync_point = await self.app_role_sync_point.read_sync_point(bookstack_user_role_sync_key)
 
+        self._refused_roles_kept = False
+        self._roles_rebuilt = False
+
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_user_role_sync_point.get('timestamp'):
             done = await self._sync_user_roles_full()
         else:
             last_sync_timestamp = bookstack_user_role_sync_point.get('timestamp')
             done = await self._sync_user_roles_incremental(last_sync_timestamp)
+            if done and bookstack_user_role_sync_point.get(ROLE_REBUILD_OWED) and not self._roles_rebuilt:
+                # A role kept through a refusal is read again on every sync until it can
+                # be read, so the members it lost in BookStack meanwhile drop out then.
+                done = await self._sync_user_roles_full()
         if not done:
             # Moving the timestamp on would leave the unapplied changes behind it.
             self.logger.warning("Role changes were not all applied; the next sync reads them again")
             self._kept_unnoted_access = True
             return
-        await self.app_role_sync_point.update_sync_point(
-            bookstack_user_role_sync_key,
-            {"timestamp": current_timestamp}
-        )
+        # A refusal repeats every sync, so the timestamp moves on (holding it would
+        # replay the audit log every sync and lose the role deletes made meanwhile),
+        # and the flag has the next sync read every role again.
+        sync_point: dict[str, object] = {"timestamp": current_timestamp}
+        if self._refused_roles_kept:
+            sync_point[ROLE_REBUILD_OWED] = True
+        await self.app_role_sync_point.update_sync_point(bookstack_user_role_sync_key, sync_point)
 
 
     async def _sync_user_roles_full(self) -> bool:
@@ -975,6 +993,7 @@ class BookStackConnector(BaseConnector):
         sync does this again.
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
+        self._roles_rebuilt = True
         if not self._users_stored:
             # The processor attaches a member only through their stored user, so a role
             # written now would leave out everyone the user sync didn't store.
@@ -1076,15 +1095,23 @@ class BookStackConnector(BaseConnector):
         """
         if self._role_list_refused:
             self._kept_unnoted_access = True
+            self._refused_roles_kept = True
         for role_id in self._refused_role_ids:
-            try:
-                await self.data_entities_processor.has_stored_permissions(
-                    "role", self.connector_id, str(role_id), keep=True
-                )
-            except Exception as e:
-                self.logger.error(f"Could not read the stored members of refused role ID {role_id}: {e}")
-                self._kept_unnoted_access = True
+            if not await self._keep_refused_role(role_id):
                 return False
+        return True
+
+    async def _keep_refused_role(self, role_id: int) -> bool:
+        """Keep one refused role as stored and note it as seen; False when that can't be read."""
+        self._refused_roles_kept = True
+        try:
+            await self.data_entities_processor.has_stored_permissions(
+                "role", self.connector_id, str(role_id), keep=True
+            )
+        except Exception as e:
+            self.logger.error(f"Could not read the stored members of refused role ID {role_id}: {e}")
+            self._kept_unnoted_access = True
+            return False
         return True
 
     def full_sync_coverage(self) -> FullSyncCoverage:
@@ -1349,7 +1376,14 @@ class BookStackConnector(BaseConnector):
         if outcome is ReadOutcome.INTERRUPTED:
             self.logger.warning(f"Could not read role ID {role_id} and its members in full; it stays as stored this sync")
             return False
-        await self._handle_role_delete_event(role_id)
+        if outcome is ReadOutcome.REFUSED and role is None:
+            # As in the full role sync: a role BookStack refuses to show keeps its
+            # stored members, and the next sync reads every role again.
+            self.logger.error(f"❌ BookStack refused role ID {role_id}; it keeps its stored members until it can be read")
+            if not await self._keep_refused_role(role_id):
+                return False
+        else:
+            await self._handle_role_delete_event(role_id)
         if role is not None:
             await self.data_entities_processor.on_new_app_roles([role])
         done = await self._sync_record_groups(full_sync=True)
