@@ -3447,6 +3447,28 @@ class TestRunPatternMatchWithLlmGrep:
         assert result == [{"virtual_record_id": "vr-1"}]
 
     @pytest.mark.asyncio
+    async def test_cancel_task_if_running_passes_on_the_callers_cancellation(self) -> None:
+        """Cancelling the task's errors away must not also swallow a stop
+        aimed at the caller while it waits for the teardown."""
+        teardown_started = asyncio.Event()
+
+        async def _slow_teardown() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                teardown_started.set()
+                await asyncio.sleep(0.3)
+                raise
+
+        task = asyncio.create_task(_slow_teardown())
+        await asyncio.sleep(0)
+        caller = asyncio.create_task(cancel_task_if_running(task))
+        await asyncio.wait_for(teardown_started.wait(), timeout=5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+    @pytest.mark.asyncio
     async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self) -> None:
         """The budget plus a bounded grace is all the caller waits; the rest of
         a slow teardown carries on in the background."""

@@ -1541,13 +1541,16 @@ def _consume_outcome(task: asyncio.Task) -> None:
 
 
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
-    """Cancel an asyncio task if it hasn't finished yet and suppress errors."""
+    """Cancel an asyncio task if it hasn't finished yet and suppress its
+    errors. A cancellation of the caller while it waits is passed on."""
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):
-            pass
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
 
 
 def _int_field(record: dict[str, Any] | None, key: str) -> int:
