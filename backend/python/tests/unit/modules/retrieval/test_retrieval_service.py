@@ -2087,6 +2087,59 @@ class TestSearchWithFilters:
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio
+    async def test_a_later_stronger_point_keeps_its_message_under_the_cap(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Messages 0-3 match at 0.5; message 30 matches at 0.3, then again at
+        0.95 (a second point of the same long message). Cap 4 keeps 30."""
+        from app.models.blocks import BlockType, GroupType
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "CONNECTOR",
+                "recordName": "Thread", "webUrl": "https://example.com/t",
+                "mimeType": "application/blocks",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": score, "content": f"chunk {index}", "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": False, "blockIndex": index},
+            }
+            for index, score in ((0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (30, 0.3), (30, 0.95))
+        ])
+        blob = {
+            "virtual_record_id": "vr1", "id": "rec1", "org_id": "o1", "record_name": "Thread",
+            "record_type": "MESSAGE", "origin": "CONNECTOR", "connector_name": "SLACK",
+            "mime_type": "application/blocks", "weburl": "https://example.com/t",
+            "block_containers": {
+                "blocks": [
+                    {"id": f"b{i}", "index": i, "type": BlockType.TEXT.value, "data": f"message {i}",
+                     "citation_metadata": None, "parent_index": 0}
+                    for i in range(40)
+                ],
+                "block_groups": [{
+                    "index": 0, "type": GroupType.CONVERSATION.value, "data": "",
+                    "children": [{"block_index": i} for i in range(40)],
+                    "citation_metadata": None, "parent_index": None,
+                }],
+            },
+        }
+
+        async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
+            vid_to_record[vid] = blob
+
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)):
+            result = await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", limit=10, knowledge_search=True,
+            )
+
+        assert 30 in [hit["block_index"] for hit in result["searchResults"]]
+
+    @pytest.mark.asyncio
     async def test_more_matches_than_the_cap_keep_the_best_hits_not_the_first(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
     ) -> None:

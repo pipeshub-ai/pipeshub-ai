@@ -1,11 +1,12 @@
 import asyncio
 import base64
 import bisect
+import functools
 import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Optional
@@ -2393,6 +2394,18 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # A split row's container queued for a large table, by chunk id: where its
     # entry sits in rows_to_be_included, so a later fragment can raise its score.
     pending_split_rows: dict[str, tuple[str, int]] = {}
+    # What a later point on an already-seen chunk updates, so the passage keeps
+    # its best hit's score: a block over 100 words is several points with one
+    # blockIndex, and the search API runs several queries.
+    on_repeat_hit: dict[str, Callable[[float], None]] = {}
+
+    def _raise_pending_row(pending_key: str, score: float) -> None:
+        rows_key, position = pending_split_rows[pending_key]
+        row_index, row_score, content = rows_to_be_included[rows_key][position]
+        rows_to_be_included[rows_key][position] = (row_index, max(row_score, score), content)
+
+    def _raise_passage(passage: dict[str, Any], score: float) -> None:
+        passage["score"] = max(float(passage.get("score") or 0.0), score)
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2570,10 +2583,11 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             chunk_id = f"{virtual_record_id}-{index}"
 
         if chunk_id in seen_chunks:
+            repeat_score = float(result.get("score", 0.0))
             if chunk_id in emitted_table_rows:
-                _note_matched_block(
-                    emitted_table_rows[chunk_id], index, float(result.get("score", 0.0))
-                )
+                _note_matched_block(emitted_table_rows[chunk_id], index, repeat_score)
+            elif chunk_id in on_repeat_hit:
+                on_repeat_hit[chunk_id](repeat_score)
             continue
         seen_chunks.add(chunk_id)
 
@@ -2628,10 +2642,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 if container_chunk_id in emitted_table_rows:
                     # The table was already expanded as a whole; its rows are
                     # emitted under the container's index.
-                    _note_matched_block(
-                        emitted_table_rows[container_chunk_id],
-                        parent_block_idx,
-                        float(result.get("score", 0.0)),
+                    table_unit = emitted_table_rows[container_chunk_id]
+                    _note_matched_block(table_unit, parent_block_idx, float(result.get("score", 0.0)))
+                    on_repeat_hit[chunk_id] = functools.partial(
+                        _note_matched_block, table_unit, parent_block_idx
                     )
                 elif container_chunk_id not in seen_chunks:
                     seen_chunks.add(container_chunk_id)
@@ -2640,6 +2654,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     rows_to_be_included[rows_key].append(
                         (parent_block_idx, float(result.get("score", 0.0)), None)
                     )
+                    on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, container_chunk_id)
                 elif container_chunk_id in pending_split_rows:
                     # Another fragment of a row already queued: the row keeps its best hit.
                     rows_key, position = pending_split_rows[container_chunk_id]
@@ -2647,6 +2662,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     rows_to_be_included[rows_key][position] = (
                         row_index, max(row_score, float(result.get("score", 0.0))), content
                     )
+                    on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, container_chunk_id)
             else:
                 target_index = container_parent_index
                 group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
@@ -2654,6 +2670,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     if group_chunk_id in emitted_groups:
                         _raise_group_score(
                             emitted_groups[group_chunk_id], float(result.get("score", 0.0)), parent_block_idx
+                        )
+                        on_repeat_hit[chunk_id] = functools.partial(
+                            _raise_group_score, emitted_groups[group_chunk_id], hit_block_index=parent_block_idx
                         )
                     continue
                 fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
@@ -2679,6 +2698,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 result["hit_block_scores"] = {parent_block_idx: float(result.get("score", 0.0))}
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
                 emitted_groups[group_chunk_id] = result
+                on_repeat_hit[chunk_id] = functools.partial(
+                    _raise_group_score, result, hit_block_index=parent_block_idx
+                )
                 flattened_results.append(result)
             continue
 
@@ -2728,7 +2750,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             if block_group_index is None:
                 logger.warning("Table row %d has no table, vrid=%s", index, virtual_record_id)
                 continue
-            rows_to_be_included[f"{virtual_record_id}_{block_group_index}"].append((index,float(result.get("score",0.0)), None))
+            rows_key = f"{virtual_record_id}_{block_group_index}"
+            pending_split_rows[chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
+            rows_to_be_included[rows_key].append((index,float(result.get("score",0.0)), None))
+            on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
             continue
         elif block_type == GroupType.TABLE.value:
             table_data = block.get("data",{})
@@ -2863,6 +2888,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             if group_chunk_id in seen_chunks:
                 if group_chunk_id in emitted_groups:
                     _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)), index)
+                    on_repeat_hit[chunk_id] = functools.partial(
+                        _raise_group_score, emitted_groups[group_chunk_id], hit_block_index=index
+                    )
                 continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
@@ -2890,6 +2918,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             result["hit_block_scores"] = {index: float(result.get("score", 0.0))}
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             emitted_groups[group_chunk_id] = result
+            on_repeat_hit[chunk_id] = functools.partial(_raise_group_score, result, hit_block_index=index)
             flattened_results.append(result)
             continue
         else:
@@ -2901,6 +2930,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
         enhanced_metadata = get_enhanced_metadata(record,block,meta)
         result["metadata"] = enhanced_metadata
         flattened_results.append(result)
+        on_repeat_hit[chunk_id] = functools.partial(_raise_passage, result)
 
     for key,rows_tuple in rows_to_be_included.items():
         sorted_rows_tuple = sorted(rows_tuple)

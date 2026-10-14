@@ -2827,6 +2827,60 @@ class TestGetFlattenedResults:
         assert any(child["block_index"] == 7 and child["content"] == "Row 7 text" for child in table["content"][1])
 
     @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_seen_message_raises_its_score(self) -> None:
+        """A long block is several points with one blockIndex, and the search API
+        runs several queries; the passage must keep its best point's score."""
+        items = [_make_text_block(index=i, data=f"message {i}", parent_index=0) for i in range(40)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [
+            _make_list_group(index=0, children_block_indices=list(range(40)), group_type=GroupType.CONVERSATION)
+        ]
+        vr_map = {"vr-1": record}
+        points = [(0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (30, 0.3), (30, 0.95)]
+        result_set = [
+            {"content": f"message {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in points
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_scores"][30] == 0.95
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_standalone_block_raises_its_score(self) -> None:
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="a long paragraph")]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "part", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False}}
+            for score in (0.3, 0.8)
+        ]
+
+        (passage,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert passage["score"] == 0.8
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_queued_large_table_row_raises_its_score(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Row 1", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 1, "isBlockGroup": False}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9]
+
+    @pytest.mark.asyncio
     async def test_a_split_row_of_a_large_table_keeps_its_best_fragment_score(self) -> None:
         """Two fragments of one image-split row of a large table both match; the
         row is queued once, and must carry the stronger hit's score."""
