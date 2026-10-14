@@ -256,7 +256,7 @@ export function createSamlRouter(container: Container) {
         recordEvent('login', {
           orgId: session.orgId?.toString(),
           userId: user._id?.toString(),
-          domain: domainFromEmail(user.email),
+          domain: domainFromEmail(verifiedEmail),
           first_login: !user.hasLoggedIn,
           auth_method: 'saml',
         });
