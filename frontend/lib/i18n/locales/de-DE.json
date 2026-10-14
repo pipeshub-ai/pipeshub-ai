@@ -2169,7 +2169,9 @@
       },
       "featureFlags": {
         "title": "Feature-Flags",
-        "subtitle": "Aktivieren oder deaktivieren Sie experimentelle Funktionen für alle Agenten in diesem Arbeitsbereich."
+        "subtitle": "Aktivieren oder deaktivieren Sie experimentelle Funktionen für alle Agenten in diesem Arbeitsbereich.",
+        "advancedTitle": "Erweiterte Feature-Flags anzeigen",
+        "advancedSubtitle": "Interne Flags, die die meisten Arbeitsbereiche bei den Standardwerten belassen können."
       },
       "vectorStore": {
         "title": "Vektorspeicher",

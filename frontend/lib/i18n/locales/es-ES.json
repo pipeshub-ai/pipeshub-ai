@@ -2187,7 +2187,9 @@
       },
       "featureFlags": {
         "title": "Indicadores de funciones",
-        "subtitle": "Active o desactive funciones experimentales para todos los agentes de este espacio de trabajo."
+        "subtitle": "Active o desactive funciones experimentales para todos los agentes de este espacio de trabajo.",
+        "advancedTitle": "Mostrar indicadores de funciones avanzadas",
+        "advancedSubtitle": "Indicadores internos que la mayoría de los espacios de trabajo pueden dejar en su valor predeterminado."
       },
       "vectorStore": {
         "title": "Almacén vectorial",

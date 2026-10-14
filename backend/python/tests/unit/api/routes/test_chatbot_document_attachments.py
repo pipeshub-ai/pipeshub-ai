@@ -1,5 +1,6 @@
 """Unit tests for DOCX / XLSX / CSV chat attachment upload support."""
 
+import asyncio
 import base64
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -159,6 +160,62 @@ async def test_upload_csv_dispatches_to_lightweight_parser():
     assert out["attachments"][0]["parseMode"] == "csv_lightweight"
     assert out["attachments"][0]["ocrMode"] == "csv_lightweight"
     orch.index.assert_awaited()
+
+
+def _csv_attachment(name: str, content: bytes) -> dict:
+    return {
+        "fileName": name,
+        "mimeType": "text/csv",
+        "size": len(content),
+        "contentBase64": base64.b64encode(content).decode("ascii"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_files_in_one_upload_share_one_description_budget() -> None:
+    """The Slack bot and the API send several files in one request, and the route
+    indexes them one after another. Each record gets what is left of one budget,
+    not a fresh one, or three slow files would spend three budgets."""
+    from app.api.routes.chatbot import upload_chat_attachments
+    from app.modules.transformers.transformer import IMAGE_DESCRIPTION_BUDGET_S
+
+    csv_bytes = b"name,amount\nAlice,10\n"
+    payload = {"attachments": [_csv_attachment("a.csv", csv_bytes), _csv_attachment("b.csv", csv_bytes)]}
+    req = MagicMock()
+    req.json = AsyncMock(return_value=payload)
+    req.state.user = {"orgId": "org-1", "userId": "user-1", "isServiceAccount": False}
+    req.app.container = MagicMock()
+
+    gp = AsyncMock()
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+
+    fake_blocks = BlocksContainer(blocks=[], block_groups=[])
+    contexts: list[dict] = []
+
+    async def slow_index(_ctx: object) -> None:
+        await asyncio.sleep(0.3)
+
+    with patch("app.api.routes.chatbot.BlobStorage") as mock_bs_cls, patch(
+        "app.api.routes.chatbot.GraphDBTransformer", return_value=MagicMock()
+    ), patch("app.api.routes.chatbot.SinkOrchestrator") as mock_sink_cls, patch(
+        "app.api.routes.chatbot.convert_record_dict_to_record",
+        side_effect=lambda _doc: MagicMock(block_containers=fake_blocks),
+    ), patch(
+        "app.api.routes.chatbot.TransformContext",
+        MagicMock(side_effect=lambda **kwargs: contexts.append(kwargs) or MagicMock()),
+    ), patch(
+        "app.api.routes.chatbot._build_csv_blocks", new_callable=AsyncMock, return_value=fake_blocks,
+    ), patch("app.api.routes.chatbot._CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S", 1.0):
+        bs = AsyncMock()
+        bs.save_binary_to_storage = AsyncMock(return_value=("ext", None))
+        mock_bs_cls.return_value = bs
+        mock_sink_cls.return_value = AsyncMock(index=AsyncMock(side_effect=slow_index))
+
+        await upload_chat_attachments(req, gp, AsyncMock())
+
+    first, second = (ctx["settings"][IMAGE_DESCRIPTION_BUDGET_S] for ctx in contexts)
+    assert 0.9 <= first <= 1.0
+    assert second <= first - 0.25
 
 
 @pytest.mark.asyncio

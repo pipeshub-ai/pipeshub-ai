@@ -100,7 +100,10 @@ def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
+        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+        return_value=[120] * len_pages,
+    ):
         with patch(
             "app.api.routes.chatbot.OCRStrategy.needs_ocr",
             return_value=needs_ocr_per_page,
@@ -124,8 +127,109 @@ def test_pdf_has_any_empty_doc():
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
+        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[],
+    ):
         assert _pdf_has_any_ocr_page(b"%PDF-empty") is False
+
+
+def _fake_pdfplumber_open(page_count: int) -> type:
+    mock_pdf = MagicMock()
+    mock_pdf.pages = [MagicMock() for _ in range(page_count)]
+
+    class FakePDFOpen:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> MagicMock:
+            return mock_pdf
+
+        def __exit__(self, *_) -> None:
+            pass
+
+    return FakePDFOpen
+
+
+class TestPdfOcrDecisionUsesTheTextLayer:
+    """PP-256: pdfplumber spent over a minute deciding that a report whose glyphs
+    were drawn as vector paths had no text. pdfium's per-page character counts
+    settle textless pages first; pdfplumber's heuristic sees only pages with text."""
+
+    def test_pages_without_a_text_layer_never_reach_pdfplumber(self) -> None:
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[0, 0, 0],
+        ), patch("app.api.routes.chatbot.OCRStrategy.needs_ocr") as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is True
+
+        needs_ocr.assert_not_called()
+
+    @pytest.mark.parametrize("pages_needing_ocr,expect", [(0, False), (1, True)])
+    def test_pages_with_text_keep_the_existing_heuristic(
+        self, pages_needing_ocr: int, expect: bool,
+    ) -> None:
+        """One textless page of four plus the heuristic's verdict on the other three."""
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        verdicts = [True] * pages_needing_ocr + [False] * (3 - pages_needing_ocr)
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(4)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+            return_value=[0, 40, 300, 12],
+        ), patch(
+            "app.api.routes.chatbot.OCRStrategy.needs_ocr", side_effect=verdicts,
+        ) as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
+
+        assert needs_ocr.call_count == 3
+
+    @pytest.mark.parametrize(
+        "char_counts",
+        [RuntimeError("pdfium could not open it"), [[0]]],
+        ids=["pdfium-error", "page-count-mismatch"],
+    )
+    def test_every_page_gets_the_heuristic_when_pdfium_cannot_help(
+        self, char_counts: object,
+    ) -> None:
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", side_effect=char_counts,
+        ), patch(
+            "app.api.routes.chatbot.OCRStrategy.needs_ocr", return_value=False,
+        ) as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is False
+
+        assert needs_ocr.call_count == 3
+
+    def test_a_real_pdf_of_vector_shapes_is_sent_to_ocr(self) -> None:
+        pytest.importorskip("reportlab")
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+        from app.modules.parsers.pdf import pdf_rasterizer
+        from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        for _ in range(2):
+            c.rect(72, 600, 200, 100, fill=1)
+            c.showPage()
+        c.drawString(72, 700, "A page with a real text layer")
+        c.showPage()
+        c.save()
+
+        # The worker runs in-process here; the pool only adds process isolation.
+        with patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+            side_effect=pdf_rasterizer._worker_count_chars_from_bytes,
+        ), patch.object(OCRStrategy, "needs_ocr", wraps=OCRStrategy.needs_ocr) as needs_ocr:
+            assert _pdf_has_any_ocr_page(buf.getvalue()) is True
+
+        assert needs_ocr.call_count == 1
 
 
 def test_pdf_page_count_fixture():

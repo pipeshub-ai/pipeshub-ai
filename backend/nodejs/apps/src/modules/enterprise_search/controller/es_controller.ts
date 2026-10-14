@@ -524,6 +524,9 @@ export const uploadChatAttachments =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        // Every attempt stores the files as new records, so a retry after a
+        // slow first attempt leaves duplicates the user never sees.
+        maxAttempts: 1,
       };
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -614,6 +617,8 @@ export const uploadChatAttachmentsInternal =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        // Not retried, for the same reason as uploadChatAttachments.
+        maxAttempts: 1,
       };
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);

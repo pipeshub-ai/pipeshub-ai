@@ -13,6 +13,10 @@ class ReconciliationContext(BaseModel):
 #: the same handler, so the indexed write also marks extraction IN_PROGRESS.
 ENRICHMENT_FOLLOWS = "enrichment_follows"
 
+#: ``TransformContext.settings`` key: seconds the image-description pass may
+#: take before the remaining images are stored undescribed. Unset means no limit.
+IMAGE_DESCRIPTION_BUDGET_S = "image_description_budget_s"
+
 
 class TransformContext(BaseModel):
     record: Record

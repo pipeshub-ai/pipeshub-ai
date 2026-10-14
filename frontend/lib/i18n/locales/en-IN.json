@@ -2160,7 +2160,9 @@
       },
       "featureFlags": {
         "title": "Feature flags",
-        "subtitle": "Toggle experimental capabilities for every agent in this workspace."
+        "subtitle": "Toggle experimental capabilities for every agent in this workspace.",
+        "advancedTitle": "Show advanced feature flags",
+        "advancedSubtitle": "Internal flags that most workspaces can leave at their defaults."
       },
       "vectorStore": {
         "title": "Vector Store",

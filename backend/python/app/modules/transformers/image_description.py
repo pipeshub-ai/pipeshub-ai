@@ -120,14 +120,17 @@ class ImageDescriber:
         block_containers: "BlocksContainer | None",
         *,
         inherited: dict[str, str] | None = None,
+        budget_s: float | None = None,
     ) -> int:
         """Describe the image blocks that need it. Returns how many were written.
 
         Never raises: a record that cannot be described is still a record worth
         indexing, and the query side degrades to whatever text it does have.
+        With *budget_s*, descriptions not finished that many seconds after the
+        first vision call starts are skipped.
         """
         try:
-            return await self._annotate(block_containers, inherited or {})
+            return await self._annotate(block_containers, inherited or {}, budget_s)
         except Exception:
             self.logger.warning(
                 "Image description failed for this record; indexing continues without it",
@@ -136,7 +139,10 @@ class ImageDescriber:
             return 0
 
     async def _annotate(
-        self, block_containers: "BlocksContainer | None", inherited: dict[str, str],
+        self,
+        block_containers: "BlocksContainer | None",
+        inherited: dict[str, str],
+        budget_s: float | None,
     ) -> int:
         blocks = getattr(block_containers, "blocks", None) or []
         candidates = [b for b in blocks if b.type == BlockType.IMAGE and _image_uri(b)]
@@ -183,7 +189,7 @@ class ImageDescriber:
             )
             pending = pending[:cap]
 
-        written = await self._describe_all(pending, vlm)
+        written = await self._describe_all(pending, vlm, budget_s)
         self.logger.info(
             "Described %d image(s), reused %d from the previous version", written, reused,
         )
@@ -203,14 +209,22 @@ class ImageDescriber:
         return is_decorative_image(width, height)
 
     async def _describe_all(
-        self, pending: list[tuple["Block", str]], vlm: "BaseChatModel",
+        self,
+        pending: list[tuple["Block", str]],
+        vlm: "BaseChatModel",
+        budget_s: float | None = None,
     ) -> int:
         semaphore = asyncio.Semaphore(_CONCURRENCY)
+        loop = asyncio.get_running_loop()
+        deadline = None if budget_s is None else loop.time() + budget_s
 
         async def describe(block: "Block", uri: str) -> bool:
             async with semaphore:
                 try:
-                    description = await self._describe_one(uri, vlm)
+                    # The model client's own timeout is 6 minutes with retries;
+                    # one stalled call must not hold a caller that has a deadline.
+                    async with asyncio.timeout_at(deadline):
+                        description = await self._describe_one(uri, vlm)
                 except Exception as exc:
                     # One unreadable image must not cost the record its other
                     # descriptions, so this is logged and skipped, not raised.
@@ -224,7 +238,13 @@ class ImageDescriber:
         results = await asyncio.gather(
             *(describe(block, uri) for block, uri in pending), return_exceptions=False,
         )
-        return sum(1 for ok in results if ok)
+        written = sum(1 for ok in results if ok)
+        if deadline is not None and loop.time() >= deadline:
+            self.logger.info(
+                "Stopped describing images at the %.0fs budget: %d of %d described",
+                budget_s, written, len(pending),
+            )
+        return written
 
     async def _describe_one(self, uri: str, vlm: "BaseChatModel") -> str:
         from langchain_core.messages import HumanMessage

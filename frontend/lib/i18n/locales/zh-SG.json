@@ -2306,7 +2306,9 @@
       },
       "featureFlags": {
         "title": "功能开关",
-        "subtitle": "为此工作区中的每个智能体启用或关闭实验性功能。"
+        "subtitle": "为此工作区中的每个智能体启用或关闭实验性功能。",
+        "advancedTitle": "显示高级功能开关",
+        "advancedSubtitle": "大多数工作区可以保持默认值的内部开关。"
       },
       "vectorStore": {
         "title": "向量存储",

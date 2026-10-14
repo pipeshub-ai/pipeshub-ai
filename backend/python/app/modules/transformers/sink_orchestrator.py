@@ -17,7 +17,12 @@ from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.image_description import ImageDescriber, harvest_descriptions
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS, TransformContext, Transformer
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    IMAGE_DESCRIPTION_BUDGET_S,
+    TransformContext,
+    Transformer,
+)
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -457,7 +462,11 @@ class SinkOrchestrator(Transformer):
                     "No previous version to inherit image descriptions from", exc_info=True,
                 )
 
-        await self.image_describer.annotate(containers, inherited=inherited)
+        await self.image_describer.annotate(
+            containers,
+            inherited=inherited,
+            budget_s=ctx.settings.get(IMAGE_DESCRIPTION_BUDGET_S),
+        )
 
     async def _update_indexing_status(self, ctx: TransformContext) -> None:
         """Mark indexingStatus=COMPLETED.

@@ -17,7 +17,7 @@ from app.config.constants.arangodb import Connectors
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat, ImageMetadata
 from app.models.entities import MimeTypes, OriginTypes, Record, RecordType
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import IMAGE_DESCRIPTION_BUDGET_S, TransformContext
 
 
 def _make_orchestrator(*, previous_record=None):
@@ -160,3 +160,17 @@ async def test_skip_blob_skips_the_description_pass_too(skip_blob: bool) -> None
     await orchestrator.index(ctx)
 
     assert orchestrator.image_describer.annotate.await_count == (0 if skip_blob else 1)
+
+
+@pytest.mark.parametrize("settings,budget", [({}, None), ({IMAGE_DESCRIPTION_BUDGET_S: 40}, 40)])
+async def test_the_callers_description_budget_reaches_the_describer(settings, budget) -> None:
+    """Chat uploads bound the pass so it cannot outlast the browser's wait;
+    connector indexing sets nothing and keeps describing without a limit."""
+    orchestrator = _make_orchestrator()
+    orchestrator.image_describer.annotate = AsyncMock(return_value=1)
+    ctx = _ctx(_image_block())
+    ctx.settings = settings
+
+    await orchestrator.index(ctx)
+
+    assert orchestrator.image_describer.annotate.await_args.kwargs["budget_s"] == budget

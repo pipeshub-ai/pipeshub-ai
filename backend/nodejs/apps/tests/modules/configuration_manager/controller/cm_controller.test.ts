@@ -786,6 +786,27 @@ describe('ConfigurationManager Controller', () => {
       const flags = res.json.firstCall.args[0].flags
       expect(flags.find((f: any) => f.key === 'ENABLE_BETA_CONNECTORS')).to.be.undefined
     })
+
+    it('should mark internal flags as advanced and keep them in the list', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
+      expect(advancedKeys).to.include.members([
+        'ENABLE_VECTOR_STORE_REBUILD',
+        'ENABLE_CONTAINER_PERMISSION_FILTER',
+        'ENABLE_SOFT_DELETE',
+        'ENABLE_NAMED_ENTITY_EXTRACTION',
+        'ENABLE_USER_CONTEXT',
+      ])
+      expect(flags.find((f: any) => f.key === 'ENABLE_MCP')?.advanced).to.not.equal(true)
+      expect(flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')?.defaultEnabled).to.equal(false)
+    })
   })
 
   describe('getEffectivePlatformFeatureFlags', () => {

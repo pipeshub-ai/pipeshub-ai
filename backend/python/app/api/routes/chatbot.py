@@ -43,6 +43,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import (
+    count_chars_per_page_from_bytes_sync,
     render_all_pages_as_pil_from_bytes_sync,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
@@ -52,7 +53,10 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import (
+    IMAGE_DESCRIPTION_BUDGET_S,
+    TransformContext,
+)
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -165,12 +169,33 @@ class AttachmentUploadRequest(BaseModel):
     attachments: list[AttachmentUploadItem]
 
 
+def _text_layer_char_counts(file_content: bytes) -> list[int] | None:
+    try:
+        return count_chars_per_page_from_bytes_sync(file_content)
+    except Exception:
+        logger.warning(
+            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
+            exc_info=True,
+        )
+        return None
+
+
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
+    chars_per_page = _text_layer_char_counts(file_content)
     with pdfplumber.open(BytesIO(file_content)) as pdf:
         total = len(pdf.pages)
         if total == 0:
             return False
-        ocr_count = sum(1 for page in pdf.pages if OCRStrategy.needs_ocr(page, logger))
+        if chars_per_page is None or len(chars_per_page) != total:
+            chars_per_page = [None] * total
+        # A page with no text layer always needs OCR (`needs_ocr` sees zero text
+        # density), so it is counted without pdfplumber, which can spend minutes
+        # walking a page whose glyphs are drawn as vector paths.
+        ocr_count = sum(
+            1
+            for page, chars in zip(pdf.pages, chars_per_page)
+            if chars == 0 or OCRStrategy.needs_ocr(page, logger)
+        )
     return ocr_count / total >= 0.5
 
 
@@ -443,6 +468,10 @@ def _attachment_unreadable(file_name: str, kind: str) -> str:
 
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
+
+# The browser gives an attachment upload 90s, and one stalled vision call can run
+# for minutes. An image left undescribed still reaches a multimodal chat model.
+_CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S = 40
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
@@ -823,6 +852,10 @@ async def upload_chat_attachments(
             config_service=config_service,
         )
 
+        # One budget for the whole request: its records are indexed one after
+        # another, and the Slack bot and API send up to 10 files in one upload.
+        loop = asyncio.get_running_loop()
+        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -834,7 +867,11 @@ async def upload_chat_attachments(
             record.virtual_record_id = record_doc.get("virtualRecordId")
             ctx = TransformContext(
                 record=record,
-                settings={"sink_only": True, "skip_vector_store": True},
+                settings={
+                    "sink_only": True,
+                    "skip_vector_store": True,
+                    IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
+                },
             )
             await sink_orchestrator.index(ctx)
     except Exception:
