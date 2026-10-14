@@ -2747,3 +2747,13 @@ class TestTokenBudgetBatches:
         from app.modules.transformers.vectorstore import _token_len
 
         assert _token_len('stop = "<|endoftext|>"') > 0
+
+    def test_text_that_spells_a_special_token_is_split_too(self) -> None:
+        """One unsplittable span over the ceiling reaches the token slicer;
+        a special-token spelling in it must not fail the record."""
+        from app.modules.transformers.vectorstore import _split_to_token_ceiling
+
+        text = "x" * 200 + "<|endoftext|>" + "y" * 200
+        pieces = _split_to_token_ceiling(text, 50)
+        assert len(pieces) > 1
+        assert "".join(pieces) == text

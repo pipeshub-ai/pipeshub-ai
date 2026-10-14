@@ -368,7 +368,9 @@ def _slice_on_character_boundaries(text: str, step: int) -> List[str]:
         raw = text.encode("utf-8")
         chunks = (raw[i : i + step] for i in range(0, len(raw), step))
     else:
-        tokens = encoder.encode(text)
+        # disallowed_special=(), as in _token_len: "<|endoftext|>" in the
+        # text is text to split, not a reason to fail the record.
+        tokens = encoder.encode(text, disallowed_special=())
         chunks = (
             encoder.decode_bytes(tokens[i : i + step])
             for i in range(0, len(tokens), step)
