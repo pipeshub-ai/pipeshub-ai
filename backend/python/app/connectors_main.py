@@ -78,7 +78,7 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - see the first import
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
