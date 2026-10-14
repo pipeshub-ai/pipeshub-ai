@@ -36149,6 +36149,7 @@ paths:
           in: query
           description: Which connector types to list. Defaults to `team`.
           schema:
+            title: ConnectorRegistryScope
             allOf:
               - $ref: '#/components/schemas/ConnectorScope'
             default: team
