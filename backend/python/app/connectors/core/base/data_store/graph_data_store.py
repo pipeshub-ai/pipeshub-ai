@@ -530,8 +530,12 @@ class GraphTransactionStore(TransactionStore):
         )
         return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
-    async def get_user_groups(self, connector_id: str, org_id: str) -> list[AppUserGroup]:
-        return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
+    async def get_user_groups(
+        self, connector_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_user_groups(
+            connector_id, org_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)

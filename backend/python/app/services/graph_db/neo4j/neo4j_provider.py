@@ -4755,7 +4755,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         connector_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[AppUserGroup]:
         """Get all user groups for a connector"""
         try:
@@ -4780,6 +4782,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Get user groups failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_app_role_by_external_id(

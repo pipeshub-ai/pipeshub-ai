@@ -109,6 +109,13 @@ async def test_kept_records_are_noted_as_seen_by_the_full_sync_in_progress() -> 
     assert run.has(CollectionNames.RECORDS.value, "r1") and run.has(CollectionNames.RECORDS.value, "r2")
 
 
+async def test_kept_user_groups_are_noted_as_seen_by_the_full_sync_in_progress() -> None:
+    processor = processor_over(FakeStore([]))
+    run = processor.begin_full_sync_run("c1")
+    processor.note_kept_user_groups("c1", [SimpleNamespace(id="g1"), SimpleNamespace(id="g2")])
+    assert run.has(CollectionNames.GROUPS.value, "g1") and run.has(CollectionNames.GROUPS.value, "g2")
+
+
 async def test_an_edge_read_that_fails_raises_instead_of_reading_as_nothing_stored() -> None:
     store = FakeStore([], edge_read_fails=True)
     with pytest.raises(RuntimeError, match="edge read failed"):

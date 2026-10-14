@@ -298,7 +298,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_groups(self, connector_id: str, org_id: str) -> list[UserGroup]:
+    async def get_user_groups(
+        self, connector_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> list[UserGroup]:
         pass
 
     @abstractmethod

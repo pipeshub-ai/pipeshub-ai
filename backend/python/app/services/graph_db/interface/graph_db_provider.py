@@ -3040,7 +3040,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list['AppUserGroup']:
         """
         Get all user groups for a connector in an organization.

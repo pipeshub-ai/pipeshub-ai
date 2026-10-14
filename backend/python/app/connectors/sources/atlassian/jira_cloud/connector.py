@@ -430,8 +430,9 @@ class JiraConnector(BaseConnector):
         self._kept_unread_access: bool = False
         # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id):
         # a user group or role; ("project_roles", key) or ("project_issues", key) for a project
-        # whose role list or issue search was refused; ("projects", "") for every project when
-        # the groups are unknown. They are noted as seen before run_sync returns, so a full
+        # whose role list or issue search was refused; ("projects", ""), ("user_groups", "") and
+        # ("project_role_ids", "") for every project, stored group and project role when the
+        # groups are unknown. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
         # True when the bulk user list was refused on its first page: the account cannot
@@ -600,8 +601,62 @@ class JiraConnector(BaseConnector):
             elif entity == "project_issues":
                 if external_id in project_ids:
                     await self._keep_stored_records(project_ids[external_id])
+            elif entity == "user_groups":
+                await self._keep_stored_user_groups()
+            elif entity == "project_role_ids":
+                await self._keep_stored_project_roles(list(project_ids))
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
+        """Note each project's stored roles as seen by a full sync in progress, without saving them.
+
+        The group list was refused, so roles are not synced (a role saved without its groups'
+        members would lose them), but the role lists can still be read. A role a project grant
+        does not name is kept this way too. A role list that fails in a way that may pass on a
+        later run reports an incomplete read instead, so nothing is unlinked. A refused one
+        (403) is lasting: the roles the project's stored grants name are kept through the
+        project, and the others give no one access.
+        """
+        for project_key in project_keys:
+            try:
+                response = await self._call_with_retry(
+                    lambda ds, key=project_key: ds.get_project_roles(projectIdOrKey=key),
+                    ctx=f"roles for project {project_key}",
+                )
+                if response.status != HttpStatusCode.OK.value:
+                    raise JiraReadError(response.status, f"HTTP {response.status}")
+                roles = response.json() or {}
+                if not isinstance(roles, dict):
+                    raise ValueError("the role list is not a mapping")
+            except JiraReadError as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._note_unread(e.status)
+                continue
+            except Exception as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._kept_unread_access = True
+                continue
+            for role_name, role_url in roles.items():
+                if role_name == ATLASSIAN_ADDONS_PROJECT_ROLE or not isinstance(role_url, str):
+                    continue
+                role_id = role_url.rstrip("/").split("/")[-1]
+                await self._has_stored_access("role", f"{project_key}_{role_id}")
+
+    async def _keep_stored_user_groups(self) -> None:
+        """Note every stored user group of this connector as seen by a full sync in progress.
+
+        The group list could not be read in full, so which groups still exist is unknown,
+        including ones no project grant names. If they cannot be listed, the run reports an
+        incomplete read instead, so nothing is unlinked.
+        """
+        try:
+            groups = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("⚠️ Could not list the stored groups to keep them: %s", e)
+            self._kept_unread_access = True
+            return
+        self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
 
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
@@ -2611,8 +2666,11 @@ class JiraConnector(BaseConnector):
                             response.status == HttpStatusCode.FORBIDDEN.value
                         )
                     # The groups past a refusal (403) are unknown, so every project's stored
-                    # grants, and the groups and roles they name, are kept.
+                    # grants, the groups and roles they name, every stored group, and each
+                    # project's roles are kept.
                     self._note_unread(response.status, ("projects", ""))
+                    self._note_unread(response.status, ("user_groups", ""))
+                    self._note_unread(response.status, ("project_role_ids", ""))
                     break
 
                 groups_data = response.json()
