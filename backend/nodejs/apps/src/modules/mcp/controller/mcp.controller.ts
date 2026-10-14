@@ -15,10 +15,8 @@ import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import { PAT_APP_CLIENT_ID_PREFIX } from '../../oauth_provider/constants/constants';
 
-const getLogger = (): Logger =>
-  Logger.getInstance({
-    service: 'MCPController',
-  });
+const getLogger = (): Logger => Logger.getInstance();
+const MCP_SERVICE = 'MCPController';
 
 // ESM-only modules — imported eagerly at module load, Node caches the result
 const mcpServerModule = import('@pipeshub-ai/mcp/esm/mcp-server/server.js');
@@ -125,10 +123,18 @@ export const handleMCPRequest =
       const { server: mcpServer } = createMCPServer({
         logger: {
           level: getLogLevel(),
-          info: logger.info.bind(logger),
-          debug: logger.debug.bind(logger),
-          warning: logger.warn.bind(logger),
-          error: logger.error.bind(logger),
+          info: (msg, meta) => {
+            logger.info(msg, { service: MCP_SERVICE, ...meta });
+          },
+          debug: (msg, meta) => {
+            logger.debug(msg, { service: MCP_SERVICE, ...meta });
+          },
+          warning: (msg, meta) => {
+            logger.warn(msg, { service: MCP_SERVICE, ...meta });
+          },
+          error: (msg, meta) => {
+            logger.error(msg, { service: MCP_SERVICE, ...meta });
+          },
         },
         dynamic: false,
         serverURL,
@@ -147,7 +153,11 @@ export const handleMCPRequest =
       // "initialized" notification never reaches this one. Count an accepted
       // initialize: a refused one can still answer HTTP 200 with a JSON-RPC
       // error, and the server keeps the client's info only once it accepts.
-      if (connectedProps && res.statusCode < 400 && mcpServer.server.getClientVersion()) {
+      if (
+        connectedProps &&
+        res.statusCode < 400 &&
+        mcpServer.server.getClientVersion()
+      ) {
         recordEvent('mcp_connected', connectedProps);
         recordActivityFromProps('mcp_connected', connectedProps);
       }
@@ -163,11 +173,13 @@ export const handleMCPRequest =
       const jsonRpcMethod =
         typeof body?.method === 'string' ? body.method : undefined;
       logger.info('MCP request completed', {
+        service: MCP_SERVICE,
         method: jsonRpcMethod,
         requestId: req.context?.requestId,
       });
     } catch (error: any) {
       logger.error('MCP request failed', {
+        service: MCP_SERVICE,
         error: error.message,
         method: req.method,
         userId: req.user?.userId,
