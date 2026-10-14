@@ -841,6 +841,31 @@ class TestEncodeGate:
         assert gate.in_use == 0
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("capacity", [1, 2])
+    async def test_a_steady_stream_of_batches_cannot_keep_a_query_waiting(
+        self, capacity: int
+    ) -> None:
+        """Batches looping on every slot, with more always queued: a query
+        still gets the next slot a batch frees."""
+        gate = EncodeGate(capacity=capacity, reserved_for_queries=0)
+        stop = asyncio.Event()
+
+        async def bulk_loop() -> None:
+            while not stop.is_set():
+                async with gate.slot(EncodePriority.BULK):
+                    await asyncio.sleep(0.001)
+
+        loops = [asyncio.ensure_future(bulk_loop()) for _ in range(4)]
+        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(gate.acquire(EncodePriority.QUERY), timeout=1)
+        finally:
+            stop.set()
+        gate.release(EncodePriority.QUERY)
+        await asyncio.gather(*loops)
+        assert gate.in_use == 0
+
+    @pytest.mark.asyncio
     async def test_queries_leave_the_last_slot_to_bulk_that_has_none(self) -> None:
         gate = EncodeGate(capacity=3, reserved_for_queries=1)
         await gate.acquire(EncodePriority.QUERY)

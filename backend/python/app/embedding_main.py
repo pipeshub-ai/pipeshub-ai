@@ -326,9 +326,11 @@ class EncodeGate:
 
     Bulk is never shut out. While a bulk request is waiting and no bulk
     request holds a slot, queries may not take the last free slot, and the
-    next slot freed goes to bulk; so a steady stream of queries slows
-    indexing to one encode at a time but cannot stop it. With a single slot
-    that means the two take turns. Event-loop only; no locking.
+    next slot a query frees goes to bulk; so a steady stream of queries
+    slows indexing to one encode at a time but cannot stop it. A slot a
+    batch frees goes to a waiting query first, so a steady stream of
+    batches cannot keep queries waiting either. With a single slot the two
+    take turns. Event-loop only; no locking.
     """
 
     def __init__(self, capacity: int, reserved_for_queries: int = 1) -> None:
@@ -373,11 +375,14 @@ class EncodeGate:
         if priority is EncodePriority.BULK:
             self._bulk_in_use += 1
 
-    def _grant_next(self, priority: EncodePriority) -> bool:
+    def _grant_next(self, priority: EncodePriority, *, any_free_slot: bool = False) -> bool:
         queue = self._waiting[priority]
         while queue and queue[0].done():
             queue.popleft()
-        if not queue or not self._has_room(priority):
+        if not queue:
+            return False
+        room = self._in_use < self._capacity if any_free_slot else self._has_room(priority)
+        if not room:
             return False
         # The slot is taken on the waiter's behalf, so nothing that runs
         # before it resumes can take it first.
@@ -385,7 +390,13 @@ class EncodeGate:
         queue.popleft().set_result(None)
         return True
 
-    def _wake(self) -> None:
+    def _wake(self, *, bulk_released: bool = False) -> None:
+        if bulk_released:
+            # A finished batch hands its slot to a waiting query first, even
+            # the last free one: otherwise, with batches always queued, the
+            # slot would pass from batch to batch and a query would wait for
+            # the whole queue. Bulk gets the next slot a query frees.
+            self._grant_next(EncodePriority.QUERY, any_free_slot=True)
         while True:
             # Bulk first only when it holds nothing; otherwise queries first.
             order = (
@@ -417,7 +428,7 @@ class EncodeGate:
         self._in_use = max(0, self._in_use - 1)
         if priority is EncodePriority.BULK:
             self._bulk_in_use = max(0, self._bulk_in_use - 1)
-        self._wake()
+        self._wake(bulk_released=priority is EncodePriority.BULK)
 
     @asynccontextmanager
     async def slot(self, priority: EncodePriority) -> AsyncIterator[None]:
