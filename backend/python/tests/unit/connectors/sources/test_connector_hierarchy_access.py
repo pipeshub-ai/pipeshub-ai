@@ -7,6 +7,7 @@ from app.connectors.sources.dropbox.access import (
 )
 from app.connectors.sources.google.drive.team.drive_access import (
     grants_to_store,
+    is_drive_organizer,
     item_inherits_parent,
     permission_is_direct,
 )
@@ -59,6 +60,24 @@ class TestDriveAccess:
         assert grants_to_store(
             everyone, direct, saw_permission_details=True, inherited_permissions_disabled=True, is_drive=False,
         ) == direct
+
+    def test_limited_access_keeps_inherited_managers_only(self) -> None:
+        manager = {"permissionDetails": [{"permissionType": "member", "inherited": True, "role": "organizer"}]}
+        content_manager = {"permissionDetails": [{"permissionType": "member", "inherited": True, "role": "fileOrganizer"}]}
+        assert is_drive_organizer(manager) is True
+        assert is_drive_organizer(content_manager) is False
+        assert permission_is_direct(manager) is False
+
+        manager_grant, direct_grant = _grant("manager@x.com"), _grant("direct@x.com")
+        everyone = [manager_grant, _grant("content-manager@x.com"), direct_grant]
+        assert grants_to_store(
+            everyone, [direct_grant], saw_permission_details=True, inherited_permissions_disabled=True,
+            is_drive=False, organizer_permissions=[manager_grant],
+        ) == [direct_grant, manager_grant]
+        assert grants_to_store(
+            everyone, [direct_grant], saw_permission_details=True, inherited_permissions_disabled=False,
+            is_drive=False, organizer_permissions=[manager_grant],
+        ) == [direct_grant]
 
     def test_fallback_does_not_inherit(self) -> None:
         assert item_inherits_parent(
