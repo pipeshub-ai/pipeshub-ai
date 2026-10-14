@@ -9,6 +9,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from app.connectors.core.constants import AuthFieldKeys
+from app.sources.client.zendesk.zendesk import normalize_subdomain
 from app.utils.oauth_config import OAuthUrlRule, register_oauth_url_rule
 
 ZENDESK_OAUTH_URL_ERROR = (
@@ -22,9 +23,8 @@ _HTTPS_DEFAULT_PORT = 443
 
 
 def _zendesk_host(settings: dict[str, Any]) -> str:
-    subdomain = settings.get(SUBDOMAIN_KEY)
-    subdomain = subdomain.strip().lower() if isinstance(subdomain, str) else ""
-    if not _DNS_LABEL.match(subdomain):
+    subdomain = normalize_subdomain(settings.get(SUBDOMAIN_KEY))
+    if not _DNS_LABEL.fullmatch(subdomain):
         raise ValueError(ZENDESK_OAUTH_URL_ERROR)
     return f"{subdomain}{_ZENDESK_DOMAIN}"
 
@@ -53,7 +53,7 @@ def check_zendesk_oauth_settings(settings: dict[str, Any]) -> None:
             or parsed.password is not None
             or port not in (None, _HTTPS_DEFAULT_PORT)
             or not url_host.endswith(_ZENDESK_DOMAIN)
-            or not _DNS_LABEL.match(url_host.removesuffix(_ZENDESK_DOMAIN))
+            or not _DNS_LABEL.fullmatch(url_host.removesuffix(_ZENDESK_DOMAIN))
         ):
             raise ValueError(ZENDESK_OAUTH_URL_ERROR)
 

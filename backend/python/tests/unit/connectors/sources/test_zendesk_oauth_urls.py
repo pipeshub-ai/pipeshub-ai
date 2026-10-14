@@ -60,7 +60,13 @@ class TestSignInAndCallback:
         }
         assert await self._urls({"oauthConfigId": "app-1", "connectorScope": "team"}, shared) == (AUTHORIZE, TOKEN)
 
-    @pytest.mark.parametrize("subdomain", ["", "acme.zendesk.com", "evil.example/x", "a b"])
+    @pytest.mark.parametrize("subdomain", ["acme.zendesk.com", "https://acme.zendesk.com/", " ACME "])
+    async def test_a_subdomain_typed_as_a_host_or_url_is_reduced_to_it(self, subdomain: str) -> None:
+        assert await self._urls(_auth(subdomain=subdomain)) == (AUTHORIZE, TOKEN)
+
+    @pytest.mark.parametrize(
+        "subdomain", ["", "evil.example/x", "acme.zendesk.com.evil.example", "a b", "acme\n.zendesk.com"]
+    )
     async def test_a_bad_subdomain_stops_the_flow(self, subdomain: str) -> None:
         with pytest.raises(HTTPException) as refused:
             await self._urls(_auth(subdomain=subdomain))
@@ -90,7 +96,8 @@ class TestSaving:
             {"tokenUrl": "https://evil.example/oauth/tokens"},
             {"authorizeUrl": "https://acme.zendesk.com.evil.example/oauth/authorizations/new"},
             {"tokenUrl": "https://user@acme.zendesk.com/oauth/tokens"},
-            {"subdomain": "acme.zendesk.com"},
+            {"subdomain": "acme.zendesk.com.evil.example"},
+            {"subdomain": "evil.example/x"},
         ],
     )
     def test_refused(self, field: dict[str, str]) -> None:
@@ -102,6 +109,8 @@ class TestSaving:
         [
             {"subdomain": "acme", "authorizeUrl": AUTHORIZE, "tokenUrl": TOKEN},
             {"subdomain": "acme"},
+            {"subdomain": "acme.zendesk.com"},
+            {"subdomain": "https://acme.zendesk.com/"},
             {"oauthConfigId": "app-1"},
         ],
     )
