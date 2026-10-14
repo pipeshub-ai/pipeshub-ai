@@ -166,6 +166,18 @@ class ConnectorsClient(APIClient):
         options.setdefault("params", {k: v for k, v in params.items() if v is not None})
         return self.get("/configured", **options)
 
+    def list_active(self, **options: Any) -> requests.Response:
+        """GET /active"""
+        return self.get("/active", **options)
+
+    def list_inactive(self, **options: Any) -> requests.Response:
+        """GET /inactive"""
+        return self.get("/inactive", **options)
+
+    def list_active_agents(self, **options: Any) -> requests.Response:
+        """GET /agents/active"""
+        return self.get("/agents/active", **options)
+
     def create_instance(self, body: dict[str, Any], **options: Any) -> requests.Response:
         """Create a connector instance.
 
@@ -228,6 +240,12 @@ class ConnectorsClient(APIClient):
         """GET /{connectorId}/config"""
         return self.get(f"/{quote(connector_id, safe='')}/config", **options)
 
+    def update_config(
+        self, connector_id: str, body: dict[str, Any], **options: Any
+    ) -> requests.Response:
+        """PUT /{connectorId}/config"""
+        return self.put(f"/{quote(connector_id, safe='')}/config", json=body, **options)
+
     def update_auth_config(
         self, connector_id: str, body: dict[str, Any], **options: Any
     ) -> requests.Response:
@@ -241,6 +259,16 @@ class ConnectorsClient(APIClient):
         return self.put(
             f"/{quote(connector_id, safe='')}/config/filters-sync", json=body, **options
         )
+
+    def get_filters(self, connector_id: str, **options: Any) -> requests.Response:
+        """GET /{connectorId}/filters"""
+        return self.get(f"/{quote(connector_id, safe='')}/filters", **options)
+
+    def save_filters(
+        self, connector_id: str, body: dict[str, Any], **options: Any
+    ) -> requests.Response:
+        """POST /{connectorId}/filters"""
+        return self.post(f"/{quote(connector_id, safe='')}/filters", json=body, **options)
 
     def get_filter_options(
         self,
