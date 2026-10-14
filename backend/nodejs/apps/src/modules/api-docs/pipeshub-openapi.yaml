@@ -9578,14 +9578,14 @@ components:
             Only records the source created on or before this date. A `YYYY-MM-DD` value
             includes that whole day.
           example: "2026-03-31"
-        updatedAfter:
+        modifiedAfter:
           type: string
           maxLength: 64
           description: |
             Only records last changed in the source on or after this date. Same format as
             `createdAfter`.
           example: "2026-09-01"
-        updatedBefore:
+        modifiedBefore:
           type: string
           maxLength: 64
           description: |

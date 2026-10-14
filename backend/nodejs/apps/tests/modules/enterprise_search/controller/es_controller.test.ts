@@ -2793,26 +2793,26 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
 
       for (const body of [
-        { query: 'q', limit: 10, updatedAfter: '2026-09-01', createdBefore: '2026-03-31' },
+        { query: 'q', limit: 10, modifiedAfter: '2026-09-01', createdBefore: '2026-03-31' },
         { query: 'q', limit: 10 },
       ]) {
         const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
         await handler(req, createMockResponse(), createMockNext())
       }
 
-      expect(sent[0]).to.deep.include({ updatedAfter: '2026-09-01', createdBefore: '2026-03-31' })
-      expect(sent[0]).to.not.have.any.keys('createdAfter', 'updatedBefore')
-      expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore')
+      expect(sent[0]).to.deep.include({ modifiedAfter: '2026-09-01', createdBefore: '2026-03-31' })
+      expect(sent[0]).to.not.have.any.keys('createdAfter', 'modifiedBefore')
+      expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'modifiedAfter', 'modifiedBefore')
     })
 
     it('passes the AI service\'s reason for refusing a date back as a 400', async () => {
       const handler = search(createMockAppConfig())
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 400,
-        data: { detail: "updatedAfter: 'last week' is not a valid ISO 8601 date." },
+        data: { detail: "modifiedAfter: 'last week' is not a valid ISO 8601 date." },
       } as any)
       const req = createMockRequest({
-        body: { query: 'q', updatedAfter: 'last week' },
+        body: { query: 'q', modifiedAfter: 'last week' },
         user: { userId: VALID_OID, orgId: VALID_OID2 },
       })
       const next = createMockNext()

@@ -39,13 +39,14 @@ class SearchQuery(BaseModel):
     query: str
     limit: Optional[int] = 5
     filters: Optional[dict[str, Any]] = {}
-    # Optional date bounds on the source's own created / last-updated time:
+    # Optional date bounds on the source's own created / last-modified time,
+    # named as on the knowledge-graph navigate endpoint (createdAfter, modifiedAfter):
     # "YYYY-MM-DD" (a whole day, UTC) or an ISO 8601 datetime with an offset.
     # Both ends are inclusive.
     createdAfter: Optional[str] = None
     createdBefore: Optional[str] = None
-    updatedAfter: Optional[str] = None
-    updatedBefore: Optional[str] = None
+    modifiedAfter: Optional[str] = None
+    modifiedBefore: Optional[str] = None
 
 
 def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
@@ -57,8 +58,8 @@ def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
     time_range, error = parse_time_range(
         created_after=body.createdAfter,
         created_before=body.createdBefore,
-        modified_after=body.updatedAfter,
-        modified_before=body.updatedBefore,
+        modified_after=body.modifiedAfter,
+        modified_before=body.modifiedBefore,
     )
     if error is not None:
         message = json.loads(error).get("message", "Invalid date filter.")
@@ -66,8 +67,8 @@ def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
         for tool_name, api_name in (
             ("created_after", "createdAfter"),
             ("created_before", "createdBefore"),
-            ("modified_after", "updatedAfter"),
-            ("modified_before", "updatedBefore"),
+            ("modified_after", "modifiedAfter"),
+            ("modified_before", "modifiedBefore"),
         ):
             message = message.replace(tool_name, api_name)
         raise HTTPException(status_code=400, detail=message)

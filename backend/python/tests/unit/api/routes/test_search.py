@@ -550,7 +550,7 @@ class TestSearchEndpoint:
     async def test_date_bounds_reach_the_retrieval_service(self) -> None:
         """The retrieval service already filters by date; the route used to drop it."""
         body = SearchQuery(
-            query="q", updatedAfter="2026-09-01", updatedBefore="2026-09-30T12:00:00Z",
+            query="q", modifiedAfter="2026-09-01", modifiedBefore="2026-09-30T12:00:00Z",
             createdAfter="2026-01-01",
         )
 
@@ -572,9 +572,9 @@ class TestSearchEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("field", "value", "said"), [
-        ("updatedAfter", "last week", "updatedAfter: 'last week' is not a valid ISO 8601 date"),
+        ("modifiedAfter", "last week", "modifiedAfter: 'last week' is not a valid ISO 8601 date"),
         ("createdBefore", "2026-01-15T08:00:00", "createdBefore: '2026-01-15T08:00:00' has no timezone"),
-        ("updatedAfter", "2999-01-01", "updatedAfter cannot be in the future"),
+        ("modifiedAfter", "2999-01-01", "modifiedAfter cannot be in the future"),
     ])
     async def test_a_bad_date_is_a_400_that_names_the_field(
         self, field: str, value: str, said: str
@@ -598,12 +598,12 @@ class TestSearchEndpoint:
     async def test_an_inverted_range_is_a_400(self) -> None:
         with pytest.raises(HTTPException) as caught:
             await self._search_with(
-                SearchQuery(query="q", updatedAfter="2026-09-30", updatedBefore="2026-09-01")
+                SearchQuery(query="q", modifiedAfter="2026-09-30", modifiedBefore="2026-09-01")
             )
 
         assert caught.value.status_code == 400
         assert caught.value.detail == (
-            "updatedAfter must be on or before updatedBefore — got an inverted range."
+            "modifiedAfter must be on or before modifiedBefore — got an inverted range."
         )
 
 

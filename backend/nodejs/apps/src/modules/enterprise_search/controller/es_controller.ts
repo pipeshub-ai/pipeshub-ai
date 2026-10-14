@@ -4616,8 +4616,8 @@ export const searchArchivedConversations =
 const SEARCH_DATE_BOUNDS = [
   'createdAfter',
   'createdBefore',
-  'updatedAfter',
-  'updatedBefore',
+  'modifiedAfter',
+  'modifiedBefore',
 ] as const;
 
 export const search =

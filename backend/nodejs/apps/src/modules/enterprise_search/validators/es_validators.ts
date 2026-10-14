@@ -1056,8 +1056,8 @@ export const enterpriseSearchSearchSchema = z.object({
     // and answers 400 with the reason when one is not a date it accepts.
     createdAfter: searchDateSchema,
     createdBefore: searchDateSchema,
-    updatedAfter: searchDateSchema,
-    updatedBefore: searchDateSchema,
+    modifiedAfter: searchDateSchema,
+    modifiedBefore: searchDateSchema,
   }),
 });
 
