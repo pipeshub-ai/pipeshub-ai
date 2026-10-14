@@ -755,6 +755,50 @@ class TestMergePatternMatchResults:
         assert "record_name" not in vr_map["vr-1"]
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("raw", "graph_extra", "block_type"), [
+        ({"match_preview": "…annual fee of $1,250,000…"}, {}, "matched_text"),
+        ({"match_preview": "…annual fee…"}, {"summary": "A master services agreement."}, "record_summary"),
+        ({}, {}, "record_name"),
+        ({"match_preview": "…annual fee…"}, {"summary": "   "}, "record_name"),
+    ], ids=["matched-text", "summary", "name-only", "blank-summary"])
+    async def test_a_record_page_citation_says_which_text_it_shows(
+        self, raw: dict, graph_extra: dict, block_type: str,
+    ) -> None:
+        """Only matched text is the record's own words. A caller checking an
+        answer against its citations must be able to tell it from a summary
+        written at indexing time, or from a bare record name."""
+        from app.utils.citations import normalize_citations_and_chunks
+
+        graph_rec = {
+            "_key": "rec-1", "id": "rec-1", "orgId": "org-1", "virtualRecordId": "vr-1",
+            "indexingStatus": "COMPLETED", "recordName": "msa.pdf", "recordType": "FILE",
+            "mimeType": "application/pdf", "connectorId": "kb-1", **graph_extra,
+        }
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[graph_rec])
+        vr_map: dict[str, dict] = {}
+        await merge_pattern_match_results(
+            raw_records=[{"virtual_record_id": "vr-1", **raw}],
+            virtual_record_id_to_result=vr_map,
+            user_id="user-1",
+            org_id="org-1",
+            blob_store=AsyncMock(),
+            graph_provider=graph_provider,
+            is_multimodal_llm=False,
+            logger_instance=MagicMock(),
+        )
+
+        _answer, citations = normalize_citations_and_chunks(
+            "The fee is set [1](http://localhost:3000/record/rec-1).", [], [],
+            virtual_record_id_to_result=vr_map,
+        )
+
+        assert len(citations) == 1
+        assert citations[0]["metadata"]["blockType"] == block_type
+        assert citations[0]["metadata"]["webUrl"] == "http://localhost:3000/record/rec-1"
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("best_first", [True, False])
     async def test_a_preview_survives_when_the_best_hit_has_none(self, best_first: bool) -> None:
         best = {"virtual_record_id": "vr-1", "matched_terms": 2, "match_count": 5}
