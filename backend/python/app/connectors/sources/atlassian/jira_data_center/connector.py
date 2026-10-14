@@ -456,7 +456,9 @@ class JiraDataCenterConnector(BaseConnector):
         # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id):
         # a user group or role; ("project_roles", key) or ("project_issues", key) for a project
         # whose role list or issue search was refused; ("projects", "") for every project when
-        # the groups are unknown. They are noted as seen before run_sync returns, so a full
+        # the groups are unknown, with ("user_groups", "") and ("project_role_ids", "") for every
+        # stored group and project role when the group list is refused, or ("scheme_groups", "")
+        # for the stored groups this sync's schemes grant when it is cut off. They are noted as seen before run_sync returns, so a full
         # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
         # True when the bulk user list was refused on its first page: the account cannot
@@ -524,6 +526,13 @@ class JiraDataCenterConnector(BaseConnector):
                     await self._keep_stored_records(project_ids[external_id])
             elif entity == "user_groups":
                 await self._keep_stored_user_groups()
+            elif entity == "scheme_groups":
+                await self._keep_stored_user_groups({
+                    str(permission.external_id)
+                    for _, permissions in projects
+                    for permission in permissions or []
+                    if permission.entity_type == EntityType.GROUP and permission.external_id
+                })
             elif entity == "project_role_ids":
                 await self._keep_stored_project_roles(list(project_ids))
             else:
@@ -545,7 +554,7 @@ class JiraDataCenterConnector(BaseConnector):
                 response = await datasource.get_project_roles_v2(projectIdOrKey=project_key)
                 if response.status != HttpStatusCode.OK.value:
                     raise JiraReadError(response.status, f"HTTP {response.status}")
-                roles = response.json() or {}
+                roles = response.json()
                 if not isinstance(roles, dict):
                     raise ValueError("the role list is not a mapping")
             except JiraReadError as e:
@@ -557,24 +566,34 @@ class JiraDataCenterConnector(BaseConnector):
                 self._kept_unread_access = True
                 continue
             for role_name, role_url in roles.items():
-                if role_name == "atlassian-addons-project-access" or not isinstance(role_url, str):
+                if role_name == "atlassian-addons-project-access":
+                    continue
+                if not isinstance(role_url, str):
+                    # A role that cannot be named cannot be kept, so nothing is unlinked.
+                    self.logger.warning("⚠️ Role %s of project %s has no URL to keep it by", role_name, project_key)
+                    self._kept_unread_access = True
                     continue
                 role_id = role_url.rstrip("/").split("/")[-1]
                 await self._has_stored_access("role", f"{project_key}_{role_id}")
 
-    async def _keep_stored_user_groups(self) -> None:
-        """Note every stored user group of this connector as seen by a full sync in progress.
+    async def _keep_stored_user_groups(self, only: Optional[set[str]] = None) -> None:
+        """Note stored user groups of this connector as seen by a full sync in progress:
+        every one, or only those whose external ids are in ``only``.
 
         The group list could not be read in full, so which groups still exist is unknown,
         including ones no project grant names. If they cannot be listed, the run reports an
         incomplete read instead, so nothing is unlinked.
         """
+        if only is not None and not only:
+            return
         try:
             groups = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
         except Exception as e:
             self.logger.warning("⚠️ Could not list the stored groups to keep them: %s", e)
             self._kept_unread_access = True
             return
+        if only is not None:
+            groups = [group for group in groups if group.source_user_group_id in only]
         self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
 
     async def _keep_stored_records(self, project_id: str) -> None:
@@ -861,9 +880,12 @@ class JiraDataCenterConnector(BaseConnector):
             group_memberships = await self._sync_user_groups(jira_users)
             if group_memberships is not None and group_memberships.cut_off:
                 # Groups past the picker limit are never read, on any sync: lasting, like a
-                # refusal, so every project's stored grants and the groups they name are kept.
+                # refusal, so every project's stored grants and the groups they name are kept,
+                # and so are the stored groups this sync's schemes grant, including for the
+                # first time. A stored group past the limit that no grant names is not kept:
+                # it gives no one access, and it may be one Jira removed.
                 self._kept_after_refusal.append(("projects", ""))
-                self._kept_after_refusal.append(("user_groups", ""))
+                self._kept_after_refusal.append(("scheme_groups", ""))
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
