@@ -617,6 +617,30 @@ class TestPermissionChangeDropsEveryAffectedUser:
 
 
 
+class TestRecordIndexedAfterItsSync:
+    """The sync's delete runs when the sync completes; indexing finishes later.
+    A search in between cached the list without the record, and it stayed out
+    of search until the entry expired."""
+
+    async def test_it_is_searchable_once_indexing_finishes(self) -> None:
+        cache = _cache(FakeRedis())
+        invalidator = AccessibleRecordsInvalidator(MagicMock(), cache, MagicMock())
+        invalidator.RECORD_INDEXED_SETTLE_SECONDS = 0.01
+        await invalidator.on_connector_sync_completed(CONNECTOR, ORG)
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({})
+        ) == {}
+
+        await invalidator.on_record_indexed(
+            connector_name="DRIVE", connector_id=CONNECTOR, org_id=ORG
+        )
+
+        assert await cache.get_or_compute_user_connector(
+            ORG, CONNECTOR, USER, _loader({"vr-1": "rec-1"})
+        ) == {"vr-1": "rec-1"}
+        await asyncio.sleep(0.05)
+
+
 def _held_loader(value: dict[str, str]) -> tuple:
     """A loader that has read the graph and is still running until released."""
     started, release = asyncio.Event(), asyncio.Event()
