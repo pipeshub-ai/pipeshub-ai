@@ -1982,11 +1982,22 @@ async def enrich_records_with_address_links(
     except Exception as e:
         logger.warning("Address link enrichment skipped: %s", e)
         return
+    if not isinstance(links, dict):
+        return
+    # Only well-formed rows: {record_id: {"mentioned_in": [ids], "links_to": [ids]}}.
+    links = {
+        record_id: {
+            direction: [rid for rid in found.get(direction) or [] if isinstance(rid, str)]
+            for direction, _title in _ADDRESS_LINK_SECTIONS
+        }
+        for record_id, found in links.items()
+        if isinstance(found, dict)
+    }
     wanted: list[str] = list(dict.fromkeys(
         rid
-        for found in (links or {}).values()
+        for found in links.values()
         for direction, _title in _ADDRESS_LINK_SECTIONS
-        for rid in (found or {}).get(direction) or []
+        for rid in found[direction]
     ))
     if not wanted:
         return
