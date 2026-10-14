@@ -2406,6 +2406,11 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
     def _raise_passage(passage: dict[str, Any], score: float) -> None:
         passage["score"] = max(float(passage.get("score") or 0.0), score)
+
+    def _raise_children(unit: dict[str, Any], score: float) -> None:
+        for child in group_child_results(unit) or []:
+            if isinstance(child, dict):
+                _raise_passage(child, score)
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2871,6 +2876,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     }
                     for row_id in table_row_ids:
                         emitted_table_rows[row_id] = table_result
+                    # The table point hit again, more strongly: its rows take that score.
+                    on_repeat_hit[chunk_id] = functools.partial(_raise_children, table_result)
                     flattened_results.append(table_result)
                     continue
                 else:

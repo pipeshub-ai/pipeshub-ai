@@ -2848,6 +2848,25 @@ class TestGetFlattenedResults:
         assert unit["hit_block_scores"][30] == 0.95
 
     @pytest.mark.asyncio
+    async def test_a_small_table_hit_again_more_strongly_raises_its_rows(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9, 0.9, 0.9]
+
+    @pytest.mark.asyncio
     async def test_a_later_stronger_point_on_a_standalone_block_raises_its_score(self) -> None:
         record = _make_record_blob()
         record["block_containers"]["blocks"] = [_make_text_block(index=0, data="a long paragraph")]
