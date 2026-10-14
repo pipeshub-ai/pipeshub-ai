@@ -787,9 +787,17 @@ class JiraConnector(BaseConnector):
                     "project access are kept, and anything with nothing stored is saved from what was read. "
                     "The next sync reads it again"
                 )
+            self._app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+            licensed_users = await self._keep_licensed_users(jira_users, self._app_roles_mapping)
+            unlicensed_ids = {u.source_user_id for u in jira_users} - {u.source_user_id for u in licensed_users}
+            jira_users = licensed_users
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
+            if not self._user_read_unfinished:
+                await self._withdraw_ineligible_app_users(
+                    jira_users, unlicensed_ids | getattr(self, "_deactivated_account_ids", set())
+                )
             # Saving a group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             groups_members_map = await self._sync_user_groups(jira_users)
@@ -1787,6 +1795,7 @@ class JiraConnector(BaseConnector):
         # Phase 1: DB reads (0 API calls)
         # ====================================================================
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        self._stored_app_users = cached_app_users
         pipeshub_users = (
             active_pipeshub_users
             if active_pipeshub_users is not None
@@ -1807,6 +1816,10 @@ class JiraConnector(BaseConnector):
         # Phase 2: Jira bulk fetch (1 paginated API call)
         # ====================================================================
         raw_jira_users = await self._fetch_all_jira_users_bulk()
+        self._deactivated_account_ids = {
+            u["accountId"] for u in raw_jira_users
+            if u.get("accountType") == "atlassian" and not u.get("active", True) and u.get("accountId")
+        }
 
         all_active_account_ids: set[str] = set()
         visible_email_map: dict[str, str] = {}  # email.lower() -> accountId
@@ -2016,7 +2029,14 @@ class JiraConnector(BaseConnector):
                     if not results or not isinstance(results, list):
                         return None
 
-                    user = results[0]
+                    # The search is a prefix match that also returns deactivated and app accounts.
+                    user = next((
+                        u for u in results
+                        if isinstance(u, dict)
+                        and u.get("accountType", "atlassian") == "atlassian"
+                        and u.get("active", True)
+                        and (u.get("emailAddress") or email).lower() == email.lower()
+                    ), None)
                     if not user:
                         return None
                     account_id = user.get("accountId")
@@ -2048,6 +2068,9 @@ class JiraConnector(BaseConnector):
                 if isinstance(result, Exception) or result is None:
                     continue
                 account_id, email, display_name = result
+                # With the bulk listing readable, only its active hidden-email accounts are candidates.
+                if not self._user_bulk_forbidden and account_id not in unresolved_account_ids:
+                    continue
                 if account_id not in resolved:
                     resolved[account_id] = AppUser(
                         app_name=self.connector_name,
@@ -2162,6 +2185,49 @@ class JiraConnector(BaseConnector):
             return {}
 
         return mapping
+
+    async def _keep_licensed_users(
+        self,
+        jira_users: list[AppUser],
+        app_roles_mapping: dict[str, list[dict[str, str]]],
+    ) -> list[AppUser]:
+        """The users with access to a Jira product: members of a group of some application role.
+
+        Jira treats any other account as anonymous, so its group, role and user grants never
+        reach it. When the roles or a role group's members can't be read, every user is kept.
+        """
+        role_groups = {
+            g["name"]: g["groupId"]
+            for groups in app_roles_mapping.values() for g in groups if g.get("name")
+        }
+        if not role_groups:
+            return jira_users
+        licensed: set[str] = set()
+        for name, group_id in role_groups.items():
+            members, ok = await self._fetch_group_members(group_id, name)
+            if not ok:
+                self.logger.warning(
+                    "⚠️ Could not read the members of product group %s; keeping every Jira user", name
+                )
+                return jira_users
+            licensed.update(members)
+        kept = [u for u in jira_users if u.source_user_id in licensed]
+        if len(kept) < len(jira_users):
+            self.logger.info(
+                f"👥 {len(jira_users) - len(kept)} Jira user(s) without Jira product access left out"
+            )
+        return kept
+
+    async def _withdraw_ineligible_app_users(self, jira_users: list[AppUser], ineligible_ids: set[str]) -> None:
+        """Take the connector away from stored users whose account Jira reports deactivated or
+        without product access, unless another account with their email was kept this run."""
+        kept_emails = {u.email.lower() for u in jira_users if u.email}
+        gone = [
+            u for u in getattr(self, "_stored_app_users", None) or []
+            if u.source_user_id in ineligible_ids and (u.email or "").lower() not in kept_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
     async def _fallback_permissions_for_forbidden_scheme(
         self,
@@ -3312,8 +3378,10 @@ class JiraConnector(BaseConnector):
             project_keys, project_keys_operator
         )
 
-        # Fetch application roles → groups mapping once (cached)
-        app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
+        # run_sync reads the mapping once per sync, before the users are filtered by it.
+        app_roles_mapping = getattr(self, "_app_roles_mapping", None)
+        if app_roles_mapping is None:
+            app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
         # Build accountId -> AppUser lookup for permission scheme resolution
         perm_user_by_account_id: dict[str, AppUser] = {}
