@@ -5954,7 +5954,9 @@ class TestSlackTeamConnectorCoverageBoost:
         """Reading the held link records comes first: when it fails, the edit
         writes nothing and raises, rather than updating the text and keeping a
         stale link."""
-        from app.connectors.core.base.data_processor.record_links import LinkRecordsUnreadableError
+        from app.connectors.core.base.data_processor.record_links import (
+            LinkRecordsUnreadableError,
+        )
 
         c = _connector_pipeline_ready()
         c.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("graph down"))
@@ -5977,7 +5979,9 @@ class TestSlackTeamConnectorCoverageBoost:
     async def test_unreadable_links_leave_the_channel_checkpoint_for_the_next_run(self) -> None:
         """The scan reads by message time, not edit time: an edit dropped here
         would never be seen again, so the channel's checkpoint must stay."""
-        from app.connectors.core.base.data_processor.record_links import LinkRecordsUnreadableError
+        from app.connectors.core.base.data_processor.record_links import (
+            LinkRecordsUnreadableError,
+        )
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()

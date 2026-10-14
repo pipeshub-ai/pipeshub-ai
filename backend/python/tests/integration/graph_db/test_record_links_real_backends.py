@@ -166,9 +166,15 @@ async def test_finds_the_records_living_at_the_addresses(seeded: _Graph) -> None
 
 
 async def test_a_tight_limit_keeps_the_ticket_over_its_attachment(seeded: _Graph) -> None:
-    rows = await seeded.graph.get_records_by_weburls([JIRA], seeded.org_id, limit=1)
+    rows = await seeded.graph.get_records_by_weburls([JIRA], seeded.org_id, per_address=1)
 
     assert [row["id"] for row in rows] == [seeded.ids["ticket"]]
+
+
+async def test_one_address_never_crowds_out_another(seeded: _Graph) -> None:
+    rows = await seeded.graph.get_records_by_weburls([JIRA, PR], seeded.org_id, per_address=1)
+
+    assert sorted(row["id"] for row in rows) == sorted([seeded.ids["ticket"], seeded.ids["pr"]])
 
 
 async def test_link_records_are_not_where_an_address_lives(seeded: _Graph) -> None:

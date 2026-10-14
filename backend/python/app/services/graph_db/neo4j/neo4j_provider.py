@@ -16735,27 +16735,29 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         weburls: list[str],
         org_id: str,
-        limit: int = 50,
+        per_address: int = 2,
         transaction: str | None = None,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
-        # Served by the (webUrl, orgId) index.
+        # One indexed (webUrl, orgId) lookup per address, each with its own limit,
+        # so the records at one address never crowd out another address.
         query = f"""
-        MATCH (r:Record)
-        WHERE r.webUrl IN $weburls AND r.orgId = $org_id
-          AND r.recordType <> 'LINK'
+        UNWIND $weburls AS url
+        MATCH (r:Record {{webUrl: url, orgId: $org_id}})
+        WHERE r.recordType <> 'LINK'
           AND (r.isPlaceholder IS NULL OR r.isPlaceholder = false)
           AND {cypher_live_record("r")}
+        WITH url, r ORDER BY coalesce(r.isDependentNode, false), r.id
+        WITH url, collect(r)[0..$per_address] AS kept
+        UNWIND kept AS r
         RETURN r.id AS id, r.recordType AS recordType, r.connectorName AS connectorName,
                r.webUrl AS webUrl, coalesce(r.isDependentNode, false) AS isDependentNode
-        ORDER BY isDependentNode, id
-        LIMIT $limit
         """
         try:
             rows = await self.client.execute_query(
                 query,
-                parameters={"weburls": list(weburls), "org_id": org_id, "limit": limit},
+                parameters={"weburls": list(dict.fromkeys(weburls)), "org_id": org_id, "per_address": per_address},
                 txn_id=transaction,
             )
             return [dict(row) for row in rows or []]

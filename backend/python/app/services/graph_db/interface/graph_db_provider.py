@@ -2104,7 +2104,7 @@ class IGraphDBProvider(ABC):
         self,
         weburls: list[str],
         org_id: str,
-        limit: int = 50,
+        per_address: int = 2,
         transaction: str | None = None,
     ) -> list[dict[str, Any]]:
         """The live records of the org stored under any of ``weburls`` (exact
@@ -2116,13 +2116,15 @@ class IGraphDBProvider(ABC):
         Args:
             weburls: Exact ``webUrl`` values. Empty returns ``[]`` without querying.
             org_id: Organization scope. Empty returns ``[]`` without querying.
-            limit: Most rows returned.
+            per_address: Most rows per address, records that are not dependent
+                nodes first; each address is looked up on its own.
             transaction: Optional transaction ID.
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",
-            "isDependentNode"}``, records that are not dependent nodes first, so
-            ``limit`` never drops a ticket in favour of its attachments.
+            "isDependentNode"}``, records that are not dependent nodes first at each address, so
+            a ticket is never dropped for its attachments, and one address
+            never crowds out another.
 
         Raises:
             Exception: on a query failure. Callers must not read a failure as

@@ -722,10 +722,7 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
 
     async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
-        # Room for every record one address can hold (a ticket and its attachments).
-        return await self.graph_provider.get_records_by_weburls(
-            weburls, org_id, limit=200, transaction=self.txn
-        )
+        return await self.graph_provider.get_records_by_weburls(weburls, org_id, transaction=self.txn)
 
     async def get_records_linking_to_weburls(
         self,

@@ -5425,33 +5425,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         weburls: list[str],
         org_id: str,
-        limit: int = 50,
+        per_address: int = 2,
         transaction: str | None = None,
     ) -> list[dict[str, Any]]:
         if not weburls or not org_id:
             return []
-        # Served by the (webUrl, orgId) index.
+        # One indexed (webUrl, orgId) lookup per address, each with its own limit,
+        # so the records at one address never crowd out another address.
         query = f"""
-        FOR record IN {CollectionNames.RECORDS.value}
-            FILTER record.webUrl IN @weburls
-                AND record.orgId == @org_id
-                AND record.recordType != "LINK"
-                AND record.isPlaceholder != true
-                AND {aql_live_record("record")}
-            SORT record.isDependentNode == true, record._key
-            LIMIT @limit
-            RETURN {{
-                id: record._key,
-                recordType: record.recordType,
-                connectorName: record.connectorName,
-                webUrl: record.webUrl,
-                isDependentNode: record.isDependentNode == true
-            }}
+        FOR url IN @weburls
+            LET rows = (
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.webUrl == url
+                        AND record.orgId == @org_id
+                        AND record.recordType != "LINK"
+                        AND record.isPlaceholder != true
+                        AND {aql_live_record("record")}
+                    SORT record.isDependentNode == true, record._key
+                    LIMIT @per_address
+                    RETURN {{
+                        id: record._key,
+                        recordType: record.recordType,
+                        connectorName: record.connectorName,
+                        webUrl: record.webUrl,
+                        isDependentNode: record.isDependentNode == true
+                    }}
+            )
+            FOR row IN rows
+                RETURN row
         """
         try:
             return await self.http_client.execute_aql(
                 query,
-                {"weburls": list(weburls), "org_id": org_id, "limit": limit},
+                {"weburls": list(dict.fromkeys(weburls)), "org_id": org_id, "per_address": per_address},
                 txn_id=transaction,
             ) or []
         except Exception as e:
