@@ -98,7 +98,7 @@ class FakeStorageGateway:
         start_text, _, end_text = ranged[len("bytes="):].partition("-")
         start = int(start_text)
         end = min(int(end_text) if end_text else len(body) - 1, len(body) - 1)
-        if start == 0:
+        if start == 0 and end > 0:  # bytes=0-0 is BlobStorage probing the size
             self.downloads += 1
         return web.Response(
             status=206,
