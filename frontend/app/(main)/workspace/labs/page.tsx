@@ -95,6 +95,7 @@ function FeatureFlagRow({
       <Switch
         checked={checked}
         onCheckedChange={onCheckedChange}
+        aria-label={flag.label || flag.key}
         style={{ flexShrink: 0, cursor: 'pointer' }}
         size="1"
       />

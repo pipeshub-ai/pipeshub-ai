@@ -189,6 +189,7 @@ describe('LabsPage feature flags', () => {
 
     for (const label of REGULAR_LABELS) {
       expect(screen.getByText(label)).toBeTruthy();
+      expect(screen.getByRole('switch', { name: label })).toBeTruthy();
     }
 
     expect(screen.getByText(en.workspace.labs.featureFlags.advancedTitle)).toBeTruthy();
@@ -211,6 +212,7 @@ describe('LabsPage feature flags', () => {
 
     for (const label of ADVANCED_LABELS) {
       expect(screen.getByText(label)).toBeTruthy();
+      expect(screen.getByRole('switch', { name: label })).toBeTruthy();
     }
     expect(accordion.getAttribute('aria-expanded')).toBe('true');
   });
