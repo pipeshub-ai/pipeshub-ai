@@ -528,6 +528,81 @@ class TestSearchEndpoint:
         assert call_kwargs["limit"] == 7
         assert call_kwargs["knowledge_search"] is True
         assert call_kwargs["filter_groups"] == {"type": ["file"]}
+        assert call_kwargs["time_range"] is None
+
+    async def _search_with(self, body: SearchQuery) -> MagicMock:
+        mock_retrieval = MagicMock()
+        mock_retrieval.llm = MagicMock()
+        mock_retrieval.search_with_filters = AsyncMock(
+            return_value={"searchResults": [], "status_code": 200}
+        )
+        with patch("app.api.routes.search.setup_query_transformation") as mock_setup:
+            mock_setup.return_value = (self._make_chain("r"), self._make_chain("e"))
+            await search(
+                request=self._build_request(),
+                body=body,
+                retrieval_service=mock_retrieval,
+                graph_provider=MagicMock(),
+            )
+        return mock_retrieval
+
+    @pytest.mark.asyncio
+    async def test_date_bounds_reach_the_retrieval_service(self):
+        """The retrieval service already filters by date; the route used to drop it."""
+        body = SearchQuery(
+            query="q", updatedAfter="2026-09-01", updatedBefore="2026-09-30T12:00:00Z",
+            createdAfter="2026-01-01",
+        )
+
+        retrieval = await self._search_with(body)
+
+        assert retrieval.search_with_filters.call_args.kwargs["time_range"] == {
+            "source_updated_after_ms": 1788220800000,  # 2026-09-01T00:00:00Z
+            "source_updated_before_ms": 1790769600000,  # 2026-09-30T12:00:00Z
+            "source_created_after_ms": 1767225600000,  # 2026-01-01T00:00:00Z
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_date_only_upper_bound_takes_in_the_whole_day(self):
+        retrieval = await self._search_with(SearchQuery(query="q", createdBefore="2026-03-31"))
+
+        assert retrieval.search_with_filters.call_args.kwargs["time_range"] == {
+            "source_created_before_ms": 1775001599999,  # 2026-03-31T23:59:59.999Z
+        }
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("field", "value", "said"), [
+        ("updatedAfter", "last week", "updatedAfter: 'last week' is not a valid ISO 8601 date"),
+        ("createdBefore", "2026-01-15T08:00:00", "createdBefore: '2026-01-15T08:00:00' has no timezone"),
+        ("updatedAfter", "2999-01-01", "updatedAfter cannot be in the future"),
+    ])
+    async def test_a_bad_date_is_a_400_that_names_the_field(self, field, value, said):
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock()
+
+        with pytest.raises(HTTPException) as caught:
+            await search(
+                request=self._build_request(),
+                body=SearchQuery(query="q", **{field: value}),
+                retrieval_service=retrieval,
+                graph_provider=MagicMock(),
+            )
+
+        assert caught.value.status_code == 400
+        assert said in caught.value.detail
+        retrieval.search_with_filters.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_inverted_range_is_a_400(self):
+        with pytest.raises(HTTPException) as caught:
+            await self._search_with(
+                SearchQuery(query="q", updatedAfter="2026-09-30", updatedBefore="2026-09-01")
+            )
+
+        assert caught.value.status_code == 400
+        assert caught.value.detail == (
+            "updatedAfter must be on or before updatedBefore — got an inverted range."
+        )
 
 
 # ---------------------------------------------------------------------------

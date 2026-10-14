@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import TYPE_CHECKING, Any, Optional
 
 from dependency_injector.wiring import inject
@@ -6,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.api.middlewares.auth import deny_service_tokens, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
@@ -37,6 +39,39 @@ class SearchQuery(BaseModel):
     query: str
     limit: Optional[int] = 5
     filters: Optional[dict[str, Any]] = {}
+    # Optional date bounds on the source's own created / last-updated time:
+    # "YYYY-MM-DD" (a whole day, UTC) or an ISO 8601 datetime with an offset.
+    # Both ends are inclusive.
+    createdAfter: Optional[str] = None
+    createdBefore: Optional[str] = None
+    updatedAfter: Optional[str] = None
+    updatedBefore: Optional[str] = None
+
+
+def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
+    """The request's date bounds as the retrieval service's ``time_range``.
+
+    Parsed by the same function as the assistant's search tool, so both accept
+    and refuse the same dates. A bad date is a 400 that says what is wrong.
+    """
+    time_range, error = parse_time_range(
+        created_after=body.createdAfter,
+        created_before=body.createdBefore,
+        modified_after=body.updatedAfter,
+        modified_before=body.updatedBefore,
+    )
+    if error is not None:
+        message = json.loads(error).get("message", "Invalid date filter.")
+        # The parser names the assistant tool's parameters; name the API's.
+        for tool_name, api_name in (
+            ("created_after", "createdAfter"),
+            ("created_before", "createdBefore"),
+            ("modified_after", "updatedAfter"),
+            ("modified_before", "updatedBefore"),
+        ):
+            message = message.replace(tool_name, api_name)
+        raise HTTPException(status_code=400, detail=message)
+    return time_range
 
 
 class SimilarDocumentQuery(BaseModel):
@@ -117,6 +152,7 @@ async def search(
     """Perform semantic search across documents"""
     container = request.app.container
     logger = container.logger()
+    time_range = _search_time_range(body)
     try:
         llm = await resolve_llm_for_search(request, retrieval_service)
 
@@ -143,6 +179,7 @@ async def search(
             limit=body.limit,
             filter_groups=updated_filters,
             knowledge_search=True,
+            time_range=time_range,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

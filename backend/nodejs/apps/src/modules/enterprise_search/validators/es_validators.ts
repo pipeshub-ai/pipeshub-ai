@@ -1031,6 +1031,14 @@ export const enterpriseSearchQuerySchema = z.object({
   }),
 });
 
+/** "YYYY-MM-DD" or an ISO 8601 datetime with an offset; checked in full by the AI service. */
+const searchDateSchema = z
+  .string()
+  .trim()
+  .min(1, { message: 'A date filter cannot be empty' })
+  .max(64, { message: 'A date filter must be at most 64 characters' })
+  .optional();
+
 export const enterpriseSearchSearchSchema = z.object({
   body: z.object({
     // Same ceiling as a chat question (chatQuerySchema). The XSS middleware
@@ -1043,6 +1051,13 @@ export const enterpriseSearchSearchSchema = z.object({
       }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
+    // Optional bounds on the source's own created / last-updated date. The AI
+    // service parses them (the assistant's search tool uses the same parser)
+    // and answers 400 with the reason when one is not a date it accepts.
+    createdAfter: searchDateSchema,
+    createdBefore: searchDateSchema,
+    updatedAfter: searchDateSchema,
+    updatedBefore: searchDateSchema,
   }),
 });
 

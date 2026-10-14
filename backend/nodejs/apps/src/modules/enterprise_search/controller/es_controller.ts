@@ -4621,6 +4621,12 @@ export const search =
     const userId = req.user?.userId;
     try {
       const { query, limit, filters } = req.body;
+      // Only the bounds the caller set, so a search without dates sends what it always did.
+      const dateBounds = Object.fromEntries(
+        (['createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore'] as const)
+          .filter((key) => typeof req.body[key] === 'string')
+          .map((key) => [key, req.body[key]]),
+      );
 
       // The query is free text, like a chat question, so text in angle
       // brackets such as "<id>" is allowed here as it is in chat. It is not
@@ -4642,7 +4648,7 @@ export const search =
         uri: `${aiBackendUrl}/api/v1/search`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: { query, limit, filters },
+        body: { query, limit, filters, ...dateBounds },
       });
 
       let aiResponse;

@@ -552,6 +552,33 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.true
     })
 
+    it('keeps optional created and updated date bounds', () => {
+      const data = {
+        body: {
+          query: 'q',
+          createdAfter: '2026-01-01',
+          createdBefore: '2026-03-31T23:59:59Z',
+          updatedAfter: ' 2026-09-01 ',
+          updatedBefore: '2026-09-30T12:00:00+05:30',
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      expect(result.data!.body).to.include({
+        createdAfter: '2026-01-01',
+        createdBefore: '2026-03-31T23:59:59Z',
+        updatedAfter: '2026-09-01',
+        updatedBefore: '2026-09-30T12:00:00+05:30',
+      })
+    })
+
+    it('rejects an empty or overlong date bound', () => {
+      for (const updatedAfter of ['', '   ', '2'.repeat(65)]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', updatedAfter } })
+        expect(result.success, JSON.stringify(updatedAfter)).to.be.false
+      }
+    })
+
     it('should strip model fields from body (semantic search schema is query-centric)', () => {
       const data = {
         body: {

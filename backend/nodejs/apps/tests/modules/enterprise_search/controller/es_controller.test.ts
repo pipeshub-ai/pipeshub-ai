@@ -2781,6 +2781,49 @@ describe('Enterprise Search Controller', () => {
       expect(response).to.have.property('searchResponse')
     })
 
+    it('forwards the date bounds a caller set, and only those', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({ statusCode: 200, data: { searchResults: [], records: [] } } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      for (const body of [
+        { query: 'q', limit: 10, updatedAfter: '2026-09-01', createdBefore: '2026-03-31' },
+        { query: 'q', limit: 10 },
+      ]) {
+        const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        await handler(req, createMockResponse(), createMockNext())
+      }
+
+      expect(sent[0]).to.deep.include({ updatedAfter: '2026-09-01', createdBefore: '2026-03-31' })
+      expect(sent[0]).to.not.have.any.keys('createdAfter', 'updatedBefore')
+      expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore')
+    })
+
+    it('passes the AI service\'s reason for refusing a date back as a 400', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 400,
+        data: { detail: "updatedAfter: 'last week' is not a valid ISO 8601 date." },
+      } as any)
+      const req = createMockRequest({
+        body: { query: 'q', updatedAfter: 'last week' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const next = createMockNext()
+
+      await handler(req, createMockResponse(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(400)
+      expect(error.message).to.include("'last week' is not a valid ISO 8601 date")
+    })
+
     it('saves every hit as a citation in one ordered insert and keeps hit order', async () => {
       const handler = search(createMockAppConfig())
 

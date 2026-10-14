@@ -9563,6 +9563,36 @@ components:
           maximum: 100
           default: 10
           description: Maximum number of results to return
+        createdAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or after this date. `YYYY-MM-DD` (the whole
+            day, UTC) or an ISO 8601 datetime with a timezone offset. A date that is not
+            one of these, or in the future, is a `400` that says why.
+          example: "2026-01-01"
+        createdBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or before this date. A `YYYY-MM-DD` value
+            includes that whole day.
+          example: "2026-03-31"
+        updatedAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or after this date. Same format as
+            `createdAfter`.
+          example: "2026-09-01"
+        updatedBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or before this date. Same format as
+            `createdBefore`. Records with no source date are left out whenever a bound on
+            that date is set.
+          example: "2026-09-30T23:59:59Z"
 
     SemanticSearchBoundingBox:
       type: object
