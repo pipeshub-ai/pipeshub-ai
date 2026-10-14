@@ -732,8 +732,8 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
     return False
 
 
-def _mostly_slow(holds: tuple[float, ...], threshold: float) -> bool:
-    return sum(1 for hold in holds if hold > threshold) * 2 > len(holds)
+def _all_slow(holds: tuple[float, ...], threshold: float) -> bool:
+    return bool(holds) and all(hold > threshold for hold in holds)
 
 
 def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
@@ -748,18 +748,18 @@ def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
     judged against the baseline. A hold over ``DOWNSTREAM_LATENCY_HOLD_FACTOR``
     times the baseline is slow.
 
-    - Most of the sample's holds are fast: the median of the fast ones feeds
+    - Any of the sample's holds is fast: the median of the fast ones feeds
       the EWMA. The few slow ones are large records, not a slow pool: pull
       requests holding a permit for ten minutes beside chat messages that
       take fifteen seconds. Read by the mean, ``permit_seconds /
       completions``, they look exactly like a slowdown and stop the pool
       growing for as long as they run.
-    - Most are slow, and so were most of the previous sample's: every
+    - Every hold is slow, in this sample and in the previous one: every
       record is slowing down. The EWMA goes straight to the median of the
       slow holds, so the hold engages on that sample, before slow start has
       doubled the pool, however few permits each sample releases.
-    - Most are slow but the previous sample's were not: possibly a batch of
-      large records finishing together. Nothing changes until the next
+    - Every hold is slow but some of the previous sample's were not:
+      possibly a batch of large records finishing together. Nothing changes until the next
       sample says which it is.
 
     The mean is still used when no hold times were reported at all."""
@@ -776,14 +776,14 @@ def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
         return _fold_hold(state, statistics.median(current))
 
     threshold = DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
-    if not _mostly_slow(current, threshold):
+    if not _all_slow(current, threshold):
         return _fold_hold(
             state, statistics.median([hold for hold in current if hold <= threshold])
         )
     previous = next((sample for sample in reversed(samples[:-1]) if sample), ())
-    if not previous or not _mostly_slow(previous, threshold):
+    if not previous or not _all_slow(previous, threshold):
         return state
-    slow_median = statistics.median([hold for hold in current if hold > threshold])
+    slow_median = statistics.median(current)
     return _fold_hold(
         state, slow_median, ewma=max(slow_median, state.hold_ewma or 0.0)
     )

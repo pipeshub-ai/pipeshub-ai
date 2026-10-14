@@ -1604,6 +1604,21 @@ class TestDownstreamBrake:
             self._CHAT_HOLD
         )
 
+    def test_a_sample_counts_as_slow_only_when_every_hold_is(self) -> None:
+        """Two pull requests and one chat message, twice running: the chat
+        message says the pool is not slow."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        mixed = (self._CHAT_HOLD, self._PR_HOLD, self._PR_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=3,
+            hold_seconds_by_sample=(mixed, mixed),
+        )
+        state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(self._CHAT_HOLD)
+        assert not policy_mod._latency_hold(state)
+
     def test_one_long_hold_after_sparse_samples_waits_for_the_next(self) -> None:
         """One large record is all there is: it must not stand for the pool,
         and neither may the mean."""
