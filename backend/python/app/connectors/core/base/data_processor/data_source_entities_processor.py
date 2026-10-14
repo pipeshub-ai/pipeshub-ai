@@ -750,7 +750,8 @@ class DataSourceEntitiesProcessor:
     async def _org_keeps_link_records(self, org_id: str, tx_store: TransactionStore) -> bool:
         """Whether the org has a connector that keeps pasted addresses as link
         records (Slack). Without one, no record can be linking here, and the
-        backfill's read is skipped. A failed read answers yes, and is not cached."""
+        backfill's read is skipped. A failed read, or one that found no app at
+        all, answers yes and is not cached."""
         cache: dict[str, tuple[int, bool]] = self.__dict__.setdefault("_link_holder_apps_cache", {})
         now = get_epoch_timestamp_in_ms()
         cached = cache.get(org_id)
@@ -762,6 +763,11 @@ class DataSourceEntitiesProcessor:
             apps = await tx_store.get_org_apps(org_id)
         except Exception as e:
             self.logger.warning(f"Could not read the apps of org {org_id}: {e}")
+            return True
+        if not apps:
+            # The connector saving this record is itself an app of the org, so no
+            # apps at all means the read failed (get_org_apps reports a failure as
+            # []): read for holders, and ask again next time.
             return True
         holders = {name.casefold() for name in self.ADDRESS_LINK_HOLDER_CONNECTORS}
         keeps = any(

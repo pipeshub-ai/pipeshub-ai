@@ -403,3 +403,19 @@ class TestAReindexKeepsTheMessagesEdges:
         await proc._process_record(message, [], tx)
 
         tx.delete_edges_by_relationship_types.assert_not_awaited()
+
+
+class TestAnEmptyAppListIsNotTrusted:
+    @pytest.mark.asyncio
+    async def test_no_apps_at_all_still_reads_and_is_asked_again(self) -> None:
+        """get_org_apps reports a query failure as []; the saving connector's own
+        app always exists, so an empty list is never read as "no Slack"."""
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        tx.get_org_apps = AsyncMock(return_value=[])
+
+        await proc._join_records_linking_here(_pull_request(), tx)
+        await proc._join_records_linking_here(_pull_request("pr-2"), tx)
+
+        assert tx.get_records_linking_to_weburls.await_count == 2
+        assert tx.get_org_apps.await_count == 2
