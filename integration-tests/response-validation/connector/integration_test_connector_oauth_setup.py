@@ -139,6 +139,14 @@ class TestSavedOAuthApps:
 
         assert_response_strictly_matches_openapi_operation(body, _LIST_OAUTH_CONFIGS)
 
+    def test_list_all_oauth_configs_matches_spec(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
+    ) -> None:
+        """Every connector type's OAuth apps; this list counts ``totalItems``."""
+        resp = oauth_configs_api.list_all_configs(page=1, limit=100)
+        assert resp.status_code == 200, resp.text
+        assert_response_strictly_matches_openapi_operation(resp.json(), "listOAuthConfigs")
+
     def test_get_oauth_config_matches_spec(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
     ) -> None:

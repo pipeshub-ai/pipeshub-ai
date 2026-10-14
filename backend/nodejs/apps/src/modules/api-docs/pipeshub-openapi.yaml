@@ -16870,6 +16870,31 @@ components:
         totalPages:
           type: integer
           description: Total number of pages
+    OAuthConfigPagination:
+      type: object
+      required:
+        - page
+        - limit
+        - totalItems
+        - totalPages
+        - hasPrev
+        - hasNext
+      properties:
+        page:
+          type: integer
+        limit:
+          type: integer
+        search:
+          type: string
+          nullable: true
+        totalItems:
+          type: integer
+        totalPages:
+          type: integer
+        hasPrev:
+          type: boolean
+        hasNext:
+          type: boolean
     OAuthCallbackResult:
       type: object
       required:
@@ -36701,7 +36726,7 @@ paths:
             type: string
       responses:
         '200':
-          description: Configured connectors retrieved
+          description: Configured connector instances
           content:
             application/json:
               schema:
@@ -36710,11 +36735,20 @@ paths:
                   success:
                     type: boolean
                   connectors:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/ConnectorInstance'
-                  pagination:
-                    $ref: '#/components/schemas/ConnectorPagination'
+                    type: object
+                    required:
+                      - connectors
+                      - pagination
+                    properties:
+                      connectors:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/ConnectorInstance'
+                      pagination:
+                        $ref: '#/components/schemas/ConnectorPagination'
+                required:
+                  - success
+                  - connectors
         '401':
           description: Unauthorized
 
@@ -41887,7 +41921,7 @@ paths:
             type: string
       responses:
         '200':
-          description: OAuth configurations retrieved
+          description: OAuth apps of every connector type
           content:
             application/json:
               schema:
@@ -41900,7 +41934,11 @@ paths:
                     items:
                       $ref: '#/components/schemas/OAuthConfig'
                   pagination:
-                    $ref: '#/components/schemas/ConnectorPagination'
+                    $ref: '#/components/schemas/OAuthConfigPagination'
+                required:
+                  - success
+                  - oauthConfigs
+                  - pagination
         '401':
           description: Unauthorized
 

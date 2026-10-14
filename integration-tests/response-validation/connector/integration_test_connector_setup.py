@@ -93,6 +93,16 @@ class TestGetConnector:
 
         assert_response_strictly_matches_openapi_operation(body, _GET)
 
+    def test_list_configured_matches_spec(
+        self, connectors_api: ConnectorsClient, rss_connector: Any
+    ) -> None:
+        """The page of configured connectors is nested under ``connectors``."""
+        resp = connectors_api.list_configured(scope="team", limit=200)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()["connectors"]
+        assert rss_connector.connector_id in {c["_key"] for c in page["connectors"]}
+        assert_response_strictly_matches_openapi_operation(resp.json(), "listConfiguredConnectors")
+
     def test_get_unknown_instance_is_404(self, connectors_api: ConnectorsClient) -> None:
         resp = connectors_api.get_instance(str(uuid4()))
         assert resp.status_code == 404, resp.text

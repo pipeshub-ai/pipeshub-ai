@@ -134,7 +134,7 @@ def _scope_cases() -> list[tuple[str, Callable[..., requests.Response]]]:
                     "connectorType": "RSS",
                     "instanceName": f"connector-spec-it-rss-{uuid4().hex[:8]}",
                     "scope": "team",
-                    "config": {"sync": {"feed_urls": "http://web-fixtures:8080/feeds/news.xml"}},
+                    "config": {"sync": {"feed_urls": f["feed"]}},
                 },
                 **h,
             ),
@@ -194,6 +194,7 @@ class TestDocumentedScopes:
         postgres_connector: Any,
         jira_oauth_connector: Any,
         minio_connector: Any,
+        rss_feed_url: str,
         rss_feed_reachable: None,
         scoped_token: Callable[[Sequence[str]], str],
     ) -> None:
@@ -208,6 +209,7 @@ class TestDocumentedScopes:
             "pg": postgres_connector,
             "jira": jira_oauth_connector,
             "minio": minio_connector,
+            "feed": rss_feed_url,
         }
         was_active = bool(
             connectors_api.get_instance(rss_connector.connector_id).json()["connector"]["isActive"]

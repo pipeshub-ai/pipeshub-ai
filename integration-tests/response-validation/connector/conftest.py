@@ -205,9 +205,8 @@ def _delete_connector(connectors: ConnectorsClient, connector_id: str) -> None:
     try:
         resp = connectors.delete_instance(connector_id)
         if resp.status_code >= 300:
-            logger.warning(
-                "Deleting connector %s: %s %s", connector_id, resp.status_code, resp.text
-            )
+            # Status only: response bodies here can echo the connector's credentials.
+            logger.warning("Deleting connector %s answered %s", connector_id, resp.status_code)
     except Exception as e:  # noqa: BLE001
         logger.warning("Failed to delete connector %s: %s", connector_id, e)
 
@@ -325,19 +324,27 @@ def jira_oauth_connector(
             },
         },
     )
+    oauth_config_id = None
     try:
-        created.oauth_config_id = _linked_oauth_config_id(connectors_api, created.connector_id)
-        assert created.oauth_config_id, "creating the connector linked no OAuth app"
+        oauth_config_id = _linked_oauth_config_id(connectors_api, created.connector_id)
+        assert oauth_config_id, "creating the connector linked no OAuth app"
+        created.oauth_config_id = oauth_config_id
         yield created
     finally:
         _delete_connector(connectors_api, created.connector_id)
-        if created.oauth_config_id:
-            resp = oauth_configs_api.delete_config("Jira", created.oauth_config_id)
-            if resp.status_code >= 300:
-                logger.warning(
-                    "Deleting OAuth app %s: %s %s",
-                    created.oauth_config_id, resp.status_code, resp.text,
-                )
+        if oauth_config_id:
+            _delete_oauth_app(oauth_configs_api, "Jira", oauth_config_id)
+
+
+def _delete_oauth_app(
+    oauth_configs_api: ConnectorOAuthConfigsClient, connector_type: str, oauth_config_id: str
+) -> None:
+    try:
+        resp = oauth_configs_api.delete_config(connector_type, oauth_config_id)
+        if resp.status_code >= 300:
+            logger.warning("Deleting OAuth app %s answered %s", oauth_config_id, resp.status_code)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Failed to delete OAuth app %s: %s", oauth_config_id, e)
 
 
 @pytest.fixture(scope="module")

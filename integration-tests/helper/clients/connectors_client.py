@@ -123,6 +123,14 @@ class ConnectorsClient(APIClient):
 
     # ----------------------------------------------------------- instances
 
+    def list_configured(
+        self, *, scope: str | None = None, limit: int | None = None, **options: Any
+    ) -> requests.Response:
+        """GET /configured"""
+        params = {"scope": scope, "limit": limit}
+        options.setdefault("params", {k: v for k, v in params.items() if v is not None})
+        return self.get("/configured", **options)
+
     def create_instance(self, body: dict[str, Any], **options: Any) -> requests.Response:
         """Create a connector instance.
 
@@ -219,6 +227,14 @@ class ConnectorOAuthConfigsClient(APIClient):
     """Client for /api/v1/oauth: the OAuth apps connectors sign in with."""
 
     BASE = "/api/v1/oauth"
+
+    def list_all_configs(
+        self, *, page: int | None = None, limit: int | None = None, **options: Any
+    ) -> requests.Response:
+        """GET /  (OAuth apps of every connector type)"""
+        params = {"page": page, "limit": limit}
+        options.setdefault("params", {k: v for k, v in params.items() if v is not None})
+        return self.get("/", **options)
 
     def list_configs(
         self,
