@@ -13869,6 +13869,8 @@ components:
           type: string
         updatedBy:
           type: string
+          description: Null for an instance nobody has updated, for example the personal KB connector
+          nullable: true
         createdAtTimestamp:
           type: integer
           description: Epoch milliseconds
@@ -14220,7 +14222,8 @@ components:
       properties:
         filters:
           type: object
-          description: "Filter values to save (structure depends on connector's filter schema)"
+          description: "Filter values to save (structure depends on connector's filter schema). Must not be empty."
+          minProperties: 1
           additionalProperties: true
           example:
             folders:
@@ -14308,72 +14311,20 @@ components:
 
     FilterOptions:
       type: object
-      description: Available filter options for a connector
-      properties:
-        filters:
-          type: array
-          items:
-            type: object
-            properties:
-              name:
-                type: string
-                description: Filter field key used in API calls
-              displayName:
-                type: string
-                description: Human-readable label shown in the UI
-              description:
-                type: string
-                description: Optional tooltip / help text for the filter
-              filterType:
-                type: string
-                enum: [string, boolean, datetime, list, multiselect, number]
-                description: Data type of the filter value
-              category:
-                type: string
-                enum: [sync, indexing]
-                description: >
-                  `sync` filters control which source records are fetched;
-                  `indexing` filters control which content types are indexed.
-              required:
-                type: boolean
-                description: Whether the user must supply a value for this field
-              defaultValue:
-                description: Pre-filled value rendered in the UI (type varies by filterType)
-              defaultOperator:
-                type: string
-                nullable: true
-                description: Operator pre-selected in the UI. Null means no operator is pre-selected.
-              noImplicitOperatorDefault:
-                type: boolean
-                description: >
-                  When `true` the frontend must not fall back to the first available
-                  operator when `defaultOperator` is null (e.g. date-range fields
-                  where an empty state is meaningful). Only present when `true`.
-              operators:
-                type: array
-                description: Allowed operators for this filter type
-                items:
-                  type: string
-                  example: "in"
-              optionSourceType:
-                type: string
-                enum: [manual, static, dynamic]
-                description: >
-                  `static` — options are embedded in the schema;
-                  `dynamic` — options must be fetched via
-                  `GET /connectors/{connectorId}/filters/{filterKey}/options`.
-              options:
-                type: array
-                description: Static options (only present when `optionSourceType` is `static`)
-                items:
-                  type: object
-                  properties:
-                    id:
-                      type: string
-                    value:
-                      type: string
-                    label:
-                      type: string
+      description: |
+        Option lists for the connector's filters, keyed by filter name, each a list of
+        `{value, label}` choices. A connector type lists them only for filters whose
+        choices come from the service; none of the current types does, so the object
+        is empty. Filter fields themselves come from the connector's registry schema.
+      additionalProperties:
+        type: array
+        items:
+          type: object
+          properties:
+            value:
+              type: string
+            label:
+              type: string
 
     OAuthConfig:
       type: object
@@ -38102,7 +38053,7 @@ paths:
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
+        - oauth2: [connector:write, connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -38127,7 +38078,12 @@ paths:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConnectorStoredConfig'
+                  message:
+                    type: string
+                required:
+                  - success
+                  - config
         '400':
           description: |
             Invalid configuration or connector is active.
@@ -38136,19 +38092,45 @@ paths:
             secret; a replacement OAuth app that would lack a required field; or a
             client secret sent while the connector still lacks its own authorize and
             token URLs (ServiceNow). Nothing is stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector, or the OAuth app named in <code>auth.oauthConfigId</code>, not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
             An OAuth app with the name the new app would take already exists in the
             organization. Send a different <code>auth.oauthInstanceName</code>, or name the
             app to update in <code>auth.oauthConfigId</code>.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             The OAuth app or the connector's settings could not be stored. An app this
             request created is removed, and an app it updated is put back.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/config/auth:
     put:
@@ -38605,7 +38587,17 @@ paths:
         <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
         When scoping options to a specific parent (e.g. GitLab projects within
         a selected group), pass the parent paths via the
-        <code>contextGroupPath</code> query parameter on that endpoint.
+        <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
+        <b>Which connectors answer:</b><br>
+        Only connectors that sign in with an API token, a username and password, or an
+        admin-consent OAuth app (and have saved those settings), and OAUTH connectors
+        that have completed sign-in. Every other connector is refused with <code>400</code>:
+        those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
+        <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
+        (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
+        signed in, and a token or password connector with no saved settings.
+        Their filter fields are in the registry schema; dynamic values come from
+        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
       operationId: getConnectorFilters
       security:
         - bearerAuth: []
@@ -38628,10 +38620,36 @@ paths:
                     type: boolean
                   filterOptions:
                     $ref: '#/components/schemas/FilterOptions'
+                required:
+                  - success
+                  - filterOptions
+        '400':
+          description: |
+            The connector's auth type has no filter options (for example <code>NONE</code>,
+            <code>BASIC_AUTH</code> or <code>ACCESS_KEY</code>), an OAUTH connector has not
+            signed in, or a token or password connector has no saved settings.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks <code>connector:read</code>, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -38641,10 +38659,17 @@ paths:
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
         After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.
+        selected values. These determine what data will be synced.<br><br>
+        <b>Request:</b><br>
+        <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
+        refused with <code>400</code>. The server stores whatever it is given under the
+        connector's saved filter values without checking it against the filter schema.
+        Use <code>PUT /connectors/{connectorId}/config/filters-sync</code> to save typed
+        sync and indexing filters.
       operationId: saveConnectorFilters
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorId
           in: path
@@ -38670,10 +38695,33 @@ paths:
                     type: boolean
                   message:
                     type: string
+                required:
+                  - success
+                  - message
+        '400':
+          description: <code>filters</code> is missing or empty
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks <code>connector:write</code>, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/filters/{filterKey}/options:
     get:
