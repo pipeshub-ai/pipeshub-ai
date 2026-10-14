@@ -5487,7 +5487,94 @@ components:
           description: >-
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
-            the record and its indexing status instead (see above).
+            the record and its indexing status instead (see above). In a
+            budgeted read, the part of the record (or thread) that fit.
+        mode:
+          type: string
+          enum: [record, thread]
+          description: Budgeted reads only. Which kind of read this was.
+        recordId:
+          type: string
+          description: Budgeted record reads only. The record read.
+        order:
+          type: string
+          enum: [in_order, relevance]
+          description: >-
+            Budgeted record reads only. `relevance` when `query` chose which
+            blocks to show; the blocks are then not contiguous.
+        startBlock:
+          type: integer
+          description: Budgeted record reads only. Where this read started.
+        totalBlocks:
+          type: integer
+          description: Budgeted record reads only. Blocks in the record.
+        shownBlocks:
+          type: array
+          description: >-
+            Budgeted record reads only. The block ranges shown, as
+            `[first, last]` pairs.
+          items:
+            type: array
+            items:
+              type: integer
+        complete:
+          type: boolean
+          description: >-
+            Budgeted reads only. True when nothing of the record (or thread)
+            is left after this read.
+        truncatedBy:
+          type: string
+          nullable: true
+          description: >-
+            Budgeted record reads only. Why the read stopped short: `chars`,
+            `selection`, `clipped`, or null when complete.
+        nextStartBlock:
+          type: integer
+          nullable: true
+          description: >-
+            Budgeted record reads only. Pass as `startBlock` to read on; null
+            when complete.
+        threadRecordCount:
+          type: integer
+          description: Thread reads only. Records in the thread the caller may see.
+        startRecord:
+          type: integer
+          description: Thread reads only. Where this read started.
+        nextStartRecord:
+          type: integer
+          nullable: true
+          description: >-
+            Thread reads only. Pass as `startRecord` to read on; null when the
+            thread is finished.
+        records:
+          type: array
+          description: Thread reads only. The records shown, oldest first.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              recordName:
+                type: string
+                nullable: true
+              complete:
+                type: boolean
+              nextStartBlock:
+                type: integer
+                nullable: true
+        unreadableRecordIds:
+          type: array
+          description: >-
+            Thread reads only. Records of the thread the caller may see whose
+            content could not be loaded.
+          items:
+            type: string
+        chars:
+          type: integer
+          description: Budgeted reads only. Characters in `content`.
+        maxChars:
+          type: integer
+          description: Budgeted reads only. The budget this read used.
 
     KnowledgeGraphNodeRefSchema:
       type: object
@@ -36453,6 +36540,19 @@ paths:
         full content when the search snippet or citation excerpt isn't
         enough to answer the question.
 
+        **Reading part of a long record, or a whole Slack thread:**
+
+        With no query parameters the whole record is returned, which for a
+        pull request with its diffs or a long document can run to hundreds of
+        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        or `mode` for a budgeted read instead: the response stays within
+        `maxChars` and says how to continue (`nextStartBlock`, or
+        `nextStartRecord` for a thread). `query` makes a record too large for
+        the budget show its most relevant blocks first, with the skipped
+        ranges marked. `mode=thread` returns every message of the Slack
+        thread the record belongs to, oldest first, as far as the caller may
+        see them.
+
         **Permission scoping:**
 
         The requesting user/token must have access to the record; access is
@@ -36473,6 +36573,55 @@ paths:
             (`hits[*].recordId`) or a chat citation (`citations[*].recordId`).
           schema:
             type: string
+        - name: maxChars
+          in: query
+          required: false
+          description: >-
+            Most characters of `content` to return. Asks for a budgeted read;
+            40000 when another budgeted-read parameter is given without it.
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 140000
+        - name: startBlock
+          in: query
+          required: false
+          description: >-
+            Read in order from this block: the `nextStartBlock` of a previous
+            read, or 0 for the top. Takes precedence over `query`.
+          schema:
+            type: integer
+            minimum: 0
+        - name: query
+          in: query
+          required: false
+          description: >-
+            What you are looking for in the record. When the record does not
+            fit in `maxChars`, the blocks most relevant to it are shown first
+            and the skipped ranges are marked.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2000
+        - name: mode
+          in: query
+          required: false
+          description: >-
+            `record` (default) reads this record. `thread` reads every record
+            of the Slack thread this message belongs to, oldest first; a
+            record outside any thread answers `422`.
+          schema:
+            type: string
+            enum: [record, thread]
+        - name: startRecord
+          in: query
+          required: false
+          description: >-
+            Thread mode: start at this record of the thread, the
+            `nextStartRecord` of a previous read.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: |
@@ -36497,6 +36646,14 @@ paths:
           description: |
             OAuth token is missing the `connector:read` scope, or the
             authenticated user does not have access to this record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            `mode=thread` was asked of a record that is not part of a Slack
+            thread.
           content:
             application/json:
               schema:
