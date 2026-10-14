@@ -841,6 +841,7 @@
     "stoppedMarker": "已停止",
     "toolCard": {
       "arguments": "引數",
+      "query": "查詢",
       "result": "結果",
       "error": "錯誤",
       "blocked": "已封鎖",

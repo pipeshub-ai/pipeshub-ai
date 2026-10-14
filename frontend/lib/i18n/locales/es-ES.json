@@ -739,6 +739,7 @@
     "stoppedMarker": "Detenido",
     "toolCard": {
       "arguments": "Argumentos",
+      "query": "Consulta",
       "result": "Resultado",
       "error": "Error",
       "blocked": "Bloqueado",

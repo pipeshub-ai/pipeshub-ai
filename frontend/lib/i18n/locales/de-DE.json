@@ -730,6 +730,7 @@
     "stoppedMarker": "Gestoppt",
     "toolCard": {
       "arguments": "Argumente",
+      "query": "Abfrage",
       "result": "Ergebnis",
       "error": "Fehler",
       "blocked": "Blockiert",

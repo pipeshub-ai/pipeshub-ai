@@ -732,6 +732,7 @@
     "stoppedMarker": "रोका गया",
     "toolCard": {
       "arguments": "आर्गुमेंट",
+      "query": "क्वेरी",
       "result": "परिणाम",
       "error": "त्रुटि",
       "blocked": "अवरुद्ध",
