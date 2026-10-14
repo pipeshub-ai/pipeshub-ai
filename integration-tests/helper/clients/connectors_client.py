@@ -316,6 +316,29 @@ class ConnectorOAuthConfigsClient(APIClient):
         options.setdefault("params", {k: v for k, v in params.items() if v is not None})
         return self.get(f"/{quote(connector_type, safe='')}", **options)
 
+    def get_registry(
+        self,
+        *,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        **options: Any,
+    ) -> requests.Response:
+        """GET /registry  (connector types that sign in with an OAuth app)"""
+        params = {"page": page, "limit": limit, "search": search}
+        options.setdefault("params", {k: v for k, v in params.items() if v is not None})
+        return self.get("/registry", **options)
+
+    def get_registry_entry(self, connector_type: str, **options: Any) -> requests.Response:
+        """GET /registry/{connectorType}"""
+        return self.get(f"/registry/{quote(connector_type, safe='')}", **options)
+
+    def create_config(
+        self, connector_type: str, body: dict[str, Any], **options: Any
+    ) -> requests.Response:
+        """POST /{connectorType}"""
+        return self.post(f"/{quote(connector_type, safe='')}", json=body, **options)
+
     def get_config(
         self, connector_type: str, config_id: str, **options: Any
     ) -> requests.Response:

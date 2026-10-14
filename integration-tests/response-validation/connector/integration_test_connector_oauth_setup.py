@@ -4,6 +4,10 @@
 - GET  /api/v1/oauth/{connectorType}                   (saved OAuth apps)
 - GET  /api/v1/oauth/{connectorType}/{configId}
 - PUT  /api/v1/oauth/{connectorType}/{configId}         (rename, rotate the secret)
+- POST /api/v1/oauth/{connectorType}                   (save an OAuth app on its own)
+- DELETE /api/v1/oauth/{connectorType}/{configId}
+- GET  /api/v1/oauth/registry                          (connector types that use an OAuth app)
+- GET  /api/v1/oauth/registry/{connectorType}
 - GET  /api/v1/connectors/{connectorId}/oauth/authorize
 - GET  /api/v1/connectors/oauth/callback
 - POST /api/v1/connectors/{connectorId}/toggle         (before sign-in completes)
@@ -17,7 +21,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Iterator, Sequence
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -34,6 +38,7 @@ from helper.clients.connectors_client import (  # noqa: E402
     ConnectorsClient,
 )
 from openapi_schema_validator import (  # noqa: E402
+    assert_operation_documents_response,
     assert_error_response_matches_openapi_operation,
     assert_operation_requires_authentication,
     assert_query_params_documented,
@@ -49,9 +54,16 @@ _LIST_ALL_OAUTH_CONFIGS = "listOAuthConfigs"
 _LIST_OAUTH_CONFIGS = "listOAuthConfigsByType"
 _GET_OAUTH_CONFIG = "getOAuthConfig"
 _UPDATE_OAUTH_CONFIG = "updateOAuthConfig"
+_CREATE_OAUTH_CONFIG = "createOAuthConfig"
+_DELETE_OAUTH_CONFIG = "deleteOAuthConfig"
+_OAUTH_REGISTRY = "getOAuthRegistry"
+_OAUTH_REGISTRY_ENTRY = "getOAuthConnectorType"
 _AUTHORIZE = "getOAuthAuthorizationUrl"
 _CALLBACK = "handleOAuthCallback"
 _TOGGLE = "toggleConnector"
+
+JIRA_DUMMY_CLIENT_ID = "connector-spec-it-client-id"
+OAUTH_BASE_URL = "http://localhost:3001"
 
 @pytest.mark.integration
 class TestCreateOAuthConnector:
@@ -366,6 +378,320 @@ class TestSavedOAuthApps:
             f"{operation_id} refuses tokens without connector:read, but the spec "
             f"documents scopes {documented}"
         )
+
+
+@pytest.fixture
+def throwaway_jira_app(
+    oauth_configs_api: ConnectorOAuthConfigsClient,
+) -> Iterator[dict[str, Any]]:
+    """A Jira OAuth app saved on its own with dummy credentials, deleted afterwards."""
+    body = {
+        "oauthInstanceName": f"connector-spec-it-jira-app-{uuid4().hex[:8]}",
+        "config": {"clientId": JIRA_DUMMY_CLIENT_ID, "clientSecret": f"secret-{uuid4().hex}"},
+    }
+    resp = oauth_configs_api.create_config("Jira", body)
+    assert resp.status_code == 200, resp.text
+    app = {"body": body, "id": resp.json()["oauthConfig"]["_id"]}
+    try:
+        yield app
+    finally:
+        oauth_configs_api.delete_config("Jira", app["id"])
+
+
+@pytest.mark.integration
+class TestCreateAndDeleteOAuthApp:
+    def test_create_oauth_config_matches_spec(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        """200 rather than 201, with a ``message`` beside ``success`` and ``oauthConfig``."""
+        body = {
+            "oauthInstanceName": f"connector-spec-it-jira-app-{uuid4().hex[:8]}",
+            "config": {"clientId": JIRA_DUMMY_CLIENT_ID, "clientSecret": f"secret-{uuid4().hex}"},
+            "baseUrl": "https://pipeshub.example.com",
+        }
+        assert_request_body_strictly_matches_openapi_operation(body, _CREATE_OAUTH_CONFIG)
+
+        resp = oauth_configs_api.create_config("Jira", body)
+        config_id = (resp.json().get("oauthConfig") or {}).get("_id")
+        try:
+            assert resp.status_code == 200, resp.text
+            created = resp.json()
+            assert created["success"] is True and created["message"], created
+            assert created["oauthConfig"]["oauthInstanceName"] == body["oauthInstanceName"]
+            assert created["oauthConfig"]["connectorType"] == "Jira"
+            assert "config" not in created["oauthConfig"], "the create response echoed credentials"
+            assert_response_strictly_matches_openapi_operation(created, _CREATE_OAUTH_CONFIG)
+
+            saved = oauth_configs_api.get_config("Jira", config_id)
+            assert saved.status_code == 200, saved.text
+            assert saved.json()["oauthConfig"]["oauthInstanceName"] == body["oauthInstanceName"]
+        finally:
+            if config_id:
+                oauth_configs_api.delete_config("Jira", config_id)
+
+    def test_create_oauth_config_with_a_taken_name_is_409(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, throwaway_jira_app: dict[str, Any]
+    ) -> None:
+        resp = oauth_configs_api.create_config("Jira", throwaway_jira_app["body"])
+        assert resp.status_code == 409, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 409)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"config": {"clientId": "a", "clientSecret": "b"}},
+            {"oauthInstanceName": ""},
+            {"oauthInstanceName": "connector-spec-it-no-config"},
+            {"oauthInstanceName": "connector-spec-it-empty-config", "config": {}},
+        ],
+        ids=["no-name", "empty-name", "no-config", "empty-config"],
+    )
+    def test_create_oauth_config_without_name_or_config_is_400(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, body: dict[str, Any]
+    ) -> None:
+        resp = oauth_configs_api.create_config("Jira", body)
+        assert resp.status_code == 400, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 400)
+        assert request_body_violations(body, _CREATE_OAUTH_CONFIG), (
+            f"the spec accepts {body}"
+        )
+
+    def test_create_oauth_config_body_that_is_not_an_object_is_500(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        resp = oauth_configs_api.post("/Jira", data='"not-an-object"')
+        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
+        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 500)
+
+    def test_create_oauth_config_unauthenticated_is_401(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        body = {"oauthInstanceName": "connector-spec-it-x", "config": {"clientId": "a"}}
+        resp = oauth_configs_api.create_config("Jira", body, auth=False)
+        assert resp.status_code == 401, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _CREATE_OAUTH_CONFIG, 401)
+
+    def test_create_oauth_config_documents_and_needs_exactly_connector_write(
+        self,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        scoped_token: Callable[[Sequence[str]], str],
+    ) -> None:
+        assert operation_oauth2_scopes(_CREATE_OAUTH_CONFIG) == ["connector:write"]
+
+        def create(scope: str, name: str) -> Any:
+            headers = {"Authorization": f"Bearer {scoped_token([scope])}"}
+            body = {
+                "oauthInstanceName": name,
+                "config": {"clientId": JIRA_DUMMY_CLIENT_ID, "clientSecret": "dummy"},
+            }
+            return oauth_configs_api.create_config("Jira", body, auth=False, headers=headers)
+
+        refused = create("connector:read", f"connector-spec-it-jira-app-{uuid4().hex[:8]}")
+        assert refused.status_code == 403, refused.text
+        assert_error_response_matches_openapi_operation(refused.json(), _CREATE_OAUTH_CONFIG, 403)
+
+        created = create("connector:write", f"connector-spec-it-jira-app-{uuid4().hex[:8]}")
+        try:
+            assert created.status_code == 200, created.text
+        finally:
+            if created.status_code == 200:
+                oauth_configs_api.delete_config("Jira", created.json()["oauthConfig"]["_id"])
+
+    def test_delete_oauth_config_matches_spec(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        created = oauth_configs_api.create_config(
+            "Jira",
+            {
+                "oauthInstanceName": f"connector-spec-it-jira-app-{uuid4().hex[:8]}",
+                "config": {"clientId": JIRA_DUMMY_CLIENT_ID, "clientSecret": "dummy"},
+            },
+        )
+        assert created.status_code == 200, created.text
+        config_id = created.json()["oauthConfig"]["_id"]
+
+        resp = oauth_configs_api.delete_config("Jira", config_id)
+        assert resp.status_code == 200, resp.text
+        assert config_id in resp.json()["message"], resp.json()
+        assert_response_strictly_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG)
+
+        gone = oauth_configs_api.get_config("Jira", config_id)
+        assert gone.status_code == 404, gone.text
+
+        again = oauth_configs_api.delete_config("Jira", config_id)
+        assert again.status_code == 404, again.text
+        assert_error_response_matches_openapi_operation(again.json(), _DELETE_OAUTH_CONFIG, 404)
+
+    def test_delete_unknown_oauth_config_is_404(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        resp = oauth_configs_api.delete_config("Jira", str(uuid4()))
+        assert resp.status_code == 404, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG, 404)
+
+    def test_delete_oauth_config_used_by_a_connector_is_allowed(
+        self,
+        connectors_api: ConnectorsClient,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        throwaway_jira_app: dict[str, Any],
+        linked_oauth_config_id: Callable[[str], str | None],
+    ) -> None:
+        """No 400: the server does not check for connectors that still use the app."""
+        body = {
+            "connectorType": "Jira",
+            "instanceName": f"connector-spec-it-jira-{uuid4().hex[:8]}",
+            "scope": "team",
+            "authType": "OAUTH",
+            "baseUrl": OAUTH_BASE_URL,
+            "config": {"auth": {"oauthConfigId": throwaway_jira_app["id"]}},
+        }
+        created = connectors_api.create_instance(body)
+        assert created.status_code < 300, created.text
+        connector_id = created.json()["connector"]["connectorId"]
+        try:
+            assert linked_oauth_config_id(connector_id) == throwaway_jira_app["id"]
+            resp = oauth_configs_api.delete_config("Jira", throwaway_jira_app["id"])
+            assert resp.status_code == 200, resp.text
+            assert_response_strictly_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG)
+            with pytest.raises(AssertionError):
+                assert_operation_documents_response(_DELETE_OAUTH_CONFIG, "400")
+        finally:
+            connectors_api.delete_instance(connector_id)
+
+    def test_delete_oauth_config_unauthenticated_is_401(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, throwaway_jira_app: dict[str, Any]
+    ) -> None:
+        resp = oauth_configs_api.delete_config("Jira", throwaway_jira_app["id"], auth=False)
+        assert resp.status_code == 401, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG, 401)
+
+    def test_delete_oauth_config_documents_and_needs_exactly_connector_delete(
+        self,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        throwaway_jira_app: dict[str, Any],
+        scoped_token: Callable[[Sequence[str]], str],
+    ) -> None:
+        assert operation_oauth2_scopes(_DELETE_OAUTH_CONFIG) == ["connector:delete"]
+
+        def delete(scope: str) -> Any:
+            headers = {"Authorization": f"Bearer {scoped_token([scope])}"}
+            return oauth_configs_api.delete_config(
+                "Jira", throwaway_jira_app["id"], auth=False, headers=headers
+            )
+
+        refused = delete("connector:write")
+        assert refused.status_code == 403, refused.text
+        assert_error_response_matches_openapi_operation(refused.json(), _DELETE_OAUTH_CONFIG, 403)
+
+        allowed = delete("connector:delete")
+        assert allowed.status_code == 200, allowed.text
+
+
+@pytest.mark.integration
+class TestOAuthRegistry:
+    def test_registry_matches_spec(self, oauth_configs_api: ConnectorOAuthConfigsClient) -> None:
+        """Every connector type, across pages; each entry carries the full OAuth description."""
+        params = {"page": 1, "limit": 10, "search": "a"}
+        assert_query_params_documented(_OAUTH_REGISTRY, params)
+
+        seen: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            resp = oauth_configs_api.get_registry(page=page, limit=10)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_strictly_matches_openapi_operation(body, _OAUTH_REGISTRY)
+            assert body["pagination"]["page"] == page and body["pagination"]["limit"] == 10
+            seen += body["connectors"]
+            if not body["pagination"]["hasNext"]:
+                break
+            page += 1
+        assert len(seen) == body["pagination"]["totalCount"] > 10, "the registry did not paginate"
+        assert len({c["type"] for c in seen}) == len(seen)
+        assert {"Jira", "Confluence"} <= {c["type"] for c in seen}
+        assert all(c["authType"] == "OAUTH" for c in seen)
+
+    def test_registry_search_filters_the_entries(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        resp = oauth_configs_api.get_registry(search="jira")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_strictly_matches_openapi_operation(body, _OAUTH_REGISTRY)
+        assert body["pagination"]["search"] == "jira"
+        assert "Jira" in {c["type"] for c in body["connectors"]}
+        assert body["pagination"]["totalCount"] < 32
+
+        nothing = oauth_configs_api.get_registry(search="connector-spec-it-no-such-type").json()
+        assert nothing["connectors"] == []
+        assert_response_strictly_matches_openapi_operation(nothing, _OAUTH_REGISTRY)
+
+    @pytest.mark.parametrize("params", [{"limit": 201}, {"limit": 0}, {"page": 0}])
+    def test_registry_with_bad_paging_is_400(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, params: dict[str, int]
+    ) -> None:
+        resp = oauth_configs_api.get_registry(**params)
+        assert resp.status_code == 400, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _OAUTH_REGISTRY, 400)
+
+    @pytest.mark.parametrize(
+        "connector_type",
+        ["Jira", "Confluence", "Calendar", "Dropbox", "Salesforce", "OneDrive"],
+    )
+    def test_registry_entry_matches_spec(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, connector_type: str
+    ) -> None:
+        """Entries differ: some carry ``additionalParams``, a few ``tokenAccessType``."""
+        resp = oauth_configs_api.get_registry_entry(connector_type)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["connector"]["type"] == connector_type
+        assert_response_strictly_matches_openapi_operation(body, _OAUTH_REGISTRY_ENTRY)
+
+    def test_registry_entry_lists_the_fields_to_register_an_app(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        entry = oauth_configs_api.get_registry_entry("Jira").json()["connector"]
+        assert {f["name"] for f in entry["authFields"]} >= {"clientId", "clientSecret"}
+        assert entry["redirectUri"] == "connectors/oauth/callback/Jira"
+
+    def test_unknown_registry_entry_is_404(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient
+    ) -> None:
+        resp = oauth_configs_api.get_registry_entry("connector-spec-it-no-such-type")
+        assert resp.status_code == 404, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _OAUTH_REGISTRY_ENTRY, 404)
+
+    @pytest.mark.parametrize("operation_id", [_OAUTH_REGISTRY, _OAUTH_REGISTRY_ENTRY])
+    def test_registry_unauthenticated_is_401(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, operation_id: str
+    ) -> None:
+        if operation_id == _OAUTH_REGISTRY:
+            resp = oauth_configs_api.get_registry(auth=False)
+        else:
+            resp = oauth_configs_api.get_registry_entry("Jira", auth=False)
+        assert resp.status_code == 401, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), operation_id, 401)
+
+    @pytest.mark.parametrize("operation_id", [_OAUTH_REGISTRY, _OAUTH_REGISTRY_ENTRY])
+    def test_registry_documents_and_needs_exactly_connector_read(
+        self,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        scoped_token: Callable[[Sequence[str]], str],
+        operation_id: str,
+    ) -> None:
+        assert operation_oauth2_scopes(operation_id) == ["connector:read"]
+
+        def call(scope: str) -> Any:
+            headers = {"Authorization": f"Bearer {scoped_token([scope])}"}
+            if operation_id == _OAUTH_REGISTRY:
+                return oauth_configs_api.get_registry(auth=False, headers=headers)
+            return oauth_configs_api.get_registry_entry("Jira", auth=False, headers=headers)
+
+        refused = call("kb:read")
+        assert refused.status_code == 403, refused.text
+        assert_error_response_matches_openapi_operation(refused.json(), operation_id, 403)
+        assert call("connector:read").status_code == 200
 
 
 @pytest.mark.integration
