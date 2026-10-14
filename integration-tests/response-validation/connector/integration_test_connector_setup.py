@@ -61,12 +61,13 @@ def _ensure_sync_off(connectors: ConnectorsClient, connector_id: str) -> None:
         return
     # A running full sync locks the connector (409) until it finishes.
     deadline = time.monotonic() + SYNC_LOCK_TIMEOUT_SEC
-    while True:
-        resp = connectors.toggle(connector_id)
-        if resp.status_code != 409 or time.monotonic() > deadline:
-            break
+    resp = connectors.toggle(connector_id)
+    while resp.status_code == 409 and time.monotonic() + 2 < deadline:
         time.sleep(2)
+        resp = connectors.toggle(connector_id)
     assert resp.status_code == 200, f"could not turn sync back off: {resp.text}"
+    # Toggle flips, so a 200 alone does not prove sync ended up off.
+    assert not _is_active(connectors, connector_id), "sync is still on after turning it off"
 
 
 @pytest.mark.integration
