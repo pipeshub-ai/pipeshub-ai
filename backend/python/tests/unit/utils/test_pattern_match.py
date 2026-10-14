@@ -3447,6 +3447,34 @@ class TestRunPatternMatchWithLlmGrep:
         assert result == [{"virtual_record_id": "vr-1"}]
 
     @pytest.mark.asyncio
+    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self) -> None:
+        """The budget plus a bounded grace is all the caller waits; the rest of
+        a slow teardown carries on in the background."""
+        cleanup_done = asyncio.Event()
+
+        async def _very_slow_cleanup() -> list[dict]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(2.5)
+                cleanup_done.set()
+                raise
+            return []
+
+        task = asyncio.create_task(_very_slow_cleanup())
+        started = asyncio.get_running_loop().time()
+        with patch("app.utils.pattern_match.KEYWORD_SEARCH_CLEANUP_GRACE_SECS", 0.2, create=True):
+            result = await await_pattern_match(
+                task, MagicMock(), wait_budget=0.05,
+                found_so_far={"vr-1": {"virtual_record_id": "vr-1"}},
+            )
+        elapsed = asyncio.get_running_loop().time() - started
+        assert result == [{"virtual_record_id": "vr-1"}]
+        assert elapsed < 1.0
+        assert not cleanup_done.is_set()
+        await asyncio.wait_for(cleanup_done.wait(), timeout=5)
+
+    @pytest.mark.asyncio
     async def test_cancelling_the_caller_during_grep_cleanup_is_not_swallowed(self) -> None:
         """Once the budget fires, the wait sits in the grep task's cleanup. A
         cancellation of the caller there must still reach the caller."""

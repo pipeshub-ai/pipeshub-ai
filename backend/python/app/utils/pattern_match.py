@@ -67,6 +67,9 @@ _PATTERN_MATCH_TOTAL_BUDGET = 35.0
 # about 3 s keeps almost nothing. 5 s keeps 67% of the matched records and 32
 # of 43 searches still get some, while ending the wait 7.6 s sooner at worst.
 KEYWORD_SEARCH_SHORT_WAIT_SECS = 5.0
+# How long the short wait gives a cut-off grep task to clean up before
+# returning without it.
+KEYWORD_SEARCH_CLEANUP_GRACE_SECS = 1.0
 # Values of the chat request's `keywordSearchBudget`. "full" (and leaving it
 # out) keeps the whole `_PATTERN_MATCH_TOTAL_BUDGET`.
 KEYWORD_SEARCH_BUDGETS = ("short", "full")
@@ -1498,13 +1501,17 @@ async def await_pattern_match(
             raise
         if task in done:
             return task.result() or []
-        await cancel_task_if_running(task)
-        # That helper swallows CancelledError, including one aimed at this
-        # caller while the grep was still cleaning up. Don't return as if
-        # nothing happened: pass the caller's cancellation on.
-        current = asyncio.current_task()
-        if current is not None and current.cancelling():
-            raise asyncio.CancelledError
+        # Give the grep task a short, bounded time to clean up (kill its
+        # subprocesses, remove its access view); a slow teardown finishes in
+        # the background instead of stretching this short wait. A caller
+        # cancelled meanwhile gets CancelledError from `asyncio.wait`, which
+        # the handler below passes on.
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=KEYWORD_SEARCH_CLEANUP_GRACE_SECS)
+        if task in done:
+            _consume_outcome(task)
+        else:
+            task.add_done_callback(_consume_outcome)
         kept = list((found_so_far or {}).values())
         logger_instance.info(
             "pattern_match: stopped waiting %.1fs after semantic results, keeping %d match(es) found so far",
@@ -1524,6 +1531,13 @@ async def await_pattern_match(
         if run_timer is not None:
             run_timer.record("pattern_match_wait", (time.perf_counter() - wait_started) * 1000.0)
     return []
+
+
+def _consume_outcome(task: asyncio.Task) -> None:
+    """Read a finished task's outcome so a late error is not reported as
+    "exception was never retrieved"."""
+    if not task.cancelled():
+        task.exception()
 
 
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
