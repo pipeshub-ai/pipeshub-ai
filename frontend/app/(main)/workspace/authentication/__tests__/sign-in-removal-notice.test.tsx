@@ -63,7 +63,8 @@ describe('SignInRemovalNotice', () => {
 
   it('names the release and the methods the workspace uses', () => {
     renderNotice(['samlSso', 'oauth']);
-    expect(screen.getByText(new RegExp(`removed in PipesHub ${SIGN_IN_REMOVAL_VERSION.replace(/\./g, '\\.')}`))).toBeTruthy();
+    const title = `removed in PipesHub ${SIGN_IN_REMOVAL_VERSION}`;
+    expect(screen.getByText((text) => text.includes(title))).toBeTruthy();
     expect(screen.getByText(/This workspace uses SAML SSO and OAuth\./)).toBeTruthy();
   });
 });
