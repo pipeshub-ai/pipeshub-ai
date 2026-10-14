@@ -64,9 +64,11 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
 from app.connectors.sources.atlassian.core.read_outcome import (
+    JiraReadError,
     StoredAccessReadError,
     is_inconclusive_status,
 )
@@ -447,6 +449,16 @@ class JiraDataCenterConnector(BaseConnector):
         # are held back. A read refused from its first page is the account's lasting answer
         # and does not set this: the sync then fails closed.
         self._user_read_unfinished: bool = False
+        # True when this sync kept stored groups, roles, a lead, a project or its issues after
+        # a read that may pass on a later run (408, 429, 5xx, a transport error);
+        # full_sync_coverage() then reports the read as incomplete.
+        self._kept_unread_access: bool = False
+        # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id):
+        # a user group or role; ("project_roles", key) or ("project_issues", key) for a project
+        # whose role list or issue search was refused; ("projects", "") for every project when
+        # the groups are unknown. They are noted as seen before run_sync returns, so a full
+        # sync's unlink leaves them alone without the refusal making every full sync incomplete.
+        self._kept_after_refusal: list[tuple[str, str]] = []
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
         # lookup afterwards does not turn it into an unfinished read.
@@ -467,6 +479,65 @@ class JiraDataCenterConnector(BaseConnector):
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that kept stored groups, roles, a lead, a project or its issues after a
+        read that may pass next time (``_note_unread``) did not see them, and they cannot be
+        told apart from what Jira removed, so nothing is unlinked after it. A lasting refusal
+        (403) does not make every full sync incomplete: what it keeps is noted as seen
+        instead, and a confirmed absence (400, 404) stays eligible for the unlink. A short
+        user read on its own does not count either: what it holds back is noted as seen."""
+        return FullSyncCoverage(complete=not self._kept_unread_access)
+
+    def _note_unread(self, status: Optional[int], kept: Optional[tuple[str, str]] = None) -> None:
+        """Record a read that failed and left stored access in place.
+
+        ``status`` is the HTTP status, or None for a transport error or an exception. A 403
+        is a lasting refusal: ``kept`` names what stays as stored, noted as seen later by
+        ``_note_kept_after_refusal``. A 400 or 404 says the thing is not there, so nothing is
+        kept. Anything else may pass on a later run, so the sync reports an incomplete read.
+        """
+        if status == HttpStatusCode.FORBIDDEN.value:
+            if kept is not None:
+                self._kept_after_refusal.append(kept)
+        elif status is None or is_inconclusive_status(status):
+            self._kept_unread_access = True
+
+    async def _note_kept_after_refusal(self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]]) -> None:
+        """Note as seen the stored nodes kept after a lasting refusal, before run_sync returns.
+
+        A project is noted through its record group, which also notes the groups and roles
+        its stored grants come from. A project whose issue search was refused keeps its
+        stored records. Each entry is handled once.
+        """
+        pending, self._kept_after_refusal = self._kept_after_refusal, []
+        project_ids = {group.short_name: str(group.external_group_id) for group, _ in projects}
+        for entity, external_id in pending:
+            if entity == "projects":
+                for project_id in project_ids.values():
+                    await self._has_stored_access("record_group", project_id)
+            elif entity == "project_roles":
+                if external_id in project_ids:
+                    await self._has_stored_access("record_group", project_ids[external_id])
+            elif entity == "project_issues":
+                if external_id in project_ids:
+                    await self._keep_stored_records(project_ids[external_id])
+            else:
+                await self._has_stored_access(entity, external_id)
+
+    async def _keep_stored_records(self, project_id: str) -> None:
+        """Note this project's stored records as seen by a full sync in progress: its issues
+        could not be read, so they stay as stored and must survive the unlink after it."""
+        page_size = 1000
+        after_key: Optional[str] = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, project_id, page_size, after_key,
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            if len(page) < page_size:
+                return
+            after_key = page[-1].id
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -715,6 +786,8 @@ class JiraDataCenterConnector(BaseConnector):
                 return
 
             # Fetch and sync users
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
             jira_users = await self._fetch_users()
             if self._user_read_unfinished:
                 # Access already stored is kept; what has none stored yet is saved from what
@@ -732,6 +805,10 @@ class JiraDataCenterConnector(BaseConnector):
             # group replaces its members, so on an unfinished user read a group whose
             # members are stored keeps them.
             group_memberships = await self._sync_user_groups(jira_users)
+            if group_memberships is not None and group_memberships.cut_off:
+                # Groups past the picker limit are never read, on any sync: lasting, like a
+                # refusal, so every project's stored grants and the groups they name are kept.
+                self._kept_after_refusal.append(("projects", ""))
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -775,6 +852,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync project lead roles
             await self._sync_project_lead_roles(raw_projects, jira_users)
+            await self._note_kept_after_refusal(projects)
 
             # Saving a project replaces its access list, so projects whose scheme could not
             # be read are left as stored; their issues are still synced below.
@@ -805,6 +883,11 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             failed_keys = sync_stats.get("failed_project_keys") or []
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in failed_keys:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
@@ -2242,6 +2325,7 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     # Unknown members, not no members: roles that include this group keep what is stored.
+                    self._note_unread(None)
                     for key in (group.get("groupId"), group.get("name")):
                         if key:
                             groups_members_map[key] = None
@@ -2262,6 +2346,7 @@ class JiraDataCenterConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
+            self._note_unread(None)
             await self._notify_group_sync_failed()
             return None
 
@@ -2291,14 +2376,19 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 if response.status == HttpStatusCode.FORBIDDEN.value:
                     await self._notify_group_sync_failed()
+                # The groups are unknown, so on a refusal every project's stored grants, and the
+                # groups and roles they name, are kept.
+                self._note_unread(response.status, ("projects", ""))
                 return None
 
             payload = response.json() or {}
             if not isinstance(payload, dict):
+                self._note_unread(None)
                 return None
 
             raw_groups = payload.get("groups") or []
             if not isinstance(raw_groups, list):
+                self._note_unread(None)
                 return None
 
             total = payload.get("total")
@@ -2326,6 +2416,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error("❌ Error fetching groups via /groups/picker: %s", e)
+            self._note_unread(None)
             return None
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> Optional[list[str]]:
@@ -2369,6 +2460,7 @@ class JiraDataCenterConnector(BaseConnector):
                         group_name,
                         response.text()[:500],
                     )
+                    self._note_unread(response.status, ("user_group", group_id))
                     return None
 
                 payload = response.json()
@@ -2401,6 +2493,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error("❌ Error fetching members for group %s: %s", group_name, e)
+                self._note_unread(None)
                 return None
 
         return member_keys
@@ -2504,6 +2597,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: {response.status}")
+                    self._note_unread(response.status, ("project_roles", project_key))
                     failed_project_keys.append(project_key)
                     continue
 
@@ -2534,6 +2628,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if role_response.status != HttpStatusCode.OK.value:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                            self._note_unread(role_response.status, ("role", f"{project_key}_{role_id}"))
                             role_detail_failed = True
                             continue
 
@@ -2615,7 +2710,9 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if group_past_cap:
                             # Past the picker limit on every sync, so not a failure to report;
-                            # _fetch_groups already warns about the limit once per run.
+                            # _fetch_groups already warns about the limit once per run. Lasting,
+                            # so the kept role is noted as seen.
+                            self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
                             self.logger.info(
                                 f"  {project_key}: Keeping the stored members of role {role_name}: "
                                 f"group '{group_past_cap}' is past the first groups Jira lists"
@@ -2623,7 +2720,10 @@ class JiraDataCenterConnector(BaseConnector):
                             continue
 
                         if unreadable_group:
-                            # Saving the role now would drop that group's members from it.
+                            # Saving the role now would drop that group's members from it. The group
+                            # read already decided whether this sync is incomplete; the kept role is
+                            # noted as seen either way.
+                            self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
                             self.logger.warning(
                                 f"  {project_key}: Keeping the stored members of role {role_name}: "
                                 f"members of group '{unreadable_group}' could not be read"
@@ -2639,6 +2739,7 @@ class JiraDataCenterConnector(BaseConnector):
                         self.logger.error(
                             f"  {project_key}: Error processing role {role_name}: {role_error}"
                         )
+                        self._note_unread(None)
                         role_detail_failed = True
                         continue
 
@@ -2646,6 +2747,7 @@ class JiraDataCenterConnector(BaseConnector):
                     failed_project_keys.append(project_key)
 
             except Exception as project_error:
+                self._note_unread(None)
                 failed_project_keys.append(project_key)
                 self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
                 continue
@@ -2757,6 +2859,7 @@ class JiraDataCenterConnector(BaseConnector):
 
 
             except Exception as lead_error:
+                self._note_unread(None)
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
 
@@ -2903,6 +3006,8 @@ class JiraDataCenterConnector(BaseConnector):
         new_count = 0
         updated_count = 0
         failed_project_keys: list[str] = []
+        # Project key -> the status its issue read failed with (None: transport or other error).
+        failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
@@ -2917,6 +3022,7 @@ class JiraDataCenterConnector(BaseConnector):
                     full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
                 failed_project_keys.append(project.short_name)
+                failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
@@ -2925,6 +3031,7 @@ class JiraDataCenterConnector(BaseConnector):
             "new_count": new_count,
             "updated_count": updated_count,
             "failed_project_keys": failed_project_keys,
+            "failed_project_statuses": failed_project_statuses,
             "full_sync_project_ids": full_sync_project_ids,
         }
 
@@ -3183,7 +3290,7 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch issues: {response.text()}")
+                    raise JiraReadError(response.status, f"Failed to fetch issues: {response.text()}")
 
                 issues_batch_response = self._safe_json_parse(response, f"issues fetch for {project_key}")
                 if issues_batch_response is None:

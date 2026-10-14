@@ -1761,6 +1761,128 @@ class TestUnfinishedUserRead:
         assert [m.email for m in db.app_roles["ENG_projectLead"]] == lead
 
 
+class TestFullSyncCoverage:
+    """What a full sync (#4119) keeps after a read that failed, and whether it still unlinks.
+
+    A failure that may pass marks the run incomplete, so nothing is unlinked. A lasting
+    refusal (403) or the picker limit keeps the stored access and notes it as seen, so the
+    unlink still runs for what is really gone. stub_site's ENG scheme grants devs and the
+    Developers role (ENG_10002), and Carol is in both.
+    """
+
+    @staticmethod
+    async def _synced(jira, db, store, search) -> JiraDataCenterConnector:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in {m.email for m in db.groups_saved["devs"]}
+        assert "carol@example.com" in {m.email for m in db.app_roles["ENG_10002"]}
+        store.sync_points.clear()  # a full sync's prep
+        return connector
+
+    async def test_a_refused_role_list_keeps_the_roles_and_still_unlinks(self, jira, db, store, search) -> None:
+        connector = await self._synced(jira, db, store, search)
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True, "a refusal does not make every full sync incomplete"
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before, "the kept role keeps its members"
+        assert "ENG_10002" in [p.external_id for p in db.record_group_permissions["10000"]]
+
+    async def test_one_unreadable_role_is_kept_and_the_run_is_incomplete(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"]
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/role/10004", json_response({"errorMessages": ["boom"]}, status=500))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"], "the unread role keeps its members"
+
+    async def test_refused_group_members_keep_the_group_and_still_unlink(self, jira, db, store, search) -> None:
+        connector = await self._synced(jira, db, store, search)
+        before = sorted(m.email for m in db.groups_saved["devs"])
+
+        jira.on("GET", f"{API}/group/member", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == before, "the kept group keeps its members"
+
+    async def test_a_refused_group_list_keeps_the_groups_projects_name_and_still_unlinks(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs, "a group the project grants is kept"
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "so is a role it grants"
+
+    async def test_groups_past_the_picker_limit_are_kept_and_the_unlink_still_runs(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+
+        # devs is past the limit: the picker returns one group of two, on every sync.
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 2})
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True, "the limit does not make every full sync incomplete"
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs, "the group past the limit keeps its members"
+        assert "devs" in [p.external_id for p in db.record_group_permissions["10000"]]
+
+    async def test_a_refused_issue_search_keeps_the_projects_records_and_still_unlinks(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        stored = sorted(r.id for r in db.records.values() if r.external_record_group_id == "10000")
+        assert stored
+
+        search.add("ENG", 0, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(db.kept_records) == stored, "the project's stored records are noted as seen"
+
+    @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
+    async def test_an_issue_search_that_fails_is_classed_by_its_status(
+        self, jira, db, store, search, status, complete
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+
+        search.add("ENG", 0, json_response({"errorMessages": ["no"]}, status=status))
+        await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is complete
+        assert db.kept_records == [], "only a refusal keeps the records"
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
 

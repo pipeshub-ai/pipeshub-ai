@@ -24,3 +24,11 @@ def is_inconclusive_status(status: int) -> bool:
 class StoredAccessReadError(Exception):
     """The stored access a sync would keep could not be read. Raised so the sync stops
     before a write that might replace that access with a list it could not read in full."""
+
+
+class JiraReadError(Exception):
+    """A Jira read answered with a status other than 200; ``status`` tells whether it may pass."""
+
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status

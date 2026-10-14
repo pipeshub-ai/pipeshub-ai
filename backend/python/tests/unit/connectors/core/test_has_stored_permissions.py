@@ -101,6 +101,14 @@ async def test_a_kept_node_keeps_the_groups_and_roles_its_edges_come_from() -> N
     assert run.has(CollectionNames.GROUPS.value, "g1")
 
 
+async def test_kept_records_are_noted_as_seen_by_the_full_sync_in_progress() -> None:
+    processor = processor_over(FakeStore([]))
+    processor.note_kept_records("c1", ["r1"])  # no full sync running: nothing to note
+    run = processor.begin_full_sync_run("c1")
+    processor.note_kept_records("c1", ["r1", "r2"])
+    assert run.has(CollectionNames.RECORDS.value, "r1") and run.has(CollectionNames.RECORDS.value, "r2")
+
+
 async def test_an_edge_read_that_fails_raises_instead_of_reading_as_nothing_stored() -> None:
     store = FakeStore([], edge_read_fails=True)
     with pytest.raises(RuntimeError, match="edge read failed"):
