@@ -378,22 +378,14 @@ class TestWebConnectorRecordGroup:
     async def test_create_record_group(self):
         connector = _make_connector()
         connector.url = "https://example.com"
-        from app.models.entities import AppUser
-        app_users = [
-            AppUser(
-                app_name=Connectors.WEB, connector_id="web-conn-1",
-                source_user_id="u1", org_id="org-1",
-                email="test@example.com", full_name="Test User", is_active=True,
-            )
-        ]
-        await connector.create_record_group(app_users)
+        await connector.create_record_group()
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_record_group_no_url(self):
         connector = _make_connector()
         connector.url = None
-        await connector.create_record_group([])
+        await connector.create_record_group()
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -402,7 +394,7 @@ class TestWebConnectorRecordGroup:
         connector.url = "https://example.com"
         connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(Exception):
-            await connector.create_record_group([])
+            await connector.create_record_group()
 
 
 # ===================================================================
