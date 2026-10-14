@@ -16,16 +16,27 @@ from app.sources.client.iclient import IClient
 
 # The subdomain is interpolated into every request URL, so anything beyond a bare
 # DNS label ("acme.zendesk.com", "evil.com/x") would send the bearer token elsewhere.
-_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE)
+_SUBDOMAIN_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", re.IGNORECASE | re.ASCII)
 
 
 class ZendeskConfigError(ValueError):
     """Connector configuration the user has to correct; the message is user-facing."""
 
 
+def normalize_subdomain(value: Any) -> str:
+    """What an admin typed, reduced to the bare subdomain where that is unambiguous.
+
+    "https://acme.zendesk.com/", "acme.zendesk.com" and "ACME" all mean acme. Anything
+    else is returned as typed, for validation to refuse.
+    """
+    text = value.strip().lower() if isinstance(value, str) else ""
+    text = re.sub(r"^https?://", "", text).split("/", 1)[0]
+    return text.removesuffix(".zendesk.com")
+
+
 def validate_subdomain(subdomain: str) -> str:
-    subdomain = (subdomain or "").strip()
-    if not _SUBDOMAIN_RE.match(subdomain):
+    subdomain = normalize_subdomain(subdomain)
+    if not _SUBDOMAIN_RE.fullmatch(subdomain):
         raise ZendeskConfigError(
             f"Invalid Zendesk subdomain '{subdomain}'. Enter only the subdomain, "
             "e.g. 'acme' for acme.zendesk.com."

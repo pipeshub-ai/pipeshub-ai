@@ -143,6 +143,8 @@ BATCH_PROCESSING_SIZE = 100
 # Zendesk rejects an incremental start_time inside the last minute.
 INCREMENTAL_SAFETY_LAG_SECONDS = 60
 RETRYABLE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504})
+# Stands in for the missing status of a request that got no answer, so it is retried.
+TRANSPORT_ERROR_STATUS = 503
 HTTP_ERROR_STATUS = 400
 CDN_FETCH_TIMEOUT_SECONDS = 60.0
 UNRELIABLE_MIME_TYPES = frozenset({"application/unknown", "application/octet-stream", "application/binary"})
@@ -157,6 +159,23 @@ ALL_TICKETS_ACCESS = "all"
 PUBLIC_GROUPS_ACCESS = "public_groups"
 PUBLIC_GROUPS_GROUP_ID = "role_public_groups"
 UNASSIGNED_GROUP_ID = "unassigned_tickets"
+# Per-person and per-organization permission groups. A ticket grants the group, and the
+# group's members are rewritten every sync, so a change to the person (suspension, a new
+# access level, another organization) takes effect without the ticket changing.
+# Staff a ticket names as CC or follower, or as requester once the requester may see it.
+NAMED_STAFF_GROUP_PREFIX = "named_"
+# A ticket's assignee, while their access is "assigned tickets only".
+ASSIGNED_STAFF_GROUP_PREFIX = "assigned_"
+# Agents whose access is "tickets in their organization", per organization. Not "org_":
+# that prefix is the organization's customers.
+ORG_AGENTS_GROUP_PREFIX = "orgagents_"
+# Earlier per-staff groups; emptied every sync so grants written with them stay inert.
+RETIRED_STAFF_GROUP_PREFIX = "staff_"
+ASSIGNED_ONLY_ACCESS = frozenset({"assigned", "assigned_only"})
+ORGANIZATION_ACCESS = frozenset({"organization", "organization_only"})
+# Bumped when the grants a ticket carries change shape; tickets synced before are re-read
+# once so they carry the current ones.
+TICKET_GRANT_MODEL = 2
 # Custom roles exist on Enterprise plans only; other plans answer with one of these.
 CUSTOM_ROLES_UNAVAILABLE_STATUSES = frozenset({403, 404})
 # Base64 inflates by a third and the result is held in the record body.
@@ -250,11 +269,18 @@ class ZendeskAuthError(Exception):
             display_name="Groups",
             filter_type=FilterType.LIST,
             category=FilterCategory.SYNC,
-            description="Filter tickets by group/team (leave empty for all groups)",
+            description=(
+                "Filter tickets by group (leave empty for all groups). Tickets with no "
+                "group are included by an \"in\" filter only if Unassigned is selected."
+            ),
             option_source_type=OptionSourceType.DYNAMIC,
         ))
-        .add_filter_field(CommonFields.modified_date_filter("Filter tickets by modification date."))
-        .add_filter_field(CommonFields.created_date_filter("Filter tickets by creation date."))
+        .add_filter_field(CommonFields.modified_date_filter(
+            "Filter tickets and Help Center articles by modification date."
+        ))
+        .add_filter_field(CommonFields.created_date_filter(
+            "Filter tickets and Help Center articles by creation date."
+        ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
             name="tickets",
@@ -468,6 +494,7 @@ class ZendeskConnector(BaseConnector):
         if users:
             await self.data_entities_processor.on_new_app_users(users)
         self.logger.info(f"Zendesk: synced {len(users)} users")
+        await self._ensure_workspace_app_edge()
 
         self._role_ticket_access, self._roles_complete = (
             await self._fetch_custom_role_ticket_access()
@@ -499,15 +526,25 @@ class ZendeskConnector(BaseConnector):
             self._role_ticket_access, self._roles_complete
         )
         if users_complete:
-            staff_access_groups = self._build_staff_access_groups()
-            staff_access_groups = await self._append_empty_removed_user_groups(
-                staff_access_groups,
-                prefixes=("staff_",),
+            person_groups = await self._append_empty_removed_user_groups(
+                self._build_person_groups(),
+                prefixes=(
+                    NAMED_STAFF_GROUP_PREFIX,
+                    ASSIGNED_STAFF_GROUP_PREFIX,
+                    RETIRED_STAFF_GROUP_PREFIX,
+                ),
             )
+            role_based: List[Tuple[AppUserGroup, List[AppUser]]] = []
+            role_free: List[Tuple[AppUserGroup, List[AppUser]]] = []
+            for entry in person_groups:
+                assigned = entry[0].source_user_group_id.startswith(ASSIGNED_STAFF_GROUP_PREFIX)
+                (role_based if assigned else role_free).append(entry)
             await self.data_entities_processor.on_new_user_groups(
-                [all_access_group, self._build_public_groups_group(), *staff_access_groups],
+                [all_access_group, self._build_public_groups_group(), *role_based],
                 replace_members=replace_members,
             )
+            # Who may sign in needs no roles, so these are rebuilt even without them.
+            await self.data_entities_processor.on_new_user_groups(role_free, replace_members=True)
         else:
             self._skip("agent access")
             self.logger.error(
@@ -527,10 +564,19 @@ class ZendeskConnector(BaseConnector):
 
         org_user_groups, orgs_complete = await self._fetch_organizations()
         if orgs_complete:
-            org_user_groups = await self._append_empty_removed_user_groups(
-                org_user_groups,
-                prefixes=("org_",),
+            org_user_groups = await self._add_organizations_missing_from_export(org_user_groups)
+        if users_complete:
+            # Before the tickets: a grant to a group that does not exist yet is dropped.
+            org_ids = sorted(
+                group.source_user_group_id.removeprefix("org_") for group, _ in org_user_groups
             )
+            org_agent_groups = await self._append_empty_removed_user_groups(
+                self._build_org_agent_groups(org_ids), prefixes=(ORG_AGENTS_GROUP_PREFIX,)
+            )
+            if org_agent_groups:
+                await self.data_entities_processor.on_new_user_groups(
+                    org_agent_groups, replace_members=replace_members
+                )
         if org_user_groups:
             shared_org_groups: List[AppUserGroup] = []
             emptied_org_groups = []
@@ -553,14 +599,20 @@ class ZendeskConnector(BaseConnector):
             )
         self.logger.info(f"Zendesk: synced {len(org_user_groups)} organizations")
 
-        # Without those AppUserGroups the group grant is dropped, and the advanced sync
-        # point would stop any later run repairing it.
+        # Without those AppUserGroups (organizations' too) the grant is dropped, and the
+        # advanced sync point would stop any later run repairing it.
         ticket_error: Optional[Exception] = None
-        if users_complete and memberships_complete:
+        if users_complete and memberships_complete and orgs_complete:
             try:
                 self._refresh_ticket_grants, users_checkpoint = (
                     await self._users_deleted_since_last_sync()
                 )
+                if not self._rebuild_ticket_edges and await self._ticket_grants_outdated():
+                    self.logger.info(
+                        "Zendesk: tickets were stored with an older set of grants — "
+                        "re-reading every ticket once to bring them up to date"
+                    )
+                    self._refresh_ticket_grants = True
                 ticket_count = await self._sync_tickets()
                 if self._ticket_sync_complete:
                     await self.data_entities_processor.reap_external_app_users(
@@ -581,8 +633,8 @@ class ZendeskConnector(BaseConnector):
             ticket_count = 0
             self._skip("tickets")
             self.logger.error(
-                "Zendesk: skipping ticket sync — group or all-tickets membership was "
-                "not written, so every ticket would land without that grant and the advanced sync "
+                "Zendesk: skipping ticket sync — group, all-tickets or organization data was "
+                "not complete, so every ticket would land without that grant and the advanced sync "
                 "point would stop any later run from repairing it"
             )
         article_count = await self._sync_help_center_articles()
@@ -625,6 +677,23 @@ class ZendeskConnector(BaseConnector):
             self._user_id_to_app_user[app_user.source_user_id] = app_user
 
         return users, user_email_map, complete
+
+    async def _ensure_workspace_app_edge(self) -> None:
+        """Let every workspace member reach this connector's records they hold a grant on.
+
+        Only agents and admins are app users, and search starts from the apps a user
+        belongs to. Without this edge a public Help Center article, granted org-wide,
+        reaches nobody else. Non-fatal: staff access does not depend on it.
+        """
+        try:
+            await self.data_entities_processor.ensure_team_app_edge(self.connector_id)
+        except Exception as e:
+            self.logger.warning(f"Zendesk: could not link the workspace to the app: {e}")
+
+    async def _ticket_grants_outdated(self) -> bool:
+        """Whether the stored tickets carry grants from an earlier model (see TICKET_GRANT_MODEL)."""
+        state = await self.records_sync_point.read_sync_point(SYNC_POINT_KEY)
+        return bool(state.get("lastEndTime")) and state.get("grantModel") != TICKET_GRANT_MODEL
 
     async def _append_empty_removed_user_groups(
         self,
@@ -882,6 +951,10 @@ class ZendeskConnector(BaseConnector):
             PUBLIC_GROUPS_ACCESS: 2,
             "all": 3,
         }
+        # The agent's own field has no public-groups value: such an agent reports
+        # "groups", which narrows nothing.
+        if role_access == PUBLIC_GROUPS_ACCESS and own_access == "groups":
+            return PUBLIC_GROUPS_ACCESS
         values = [value for value in (role_access, own_access) if value in access_rank]
         if not values:
             return role_access
@@ -960,30 +1033,69 @@ class ZendeskConnector(BaseConnector):
             entity_type=EntityType.GROUP,
         )
 
-    def _build_staff_access_groups(
-        self,
-    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
-        """Create a private permission group for each restricted staff member."""
+    def _build_person_groups(self) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        """Two permission groups per staff member, granted by the tickets that name them.
+
+        ``named_`` holds them while they can sign in; ``assigned_`` while their access is
+        "assigned tickets only". Both are written for every staff member, empty or not,
+        so a ticket's grant always lands and only membership has to change later.
+        """
         groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        for user_id, app_user in self._user_id_to_app_user.items():
+            user_data = self._user_id_to_data.get(user_id, {})
+            active = user_data.get("active") is not False and not user_data.get("suspended")
+            assigned_only = active and self._effective_ticket_access(
+                user_data, self._role_ticket_access
+            ) in ASSIGNED_ONLY_ACCESS
+            name = user_data.get("name") or user_id
+            groups.append((
+                self._person_group(f"{NAMED_STAFF_GROUP_PREFIX}{user_id}", f"Zendesk: {name}"),
+                [app_user] if active else [],
+            ))
+            groups.append((
+                self._person_group(
+                    f"{ASSIGNED_STAFF_GROUP_PREFIX}{user_id}", f"Zendesk: assigned to {name}"
+                ),
+                [app_user] if assigned_only else [],
+            ))
+        return groups
+
+    def _person_group(self, external_id: str, name: str) -> AppUserGroup:
+        return AppUserGroup(
+            app_name=Connectors.ZENDESK,
+            connector_id=self.connector_id,
+            source_user_group_id=external_id,
+            name=name,
+            org_id=self.data_entities_processor.org_id,
+        )
+
+    def _build_org_agent_groups(self, org_ids: List[str]) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        """One group per organization holding its organization-limited agents.
+
+        Zendesk lets such an agent read the tickets requested by end users in their
+        organization, whatever the organization's ticket sharing says (that setting is
+        for end users).
+        """
+        members: Dict[str, List[AppUser]] = defaultdict(list)
         for user_id, app_user in self._user_id_to_app_user.items():
             user_data = self._user_id_to_data.get(user_id, {})
             if user_data.get("active") is False or user_data.get("suspended"):
                 continue
-            access = self._effective_ticket_access(user_data, self._role_ticket_access)
-            if access not in {
-                "assigned", "assigned_only", "requested", "organization",
-                "organization_only",
-            }:
-                continue
-            group = AppUserGroup(
-                app_name=Connectors.ZENDESK,
-                connector_id=self.connector_id,
-                source_user_group_id=f"staff_{user_id}",
-                name=f"Zendesk staff {user_data.get('name') or user_id}",
-                org_id=self.data_entities_processor.org_id,
+            if self._effective_ticket_access(
+                user_data, self._role_ticket_access
+            ) in ORGANIZATION_ACCESS and user_data.get("organization_id"):
+                members[str(user_data["organization_id"])].append(app_user)
+        return [
+            (
+                self._person_group(
+                    f"{ORG_AGENTS_GROUP_PREFIX}{org_id}",
+                    f"Zendesk: agents of {(self._org_id_to_data.get(org_id) or {}).get('name') or org_id}",
+                ),
+                members.get(org_id, []),
             )
-            groups.append((group, [app_user]))
-        return groups
+            # An agent's organization may be missing from a cut-short export.
+            for org_id in sorted(set(org_ids) | members.keys())
+        ]
 
     def _all_tickets_permission(self) -> Permission:
         return Permission(
@@ -1078,7 +1190,7 @@ class ZendeskConnector(BaseConnector):
             )
             members: List[AppUser] = []
             for user_data in users_data:
-                if user_data.get("active") is False or user_data.get("suspended"):
+                if not self._is_signed_in_customer(user_data):
                     continue
                 app_user = self._to_app_user(user_data)
                 if app_user:
@@ -1098,6 +1210,71 @@ class ZendeskConnector(BaseConnector):
             await self.data_entities_processor.on_external_app_users(
                 sorted(emails), self.connector_id
             )
+
+    async def _add_organizations_missing_from_export(
+        self, org_user_groups: List[Tuple[AppUserGroup, List[AppUser]]]
+    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        """Settle each organization that has groups here but is not in the export.
+
+        Absence alone is not deletion: an organization edited moments ago can be missing
+        from a complete export, and emptying its group would cut its customers off until
+        the next sync. Zendesk is asked about each one. Gone: its groups are deleted,
+        which also takes their grant off every ticket. Still there: it is synced like the
+        rest. No answer: left as it is.
+        """
+        exported = {group.source_user_group_id.removeprefix("org_") for group, _ in org_user_groups}
+        async with self.data_store_provider.transaction() as tx_store:
+            stored = await tx_store.get_user_groups(
+                self.connector_id, self.data_entities_processor.org_id
+            )
+        missing = sorted({
+            group.source_user_group_id.removeprefix("org_").removeprefix(ORG_AGENTS_GROUP_PREFIX)
+            for group in stored
+            if group.source_user_group_id.startswith(("org_", ORG_AGENTS_GROUP_PREFIX))
+        } - exported)
+        if not missing:
+            return org_user_groups
+        datasource = await self._get_fresh_datasource()
+        for org_id in missing:
+            if not org_id.isdigit():
+                continue
+            try:
+                response = await self._call_api_with_retry(
+                    datasource.show_organization,
+                    "zendesk/show_organization",
+                    organization_id=int(org_id),
+                )
+            except Exception as e:
+                self.logger.warning(f"Zendesk: could not check organization {org_id}: {e}")
+                continue
+            if response.status_code == HttpStatusCode.NOT_FOUND.value:
+                for external_id in (f"org_{org_id}", f"{ORG_AGENTS_GROUP_PREFIX}{org_id}"):
+                    await self.data_entities_processor.on_user_group_deleted(
+                        external_id, self.connector_id
+                    )
+                continue
+            org_data = (
+                self._extract_required_object(response.data, "organization")
+                if response.success else {}
+            )
+            if str(org_data.get("id")) != org_id:
+                self.logger.warning(
+                    f"Zendesk: organization {org_id} missing from the export and unreadable"
+                )
+                continue
+            self._org_id_to_data[org_id] = org_data
+            org_user_groups.append((self._org_user_group(org_id), []))
+        return org_user_groups
+
+    @staticmethod
+    def _is_signed_in_customer(user_data: Dict[str, Any]) -> bool:
+        """An end user who can sign in. Organization sharing is an end-user rule: an
+        agent's reach comes from their access level, never from their organization."""
+        return (
+            user_data.get("role") == "end-user"
+            and user_data.get("active") is not False
+            and not user_data.get("suspended")
+        )
 
     def _org_user_group(self, org_id: str) -> AppUserGroup:
         org_data = self._org_id_to_data[org_id]
@@ -1122,6 +1299,8 @@ class ZendeskConnector(BaseConnector):
         for user_data in self._extract_list(payload, "users"):
             org_id = str(user_data.get("organization_id") or "")
             if not self._org_data_shares_tickets(self._org_id_to_data.get(org_id)):
+                continue
+            if not self._is_signed_in_customer(user_data):
                 continue
             app_user = self._to_app_user(user_data)
             if app_user:
@@ -1281,6 +1460,13 @@ class ZendeskConnector(BaseConnector):
                         "lastCursor": next_cursor,
                         "resetId": reset_id,
                         "pendingTicketIds": sorted(pending_ticket_ids),
+                        # New pages carry the current grants, so a resumed first sync
+                        # need not start over; a refresh counts only once it finishes.
+                        "grantModel": (
+                            saved_state.get("grantModel")
+                            if self._refresh_ticket_grants
+                            else TICKET_GRANT_MODEL
+                        ),
                         "updatedAt": get_epoch_timestamp_in_ms(),
                     },
                 )
@@ -1333,6 +1519,7 @@ class ZendeskConnector(BaseConnector):
                 "lastCursor": None,
                 "resetId": reset_id,
                 "pendingTicketIds": sorted(pending_ticket_ids),
+                "grantModel": TICKET_GRANT_MODEL,
                 "updatedAt": get_epoch_timestamp_in_ms(),
             },
         )
@@ -1345,7 +1532,7 @@ class ZendeskConnector(BaseConnector):
         return synced
 
     async def _process_ticket_batch(
-        self, tickets: List[Dict[str, Any]]
+        self, tickets: List[Dict[str, Any]], *, replace_grants: bool = False
     ) -> Tuple[int, int, List[str]]:
         """Store tickets with their grants and attachments.
 
@@ -1405,7 +1592,9 @@ class ZendeskConnector(BaseConnector):
                 await self.data_entities_processor.on_new_records(
                     records_with_permissions[start:start + BATCH_PROCESSING_SIZE]
                 )
-            await self._replace_changed_record_permissions(records_with_permissions)
+            await self._replace_changed_record_permissions(
+                records_with_permissions, replace_all=replace_grants
+            )
             # At sync time, not on the streaming path: an attachment is a record in
             # its own right and must exist even if its ticket is never indexed. This
             # is also what rebuilds their edges after a full sync wipes them, so an
@@ -1469,12 +1658,16 @@ class ZendeskConnector(BaseConnector):
                 still_pending.add(ticket_id)
                 continue
             self._cache_sideloads(response.data)
-            _, _, failed_ids = await self._process_ticket_batch([ticket])
+            # Set aside, it missed whatever grant change the run it failed in made.
+            _, _, failed_ids = await self._process_ticket_batch([ticket], replace_grants=True)
             still_pending.update(failed_ids)
         return still_pending
 
     async def _replace_changed_record_permissions(
-        self, records_with_permissions: List[Tuple[Record, List[Permission]]]
+        self,
+        records_with_permissions: List[Tuple[Record, List[Permission]]],
+        *,
+        replace_all: bool = False,
     ) -> None:
         """Swap the grants of tickets that already existed for the ones just computed.
 
@@ -1486,7 +1679,7 @@ class ZendeskConnector(BaseConnector):
         if self._rebuild_ticket_edges:
             return
         for record, permissions in records_with_permissions:
-            if record.version > 0 or self._refresh_ticket_grants:
+            if replace_all or record.version > 0 or self._refresh_ticket_grants:
                 await self.data_entities_processor.on_updated_record_permissions(
                     record, permissions
                 )
@@ -1499,7 +1692,7 @@ class ZendeskConnector(BaseConnector):
         if self._is_deleted_ticket(ticket_data):
             return False
         # A groupless ticket is filed under Unassigned, which an "in" group filter
-        # never selects.
+        # keeps only when Unassigned is one of the chosen groups.
         group_id = ticket_data.get("group_id")
         if not self._is_group_allowed_by_filter(str(group_id) if group_id else UNASSIGNED_GROUP_ID):
             return False
@@ -1635,6 +1828,9 @@ class ZendeskConnector(BaseConnector):
             ),
             external_record_group_id=external_group_id,
             record_group_type=RecordGroupType.PROJECT,
+            # Unassigned's grants are for tickets with no group; one whose group was
+            # deleted is filed there but carries only its own grants.
+            inherit_permissions=known_group or not group_id,
             version=version,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.ZENDESK,
@@ -2062,7 +2258,8 @@ class ZendeskConnector(BaseConnector):
                 complete = False
                 break
             self._cache_sideloads(payload)
-            for article in self._extract_list(payload, "articles"):
+            page_articles = self._extract_list(payload, "articles")
+            for article in page_articles:
                 article_id = article.get("id")
                 if article_id is None:
                     continue
@@ -2079,17 +2276,57 @@ class ZendeskConnector(BaseConnector):
             end_time = payload.get("end_time")
             if end_time:
                 max_end_time = max(max_end_time, int(end_time))
-            if payload.get("end_of_stream", True):
+            if self._export_finished(payload):
                 break
-            if not end_time or end_time <= start_time:
+            next_start = self._next_export_start(
+                start_time, end_time, page_has_items=bool(page_articles)
+            )
+            if next_start is None:
                 self.logger.error(
-                    "Zendesk incremental_articles stopped advancing before end_of_stream"
+                    "Zendesk incremental_articles stopped advancing before its last page"
                 )
                 complete = False
                 break
-            start_time = end_time
+            start_time = next_start
         articles.extend(articles_by_id.values())
         return articles, complete, max_end_time
+
+    @staticmethod
+    def _export_finished(payload: Dict[str, Any]) -> bool:
+        """Whether a time-based export page is the last one.
+
+        The Support exports say so with end_of_stream. The Help Center one carries no
+        such field: a null next_page is its last page.
+        """
+        end_of_stream = payload.get("end_of_stream")
+        if end_of_stream is None:
+            return not payload.get("next_page")
+        return bool(end_of_stream)
+
+    def _next_export_start(
+        self, start_time: int, end_time: Any, *, page_has_items: bool
+    ) -> Optional[int]:
+        """Where a time-based export resumes, or None when it cannot go on.
+
+        Normally the page's end_time. A page that ends on the second it started on
+        holds a second's worth of items, and asking again returns the same page for
+        ever, so the export steps one second on. Only a page that carried items may
+        step: anything else is an export that is not moving.
+        """
+        if not end_time:
+            return None
+        end_time = int(end_time)
+        if end_time > start_time:
+            return end_time
+        if end_time < start_time or not page_has_items:
+            return None
+        # shortcut: items of that second beyond the page are left until they next change;
+        # the Help Center export has no cursor form to page within a second.
+        next_start = start_time + 1
+        # Zendesk rejects a start_time inside the last minute; the next sync resumes.
+        if next_start > get_epoch_timestamp_in_ms() // 1000 - INCREMENTAL_SAFETY_LAG_SECONDS:
+            return None
+        return next_start
 
     async def _sync_help_center_sections(self) -> bool:
         """Publish the Help Center tree: category -> section -> subsection.
@@ -2837,6 +3074,10 @@ class ZendeskConnector(BaseConnector):
                 connector_id=self.connector_id,
                 external_record_id=external_id,
             )
+            # A download only links records the sync made; one it can't link yet would
+            # be a child id that never exists.
+            if existing_record is None and not publish_records:
+                continue
             record_id = existing_record.id if existing_record else str(uuid4())
             version = 0 if existing_record is None else existing_record.version
             file_name = attachment.get("file_name") or attachment.get("mapped_content_url") or f"attachment_{attachment_id}"
@@ -2855,6 +3096,7 @@ class ZendeskConnector(BaseConnector):
                 parent_record_type=parent_record.record_type,
                 external_record_group_id=parent_record.external_record_group_id,
                 record_group_type=parent_record.record_group_type,
+                inherit_permissions=parent_record.inherit_permissions,
                 version=version,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.ZENDESK,
@@ -3071,6 +3313,11 @@ class ZendeskConnector(BaseConnector):
                 if search and search.lower() not in group_name.lower():
                     continue
                 options.append(FilterOption(id=str(group_id), label=group_name))
+            # Tickets with no group are filed under Unassigned; offering it lets an "in"
+            # filter keep them, which no list of real groups can.
+            unassigned = "Unassigned (tickets with no group)"
+            if not search or search.lower() in unassigned.lower():
+                options.append(FilterOption(id=UNASSIGNED_GROUP_ID, label=unassigned))
 
         start_idx = (page - 1) * limit
         end_idx = start_idx + limit
@@ -3176,13 +3423,14 @@ class ZendeskConnector(BaseConnector):
             if response.status_code == HttpStatusCode.UNAUTHORIZED.value:
                 raise ZendeskAuthError(AUTH_FAILED_MESSAGE)
         status = response.status_code
-        if not response.success and status in RETRYABLE_STATUS_CODES:
+        # No status at all is a request that never got an answer (reset, timeout).
+        if not response.success and (status is None or status in RETRYABLE_STATUS_CODES):
             request = httpx.Request("GET", getattr(api_method, "__name__", "zendesk"))
             raise httpx.HTTPStatusError(
                 f"Zendesk HTTP {status}: {response.error}",
                 request=request,
                 response=httpx.Response(
-                    status, request=request, headers=response.headers or {}
+                    status or TRANSPORT_ERROR_STATUS, request=request, headers=response.headers or {}
                 ),
             )
         return response
@@ -3485,77 +3733,60 @@ class ZendeskConnector(BaseConnector):
         requester_id: Any = None,
     ) -> List[Permission]:
         permissions: List[Permission] = [self._all_tickets_permission()]
-        if group_id:
-            permissions.append(Permission(
-                external_id=f"group_{group_id}",
-                type=PermissionType.READ,
-                entity_type=EntityType.GROUP,
-            ))
-        else:
-            permissions.append(self._public_groups_permission())
-        for staff_id in {str(value) for value in (assignee_id, requester_id) if value}:
-            staff_data = self._user_id_to_data.get(staff_id, {})
-            access = self._effective_ticket_access(staff_data, self._role_ticket_access)
-            allowed_for_staff = (
-                (staff_id == str(assignee_id) and access in {"assigned", "assigned_only"})
-                or (staff_id == str(requester_id) and access == "requested")
-            )
-            if allowed_for_staff:
+        granted: set[str] = set()
+
+        def grant_group(external_id: str) -> None:
+            if external_id not in granted:
+                granted.add(external_id)
                 permissions.append(Permission(
-                    external_id=f"staff_{staff_id}",
+                    external_id=external_id,
                     type=PermissionType.READ,
                     entity_type=EntityType.GROUP,
                 ))
+
+        if group_id:
+            grant_group(f"group_{group_id}")
+        else:
+            permissions.append(self._public_groups_permission())
+        # Staff are granted through their own groups, never by email: a group's members
+        # are rewritten every sync, so suspension or a new access level reaches tickets
+        # that never change again.
+        if assignee_id and str(assignee_id) in self._user_id_to_data:
+            grant_group(f"{ASSIGNED_STAFF_GROUP_PREFIX}{assignee_id}")
+        known_org = bool(organization_id) and str(organization_id) in self._org_id_to_data
+        if known_org:
+            grant_group(f"{ORG_AGENTS_GROUP_PREFIX}{organization_id}")
         # Granted whether or not the org shares tickets: run_sync empties the group of
         # an org that does not, so toggling sharing needs no change to the tickets.
-        if (
-            include_customer_access
-            and organization_id
-            and str(organization_id) in self._org_id_to_data
-        ):
-            permissions.append(Permission(
-                external_id=f"org_{organization_id}",
-                type=PermissionType.READ,
-                entity_type=EntityType.GROUP,
-            ))
-        if organization_id and self._org_shares_tickets(organization_id):
-            for staff_id, staff_data in self._user_id_to_data.items():
-                if (
-                    staff_data.get("active") is not False
-                    and not staff_data.get("suspended")
-                    and str(staff_data.get("organization_id")) == str(organization_id)
-                    and self._effective_ticket_access(
-                        staff_data, self._role_ticket_access
-                    ) in {"organization", "organization_only"}
-                ):
-                    permissions.append(Permission(
-                        external_id=f"staff_{staff_id}",
-                        type=PermissionType.READ,
-                        entity_type=EntityType.GROUP,
-                    ))
-        requester_email = requester.get("email") if include_customer_access else None
-        if requester_email:
-            permissions.append(Permission(
-                email=requester_email,
-                type=PermissionType.READ,
-                entity_type=EntityType.USER,
-            ))
-        if include_customer_access:
-            requester_email_lower = (requester_email or "").lower()
-            seen_collaborators: set[str] = set()
-            for collaborator_id in collaborators or []:
-                collaborator_email = self._user_data(collaborator_id).get("email")
-                if not collaborator_email:
-                    continue
-                normalized_email = collaborator_email.lower()
-                if normalized_email == requester_email_lower or normalized_email in seen_collaborators:
-                    continue
-                seen_collaborators.add(normalized_email)
+        if include_customer_access and known_org:
+            grant_group(f"org_{organization_id}")
+
+        emails: set[str] = set()
+
+        def grant_person(user_id: Any, user_data: Dict[str, Any], *, works_the_ticket: bool) -> None:
+            if str(user_id) in self._user_id_to_data:
+                # A CC or follower works the ticket; an agent who only requested it
+                # sees it the way an end user would.
+                if works_the_ticket or include_customer_access:
+                    grant_group(f"{NAMED_STAFF_GROUP_PREFIX}{user_id}")
+                return
+            # A suspended or deleted customer cannot sign in to see anything.
+            if not include_customer_access or user_data.get("active") is False or user_data.get("suspended"):
+                return
+            email = user_data.get("email")
+            if email and email.lower() not in emails:
+                emails.add(email.lower())
                 permissions.append(Permission(
-                    email=collaborator_email,
+                    email=email,
                     type=PermissionType.READ,
                     entity_type=EntityType.USER,
                 ))
+
+        for collaborator_id in collaborators or []:
+            if collaborator_id:
+                grant_person(collaborator_id, self._user_data(collaborator_id), works_the_ticket=True)
+        if requester_id or requester:
+            grant_person(requester_id, requester, works_the_ticket=False)
         if len(permissions) == 1:
             self.logger.warning(
                 "Zendesk: no group or requester grant for a record (group_id=%s) — "

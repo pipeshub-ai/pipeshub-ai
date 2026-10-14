@@ -128,12 +128,22 @@ class TestZendeskRESTClientViaOAuth:
         assert client.get_subdomain() == SUBDOMAIN
 
     @pytest.mark.parametrize(
-        "subdomain", ["evil.com/x?", "acme.zendesk.com", "https://acme", "-acme", "", "a b"]
+        "subdomain", ["evil.com/x?", "acme.zendesk.com.evil.com", "user@acme", "-acme", "", "a b",
+                      "acme\n.zendesk.com", "\u017ftore"]
     )
     def test_rejects_anything_but_a_bare_subdomain(self, subdomain):
         """The subdomain lands in every URL; a host or path would send the token elsewhere."""
         with pytest.raises(ZendeskConfigError, match="Invalid Zendesk subdomain"):
             ZendeskRESTClientViaOAuth(subdomain, "cid", "secret", "https://cb", "tok")
+
+    @pytest.mark.parametrize(
+        "typed", ["acme.zendesk.com", "https://acme.zendesk.com/", "http://ACME.zendesk.com/agent", " Acme "]
+    )
+    def test_a_host_or_url_is_reduced_to_the_subdomain(self, typed):
+        """Admins paste what is in their browser's address bar."""
+        client = ZendeskRESTClientViaOAuth(typed, "cid", "secret", "https://cb", "tok")
+        assert client.get_subdomain() == "acme"
+        assert client.base_url == "https://acme.zendesk.com/api/v2"
 
     def test_set_access_token_updates_the_live_header(self):
         client = ZendeskRESTClientViaOAuth(SUBDOMAIN, "cid", "secret", "https://cb", "tok")
