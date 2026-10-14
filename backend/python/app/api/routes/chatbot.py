@@ -852,6 +852,10 @@ async def upload_chat_attachments(
             config_service=config_service,
         )
 
+        # One budget for the whole request: its records are indexed one after
+        # another, and the Slack bot and API send up to 10 files in one upload.
+        loop = asyncio.get_running_loop()
+        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -866,7 +870,7 @@ async def upload_chat_attachments(
                 settings={
                     "sink_only": True,
                     "skip_vector_store": True,
-                    IMAGE_DESCRIPTION_BUDGET_S: _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S,
+                    IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
                 },
             )
             await sink_orchestrator.index(ctx)
