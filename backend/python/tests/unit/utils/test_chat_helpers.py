@@ -2799,6 +2799,34 @@ class TestGetFlattenedResults:
         assert len(table["content"][1]) == 10
 
     @pytest.mark.asyncio
+    async def test_a_hit_on_a_split_row_of_an_expanded_table_is_recorded_on_its_row(self) -> None:
+        """A row with an inline image is stored as an empty row container plus text
+        fragments, and the fragment is what was indexed. When the table was already
+        expanded, the fragment's hit is recorded on the container's row."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        rows[7]["data"] = {"row_number": 8}
+        fragment = {
+            "id": "frag-10", "index": 10, "type": BlockType.TEXT.value, "data": "Row 7 text",
+            "citation_metadata": None, "parent_index": None, "parent_block_index": 7,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, fragment]
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            {"content": "Row 7 text", "score": 0.6, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 10, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == {7: 0.6}
+        assert any(child["block_index"] == 7 and child["content"] == "Row 7 text" for child in table["content"][1])
+
+    @pytest.mark.asyncio
     async def test_each_row_hit_on_an_expanded_table_keeps_its_own_score(self) -> None:
         """The rows all carry the table point's score; the search API ranks the
         matched rows by their own hits, so each hit's score is kept."""

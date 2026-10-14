@@ -2622,7 +2622,15 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             if container.get("type") == BlockType.TABLE_ROW.value:
                 # Fragment of a split table row → add the container to rows_to_be_included.
                 container_chunk_id = f"{virtual_record_id}-{parent_block_idx}"
-                if container_chunk_id not in seen_chunks:
+                if container_chunk_id in emitted_table_rows:
+                    # The table was already expanded as a whole; its rows are
+                    # emitted under the container's index.
+                    _note_matched_block(
+                        emitted_table_rows[container_chunk_id],
+                        parent_block_idx,
+                        float(result.get("score", 0.0)),
+                    )
+                elif container_chunk_id not in seen_chunks:
                     seen_chunks.add(container_chunk_id)
                     rows_to_be_included[f"{virtual_record_id}_{container_parent_index}"].append(
                         (parent_block_idx, float(result.get("score", 0.0)), None)
