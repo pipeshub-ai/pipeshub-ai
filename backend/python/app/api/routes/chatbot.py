@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import aclosing
 from io import BytesIO
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 import pdfplumber
@@ -121,6 +121,12 @@ class ChatQuery(BaseModel):
     # `retrieval_context` frames naming the records and blocks that reached
     # the model, plus a `run_usage` frame. No effect on the answer.
     includeRetrievalContext: bool = False
+    # "short": a search waits at most `KEYWORD_SEARCH_SHORT_WAIT_SECS` for the
+    # keyword (grep) pattern match once its semantic results are in, and keeps
+    # what it found by then. For callers that would rather answer sooner, such
+    # as agents calling chat over MCP. Ignored under HIGH_ACCURACY_MODE.
+    # Absent or "full": waits for all of it, as before.
+    keywordSearchBudget: Literal["short", "full"] | None = None
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` can target it. Absent for callers
     # that predate this field or don't need cancellation (the agent loop
@@ -1435,6 +1441,7 @@ async def _generate_chat_stream_via_agent_loop(
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
         "includeRetrievalContext": query_info.includeRetrievalContext,
+        "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
     }

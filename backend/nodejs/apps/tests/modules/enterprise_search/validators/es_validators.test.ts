@@ -212,6 +212,40 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('keywordSearchBudget', () => {
+    // Undeclared, Zod strips it and the short wait an MCP caller asked for
+    // never reaches Python. All four stream routes an MCP chat uses take it.
+    const valid = '507f1f77bcf86cd799439011'
+    const routes = [
+      ['new conversation', () => enterpriseSearchStreamCreateSchema, { chatMode: 'agent' }, {}],
+      ['follow-up', () => addMessageStreamParamsSchema, { chatMode: 'agent' }, { conversationId: valid }],
+      ['new agent conversation', () => agentStreamCreateSchema, { chatMode: 'quick' }, { agentKey: 'a1' }],
+      ['agent follow-up', () => agentAddMessageParamsSchema, { chatMode: 'quick' }, { agentKey: 'a1', conversationId: valid }],
+    ] as const
+
+    for (const [name, schema, body, params] of routes) {
+      it(`survives parsing on the ${name} route`, () => {
+        const result = (schema() as z.ZodTypeAny).safeParse({
+          params,
+          body: { query: 'hello', ...body, keywordSearchBudget: 'short' },
+        })
+        expect(result.success, JSON.stringify(result.error?.issues)).to.be.true
+        expect(result.data.body.keywordSearchBudget).to.equal('short')
+      })
+    }
+
+    it('is optional, and rejects anything but short or full', () => {
+      const parse = (extra: object) => enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello', chatMode: 'agent', ...extra },
+      })
+      const absent = parse({})
+      expect(absent.success).to.be.true
+      if (absent.success) expect(absent.data.body.keywordSearchBudget).to.equal(undefined)
+      expect(parse({ keywordSearchBudget: 'full' }).success).to.be.true
+      expect(parse({ keywordSearchBudget: 'off' }).success).to.be.false
+    })
+  })
+
   describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
     for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
       it(`should accept required universal stream chatMode ${chatMode}`, () => {

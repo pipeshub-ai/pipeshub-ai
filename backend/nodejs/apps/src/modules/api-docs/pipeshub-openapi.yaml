@@ -7558,6 +7558,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -7775,6 +7785,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -8019,6 +8039,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -8201,6 +8231,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:

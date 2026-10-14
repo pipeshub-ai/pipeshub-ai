@@ -81,6 +81,21 @@ export const assignRetrievalContextToPayload = (
   }
 };
 
+/**
+ * Forward `keywordSearchBudget` (`short` | `full`) to every chat mode: it sets
+ * how long a search waits for the keyword pattern match, and every mode can
+ * search. Omitted when absent, so Python keeps its default full wait.
+ */
+export const assignKeywordSearchBudgetToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  const budget = body.keywordSearchBudget;
+  if (budget === 'short' || budget === 'full') {
+    payload.keywordSearchBudget = budget;
+  }
+};
+
 /** Which AI-backend chat a turn is for: the assistant, or one saved agent. */
 export type ChatTarget =
   | { kind: 'assistant' }
@@ -142,6 +157,7 @@ export const buildAiChatRequest = (
     runId: nullable(body.runId),
   };
   assignRetrievalContextToPayload(payload, body);
+  assignKeywordSearchBudgetToPayload(payload, body);
 
   let path: string;
   if (target.kind === 'agent') {

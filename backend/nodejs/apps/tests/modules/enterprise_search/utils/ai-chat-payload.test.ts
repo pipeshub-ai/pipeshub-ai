@@ -82,6 +82,26 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       expect(payload.includeRetrievalContext).to.equal(true)
     })
 
+    it('forwards keywordSearchBudget on assistant, assistant-agent and agent turns', () => {
+      for (const [target, body] of [
+        [{ kind: 'assistant' }, { query: 'q', chatMode: 'internal_search' }],
+        [{ kind: 'assistant' }, { query: 'q', chatMode: 'agent' }],
+        [{ kind: 'agent', agentKey: 'a1' }, { query: 'q' }],
+      ] as const) {
+        const { payload } = buildAiChatRequest(target, { ...body, keywordSearchBudget: 'short' }, context())
+        expect(payload.keywordSearchBudget).to.equal('short')
+      }
+    })
+
+    it('sends no keywordSearchBudget when the request has none, or an unknown one', () => {
+      const absent = buildAiChatRequest({ kind: 'assistant' }, { query: 'q', chatMode: 'agent' }, context())
+      expect(absent.payload).not.to.have.property('keywordSearchBudget')
+      const unknown = buildAiChatRequest(
+        { kind: 'assistant' }, { query: 'q', chatMode: 'agent', keywordSearchBudget: 'off' }, context(),
+      )
+      expect(unknown.payload).not.to.have.property('keywordSearchBudget')
+    })
+
     it('sends an agent turn to its own route, escaping the key, with caller context', () => {
       const { path, payload } = buildAiChatRequest(
         { kind: 'agent', agentKey: 'a/b c' },

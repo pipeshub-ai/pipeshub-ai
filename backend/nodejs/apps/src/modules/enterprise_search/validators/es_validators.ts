@@ -298,6 +298,17 @@ const retrievalContextFieldsSchema = {
   includeRetrievalContext: z.boolean().optional(),
 };
 
+/**
+ * How long each search waits for the keyword (grep) pattern match after its
+ * semantic results: `short` caps the wait (Python `pattern_match_wait_budget`)
+ * for callers that would rather answer sooner, such as agents calling chat
+ * over MCP; `full`, or leaving it out, waits for all of it. Declared on every
+ * chat body that runs a search, or Zod strips it.
+ */
+const keywordSearchFieldsSchema = {
+  keywordSearchBudget: z.enum(['short', 'full']).optional(),
+};
+
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
  * cancel routes, matching Python's `CancelRunRequest`. */
 export const cancelRunBodySchema = z.object({
@@ -383,6 +394,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
+    ...keywordSearchFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -538,6 +550,7 @@ const addMessageBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
+    ...keywordSearchFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
