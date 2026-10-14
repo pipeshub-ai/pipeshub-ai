@@ -175,9 +175,11 @@ def _clip(
 def _truncated_by(outcome: RecordRenderOutcome) -> str | None:
     if outcome.complete:
         return None
-    if outcome.stop_reason:
-        return outcome.stop_reason
-    return "clipped" if outcome.clipped else "chars"
+    # A cut block is the loss a reader most needs to know about; the stop
+    # that followed it is only where the walk ended.
+    if outcome.clipped:
+        return "clipped"
+    return outcome.stop_reason or "chars"
 
 
 async def read_record(
@@ -229,6 +231,7 @@ async def read_record(
     indices = _renderable_block_indices(record)
     next_start = None if outcome.complete else outcome.stopped_at_block
     complete = outcome.complete
+    given_up = clip["block"] if clip["block"] is not None and not clip["hold"] else None
     if clip["block"] is not None:
         if clip["hold"]:
             next_start = clip["block"]
@@ -257,6 +260,9 @@ async def read_record(
         "shownBlocks": _ranges(outcome.shown_blocks),
         "complete": complete,
         "truncatedBy": _truncated_by(outcome),
+        # A block cut at the largest `maxChars` whose rest no read can return.
+        # Named here, in the read that gave it up, whatever else the read did.
+        "givenUpBlock": given_up,
         "nextStartBlock": next_start,
         "chars": len(text),
         "maxChars": max_chars,
@@ -384,6 +390,7 @@ async def read_thread(
             "startBlock": offset,
             "complete": outcome.complete,
             "truncatedBy": _truncated_by(outcome),
+            "givenUpBlock": clipped if clipped is not None and not clip["hold"] else None,
             "nextStartBlock": resume,
         })
         if not outcome.complete:
@@ -414,9 +421,14 @@ async def read_thread(
         # a block given up at the largest `maxChars` (its `truncatedBy` is
         # `clipped`, with no `nextStartBlock`) has nothing left either.
         "complete": next_record is None and all(
-            r["complete"] or (r["truncatedBy"] == "clipped" and r["nextStartBlock"] is None)
+            r["complete"] or (r["givenUpBlock"] is not None and r["nextStartBlock"] is None)
             for r in shown
         ),
+        # Every block this read gave up at the largest `maxChars`.
+        "givenUpBlocks": [
+            {"recordId": r["recordId"], "block": r["givenUpBlock"]}
+            for r in shown if r["givenUpBlock"] is not None
+        ],
         "nextStartRecord": next_record,
         "nextStartBlock": next_block if next_record is not None else None,
         "chars": len(text),

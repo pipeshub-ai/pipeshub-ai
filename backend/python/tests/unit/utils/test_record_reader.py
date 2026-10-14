@@ -128,6 +128,9 @@ class TestReadingInOrder:
         assert read["nextStartBlock"] == 1
         assert "cannot be returned" in read["content"]
         assert read["complete"] is False, "block 1 is still to read"
+        # The loss is named in the read that gave the block up, though the
+        # walk went on to block 1.
+        assert (read["givenUpBlock"], read["truncatedBy"]) == (0, "clipped")
 
     async def test_a_last_block_larger_than_the_largest_budget_ends_the_read(self) -> None:
         """Given up at the ceiling with nothing after it: nothing is left, so
@@ -139,6 +142,7 @@ class TestReadingInOrder:
 
         assert read["chars"] <= MAX_READ_CHARS
         assert (read["complete"], read["nextStartBlock"], read["truncatedBy"]) == (True, None, "clipped")
+        assert read["givenUpBlock"] == 0
         assert "cannot be returned" in read["content"]
 
     async def test_an_offset_past_the_end_says_so(self) -> None:
@@ -349,6 +353,19 @@ class TestReadingAThread:
         read = await read_thread(records, max_chars=MAX_READ_CHARS, start_record=1)
         assert (read["complete"], read["nextStartRecord"]) == (True, None)
         assert read["records"][0]["truncatedBy"] == "clipped"
+        assert "cannot be returned" in read["content"]
+
+    async def test_a_reply_given_up_mid_thread_is_named_on_that_page(self) -> None:
+        records = [
+            _burst("t-0", 1, "<m0> " + "q" * 200_000),
+            _burst("t-1", 2, "<m1> the next reply"),
+        ]
+
+        read = await read_thread(records, max_chars=MAX_READ_CHARS)
+
+        assert (read["complete"], read["nextStartRecord"], read["nextStartBlock"]) == (False, 1, 0)
+        assert read["givenUpBlocks"] == [{"recordId": "t-0", "block": 0}]
+        assert read["records"][0]["givenUpBlock"] == 0
         assert "cannot be returned" in read["content"]
 
     async def test_the_cursor_stays_on_a_cut_record(self) -> None:

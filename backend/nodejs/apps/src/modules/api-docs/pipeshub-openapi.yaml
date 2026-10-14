@@ -5530,8 +5530,29 @@ components:
           type: string
           nullable: true
           description: >-
-            Budgeted record reads only. Why the read stopped short: `chars`,
-            `selection`, `clipped`, or null when complete.
+            Budgeted reads. Why the read stopped short: `chars`, `selection`,
+            or `clipped` (a block larger than `maxChars` was cut; it takes
+            precedence over the others). Null when complete.
+        givenUpBlock:
+          type: integer
+          nullable: true
+          description: >-
+            Budgeted record reads only. A block larger than the largest
+            `maxChars` (140000) that this read cut and gave up: no read can
+            return the rest of it. Set in the read that gave it up, even when
+            more of the record follows.
+        givenUpBlocks:
+          type: array
+          description: >-
+            Thread reads only. Every block this read gave up at the largest
+            `maxChars`, by record.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              block:
+                type: integer
         nextStartBlock:
           type: integer
           nullable: true
@@ -5576,6 +5597,9 @@ components:
                 type: boolean
               truncatedBy:
                 type: string
+                nullable: true
+              givenUpBlock:
+                type: integer
                 nullable: true
               nextStartBlock:
                 type: integer
