@@ -605,22 +605,23 @@ describe('MCP Controller — handleMCPRequest', () => {
     let errorStub: sinon.SinonStub
 
     beforeEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      infoStub = sinon.stub()
+      errorStub = sinon.stub()
+      const mockLogger = {
+        info: infoStub,
+        error: errorStub,
+        warn: sinon.stub(),
+        debug: sinon.stub(),
       }
-      infoStub = sinon.stub(Logger.prototype, 'info')
-      errorStub = sinon.stub(Logger.prototype, 'error')
+      sinon.stub(Logger, 'getInstance').returns(mockLogger as any)
     })
 
     afterEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
-      }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
     })
 
@@ -642,6 +643,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
       expect(infoStub.firstCall.args[1]).to.deep.equal({
+        service: 'MCPController',
         method: 'initialize',
         requestId: 'pilot-1',
       })
@@ -671,6 +673,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
       expect(infoStub.firstCall.args[1]).to.deep.equal({
+        service: 'MCPController',
         method: 'tools/call',
         requestId: 'pilot-1',
       })
@@ -693,6 +696,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
       expect(infoStub.firstCall.args[1]).to.deep.equal({
+        service: 'MCPController',
         method: 'tools/list',
         requestId: undefined,
       })
@@ -726,6 +730,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
       expect(errorStub.firstCall.args[1]).to.deep.include({
+        service: 'MCPController',
         error: 'transport failure',
         method: 'POST',
         userId: 'user-42',
@@ -752,12 +757,46 @@ describe('MCP Controller — handleMCPRequest', () => {
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
       expect(errorStub.firstCall.args[1]).to.deep.include({
+        service: 'MCPController',
         error: 'init failure',
         method: 'POST',
         userId: 'user-42',
         requestId: undefined,
       })
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should retrieve Logger without arguments to avoid reconfiguring singleton defaultMeta', async () => {
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: { connect: sinon.stub().resolves(), server: {} },
+      })
+
+      const req = createMockRequest({ body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      const getInstanceStub = Logger.getInstance as unknown as sinon.SinonStub
+      expect(getInstanceStub.called).to.be.true
+      expect(getInstanceStub.alwaysCalledWithExactly()).to.be.true
+    })
+
+    it('should attach service metadata to logger callbacks passed to createMCPServer', async () => {
+      let passedLogger: any
+      mcpServerExports.createMCPServer = sinon.stub().callsFake((opts: any) => {
+        passedLogger = opts.logger
+        return { server: { connect: sinon.stub().resolves(), server: {} } }
+      })
+
+      const req = createMockRequest({ body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      passedLogger.info('subsystem log', { detail: 'abc' })
+      expect(infoStub.calledWith('subsystem log', { service: 'MCPController', detail: 'abc' })).to.be.true
     })
   })
 
@@ -768,15 +807,22 @@ describe('MCP Controller — handleMCPRequest', () => {
     let errorStub: sinon.SinonStub
 
     beforeEach(() => {
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
-      errorStub = sinon.stub(Logger.prototype, 'error')
+      errorStub = sinon.stub()
+      const mockLogger = {
+        info: sinon.stub(),
+        error: errorStub,
+        warn: sinon.stub(),
+        debug: sinon.stub(),
+      }
+      sinon.stub(Logger, 'getInstance').returns(mockLogger as any)
     })
 
     afterEach(() => {
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
     })
 
