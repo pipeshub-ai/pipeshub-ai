@@ -3447,6 +3447,33 @@ class TestRunPatternMatchWithLlmGrep:
         assert result == [{"virtual_record_id": "vr-1"}]
 
     @pytest.mark.asyncio
+    async def test_cancelling_the_caller_during_grep_cleanup_is_not_swallowed(self) -> None:
+        """Once the budget fires, the wait sits in the grep task's cleanup. A
+        cancellation of the caller there must still reach the caller."""
+        cleanup_started = asyncio.Event()
+
+        async def _slow_cleanup() -> list[dict]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await asyncio.sleep(0.3)
+                raise
+            return []
+
+        task = asyncio.create_task(_slow_cleanup())
+        caller = asyncio.create_task(
+            await_pattern_match(
+                task, MagicMock(), wait_budget=0.05,
+                found_so_far={"vr-1": {"virtual_record_id": "vr-1"}},
+            ),
+        )
+        await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+    @pytest.mark.asyncio
     async def test_cancelling_the_caller_cancels_the_grep_task(self) -> None:
         """Awaiting the task directly passed a caller's cancellation on to it;
         the budgeted wait must too, or the grep keeps running for nobody."""

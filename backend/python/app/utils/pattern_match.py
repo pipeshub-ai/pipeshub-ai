@@ -1499,6 +1499,12 @@ async def await_pattern_match(
         if task in done:
             return task.result() or []
         await cancel_task_if_running(task)
+        # That helper swallows CancelledError, including one aimed at this
+        # caller while the grep was still cleaning up. Don't return as if
+        # nothing happened: pass the caller's cancellation on.
+        current = asyncio.current_task()
+        if current is not None and current.cancelling():
+            raise asyncio.CancelledError
         kept = list((found_so_far or {}).values())
         logger_instance.info(
             "pattern_match: stopped waiting %.1fs after semantic results, keeping %d match(es) found so far",
