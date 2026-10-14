@@ -217,23 +217,50 @@ class TestIssueDeletionGaps:
             await conn._handle_deleted_issue("PROJ-9")
 
     @pytest.mark.asyncio
-    async def test_handle_deleted_issue_outer_exception_logged(self):
+    async def test_handle_deleted_issue_outer_exception_is_raised(self) -> None:
         conn = _make_connector()
         conn.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx boom"))
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=MagicMock())):
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=MagicMock())), \
+                pytest.raises(RuntimeError, match="tx boom"):
             await conn._handle_deleted_issue("PROJ-1")
 
     @pytest.mark.asyncio
-    async def test_a_failed_attachment_delete_is_raised(self) -> None:
-        """Swallowed, it let the issue delete commit with the attachment half deleted."""
+    async def test_a_failed_attachment_delete_keeps_the_issue_and_the_audit_checkpoint(self) -> None:
+        """Swallowed, the issue delete committed with its attachment half deleted, and the
+        checkpoint moved past the audit event, so the issue was never retried."""
         conn = _make_connector()
+        conn.issues_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1_700_000_000_000})
+        conn.issues_sync_point.update_sync_point = AsyncMock()
+        conn._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(return_value=MagicMock(status=404))
+        issues = {"PROJ-1": MagicMock(id="issue-1", external_record_id="100"),
+                  "PROJ-2": MagicMock(id="issue-2", external_record_id="200")}
+        attachments = {"100": [MagicMock(id="att-1")], "200": []}
         tx = MagicMock()
-        tx.get_records_by_parent = AsyncMock(return_value=[MagicMock(id="att-1")])
-        tx.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("db"))
+        tx.get_record_by_issue_key = AsyncMock(side_effect=lambda connector_id, issue_key: issues[issue_key])
+        tx.get_records_by_parent = AsyncMock(
+            side_effect=lambda connector_id, parent_external_record_id, record_type: attachments[parent_external_record_id]
+        )
 
-        with pytest.raises(RuntimeError, match="db"):
-            await conn._delete_direct_attachment_records("100", tx)
+        async def delete(record_key: str, hard_delete: bool) -> bool:
+            if record_key == "att-1":
+                raise RuntimeError("db")
+            return True
+
+        tx.delete_records_and_relations = AsyncMock(side_effect=delete)
+        conn.data_store_provider.transaction = MagicMock(side_effect=lambda: _tx_ctx(tx))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)), patch(
+            "app.connectors.sources.atlassian.jira_data_center.connector.is_soft_delete_enabled",
+            new=AsyncMock(return_value=False),
+        ):
+            await conn._handle_issue_deletions(1_600_000_000_000)
+
+        deleted = [c.kwargs["record_key"] for c in tx.delete_records_and_relations.await_args_list]
+        assert deleted == ["att-1", "issue-2"]
+        conn.issues_sync_point.update_sync_point.assert_not_awaited()
 
 
 class TestPermissionSchemeGaps:

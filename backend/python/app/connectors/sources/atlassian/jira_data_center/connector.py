@@ -1216,7 +1216,8 @@ class JiraDataCenterConnector(BaseConnector):
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> Optional[int]:
         """Fetch deleted issue keys from the audit log and delete each one flat.
 
-        Returns None when the audit log could not be read, so the caller keeps its checkpoint.
+        Returns None when the audit log could not be read, or an issue could not be
+        deleted, so the caller keeps its checkpoint.
         """
         self.logger.info("🔍 Checking for deleted issues via Jira DC audit log...")
 
@@ -1228,13 +1229,23 @@ class JiraDataCenterConnector(BaseConnector):
             return 0
 
         deleted_count = 0
+        failed_keys: list[str] = []
         for issue_key in deleted_issue_keys:
             try:
                 await self._handle_deleted_issue(issue_key)
                 deleted_count += 1
             except Exception as e:
+                failed_keys.append(issue_key)
                 self.logger.error("❌ Error handling deleted issue %s: %s", issue_key, e)
 
+        if failed_keys:
+            # Kept checkpoint: the next sync retries them, and a delete that already
+            # committed is a no-op then (the issue is no longer found).
+            self.logger.warning(
+                "Could not delete %d issue(s) the audit log reports deleted (%s)",
+                len(failed_keys), ", ".join(failed_keys),
+            )
+            return None
         return deleted_count
 
     async def _fetch_deleted_issues_from_audit(self, last_sync_time: int) -> Optional[list[str]]:
@@ -1414,6 +1425,7 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(
                 "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
             )
+            raise
 
     async def _delete_direct_attachment_records(
         self,
