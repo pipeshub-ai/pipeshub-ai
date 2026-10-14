@@ -598,6 +598,7 @@ class JiraConnector(BaseConnector):
             elif entity == "project_roles":
                 if external_id in project_ids:
                     await self._has_stored_access("record_group", project_ids[external_id])
+                    await self._keep_scheme_roles(projects, {external_id})
             elif entity == "project_issues":
                 if external_id in project_ids:
                     await self._keep_stored_records(project_ids[external_id])
@@ -605,8 +606,26 @@ class JiraConnector(BaseConnector):
                 await self._keep_stored_user_groups()
             elif entity == "project_role_ids":
                 await self._keep_stored_project_roles(list(project_ids))
+                await self._keep_scheme_roles(projects, set(project_ids))
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_scheme_roles(
+        self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]], project_keys: set[str]
+    ) -> None:
+        """Note the stored roles these projects' schemes grant on this sync as seen.
+
+        Roles are not saved when their list was refused or the group list was, but the
+        scheme is still saved, and it may grant a stored role its stored grants did not name.
+        Unnoted, that role would lose its members and the new grant to the unlink. A scheme
+        that could not be read, or the configuring-user grant after a refused one, names none.
+        """
+        for group, permissions in projects:
+            if group.short_name not in project_keys:
+                continue
+            for permission in permissions or []:
+                if permission.entity_type == EntityType.ROLE and permission.external_id:
+                    await self._has_stored_access("role", str(permission.external_id))
 
     async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
         """Note each project's stored roles as seen by a full sync in progress, without saving them.
@@ -626,7 +645,7 @@ class JiraConnector(BaseConnector):
                 )
                 if response.status != HttpStatusCode.OK.value:
                     raise JiraReadError(response.status, f"HTTP {response.status}")
-                roles = response.json() or {}
+                roles = response.json()
                 if not isinstance(roles, dict):
                     raise ValueError("the role list is not a mapping")
             except JiraReadError as e:
@@ -638,7 +657,12 @@ class JiraConnector(BaseConnector):
                 self._kept_unread_access = True
                 continue
             for role_name, role_url in roles.items():
-                if role_name == ATLASSIAN_ADDONS_PROJECT_ROLE or not isinstance(role_url, str):
+                if role_name == ATLASSIAN_ADDONS_PROJECT_ROLE:
+                    continue
+                if not isinstance(role_url, str):
+                    # A role that cannot be named cannot be kept, so nothing is unlinked.
+                    self.logger.warning("⚠️ Role %s of project %s has no URL to keep it by", role_name, project_key)
+                    self._kept_unread_access = True
                     continue
                 role_id = role_url.rstrip("/").split("/")[-1]
                 await self._has_stored_access("role", f"{project_key}_{role_id}")
@@ -660,7 +684,9 @@ class JiraConnector(BaseConnector):
 
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
-        could not be read, so they stay as stored and must survive the unlink after it."""
+        could not be read, so they stay as stored and must survive the unlink after it. So does
+        the project's record group, even with no grants of its own, for the records' links into it."""
+        await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
         while True:
@@ -2674,7 +2700,19 @@ class JiraConnector(BaseConnector):
                     break
 
                 groups_data = response.json()
-                batch_groups = groups_data.get("values", [])
+                batch_groups = groups_data.get("values") if isinstance(groups_data, dict) else None
+                if not isinstance(batch_groups, list) or not all(
+                    isinstance(row, dict)
+                    and isinstance(row.get("groupId"), str) and row["groupId"]
+                    and isinstance(row.get("name"), str) and row["name"]
+                    for row in batch_groups
+                ):
+                    # A missing or malformed list, or a malformed row, is not "no more groups":
+                    # the groups it leaves out would look gone to a full sync's unlink.
+                    self.logger.error(f"❌ Group page at offset {start_at} is not a page of groups")
+                    fetch_failed = True
+                    self._note_unread(None)
+                    break
 
                 if not batch_groups:
                     break
@@ -2790,6 +2828,11 @@ class JiraConnector(BaseConnector):
                 return project_key, project_roles, True
 
             roles_dict = response.json()
+            if not isinstance(roles_dict, dict):
+                # Not "no roles": the stored ones would look gone to a full sync's unlink.
+                self.logger.warning(f"⚠️ The role list of project {project_key} is not a mapping")
+                self._note_unread(None)
+                return project_key, project_roles, True
 
             if not roles_dict:
                 self.logger.debug(f"No roles found for project {project_key}")

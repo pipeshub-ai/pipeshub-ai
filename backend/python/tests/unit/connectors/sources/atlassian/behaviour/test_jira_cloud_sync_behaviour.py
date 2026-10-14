@@ -1439,7 +1439,9 @@ class TestUnfinishedUserRead:
         assert self._access(site_db)["devs"] == before["devs"], "the group the project grants keeps its members"
         assert self._access(site_db)["project"] == before["project"]
 
-    @pytest.mark.parametrize("failing", [None, "group listing", "role list", "role list refused"])
+    @pytest.mark.parametrize(
+        "failing", [None, "group listing", "role list", "role list refused", "role list not a mapping", "role with no URL"]
+    )
     async def test_a_refused_group_list_keeps_stored_groups_and_roles_no_grant_names(
         self, api, site_db, checkpoints, search, failing
     ) -> None:
@@ -1463,11 +1465,15 @@ class TestUnfinishedUserRead:
             api.on("GET", f"{JIRA}/project/ENG/role", json_response({"errorMessages": ["busy"]}, status=503))
         elif failing == "role list refused":
             api.on("GET", f"{JIRA}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        elif failing == "role list not a mapping":
+            api.on("GET", f"{JIRA}/project/ENG/role", json_response([]))
+        elif failing == "role with no URL":
+            api.on("GET", f"{JIRA}/project/ENG/role", {"Developers": f"{SITE}{JIRA}/project/ENG/role/10002", "Testers": None})
         api.on("GET", f"{JIRA}/group/bulk", json_response({"errorMessages": ["denied"]}, status=403))
         graph = await run_full_sync(connector, site_db)
 
         after = self._access(site_db)
-        if failing in ("group listing", "role list"):
+        if failing in ("group listing", "role list", "role list not a mapping", "role with no URL"):
             # What could not be listed cannot be kept by name, so nothing is unlinked.
             assert connector.full_sync_coverage().complete is False
             graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
@@ -1511,6 +1517,106 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert "grp-qa" in [p.external_id for p in site_db.record_group_permissions["10000"]], "the new grant stays"
         assert saved_members(site_db, "grp-qa") == qa, "and so do the group's members"
+
+    @pytest.mark.parametrize("refused", ["role list", "group list and role list"])
+    async def test_a_role_the_scheme_newly_grants_keeps_its_grant_and_members_when_roles_are_not_synced(
+        self, api, site_db, checkpoints, search, refused
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "ENG_10002" not in [p.external_id for p in site_db.record_group_permissions["10000"]]
+        developers = self._access(site_db)["developers"]
+        assert developers
+
+        # The scheme now grants Developers, and its role list is refused, so roles are not synced.
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        api.on("GET", f"{JIRA}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        if refused == "group list and role list":
+            api.on("GET", f"{JIRA}/group/bulk", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert "ENG_10002" in [p.external_id for p in site_db.record_group_permissions["10000"]], "the new grant stays"
+        assert self._access(site_db)["developers"] == developers, "and so do the role's members"
+
+    async def test_a_role_list_that_is_not_a_mapping_is_an_incomplete_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        developers = self._access(site_db)["developers"]
+        assert developers
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/role", json_response([]))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is False, "an empty list is not a project with no roles"
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert self._access(site_db)["developers"] == developers
+
+    @pytest.mark.parametrize(
+        "page",
+        [
+            pytest.param({"values": None, "isLast": True}, id="null list"),
+            pytest.param({"isLast": True}, id="no list"),
+            pytest.param({"values": [{"groupId": "grp-dev", "name": "devs"}, {"name": "qa"}], "isLast": True}, id="row without an id"),
+            pytest.param({"values": [{"groupId": "grp-dev", "name": "devs"}, "qa"], "isLast": True}, id="row not an object"),
+            pytest.param([{"groupId": "grp-dev", "name": "devs"}], id="not a page"),
+        ],
+    )
+    async def test_a_malformed_group_page_is_an_incomplete_read(self, api, site_db, checkpoints, search, page) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/group/bulk", {"values": [
+            {"groupId": "grp-dev", "name": "devs"}, {"groupId": "grp-qa", "name": "qa"},
+        ], "isLast": True})
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        qa = saved_members(site_db, "grp-qa")
+        assert qa
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/group/bulk", json_response(page))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is False, "a group left out is not a group Jira removed"
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert saved_members(site_db, "grp-qa") == qa
+
+    async def test_a_refused_issue_search_keeps_the_project_its_records_belong_to(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": []})  # no grants of its own
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert site_db.record_group_permissions["10000"] == []
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        search.add("ENG", None, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert site_db.kept_records, "the project's records are kept"
+        assert "10000" not in site_db.unlinked_record_groups, "so is the project, so the records keep their link into it"
 
     async def test_a_full_sync_whose_issue_search_is_refused_keeps_the_projects_records_and_still_unlinks(
         self, api, site_db, checkpoints, search
