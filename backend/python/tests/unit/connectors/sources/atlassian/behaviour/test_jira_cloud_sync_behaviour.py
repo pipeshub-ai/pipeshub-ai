@@ -1419,6 +1419,62 @@ class TestUnfinishedUserRead:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert saved_members(site_db, "grp-dev") == before, "the kept group keeps its members"
 
+    async def test_a_full_sync_whose_group_list_is_refused_keeps_what_projects_grant_and_still_unlinks(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+
+        # A refusal repeats on every full sync; the groups are unknown, so what the projects grant is kept.
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/group/bulk", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert self._access(site_db)["devs"] == before["devs"], "the group the project grants keeps its members"
+        assert self._access(site_db)["project"] == before["project"]
+
+    async def test_a_full_sync_whose_issue_search_is_refused_keeps_the_projects_records_and_still_unlinks(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        stored = sorted(r.id for r in site_db.records.values() if r.external_record_group_id == "10000")
+        assert stored
+
+        checkpoints.sync_points.clear()
+        search.add("ENG", None, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(site_db.kept_records) == stored, "the project's stored records are noted as seen"
+
+    @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
+    async def test_a_full_sync_whose_issue_search_fails_is_classed_by_its_status(
+        self, api, site_db, checkpoints, search, status, complete
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        checkpoints.sync_points.clear()
+        search.add("ENG", None, json_response({"errorMessages": ["no"]}, status=status))
+        await run_full_sync(connector, site_db)
+
+        assert connector.full_sync_coverage().complete is complete
+        assert site_db.kept_records == [], "only a refusal keeps the records"
+
     def test_the_connector_class_keeps_its_registration(self) -> None:
         # The helpers live in the same module; the builder decorator must still land on the connector.
         assert "_connector_metadata" in JiraConnector.__dict__

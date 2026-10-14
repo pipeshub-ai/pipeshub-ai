@@ -155,6 +155,7 @@ class FakeRecordsDb:
         self.fail_lookup_for: set[str] = set()
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
+        self.kept_records: list[str] = []
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
@@ -225,6 +226,20 @@ class FakeRecordsDb:
                     elif kind.endswith("GROUP"):
                         seen.add(CollectionNames.GROUPS.value, permission.external_id)
         return stored
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
+        rows = sorted(
+            (r for r in self.records.values()
+             if r.external_record_group_id == external_group_id and matches_visibility(r, visibility)),
+            key=lambda r: r.id,
+        )
+        return [r for r in rows if after_key is None or r.id > after_key][:limit]
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        self.kept_records.extend(record_ids)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         if record_id in self.fail_delete_for:

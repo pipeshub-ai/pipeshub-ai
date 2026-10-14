@@ -3085,6 +3085,12 @@ class DataSourceEntitiesProcessor:
             self.logger.error(f"Failed to publish reindex events: {str(e)}")
             raise e
 
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        """Note records a connector keeps as stored without writing them as seen by the full
+        sync in progress, if any, so the unlink after that sync leaves them alone."""
+        for record_id in record_ids:
+            self._note_full_sync_seen(connector_id, CollectionNames.RECORDS.value, record_id)
+
     async def has_stored_permissions(
         self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
     ) -> bool:

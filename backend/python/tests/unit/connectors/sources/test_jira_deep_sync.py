@@ -290,6 +290,7 @@ class TestSyncAllProjectIssues:
             "updated_count": 0,
             "failed_count": 0,
             "failed_project_keys": [],
+            "failed_project_statuses": {},
             "full_sync_project_ids": set(),
         }
 

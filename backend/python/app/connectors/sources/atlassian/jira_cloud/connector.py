@@ -82,6 +82,7 @@ from app.connectors.sources.atlassian.core.oauth import (
     AtlassianScope,
 )
 from app.connectors.sources.atlassian.core.read_outcome import (
+    JiraReadError,
     StoredAccessReadError,
     is_inconclusive_status,
 )
@@ -427,10 +428,11 @@ class JiraConnector(BaseConnector):
         # a read that may pass on a later run (408, 429, 5xx, a transport error);
         # full_sync_coverage() then reports the read as incomplete.
         self._kept_unread_access: bool = False
-        # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id),
-        # or ("project_roles", project key) when a project's role list was refused. They are
-        # noted as seen before run_sync returns, so a full sync's unlink leaves them alone
-        # without the refusal making every full sync incomplete.
+        # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id):
+        # a user group or role; ("project_roles", key) or ("project_issues", key) for a project
+        # whose role list or issue search was refused; ("projects", "") for every project when
+        # the groups are unknown. They are noted as seen before run_sync returns, so a full
+        # sync's unlink leaves them alone without the refusal making every full sync incomplete.
         self._kept_after_refusal: list[tuple[str, str]] = []
         # True when the bulk user list was refused on its first page: the account cannot
         # list users at all. That is lasting, so the sync fails closed, and a failed email
@@ -569,9 +571,9 @@ class JiraConnector(BaseConnector):
         """Record a read that failed and left stored access in place.
 
         ``status`` is the HTTP status, or None for a transport error or an exception. A 403
-        is a lasting refusal: ``kept`` (the node whose stored access stays) is noted as seen
-        later. A 400 or 404 says the thing is not there, so nothing is kept. Anything else
-        may pass on a later run, so the sync reports an incomplete read.
+        is a lasting refusal: ``kept`` names what stays as stored, noted as seen later by
+        ``_note_kept_after_refusal``. A 400 or 404 says the thing is not there, so nothing is
+        kept. Anything else may pass on a later run, so the sync reports an incomplete read.
         """
         if status == HttpStatusCode.FORBIDDEN.value:
             if kept is not None:
@@ -582,17 +584,38 @@ class JiraConnector(BaseConnector):
     async def _note_kept_after_refusal(self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]]) -> None:
         """Note as seen the stored nodes kept after a lasting refusal, before run_sync returns.
 
-        A project whose role list was refused is noted through its record group, which also
-        notes the roles its stored grants come from.
+        A project is noted through its record group, which also notes the groups and roles
+        its stored grants come from. A project whose issue search was refused keeps its
+        stored records. Each entry is handled once.
         """
+        pending, self._kept_after_refusal = self._kept_after_refusal, []
         project_ids = {group.short_name: str(group.external_group_id) for group, _ in projects}
-        for entity, external_id in self._kept_after_refusal:
-            if entity == "project_roles":
-                project_id = project_ids.get(external_id)
-                if project_id:
+        for entity, external_id in pending:
+            if entity == "projects":
+                for project_id in project_ids.values():
                     await self._has_stored_access("record_group", project_id)
+            elif entity == "project_roles":
+                if external_id in project_ids:
+                    await self._has_stored_access("record_group", project_ids[external_id])
+            elif entity == "project_issues":
+                if external_id in project_ids:
+                    await self._keep_stored_records(project_ids[external_id])
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_stored_records(self, project_id: str) -> None:
+        """Note this project's stored records as seen by a full sync in progress: its issues
+        could not be read, so they stay as stored and must survive the unlink after it."""
+        page_size = 1000
+        after_key: Optional[str] = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, project_id, page_size, after_key,
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            if len(page) < page_size:
+                return
+            after_key = page[-1].id
 
     def _project_access_may_be_partial(self, project_key: str) -> bool:
         """Whether this project's access list may be partial: the user list was not read in
@@ -731,9 +754,12 @@ class JiraConnector(BaseConnector):
 
             # 9. Outcome: notify when any project failed issue sync (include keys)
             failed_keys = sync_stats.get("failed_project_keys") or []
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in failed_keys:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
             if failed_keys:
-                # Their issues were not read, so they would look gone to a full sync's unlink.
-                self._kept_unread_access = True
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
                     preview = f"{preview}, and {len(failed_keys) - 10} more"
@@ -2584,9 +2610,9 @@ class JiraConnector(BaseConnector):
                         self._group_bulk_forbidden = (
                             response.status == HttpStatusCode.FORBIDDEN.value
                         )
-                    # A refusal (403) repeats on every sync, and the groups past it are not
-                    # known, so a full sync unlinks them as it did before #4119 (fail closed).
-                    self._note_unread(response.status)
+                    # The groups past a refusal (403) are unknown, so every project's stored
+                    # grants, and the groups and roles they name, are kept.
+                    self._note_unread(response.status, ("projects", ""))
                     break
 
                 groups_data = response.json()
@@ -3233,6 +3259,8 @@ class JiraConnector(BaseConnector):
         new_count = 0
         updated_count = 0
         failed_project_keys: list[str] = []
+        # Project key -> the status its issue read failed with (None: transport or other error).
+        failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
@@ -3249,6 +3277,7 @@ class JiraConnector(BaseConnector):
                 # Per-project failures self-heal: the project checkpoint only advances on
                 # success, so the next sync resumes it. run_sync notifies with the keys.
                 failed_project_keys.append(project.short_name)
+                failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
@@ -3258,6 +3287,7 @@ class JiraConnector(BaseConnector):
             "updated_count": updated_count,
             "failed_count": len(failed_project_keys),
             "failed_project_keys": failed_project_keys,
+            "failed_project_statuses": failed_project_statuses,
             "full_sync_project_ids": full_sync_project_ids,
         }
 
@@ -3460,7 +3490,7 @@ class JiraConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch issues: {response.text()}")
+                    raise JiraReadError(response.status, f"Failed to fetch issues: {response.text()}")
 
                 issues_batch_response = self._safe_json_parse(response, f"issues fetch for {project_key}")
                 if issues_batch_response is None:
