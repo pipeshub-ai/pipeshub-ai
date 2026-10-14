@@ -660,10 +660,11 @@ class BlobStorage(Transformer):
 
         try:
             if use_parallel:
-                file_bytes = await self._download_with_range_requests(
+                # Not kept in a local: a reader waiting for a decode slot would hold
+                # the raw download alongside the parsed envelope it was parsed into.
+                data = _decode_json(await self._download_with_range_requests(
                     session, signed_url, chunk_size_mb=2, max_connections=6
-                )
-                data = _decode_json(file_bytes)
+                ))
             else:
                 data = await _single()
         except Exception as e:
