@@ -140,8 +140,16 @@ class InMemoryGraph:
                 return copy.deepcopy(doc)
         return None
 
-    async def get_document(self, document_key: str, collection: str, transaction: str | None = None) -> dict | None:
-        self._enter("get_document", document_key, collection)
+    async def get_document(
+        self, document_key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> dict | None:
+        try:
+            self._enter("get_document", document_key, collection)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         doc = self.nodes.get(collection, {}).get(document_key)
         return copy.deepcopy(doc) if doc is not None else None
 

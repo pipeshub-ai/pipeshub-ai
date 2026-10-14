@@ -74,7 +74,7 @@ from app.utils.attachment_utils import (
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
@@ -407,7 +407,7 @@ async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, log
 async def _get_org_info(user_info: dict[str, Any], graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get organization information with validation"""
     try:
-        org_doc = await graph_provider.get_document(user_info["orgId"], CollectionNames.ORGS.value)
+        org_doc = await get_org_or_503(graph_provider, user_info["orgId"])
         if not org_doc or not isinstance(org_doc, dict):
             raise HTTPException(status_code=404, detail="Organization not found")
 

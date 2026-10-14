@@ -854,8 +854,8 @@ class TestGetOrgInfoAccountTypes:
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve organization" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -864,14 +864,12 @@ class TestGetOrgInfoAccountTypes:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_document = AsyncMock(return_value=None)
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_calls_get_document_with_correct_args(self) -> None:
@@ -885,7 +883,7 @@ class TestGetOrgInfoAccountTypes:
         log = logging.getLogger("test")
 
         await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value)
+        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value, raise_on_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1524,7 +1522,7 @@ class TestGetOrgInfo:
         graph_provider.get_document = AsyncMock(side_effect=RuntimeError("db error"))
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "o1"}, graph_provider, logging.getLogger("test"))
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------

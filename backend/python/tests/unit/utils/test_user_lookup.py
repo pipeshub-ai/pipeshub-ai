@@ -15,13 +15,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
-from app.utils.user_lookup import get_user_or_503
+from app.config.constants.arangodb import CollectionNames
+from app.utils.user_lookup import get_org_or_503, get_user_or_503
 from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
 async def _read_fails(user_id: str, *, raise_on_error: bool = False) -> dict[str, Any] | None:
     if raise_on_error:
         raise RuntimeError(f"connection refused reading {user_id}")
+    return None
+
+
+async def _document_read_fails(
+    key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+) -> dict[str, Any] | None:
+    if raise_on_error:
+        raise RuntimeError(f"connection refused reading {collection}/{key}")
     return None
 
 
@@ -49,6 +58,21 @@ class TestGetUserOr503:
         graph = AsyncMock()
         graph.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
         assert await get_user_or_503(graph, "u1") == {"_key": "k1"}
+
+
+class TestGetOrgOr503:
+    async def test_a_failed_read_is_503(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(side_effect=_document_read_fails)
+        with pytest.raises(HTTPException) as exc:
+            await get_org_or_503(graph, "org-1")
+        _assert_outage(exc.value)
+        graph.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value, raise_on_error=True)
+
+    async def test_a_missing_org_is_none(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value=None)
+        assert await get_org_or_503(graph, "org-1") is None
 
 
 def _team_request() -> MagicMock:
@@ -111,6 +135,15 @@ class TestAgentAndSkillRoutes:
         graph.get_user_by_user_id = AsyncMock(side_effect=_read_fails)
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("u1", graph, MagicMock())
+        _assert_outage(exc.value)
+
+    async def test_agent_org_info(self) -> None:
+        from app.api.routes.agent import _get_org_info
+
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(side_effect=_document_read_fails)
+        with pytest.raises(HTTPException) as exc:
+            await _get_org_info({"orgId": "org-1"}, graph, MagicMock())
         _assert_outage(exc.value)
 
     async def test_skills_user_key(self) -> None:

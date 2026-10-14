@@ -170,7 +170,7 @@ from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-from app.utils.user_lookup import get_user_or_503
+from app.utils.user_lookup import get_org_or_503, get_user_or_503
 
 logger = create_logger("connector_service")
 
@@ -1243,7 +1243,7 @@ async def stream_record_internal(
             )
 
         record_task = graph_provider.get_record_by_id(record_id)
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org_task = get_org_or_503(graph_provider, org_id)
         record, org = await asyncio.gather(record_task, org_task)
 
         if not record:
@@ -1394,7 +1394,7 @@ async def download_file(
             )
 
         # Get org details to determine account type
-        org = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org = await get_org_or_503(graph_provider, org_id)
         if not org:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Organization not found")
 
@@ -1480,7 +1480,7 @@ async def stream_record(
         org_id = user.get("orgId")
         user_id = user.get("userId")
 
-        org_task = graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+        org_task = get_org_or_503(graph_provider, org_id)
         record_task = graph_provider.get_record_by_id(
             record_id
         )
@@ -8021,10 +8021,7 @@ async def toggle_connector_instance(
 
 
         # Get organization
-        org = await graph_provider.get_document(
-            user_info["orgId"],
-            CollectionNames.ORGS.value
-        )
+        org = await get_org_or_503(graph_provider, user_info["orgId"])
         if not org:
             logger.error("Organization not found")
             raise HTTPException(
