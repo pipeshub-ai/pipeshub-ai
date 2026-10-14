@@ -188,10 +188,8 @@ _STAMP_FIELD = "indexStamp"
 # written to. Long enough for one drop and create; a holder that dies frees it.
 _RECREATE_LOCK_SECONDS = 120
 # Finding the model a collection was written with pages past points that
-# predate the field, which scroll first on OpenSearch and Redis. Capped below
-# Redis's 10,000-result window, past which its scroll raises.
+# predate the field, which scroll first on OpenSearch and Redis.
 _MODEL_PROBE_PAGE = 500
-_MODEL_PROBE_MAX_POINTS = 9_000
 
 
 def _recreate_lock_key(collection: str) -> str:
@@ -844,27 +842,32 @@ class EntityVectorStore:
         whenever the model changes, and writes embedded with a model the
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
-        model's points. Points that predate the field are paged past, up to
-        ``_MODEL_PROBE_MAX_POINTS``."""
+        model's points. Points that predate the field are paged past until
+        one records a model or the scroll ends. A page past the first that
+        cannot be read ends the walk with the model unknown, as when no point
+        records one: Redis refuses scroll offsets past its 10,000-result
+        window, and initialisation must not fail on a collection it accepted
+        before."""
         collection = collection or self.collection_name
-        offset: str | None = None
+        page = await self._entity_page(collection, _MODEL_PROBE_PAGE)
         seen = 0
-        while seen < _MODEL_PROBE_MAX_POINTS:
-            page = await self._entity_page(collection, _MODEL_PROBE_PAGE, offset)
+        while True:
             for point in page.points:
                 stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
                 if stored:
                     return stored
             seen += len(page.points)
-            offset = page.next_offset
-            if not page.points or not offset:
+            if not page.points or not page.next_offset:
                 return None
-        self.logger.warning(
-            "The first %d entity points of '%s' record no embedding model; "
-            "treating the collection as written by the current one",
-            seen, collection,
-        )
-        return None
+            try:
+                page = await self._entity_page(collection, _MODEL_PROBE_PAGE, page.next_offset)
+            except Exception as exc:
+                self.logger.warning(
+                    "Read %d entity points of '%s' without finding a recorded embedding model "
+                    "and cannot read further (%s); treating the collection as written by the "
+                    "current one", seen, collection, exc,
+                )
+                return None
 
     async def _holds_entities(self, collection: str) -> bool:
         """Whether the collection holds an entity point (the stamp point is

@@ -173,8 +173,8 @@ class TestWrites:
         """Older points scroll first on OpenSearch and Redis; the probe pages past them."""
         monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 10)
         db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
-        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(40)], merge_membership=False)
-        for point in list(db.points.values())[:39]:
+        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(120)], merge_membership=False)
+        for point in list(db.points.values())[:119]:
             del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
 
         await switch_embedding_model(config, SMALL_CONFIG)
@@ -182,20 +182,31 @@ class TestWrites:
             await _store(db, config, owner=False).embedding_fingerprint()
         assert db.deletions == 0
 
-    async def test_the_probe_stops_at_its_cap(self, monkeypatch, caplog) -> None:
+    async def test_a_scroll_that_cannot_go_deeper_leaves_the_model_unknown(self, monkeypatch, caplog) -> None:
+        """Redis refuses offsets past its result window: what was read decides."""
         monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
-        monkeypatch.setattr(module, "_MODEL_PROBE_MAX_POINTS", 4)
         db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
         await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(6)], merge_membership=False)
         for point in list(db.points.values())[:5]:
             del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
-        scroll = AsyncMock(wraps=db.scroll)
-        monkeypatch.setattr(db, "scroll", scroll)
+        scroll = db.scroll
 
+        async def window(*args: object, offset: str | None = None, **kwargs: object) -> object:
+            if int(offset or 0) >= 4:
+                raise RuntimeError("reached the RediSearch result ceiling")
+            return await scroll(*args, offset=offset, **kwargs)
+
+        monkeypatch.setattr(db, "scroll", window)
         with caplog.at_level(logging.WARNING, logger="entity-model-test"):
             assert await _store(db, config, owner=False)._model_of_a_stored_point() is None
-        assert scroll.await_count == 2
-        assert any("record no embedding model" in r.getMessage() for r in caplog.records)
+        assert any("cannot read further" in r.getMessage() for r in caplog.records)
+
+    async def test_a_first_page_that_cannot_be_read_still_fails(self, monkeypatch) -> None:
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        monkeypatch.setattr(db, "scroll", AsyncMock(side_effect=RuntimeError("scroll timed out")))
+        with pytest.raises(RuntimeError, match="scroll timed out"):
+            await _store(db, config, owner=False)._model_of_a_stored_point()
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""
