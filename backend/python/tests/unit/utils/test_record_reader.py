@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.models.blocks import BlockType, GroupType
 from app.utils.chat_helpers import record_to_text
-from app.utils.record_reader import read_record, read_thread
+from app.utils.record_reader import MAX_READ_CHARS, read_record, read_thread
 
 
 def _text_block(index: int, text: str) -> dict:
@@ -95,6 +95,38 @@ class TestReadingInOrder:
         assert _blocks_in(read["content"]) == [0, 1, 2, 3, 4]
         assert read["shownBlocks"] == [[0, 4]]
         assert read["totalBlocks"] == 5
+
+    async def test_a_block_larger_than_the_budget_is_not_skipped(self) -> None:
+        """A cut block's rest is at no later block. Following only the returned
+        cursor at that budget never moves past it, and the text names the
+        same place to continue as `nextStartBlock`; with room for the block
+        the record reads once."""
+        record = _record("doc-1", [_text_block(0, "<b0> " + "z" * 9_000), _text_block(1, "<b1> after")])
+
+        start: int | None = None
+        for _ in range(5):
+            read = await read_record(record, max_chars=5_000, start_block=start)
+            assert read["chars"] <= 5_000
+            assert "<b1>" not in read["content"]
+            assert read["complete"] is False
+            assert read["nextStartBlock"] == 0
+            assert "larger than maxChars=5000" in read["content"]
+            # One place to continue from, not two.
+            assert set(re.findall(r"startBlock=(\d+)", read["content"])) == {"0"}
+            start = read["nextStartBlock"]
+
+        read = await read_record(record, max_chars=20_000, start_block=start)
+        assert read["complete"] is True
+        assert _blocks_in(read["content"]) == [0, 1]
+
+    async def test_at_the_largest_budget_a_cut_block_cannot_loop(self) -> None:
+        record = _record("doc-1", [_text_block(0, "<b0> " + "z" * 200_000), _text_block(1, "<b1> after")])
+
+        read = await read_record(record, max_chars=MAX_READ_CHARS)
+
+        assert read["chars"] <= MAX_READ_CHARS
+        assert read["nextStartBlock"] == 1
+        assert "cannot be returned" in read["content"]
 
     async def test_an_offset_past_the_end_says_so(self) -> None:
         record = _record("doc-1", [_text_block(i, f"<b{i}>") for i in range(5)])

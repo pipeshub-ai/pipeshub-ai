@@ -26,7 +26,10 @@ are taken out: an API caller has no use for them.
 from __future__ import annotations
 
 import re
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from app.utils.chat_helpers import (
     CitationRefMapper,
@@ -104,7 +107,15 @@ def _render(
     *,
     start_block: int,
     include_blocks: set[int] | None,
+    clipped_note: Callable[[RecordRenderOutcome], str | None] | None = None,
 ) -> str:
+    """The record's text as the caller reads it.
+
+    `clipped_note`, given the render's outcome, may return a note to stand in
+    for the renderer's own trailing "read on from block N" hint -- the hint
+    names the block after one that was cut, and a response must not carry two
+    different places to continue from.
+    """
     mapper = CitationRefMapper()
     content, mapper = record_to_message_content(
         record,
@@ -115,10 +126,50 @@ def _render(
         hints=API_READ_HINTS,
     )
     refs = set(mapper.ref_to_url)
-    return "".join(
-        _strip_labels(item.get("text", ""), refs)
-        for item in content if item.get("type") == "text"
-    )
+    texts = [_strip_labels(item.get("text", ""), refs) for item in content if item.get("type") == "text"]
+    note = clipped_note(budget.outcome(_record_key(record))) if clipped_note else None
+    if note is not None:
+        # The trailing hint is the last "[Record …" piece; the record's
+        # foreign-key lines and closing tag come after it.
+        hint = next(
+            (i for i in range(len(texts) - 1, -1, -1) if texts[i].startswith("\n[Record ")), None,
+        )
+        if hint is None:
+            texts.insert(len(texts) - 1 if texts else 0, note)
+        else:
+            texts[hint] = note
+    return "".join(texts)
+
+
+def _clip(
+    record: dict[str, Any],
+    offset: int,
+    max_chars: int,
+    candidates: set[int] | None = None,
+) -> tuple[Callable[[RecordRenderOutcome], str | None], dict[str, Any]]:
+    """What to do about a block cut because it alone was larger than the budget.
+
+    The renderer reports the block *after* a cut one as where to resume, so
+    following it would lose the rest of the cut block. Below the largest
+    `maxChars` the cursor stays on the cut block and the note says to send the
+    same cursor with more room. At the largest, nothing can return the block
+    whole, so the cursor moves on (no loop) and the note says so beside the
+    renderer's own hint.
+
+    Returns the `_render` callback and a dict it fills with `block` (the cut
+    block) and `hold` (whether the cursor stays on it).
+    """
+    found: dict[str, Any] = {"block": None, "hold": False}
+
+    def _note(outcome: RecordRenderOutcome) -> str | None:
+        block = _clipped_block(record, outcome, offset, candidates)
+        if block is None:
+            return None
+        found["block"] = block
+        found["hold"] = max_chars < MAX_READ_CHARS
+        return _oversized_note(record.get("id"), block, max_chars) if found["hold"] else None
+
+    return _note, found
 
 
 def _truncated_by(outcome: RecordRenderOutcome) -> str | None:
@@ -167,10 +218,21 @@ async def read_record(
             reserve=estimate_frame_chars(record, selection=True),
         )
     budget.allot(key, None, unbounded_blocks=include_blocks is not None)
+    # Room for the note that may stand in for the trailing hint.
+    budget.charge_framing_chars(_OVERSIZED_NOTE_RESERVE + len(str(record.get("id") or "")))
 
-    text = _render(record, budget, start_block=start, include_blocks=include_blocks)
+    clipped_note, clip = _clip(record, start, max_chars, include_blocks)
+    text = _render(
+        record, budget, start_block=start, include_blocks=include_blocks, clipped_note=clipped_note,
+    )
     outcome = budget.outcome(key)
     indices = _renderable_block_indices(record)
+    next_start = None if outcome.complete else outcome.stopped_at_block
+    if clip["block"] is not None:
+        if clip["hold"]:
+            next_start = clip["block"]
+        else:
+            text += _oversized_note(record.get("id"), clip["block"], max_chars)
 
     if start > 0 and outcome.blocks_rendered == 0 and not any(i >= start for i in indices):
         last = max(indices) if indices else -1
@@ -189,7 +251,7 @@ async def read_record(
         "shownBlocks": _ranges(outcome.shown_blocks),
         "complete": outcome.complete,
         "truncatedBy": _truncated_by(outcome),
-        "nextStartBlock": None if outcome.complete else outcome.stopped_at_block,
+        "nextStartBlock": next_start,
         "chars": len(text),
         "maxChars": max_chars,
     }
@@ -205,6 +267,10 @@ def _thread_note(
     )
 
 
+# Longest `_oversized_note` without its record id, for reserving room.
+_OVERSIZED_NOTE_RESERVE = 240
+
+
 def _oversized_note(record_id: object, block: int, max_chars: int) -> str:
     if max_chars >= MAX_READ_CHARS:
         return (
@@ -214,12 +280,17 @@ def _oversized_note(record_id: object, block: int, max_chars: int) -> str:
         )
     return (
         f"\n[Block {block} of record {record_id} is larger than maxChars={max_chars} "
-        f"and was cut. To read it whole, request the same startRecord and "
-        f"startBlock with a larger maxChars (up to {MAX_READ_CHARS}).]\n"
+        f"and was cut. To read it whole, request it again from startBlock={block} "
+        f"with a larger maxChars (up to {MAX_READ_CHARS}).]\n"
     )
 
 
-def _clipped_block(record: dict[str, Any], outcome: RecordRenderOutcome, offset: int) -> int | None:
+def _clipped_block(
+    record: dict[str, Any],
+    outcome: RecordRenderOutcome,
+    offset: int,
+    candidates: set[int] | None = None,
+) -> int | None:
     """The block a read cut short because it alone was larger than the budget.
 
     Only the first block a read shows for a record can be clipped, and a
@@ -229,7 +300,11 @@ def _clipped_block(record: dict[str, Any], outcome: RecordRenderOutcome, offset:
     if not outcome.clipped:
         return None
     return next(
-        (i for i in _renderable_block_indices(record) if i >= offset and i not in outcome.shown_blocks),
+        (
+            i for i in _renderable_block_indices(record)
+            if i >= offset and i not in outcome.shown_blocks
+            and (candidates is None or i in candidates)
+        ),
         None,
     )
 
@@ -282,18 +357,21 @@ async def read_thread(
             next_record, next_block = position, 0
             break
         budget.allot(key, None)
-        parts.append(_render(record, budget, start_block=offset, include_blocks=None))
+        clipped_note, clip = _clip(record, offset, max_chars)
+        parts.append(_render(
+            record, budget, start_block=offset, include_blocks=None, clipped_note=clipped_note,
+        ))
         outcome = budget.outcome(key)
         resume = None if outcome.complete else outcome.stopped_at_block
-        clipped = _clipped_block(record, outcome, offset)
+        clipped = clip["block"]
         if clipped is not None:
-            # A block larger than the whole budget was cut. Its rest is not at
-            # any later block, so the cursor stays on it: the same cursor with
-            # a larger `maxChars` reads it whole. At the largest `maxChars`
-            # nothing can, and the cursor moves on.
-            oversized = _oversized_note(record.get("id"), clipped, max_chars)
-            if max_chars < MAX_READ_CHARS:
+            # A block larger than the whole budget was cut; see `_clip`. When
+            # the cursor holds, the note already stands in for the record's
+            # own hint; when it cannot, the note goes beside it.
+            if clip["hold"]:
                 resume = clipped
+            else:
+                oversized = _oversized_note(record.get("id"), clipped, max_chars)
         shown.append({
             "recordId": record.get("id"),
             "recordName": record.get("record_name"),
