@@ -46,3 +46,23 @@ low for that corpus, and `SEARCH_PER_RECORD_FLOOR` can be raised.
 With `LOG_LEVEL=debug` each search logs the points fused, the points kept, and
 the records a plain cut would have shown against the records the record cut
 shows. The switch state is logged at `info` on the first search.
+
+## Each record's share of a search API response
+
+The search API (`POST /api/v1/search`, and the web app's search on it) expands
+a match inside a section, such as a Slack thread, a pull request, a list or a
+table, into every passage of that section. One long record could therefore
+fill a response with hundreds or thousands of passages.
+
+After that expansion, each record keeps at most
+`max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages,
+the same count the record cut gives one record (4 at the default limit of 10).
+It keeps its best-scoring passages, and among passages of one section the ones
+nearest the passage the search matched. Each expanded passage carries
+`distanceFromMatch` (0 is the matched passage), and the response's
+`omittedPassages` maps each record that lost passages to how many. Kept
+passages stay in the order they had.
+
+This bound is always on, whatever `FUSION_RECORD_CUT` says. The assistant's
+own searches do not go through it: they are ranked and fitted to the model's
+budget by the context pipeline (`docs/retrieval-context.md`).

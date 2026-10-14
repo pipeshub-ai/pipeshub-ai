@@ -1947,6 +1947,93 @@ class TestSearchWithFilters:
         assert "table row content" in contents
         assert "text result" in contents
 
+    async def _knowledge_search_over_a_thread(
+        self, retrieval_service, mock_graph_provider, *, passages: int, hit: int | None
+    ) -> dict:
+        """A match inside a long thread: the thread is expanded into every passage."""
+        from app.models.blocks import GroupType
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "CONNECTOR",
+                "recordName": "Thread", "webUrl": "https://example.com/t",
+                "mimeType": "application/blocks",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9, "content": "message 20", "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": False, "blockIndex": 20},
+            }
+        ])
+        meta = {
+            "virtualRecordId": "vr1", "orgId": "o1", "origin": "CONNECTOR",
+            "recordName": "Thread", "recordId": "rec1", "mimeType": "application/blocks",
+        }
+        unit = {
+            "block_type": GroupType.CONVERSATION.value,
+            "score": 0.9,
+            "content": ("", [
+                {"score": 0.9, "content": f"message {i}", "block_index": i,
+                 "citationType": "vectordb|document", "metadata": dict(meta)}
+                for i in range(passages)
+            ]),
+        }
+        if hit is not None:
+            unit["hit_block_index"] = hit
+
+        async def fake_get_record(vid, vid_to_record, *_args) -> None:
+            vid_to_record[vid] = {"record_type": "MESSAGE"}
+
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)), \
+             patch("app.modules.retrieval.retrieval_service.get_flattened_results",
+                   new=AsyncMock(return_value=[unit])):
+            return await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", limit=10, knowledge_search=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_one_long_thread_cannot_fill_the_search_response(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """A match in message 20 of a 40-message thread returned all 40 messages
+        as separate hits. Now the thread keeps the matched message and its
+        nearest neighbours, and the response says how many were left out."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40, hit=20
+        )
+
+        kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
+        assert kept == [(18, 2), (19, 1), (20, 0), (21, 1)]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_a_section_hit_as_a_whole_keeps_its_first_passages(
+        self, retrieval_service, mock_graph_provider
+    ):
+        """No single passage matched, so the section keeps its reading order."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=10, hit=None
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [0, 1, 2, 3]
+        assert "distanceFromMatch" not in result["searchResults"][0]
+        assert result["omittedPassages"] == {"rec1": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_short_section_is_returned_whole_without_an_omitted_count(
+        self, retrieval_service, mock_graph_provider
+    ):
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=3, hit=1
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [0, 1, 2]
+        assert "omittedPassages" not in result
+
     @pytest.mark.asyncio
     async def test_knowledge_search_get_record_returns_none_skips(
         self, retrieval_service, mock_graph_provider, mock_blob_store

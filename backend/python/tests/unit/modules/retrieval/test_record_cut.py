@@ -15,8 +15,10 @@ from app.modules.retrieval.record_cut import (
     MAX_PER_RECORD,
     RecordCut,
     active_record_cut,
+    cap_passages_per_record,
     cut_by_record,
     hit_record_id,
+    passages_per_record,
     point_record_id,
     record_cut_from_env,
 )
@@ -298,3 +300,62 @@ class TestRecordOf:
     def test_a_hit_without_metadata_has_no_record(self) -> None:
         assert hit_record_id({"metadata": None}) is None
         assert hit_record_id({"metadata": {"virtualRecordId": "v1"}}) == "v1"
+
+
+def _passage(name: str, record: str | None, score: float, distance: int | None = None) -> dict:
+    passage = {"name": name, "score": score, "metadata": {"recordId": record}}
+    if distance is not None:
+        passage["distanceFromMatch"] = distance
+    return passage
+
+
+def _capped(results: list[dict], per_record: int) -> tuple[list[str], dict]:
+    kept, omitted = cap_passages_per_record(
+        results,
+        per_record,
+        record_of=lambda r: r["metadata"].get("recordId"),
+        priority=lambda r: (-r["score"], r.get("distanceFromMatch") or 0),
+    )
+    return [r["name"] for r in kept], omitted
+
+
+class TestCapPassagesPerRecord:
+    def test_a_thread_expanded_around_its_match_keeps_the_match_and_its_neighbours(self) -> None:
+        """Every passage of an expanded section shares the section's score, so
+        nearness to the matched passage decides which ones stay."""
+        thread = [_passage(f"m{i}", "pr", 0.9, abs(i - 20)) for i in range(40)]
+        names, omitted = _capped([*thread, _passage("other", "doc", 0.5)], 4)
+        # m18 and m22 are equally near; the earlier one wins the tie.
+        assert names == ["m18", "m19", "m20", "m21", "other"]
+        assert omitted == {"pr": 36}
+
+    def test_a_higher_scoring_passage_beats_a_nearer_one(self) -> None:
+        results = [
+            _passage("a-best", "a", 0.95),
+            _passage("a-near", "a", 0.6, 0),
+            _passage("a-far", "a", 0.6, 3),
+        ]
+        names, omitted = _capped(results, 2)
+        assert names == ["a-best", "a-near"]
+        assert omitted == {"a": 1}
+
+    def test_kept_passages_stay_in_their_original_order(self) -> None:
+        results = [
+            _passage("x0", "x", 0.9, 2),
+            _passage("y0", "y", 0.8),
+            _passage("x1", "x", 0.9, 0),
+            _passage("x2", "x", 0.9, 1),
+        ]
+        names, _ = _capped(results, 2)
+        assert names == ["y0", "x1", "x2"]
+
+    def test_records_within_the_cap_are_untouched_and_unknown_records_are_kept(self) -> None:
+        results = [_passage("a", "r1", 0.9), _passage("b", None, 0.8), _passage("c", None, 0.7)]
+        names, omitted = _capped(results, 1)
+        assert names == ["a", "b", "c"]
+        assert omitted == {}
+
+    def test_the_cap_follows_the_record_cut_knobs(self) -> None:
+        """One setting bounds a record in the fused cut and in the search response."""
+        assert passages_per_record(10) == RecordCut().per_record(10) == 4
+        assert passages_per_record(60) == 10

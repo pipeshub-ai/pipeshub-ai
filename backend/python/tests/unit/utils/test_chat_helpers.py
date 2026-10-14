@@ -2753,6 +2753,24 @@ class TestGetFlattenedResults:
 
         assert unit["score"] == 0.9
         assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+        # The search API keeps the passages nearest the item that scored best.
+        assert unit["hit_block_index"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_list_unit_records_the_item_that_matched(self) -> None:
+        items = [_make_text_block(index=i, data=f"Item{i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1, 2])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Item2", "score": 0.7, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 2, "isBlockGroup": False}},
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_index"] == 2
+        assert [child["block_index"] for child in unit["content"][1]] == [0, 1, 2]
 
     @pytest.mark.asyncio
     async def test_one_unreadable_record_does_not_fail_the_rest(self):

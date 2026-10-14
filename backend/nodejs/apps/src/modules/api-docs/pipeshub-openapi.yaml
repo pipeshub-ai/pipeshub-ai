@@ -9797,6 +9797,14 @@ components:
         block_index:
           type: integer
           nullable: true
+        distanceFromMatch:
+          type: integer
+          minimum: 0
+          description: |
+            Set on a passage returned because a match inside its section (a thread, a list,
+            a table) brought the whole section back: how many blocks it sits from the passage
+            the search matched. `0` is the matched passage. Absent when the hit matched
+            directly or the section matched as a whole.
 
     SemanticSearchGraphRecord:
       type: object
@@ -10007,6 +10015,16 @@ components:
           type: string
         appliedFilters:
           $ref: '#/components/schemas/SemanticSearchAppliedFilters'
+        omittedPassages:
+          type: object
+          description: |
+            Present only when some records lost passages to the per-record cap: maps a
+            `recordId` to how many of its passages were left out. Each record keeps at most
+            `max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages
+            (4 at the default limit), its best-scoring ones, nearest the match first.
+          additionalProperties:
+            type: integer
+            minimum: 1
         virtual_to_record_map:
           type: object
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.

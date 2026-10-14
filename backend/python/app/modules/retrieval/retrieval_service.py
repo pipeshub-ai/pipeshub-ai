@@ -36,7 +36,9 @@ from app.modules.retrieval.entity_filters import (
 from app.modules.retrieval.record_cut import (
     RecordCut,
     active_record_cut,
+    cap_passages_per_record,
     hit_record_id,
+    passages_per_record,
     point_record_id,
 )
 from app.modules.retrieval.result_merging import (
@@ -953,7 +955,13 @@ class RetrievalService:
                     if (
                         block_type == GroupType.TABLE.value or block_type in valid_group_labels
                     ) and child_results is not None:
+                        hit_index = result.get("hit_block_index")
                         for child in child_results:
+                            child_index = child.get("block_index")
+                            if isinstance(hit_index, int) and isinstance(child_index, int):
+                                # 0 is the passage the search matched; the per-record
+                                # cap below keeps the passages nearest it.
+                                child["distanceFromMatch"] = abs(child_index - hit_index)
                             final_search_results.append(child)
                     else:
                         final_search_results.append(result)
@@ -978,6 +986,25 @@ class RetrievalService:
                     self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
 
             search_results = complete_results
+            omitted_passages: dict[str, int] = {}
+            if knowledge_search:
+                # A match inside a thread, a pull request or a table brings back
+                # every passage of that section; one long record could fill the
+                # response with thousands of them. Each record keeps its best
+                # passages, nearest the match first.
+                search_results, omitted_passages = cap_passages_per_record(
+                    search_results,
+                    passages_per_record(limit),
+                    record_of=lambda r: (r.get("metadata") or {}).get("recordId"),
+                    priority=lambda r: (-(r.get("score") or 0.0), r.get("distanceFromMatch") or 0),
+                )
+                if omitted_passages:
+                    self.logger.debug(
+                        "search passages capped at %d per record: %d records lost %d passages",
+                        passages_per_record(limit),
+                        len(omitted_passages),
+                        sum(omitted_passages.values()),
+                    )
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,
@@ -987,6 +1014,10 @@ class RetrievalService:
                     "message": "Query processed successfully. Relevant records retrieved.",
                     "virtual_to_record_map": virtual_to_record_map,
                 }
+                if omitted_passages:
+                    # recordId -> passages left out, so a caller can say how many
+                    # each record matched in all.
+                    response_data["omittedPassages"] = omitted_passages
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:

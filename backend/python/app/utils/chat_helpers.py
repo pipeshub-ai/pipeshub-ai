@@ -2347,11 +2347,16 @@ def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tu
     return index, *check
 
 
-def _raise_group_score(unit: dict[str, Any], score: float) -> None:
-    """Give a list unit, and the children /search unpacks from it, its best hit's score."""
+def _raise_group_score(unit: dict[str, Any], score: float, hit_block_index: int | None = None) -> None:
+    """Give a list unit, and the children /search unpacks from it, its best hit's score.
+
+    The block that scored it becomes the unit's ``hit_block_index``.
+    """
     if score <= float(unit.get("score") or 0.0):
         return
     unit["score"] = score
+    if hit_block_index is not None:
+        unit["hit_block_index"] = hit_block_index
     content = unit.get("content")
     if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
         for child in content[1]:
@@ -2608,7 +2613,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
                 if group_chunk_id in seen_chunks:
                     if group_chunk_id in emitted_groups:
-                        _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
+                        _raise_group_score(
+                            emitted_groups[group_chunk_id], float(result.get("score", 0.0)), parent_block_idx
+                        )
                     continue
                 fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
                 group_text_result = get_group_label_n_first_child(block_groups, target_index)
@@ -2629,6 +2636,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 result["virtual_record_id"] = virtual_record_id
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
+                # The block the search matched; its fragments are rendered through it.
+                result["hit_block_index"] = parent_block_idx
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
                 emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
@@ -2810,7 +2819,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             group_chunk_id = f"{virtual_record_id}-{target_index}-block_group"
             if group_chunk_id in seen_chunks:
                 if group_chunk_id in emitted_groups:
-                    _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)))
+                    _raise_group_score(emitted_groups[group_chunk_id], float(result.get("score", 0.0)), index)
                 continue
 
             fmap = fragment_maps.setdefault(virtual_record_id, _build_fragment_map(blocks))
@@ -2834,6 +2843,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             result["virtual_record_id"] = virtual_record_id
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
+            # The item the search matched, which the list is expanded around.
+            result["hit_block_index"] = index
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             emitted_groups[group_chunk_id] = result
             flattened_results.append(result)
