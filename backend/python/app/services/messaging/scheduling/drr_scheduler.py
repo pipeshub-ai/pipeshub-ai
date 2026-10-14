@@ -215,14 +215,28 @@ class _Node(Generic[T]):
             self.deficit.clear()
         self.count = 0
 
-    def backlogged(self, out: list[FairnessKey]) -> None:
+    def backlogged(
+        self,
+        out: list[FairnessKey],
+        now: float,
+        can_dispatch: Callable[[T], bool] | None,
+    ) -> None:
         if self.is_leaf:
-            if self.entries:
-                out.append(self.prefix)
+            if not self.entries:
+                return
+            # Judged on the head alone, exactly as try_pop judges it: a leaf
+            # whose head is not due, or not dispatchable, cannot be popped
+            # however ready the entries behind it are.
+            head = self.entries[0]
+            if head.not_before is not None and head.not_before > now:
+                return
+            if can_dispatch is not None and not can_dispatch(head.item):
+                return
+            out.append(self.prefix)
             return
         for child in self.children.values():
             if child.count > 0:
-                child.backlogged(out)
+                child.backlogged(out, now, can_dispatch)
 
     def leaf_count(self) -> int:
         """Number of distinct fully-qualified keys with buffered items."""
@@ -388,10 +402,15 @@ class DRRScheduler(Generic[T]):
             node = node.child(name)
         return node.count if node is not None else 0
 
-    def backlogged_keys(self) -> list[FairnessKey]:
-        """Every full (leaf-level) key that has buffered items."""
+    def backlogged_keys(
+        self, can_dispatch: Callable[[T], bool] | None = None
+    ) -> list[FairnessKey]:
+        """Every full (leaf-level) key that ``dequeue`` could pop from right
+        now, apart from any ``key_allowed`` check: its head is due and, when
+        ``can_dispatch`` is given, accepted by it. A key whose head is waiting
+        out a retry backoff is buffered but not listed."""
         out: list[FairnessKey] = []
-        self._root.backlogged(out)
+        self._root.backlogged(out, time.time(), can_dispatch)
         return out
 
     @property

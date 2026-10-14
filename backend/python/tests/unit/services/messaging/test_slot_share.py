@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING
 
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
@@ -187,6 +188,23 @@ class TestSchedulerHooks:
         blocked.clear()
         # GitHub kept its place at the head of the round.
         assert scheduler.dequeue(key_allowed=lambda key: True)[1] == "g0"
+
+    def test_a_head_not_yet_due_is_not_backlogged(self) -> None:
+        """A due record behind it does not count: dequeue only looks at the
+        head, so the key cannot take a slot until the head is due."""
+        scheduler: DRRScheduler[str] = DRRScheduler(_config())
+        scheduler.enqueue(("org", "github", "light"), "g0", not_before=time.time() + 300)
+        scheduler.enqueue(("org", "github", "light"), "g1")
+        scheduler.enqueue(("org", "slack", "light"), "s0")
+        assert scheduler.backlogged_keys() == [("org", "slack", "light")]
+
+    def test_a_head_the_dispatcher_rejects_is_not_backlogged(self) -> None:
+        scheduler: DRRScheduler[str] = DRRScheduler(_config())
+        scheduler.enqueue(("org", "github", "light"), "g0")
+        scheduler.enqueue(("org", "slack", "light"), "s0")
+        assert scheduler.backlogged_keys(can_dispatch=lambda item: item != "g0") == [
+            ("org", "slack", "light")
+        ]
 
     def test_dequeue_returns_none_when_every_key_is_disallowed(self) -> None:
         scheduler: DRRScheduler[str] = DRRScheduler(_config())

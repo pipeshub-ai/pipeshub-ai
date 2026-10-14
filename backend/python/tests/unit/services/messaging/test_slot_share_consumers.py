@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from concurrent.futures import Future
 from unittest.mock import AsyncMock, MagicMock
 
@@ -65,8 +66,9 @@ def _fair_config(**overrides) -> FairSchedulerConfig:
     return FairSchedulerConfig(**defaults)
 
 
-def _payload(connector_id: str, record_id: str) -> dict:
+def _payload(connector_id: str, record_id: str, **extra: object) -> dict:
     return {
+        **extra,
         "recordId": record_id,
         "orgId": "org-a",
         "connectorId": connector_id,
@@ -95,11 +97,18 @@ def _redis_consumer() -> IndexingRedisStreamsConsumer:
     return consumer
 
 
-async def _redis_buffer(consumer, connector_id: str, count: int, start: int) -> None:
+async def _redis_buffer(
+    consumer, connector_id: str, count: int, start: int, *, first_not_before: float | None = None
+) -> None:
     for i in range(count):
+        extra = (
+            {"_retry_not_before": first_not_before}
+            if i == 0 and first_not_before is not None
+            else {}
+        )
         envelope = {
             "eventType": "newRecord",
-            "payload": _payload(connector_id, f"{connector_id}-{i}"),
+            "payload": _payload(connector_id, f"{connector_id}-{i}", **extra),
             "requestId": f"{connector_id}-{i}",
         }
         await consumer._IndexingRedisStreamsConsumer__enqueue_message(
@@ -139,6 +148,25 @@ class TestRedisStreams:
         assert len(futures) == SLOTS + 1
         assert _redis_dispatched(consumer, "github") == SLOTS // 2
         assert _redis_dispatched(consumer, "slack") == SLOTS // 2
+
+    async def test_a_connector_backing_off_does_not_shrink_the_others_share(
+        self, futures
+    ) -> None:
+        """GitHub's next record is waiting out a retry backoff, with a due
+        record queued behind it. The dispatcher cannot reach that one, so
+        GitHub cannot take a slot, and Slack keeps the whole pool."""
+        consumer = _redis_consumer()
+        await _redis_buffer(
+            consumer, "github", 2, start=0, first_not_before=time.time() + 300
+        )
+        await _redis_buffer(consumer, "slack", 20, start=100)
+
+        await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
+
+        assert _redis_dispatched(consumer, "github") == 0
+        # Uncapped, as if alone: all 20 dispatched (the gate then admits 4).
+        # Counting the backing-off connector as waiting would stop it at 2.
+        assert _redis_dispatched(consumer, "slack") == 20
 
     async def test_a_connector_alone_gets_every_slot(self, futures) -> None:
         consumer = _redis_consumer()

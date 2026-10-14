@@ -692,15 +692,22 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self, key, tier_level=self.fair_scheduler_config.tier_level
         )
 
-    def _slot_share_plan(self) -> SlotSharePlan | None:
+    def _slot_share_plan(
+        self, can_dispatch: "Callable[[Any], bool] | None" = None
+    ) -> SlotSharePlan | None:
         """Each waiting connector's cap on records in flight, for one
-        dispatch decision. None when fair scheduling is off."""
+        dispatch decision. None when fair scheduling is off.
+
+        Only connectors whose next record could be dispatched now count as
+        waiting (``can_dispatch`` is the dispatch phase's own check). One
+        whose head is waiting out a retry backoff cannot take a slot, so it
+        must not shrink anyone else's share."""
         scheduler = self._scheduler
         slot_share = self._slot_share
         if scheduler is None or slot_share is None:
             return None
         return slot_share.plan(
-            scheduler.backlogged_keys(),
+            scheduler.backlogged_keys(can_dispatch),
             self._slot_pool_of,
             lambda pool: concurrency.slot_pool_limit(self, pool),
         )
@@ -1909,7 +1916,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             # Rebuilt for every record: each dispatch changes one connector's
             # count in flight, and may empty its queue.
-            plan = self._slot_share_plan()
+            plan = self._slot_share_plan(can_dispatch)
             dispatched = scheduler.dequeue(
                 can_dispatch=can_dispatch,
                 key_allowed=plan.allows if plan is not None else None,
