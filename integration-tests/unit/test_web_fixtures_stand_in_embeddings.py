@@ -10,12 +10,15 @@ from __future__ import annotations
 import importlib.util
 import sys
 import threading
-from collections.abc import Iterator
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 import requests
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 # Loaded by path: helper/ is on sys.path in this suite, so the name
 # ``web_fixtures`` already means the client module there.
