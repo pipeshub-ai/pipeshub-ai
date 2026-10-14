@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+from collections import deque
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -1433,6 +1434,74 @@ class TestDownstreamBrake:
         assert state.hold_ewma == pytest.approx(10.0, rel=1e-3)
         assert state.hold_baseline == pytest.approx(10.0, rel=1e-2)
         assert not policy_mod._latency_hold(state)
+
+    # A pool of 15 light index permits. Chat messages hold a permit for
+    # 17.6 s; pull requests for 600 s. With 14 of the 15 permits on pull
+    # requests (what counting records gave them), a 15 s sample releases
+    # about one chat permit, and a pull request every third sample.
+    _CHAT_HOLD = 17.6
+    _PR_HOLD = 600.0
+
+    def _mixed_run(
+        self, *, report_holds: bool, downstream_factor: float = 1.0
+    ) -> tuple[Limits, bool]:
+        """Run chat alone, then chat beside pull requests. Returns the final
+        limits and whether the latency hold engaged at any point after the
+        pull requests arrived."""
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        limits = self._limits(16, 15)
+        state = ControllerState.initial()
+        recent: deque[float] = deque(maxlen=32)
+
+        def demand(completions: int) -> dict[Pool, PoolDemand]:
+            return {
+                p: PoolDemand(
+                    permit_seconds=15 * INTERVAL,
+                    blocked_acquires=3,
+                    completions=completions,
+                    hold_seconds=tuple(recent) if report_holds else (),
+                )
+                for p in Pool
+            }
+
+        # Chat alone: all 15 permits turning over.
+        for i in range(5):
+            recent.extend([self._CHAT_HOLD] * 13)
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand(13), now=100.0 + i * INTERVAL,
+            )
+        # Pull requests join.
+        held = False
+        for i in range(5, 30):
+            completions = 1
+            recent.append(self._CHAT_HOLD * downstream_factor)
+            if i % 3 == 0:
+                recent.append(self._PR_HOLD * downstream_factor)
+                completions += 1
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand(completions), now=100.0 + i * INTERVAL,
+            )
+            held = held or policy_mod._latency_hold(state.get(Pool.INDEX_LIGHT))
+        return limits, held
+
+    def test_a_few_large_records_read_as_a_slow_downstream_by_their_mean(self) -> None:
+        """What happens without reported holds: 225 permit-seconds over one
+        or two completions is 110-225 s a record, far over twice the chat
+        baseline, and the pool stops growing although nothing downstream
+        slowed."""
+        _limits, held = self._mixed_run(report_holds=False)
+        assert held
+
+    def test_a_few_large_records_do_not_hold_growth(self) -> None:
+        limits, held = self._mixed_run(report_holds=True)
+        assert not held
+        assert limits.get(Pool.INDEX_LIGHT) > 15
+
+    def test_a_downstream_slowdown_still_holds_growth(self) -> None:
+        """Every record taking three times as long moves the median too."""
+        _limits, held = self._mixed_run(report_holds=True, downstream_factor=3.0)
+        assert held
 
     def test_no_feedback_argument_keeps_the_old_behaviour(self) -> None:
         limits, _ = next_limits(

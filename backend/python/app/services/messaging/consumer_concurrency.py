@@ -843,7 +843,14 @@ async def acquire_index_slot(
             raise RuntimeError(
                 f"Index admission denied for pool {index_pool(resolved_tier).value}"
             )
-        return Admission(tier=resolved_tier, _release=lambda: gate.release())
+        admitted_at = time.monotonic()
+        # The hold is reported with the release so the governor can judge the
+        # pool's typical record by its median rather than its mean, which a
+        # few very large records would drag up (policy._track_hold_time).
+        return Admission(
+            tier=resolved_tier,
+            _release=lambda: gate.release(held_seconds=time.monotonic() - admitted_at),
+        )
 
     legacy_semaphore = host.indexing_semaphore
     if legacy_semaphore is None:

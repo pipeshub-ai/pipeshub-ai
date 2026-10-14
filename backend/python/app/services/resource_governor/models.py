@@ -207,6 +207,13 @@ class PoolDemand:
     otherwise free — the diagnostic signal that separates "genuinely at the
     concurrency limit" from "throttled by the burst smoother regardless of
     limit" (see gate.py ``AdmissionGate._try_admit``)."""
+    hold_seconds: tuple[float, ...] = ()
+    """How long the most recently released permits were held (up to the
+    gate's window, kept across intervals), for releases whose holder
+    reported it; the index pools do. The latency hold reads their median:
+    ``permit_seconds / completions`` is a mean, and a few records far larger
+    than the rest pull a mean up as far as a slow downstream does (see
+    policy ``_track_hold_time``)."""
 
     @staticmethod
     def empty() -> "PoolDemand":

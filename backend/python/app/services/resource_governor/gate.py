@@ -24,6 +24,12 @@ if TYPE_CHECKING:
 # wakeup is ever missed, a waiter re-checks admission at worst this often
 # instead of stalling indefinitely.
 _SAFETY_NET_INTERVAL_SECONDS = 1.0
+# How many of the most recent permit hold times a gate remembers for the
+# pool's median (PoolDemand.hold_seconds). Kept across sample intervals, not
+# reset with the other accumulators: a pool turning over slowly may release
+# one or two permits in an interval, and the median of one or two is
+# whatever those happened to be.
+_HOLD_WINDOW = 32
 
 
 class StartRateLimiter:
@@ -118,6 +124,7 @@ class AdmissionGate:
         self._completions = 0
         self._max_in_use = 0
         self._rate_limited_acquires = 0
+        self._recent_holds: deque[float] = deque(maxlen=_HOLD_WINDOW)
         self._last_change = clock()
 
     # -- loop binding ---------------------------------------------------
@@ -222,12 +229,17 @@ class AdmissionGate:
             # one wake at a time.
             self._wake_head()
 
-    def release(self, cost: int = 1) -> None:
+    def release(self, cost: int = 1, held_seconds: float | None = None) -> None:
+        """Return *cost* permits. ``held_seconds``, when the holder knows it,
+        is how long this permit was held; it feeds the pool's typical hold
+        time (``PoolDemand.hold_seconds``)."""
         now = self._clock()
         self._fold_permit_seconds(now)
         released = min(cost, self._in_use)
         self._in_use -= released
         self._completions += 1
+        if held_seconds is not None and held_seconds >= 0:
+            self._recent_holds.append(held_seconds)
         self._wake_head()
 
     @contextlib.asynccontextmanager
@@ -256,6 +268,7 @@ class AdmissionGate:
             completions=self._completions,
             max_in_use=self._max_in_use,
             rate_limited_acquires=self._rate_limited_acquires,
+            hold_seconds=tuple(self._recent_holds),
         )
         self._permit_seconds = 0.0
         self._blocked_acquires = 0

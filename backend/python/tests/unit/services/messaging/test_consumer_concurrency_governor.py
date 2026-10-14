@@ -275,6 +275,22 @@ class TestAcquireReleaseParsingSlot:
         concurrency.release_admission(None)
 
 
+class TestIndexSlotReportsItsHoldTime:
+    @pytest.mark.asyncio
+    async def test_releasing_an_index_permit_reports_how_long_it_was_held(self) -> None:
+        governor = _make_governor()
+        host = _host(governor=governor)
+        gate = governor.gate(Pool.INDEX_LIGHT)
+        gate.drain_demand()
+
+        admission = await concurrency.acquire_index_slot(host, ParseTier.LIGHT)
+        concurrency.release_admission(admission)
+
+        holds = gate.drain_demand().hold_seconds
+        assert len(holds) == 1
+        assert 0.0 <= holds[0] < 5.0
+
+
 class TestReportMemoryIncidentIfApplicable:
     def test_memory_error_with_governor_triggers_incident(self) -> None:
         governor = MagicMock()

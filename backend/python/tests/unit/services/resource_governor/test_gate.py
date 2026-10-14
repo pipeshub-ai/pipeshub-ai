@@ -231,6 +231,58 @@ class TestAdmissionGateDemandAccounting:
         assert demand.blocked_acquires >= 290
 
 
+class TestRecentHoldTimes:
+    """The hold times a holder reports on release, kept for the pool's
+    median (``PoolDemand.hold_seconds``)."""
+
+    @staticmethod
+    def _gate() -> AdmissionGate:
+        return AdmissionGate(Pool.INDEX_LIGHT, _registry(limit=64, pool=Pool.INDEX_LIGHT))
+
+    def test_reported_holds_reach_the_demand(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> None:
+            for held in (17.6, 18.0, 600.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+            await gate.acquire()
+            gate.release()  # nothing reported: not a sample
+
+        asyncio.run(scenario())
+        demand = gate.drain_demand()
+        assert demand.hold_seconds == (17.6, 18.0, 600.0)
+        assert demand.completions == 4
+
+    def test_holds_outlive_the_sample_interval(self) -> None:
+        """A pool releasing one permit an interval still has a median of
+        many, not of whichever record finished last."""
+        gate = self._gate()
+
+        async def scenario() -> tuple[float, ...]:
+            await gate.acquire()
+            gate.release(held_seconds=17.6)
+            gate.drain_demand()
+            await gate.acquire()
+            gate.release(held_seconds=600.0)
+            return gate.drain_demand().hold_seconds
+
+        assert asyncio.run(scenario()) == (17.6, 600.0)
+
+    def test_only_the_most_recent_holds_are_kept(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> None:
+            for i in range(100):
+                await gate.acquire()
+                gate.release(held_seconds=float(i))
+
+        asyncio.run(scenario())
+        holds = gate.drain_demand().hold_seconds
+        assert len(holds) == 32
+        assert holds[-1] == 99.0
+
+
 class TestArrivalOrder:
     """Waiters are admitted in the order they arrived. With every waiter
     woken at once they raced for the permit, and one could lose that race

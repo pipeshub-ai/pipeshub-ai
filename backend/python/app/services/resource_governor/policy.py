@@ -11,6 +11,7 @@ growth ramps slowly (plan section 4).
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -732,14 +733,28 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
 
 
 def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
-    """Fold this sample's mean permit hold time into the pool's EWMA and
+    """Fold this sample's typical permit hold time into the pool's EWMA and
     low-water baseline. The baseline drifts toward the EWMA by a small
     fraction of the gap each sample, so a workload that is simply slower
     than the one before it becomes the new normal within a few minutes
-    instead of pinning growth for the life of the process."""
+    instead of pinning growth for the life of the process.
+
+    Typical means the median of the most recent holds, when the holders
+    reported them (``PoolDemand.hold_seconds``). The mean,
+    ``permit_seconds / completions``, is what a slow downstream raises, but
+    a handful of very large records raise it just as far: pull requests
+    holding their permits for ten minutes next to chat messages that take
+    fifteen seconds read as a pool whose every record has slowed down, and
+    the pool stops growing for as long as they run. A downstream slowdown
+    moves the median with everything else; a few large records do not. The
+    mean remains the fallback when no hold times were reported."""
     if demand.completions <= 0:
         return state
-    mean_hold = demand.permit_seconds / demand.completions
+    mean_hold = (
+        statistics.median(demand.hold_seconds)
+        if demand.hold_seconds
+        else demand.permit_seconds / demand.completions
+    )
     ewma = (
         mean_hold
         if state.hold_ewma is None
