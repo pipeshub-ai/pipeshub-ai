@@ -792,21 +792,22 @@ class TestEncodeGate:
 
     @pytest.mark.asyncio
     async def test_a_query_goes_ahead_of_bulk_already_waiting(self) -> None:
-        gate = EncodeGate(capacity=1, reserved_for_queries=1)
+        gate = EncodeGate(capacity=2, reserved_for_queries=0)
+        await gate.acquire(EncodePriority.BULK)
         await gate.acquire(EncodePriority.BULK)
         order: list[str] = []
 
         async def take(priority: EncodePriority, name: str) -> None:
             await gate.acquire(priority)
             order.append(name)
-            gate.release()
+            gate.release(priority)
 
         bulk = [asyncio.ensure_future(take(EncodePriority.BULK, f"bulk-{i}")) for i in range(3)]
         await self._settle()
         query = asyncio.ensure_future(take(EncodePriority.QUERY, "query"))
         await self._settle()
 
-        gate.release()
+        gate.release(EncodePriority.BULK)
         await asyncio.gather(*bulk, query)
         assert order == ["query", "bulk-0", "bulk-1", "bulk-2"]
 
@@ -818,18 +819,57 @@ class TestEncodeGate:
         await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
 
     @pytest.mark.asyncio
+    async def test_a_steady_stream_of_queries_cannot_stop_indexing(self) -> None:
+        """Queries looping on every slot, with more always queued: a bulk
+        request still gets a slot."""
+        gate = EncodeGate(capacity=4, reserved_for_queries=1)
+        stop = asyncio.Event()
+
+        async def query_loop() -> None:
+            while not stop.is_set():
+                async with gate.slot(EncodePriority.QUERY):
+                    await asyncio.sleep(0.001)
+
+        loops = [asyncio.ensure_future(query_loop()) for _ in range(8)]
+        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+        finally:
+            stop.set()
+            await asyncio.gather(*loops)
+        gate.release(EncodePriority.BULK)
+        assert gate.in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_queries_leave_the_last_slot_to_bulk_that_has_none(self) -> None:
+        gate = EncodeGate(capacity=3, reserved_for_queries=1)
+        await gate.acquire(EncodePriority.QUERY)
+        await gate.acquire(EncodePriority.QUERY)
+        await gate.acquire(EncodePriority.QUERY)
+        bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        query = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
+        await self._settle()
+
+        gate.release(EncodePriority.QUERY)
+        await asyncio.wait_for(bulk, timeout=1)
+        assert not query.done()
+        gate.release(EncodePriority.QUERY)
+        await asyncio.wait_for(query, timeout=1)
+
+    @pytest.mark.asyncio
     async def test_bulk_waits_while_a_query_is_waiting(self) -> None:
         gate = EncodeGate(capacity=2, reserved_for_queries=0)
-        await gate.acquire(EncodePriority.QUERY)
+        await gate.acquire(EncodePriority.BULK)
         await gate.acquire(EncodePriority.QUERY)
         query = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
         bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
         await self._settle()
 
-        gate.release()
+        gate.release(EncodePriority.QUERY)
         await self._settle()
         assert query.done() and not bulk.done()
-        gate.release()
+        gate.release(EncodePriority.BULK)
         await asyncio.wait_for(bulk, timeout=1)
 
     @pytest.mark.asyncio
@@ -841,7 +881,7 @@ class TestEncodeGate:
         gone.cancel()
         await self._settle()
 
-        gate.release()
+        gate.release(EncodePriority.BULK)
         assert gate.in_use == 0
         await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
 
@@ -851,7 +891,7 @@ class TestEncodeGate:
         await gate.acquire(EncodePriority.BULK)
         waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
         await self._settle()
-        gate.release()  # granted to the waiter...
+        gate.release(EncodePriority.BULK)  # granted to the waiter...
         waiter.cancel()  # ...which is cancelled before it resumes
         with pytest.raises(asyncio.CancelledError):
             await waiter

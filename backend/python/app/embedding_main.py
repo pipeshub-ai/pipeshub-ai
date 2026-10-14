@@ -324,8 +324,11 @@ class EncodeGate:
     at once instead of waiting for a batch to finish. Within each class,
     first come first served.
 
-    Bulk always keeps at least one slot, so a steady stream of queries slows
-    indexing down but cannot stop it. Event-loop only; no locking.
+    Bulk is never shut out. While a bulk request is waiting and no bulk
+    request holds a slot, queries may not take the last free slot, and the
+    next slot freed goes to bulk; so a steady stream of queries slows
+    indexing to one encode at a time but cannot stop it. With a single slot
+    that means the two take turns. Event-loop only; no locking.
     """
 
     def __init__(self, capacity: int, reserved_for_queries: int = 1) -> None:
@@ -334,6 +337,7 @@ class EncodeGate:
         self._capacity = capacity
         self._bulk_limit = max(1, capacity - max(0, reserved_for_queries))
         self._in_use = 0
+        self._bulk_in_use = 0
         self._waiting: dict[EncodePriority, deque[asyncio.Future[None]]] = {
             EncodePriority.QUERY: deque(),
             EncodePriority.BULK: deque(),
@@ -350,26 +354,51 @@ class EncodeGate:
     def waiting(self, priority: EncodePriority) -> int:
         return sum(1 for f in self._waiting[priority] if not f.done())
 
+    def _bulk_shut_out(self) -> bool:
+        """A bulk request is waiting and no bulk request holds a slot."""
+        return self._bulk_in_use == 0 and self.waiting(EncodePriority.BULK) > 0
+
     def _has_room(self, priority: EncodePriority) -> bool:
+        if self._in_use >= self._capacity:
+            return False
         if priority is EncodePriority.QUERY:
-            return self._in_use < self._capacity
+            # Leave the last free slot to bulk work that has none.
+            return not (self._bulk_shut_out() and self._in_use >= self._capacity - 1)
+        if self._bulk_in_use == 0:
+            return True
         return self._in_use < self._bulk_limit and not self.waiting(EncodePriority.QUERY)
 
+    def _take(self, priority: EncodePriority) -> None:
+        self._in_use += 1
+        if priority is EncodePriority.BULK:
+            self._bulk_in_use += 1
+
+    def _grant_next(self, priority: EncodePriority) -> bool:
+        queue = self._waiting[priority]
+        while queue and queue[0].done():
+            queue.popleft()
+        if not queue or not self._has_room(priority):
+            return False
+        # The slot is taken on the waiter's behalf, so nothing that runs
+        # before it resumes can take it first.
+        self._take(priority)
+        queue.popleft().set_result(None)
+        return True
+
     def _wake(self) -> None:
-        for priority in (EncodePriority.QUERY, EncodePriority.BULK):
-            queue = self._waiting[priority]
-            while queue and self._has_room(priority):
-                waiter = queue.popleft()
-                if waiter.done():
-                    continue
-                # The slot is taken on the waiter's behalf, so nothing that
-                # runs before it resumes can take it first.
-                self._in_use += 1
-                waiter.set_result(None)
+        while True:
+            # Bulk first only when it holds nothing; otherwise queries first.
+            order = (
+                (EncodePriority.BULK, EncodePriority.QUERY)
+                if self._bulk_shut_out()
+                else (EncodePriority.QUERY, EncodePriority.BULK)
+            )
+            if not any(self._grant_next(priority) for priority in order):
+                return
 
     async def acquire(self, priority: EncodePriority) -> None:
         if not self.waiting(priority) and self._has_room(priority):
-            self._in_use += 1
+            self._take(priority)
             return
         waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self._waiting[priority].append(waiter)
@@ -381,11 +410,13 @@ class EncodeGate:
         except asyncio.CancelledError:
             if waiter.done() and not waiter.cancelled():
                 # Granted, then cancelled before it could run: hand it back.
-                self.release()
+                self.release(priority)
             raise
 
-    def release(self) -> None:
+    def release(self, priority: EncodePriority) -> None:
         self._in_use = max(0, self._in_use - 1)
+        if priority is EncodePriority.BULK:
+            self._bulk_in_use = max(0, self._bulk_in_use - 1)
         self._wake()
 
     @asynccontextmanager
@@ -394,7 +425,7 @@ class EncodeGate:
         try:
             yield
         finally:
-            self.release()
+            self.release(priority)
 
 
 class ModelManager:
