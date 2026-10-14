@@ -195,6 +195,18 @@ def _batch_documents_by_size(
     return batches
 
 
+_OPENAI_API_HOST = "api.openai.com"
+
+
+def _is_openai_api(endpoint: str) -> bool:
+    """True for no endpoint (the SDK's default) or OpenAI's own API host."""
+    if not endpoint:
+        return True
+    from urllib.parse import urlparse
+
+    return (urlparse(endpoint).hostname or "").lower() == _OPENAI_API_HOST
+
+
 def _batch_documents_by_tokens(
     documents: list[Document], max_documents: int, max_tokens: int
 ) -> list[tuple[int, list[Document]]]:
@@ -1450,8 +1462,23 @@ class VectorStore(Transformer):
         if self.embedding_provider not in _TOKEN_BATCHED_EMBEDDING_PROVIDERS:
             return False
         if self.embedding_provider == EmbeddingProvider.OPENAI.value:
-            return not (self.embedding_endpoint or "").strip()
+            return _is_openai_api(self._effective_openai_endpoint())
         return True
+
+    def _effective_openai_endpoint(self) -> str:
+        """Where the OpenAI client actually sends requests. With no endpoint
+        configured, LangChain still takes one from ``OPENAI_API_BASE`` and
+        the OpenAI SDK from ``OPENAI_BASE_URL``, so those count too."""
+        candidates = (
+            self.embedding_endpoint,
+            getattr(self.dense_embeddings, "openai_api_base", None),
+            os.getenv("OPENAI_API_BASE"),
+            os.getenv("OPENAI_BASE_URL"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return ""
 
     async def _compute_sparse_embeddings(
         self, texts: List[str]

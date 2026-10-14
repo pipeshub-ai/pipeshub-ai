@@ -2678,8 +2678,12 @@ class TestTokenBudgetBatches:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("provider", ["openAI", "azureOpenAI"])
-    async def test_small_documents_share_one_request(self, provider: str) -> None:
+    async def test_small_documents_share_one_request(
+        self, provider: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """A typical pull request's diffs: ~550 documents, ~11k tokens."""
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+        monkeypatch.delenv("OPENAI_API_BASE", raising=False)
         docs = self._sentence_docs(550)
         batches = await self._batches(provider, docs)
         assert len(batches) == 1
@@ -2705,6 +2709,32 @@ class TestTokenBudgetBatches:
         batches = await self._batches(provider, self._sentence_docs(550), endpoint)
         assert len(batches) == 11
         assert max(len(b) for b in batches) == _DEFAULT_DOCUMENT_BATCH_SIZE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("variable", ["OPENAI_BASE_URL", "OPENAI_API_BASE"])
+    async def test_openai_pointed_elsewhere_by_the_environment_keeps_fifty(
+        self, variable: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No endpoint configured, but the client takes one from the
+        environment: that server's input limit is unknown too."""
+        monkeypatch.setenv(variable, "https://llm-gateway.example.com/v1")
+        batches = await self._batches("openAI", self._sentence_docs(550))
+        assert len(batches) == 11
+
+    @pytest.mark.asyncio
+    async def test_openai_pointed_elsewhere_by_its_client_keeps_fifty(self) -> None:
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.embedding_endpoint = None
+        vs.dense_embeddings = MagicMock(openai_api_base="https://llm-gateway.example.com/v1")
+        assert not vs._batches_by_tokens()
+
+    @pytest.mark.asyncio
+    async def test_openai_named_explicitly_still_packs_by_tokens(self) -> None:
+        batches = await self._batches(
+            "openAI", self._sentence_docs(550), "https://api.openai.com/v1"
+        )
+        assert len(batches) == 1
 
     @pytest.mark.asyncio
     async def test_the_token_budget_bounds_each_request(self) -> None:
