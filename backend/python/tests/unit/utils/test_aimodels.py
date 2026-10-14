@@ -1744,6 +1744,34 @@ class TestDefaultTemperatureProviderGating:
         get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
         assert mock_cls.call_args.kwargs["temperature"] == 1
 
+    @pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol"])
+    @pytest.mark.parametrize("is_reasoning", [False, True])
+    def test_azure_openai_gpt6_request_body(self, model, is_reasoning) -> None:
+        """The body that reaches Azure, not just the constructor kwargs.
+
+        Azure accepts temperature=1 for these models on both shapes: Chat
+        Completions with the model's own default reasoning (Reasoning
+        unticked) and the Responses API with reasoning effort "high"
+        (Reasoning ticked). gpt-6.1-sol cannot turn reasoning off, so its
+        unticked request is already a reasoning request."""
+        from langchain_core.messages import HumanMessage
+
+        config = self._base_config(model)
+        config["configuration"]["deploymentName"] = model
+        config["configuration"]["endpoint"] = "https://example.openai.azure.com"
+        config["isReasoning"] = is_reasoning
+        llm = get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
+        payload = llm._get_request_payload([HumanMessage(content="hi")])
+
+        assert payload["temperature"] == 1
+        if is_reasoning:
+            assert "input" in payload  # Responses API
+            assert payload["reasoning"] == {"effort": "high"}
+        else:
+            assert "messages" in payload  # Chat Completions
+            assert "reasoning" not in payload
+            assert "reasoning_effort" not in payload
+
     @patch("langchain_openai.AzureChatOpenAI")
     def test_azure_openai_older_model_keeps_configured_temperature(self, mock_cls) -> None:
         mock_cls.return_value = MagicMock()
