@@ -13657,16 +13657,19 @@ components:
 
     ConnectorAuthType:
       type: string
-      description: |
-        Authentication method required by the connector:<br>
-        <ul>
-        <li><code>OAUTH</code> - User OAuth consent flow</li>
-        <li><code>OAUTH_ADMIN_CONSENT</code> - Admin OAuth with org-wide consent</li>
-        <li><code>API_TOKEN</code> - API key or token authentication</li>
-        <li><code>USERNAME_PASSWORD</code> - Username/password credentials</li>
-        <li><code>NONE</code> - No authentication required</li>
-        </ul>
-      enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD, NONE]
+      description: How a connector instance signs in to its source. Each connector type supports a subset;
+        see `supportedAuthTypes` in the registry.
+      enum:
+        - OAUTH
+        - OAUTH_ADMIN_CONSENT
+        - API_TOKEN
+        - BEARER_TOKEN
+        - BASIC_AUTH
+        - ACCESS_KEY
+        - ACCOUNT_KEY
+        - CONNECTION_STRING
+        - CUSTOM
+        - NONE
 
     ConnectorType:
       type: object
@@ -13724,242 +13727,361 @@ components:
 
     ConnectorInstance:
       type: object
-      description: |
-        A configured connector instance. Represents an active or configured
-        connection to an external service.
+      description: 'A connector instance: its type''s registry entry plus the instance''s own state.'
       properties:
-        connectorId:
-          type: string
-          description: Unique instance identifier
-          example: "conn_abc123"
-        connectorType:
-          type: string
-          description: Type of connector (from registry)
-          example: "google-drive"
-        instanceName:
-          type: string
-          description: User-defined name for this instance
-          example: "Company Google Drive"
-        scope:
-          $ref: '#/components/schemas/ConnectorScope'
-        authType:
-          $ref: '#/components/schemas/ConnectorAuthType'
-        createdBy:
-          type: string
-          description: User ID who created this instance
-        orgId:
-          type: string
-          description: Organization ID
-        isActive:
-          type: boolean
-          description: Whether connector is enabled for syncing/agent
-        desktopOnline:
-          type: boolean
-          description: |
-            Whether the owner device (`ownerDeviceId`) is currently connected.
-            Local FS only; omitted otherwise, and while the connector has no owner.
-        ownerDeviceId:
-          type: string
-          description: |
-            Local FS only. The desktop device that owns this connector, set when
-            sync is first enabled from the desktop app.
-        ownerDeviceName:
-          type: string
-          description: |
-            Local FS only. Display name of the desktop device that owns this
-            connector, set when sync is first enabled from the desktop app.
-          example: "WIN-LAPTOP"
-        isConfigured:
-          type: boolean
-          description: Whether all required configuration is complete
-        isAuthenticated:
-          type: boolean
-          description: Whether authentication is complete and valid
-        pendingFullSync:
-          type: boolean
-          description: Whether a full sync is pending due to filter changes or other configuration updates
-        syncEnabled:
-          type: boolean
-          description: Whether sync is enabled
-        agentEnabled:
-          type: boolean
-          description: Whether agent integration is enabled
-        lastSyncAt:
-          type: string
-          format: date-time
-          description: Timestamp of last successful sync
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
-
-    ConnectorConfig:
-      type: object
-      description: Configuration for a connector instance including auth, sync, and filter settings
-      properties:
-        connectorId:
+        _key:
           type: string
           description: Connector instance ID
-        connectorType:
-          type: string
-          description: Connector type
-        instanceName:
+        name:
           type: string
           description: Instance name
-        authType:
-          $ref: '#/components/schemas/ConnectorAuthType'
-        scope:
-          $ref: '#/components/schemas/ConnectorScope'
-        config:
-          type: object
-          description: Configuration sections
-          properties:
-            auth:
-              type: object
-              description: "Authentication configuration. Each stored secret is returned as `••••••••`: a field the connector type's auth schema marks secret (such as an API token or password), a secret field of its OAuth app registration (such as `clientSecret`), or the `private_key` of an older Google Workspace service account."
-            sync:
-              type: object
-              description: Sync configuration (schedule, options)
-            filters:
-              type: object
-              description: Filter selections for data scope
-        baseUrl:
+        type:
           type: string
-          description: Base URL for self-hosted instances
-        isActive:
-          type: boolean
-        isConfigured:
-          type: boolean
-        isAuthenticated:
-          type: boolean
-
-    ConnectorSchema:
-      type: object
-      description: Schema definition for configuring a connector type
-      properties:
-        connectorType:
+          description: Connector type
+        appGroup:
           type: string
-        authSchema:
-          type: object
-          description: JSON Schema for authentication fields
-        syncSchema:
-          type: object
-          description: JSON Schema for sync configuration
-        filterSchema:
-          type: object
-          description: JSON Schema for filter options
-        requiredFields:
+        supportedAuthTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorAuthType'
+        appDescription:
+          type: string
+        appCategories:
           type: array
           items:
             type: string
-          description: Required field names
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorDocumentationLink'
+        isAdminAccessRequired:
+          type: boolean
+        personalConnectorType:
+          type: string
+          description: For a team connector type, its personal counterpart, if any
+          nullable: true
+        connectorInfo:
+          type: string
+          description: Guidance shown before setup
+          nullable: true
+        authType:
+          $ref: '#/components/schemas/ConnectorAuthType'
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        isActive:
+          type: boolean
+          description: Sync is on
+        isAgentActive:
+          type: boolean
+          description: Agents may use this connector
+        isConfigured:
+          type: boolean
+          description: Sync settings are saved; sync can be enabled
+        isAuthenticated:
+          type: boolean
+          description: OAuth sign-in has completed
+        isLocked:
+          type: boolean
+          description: A sync or deletion holds the connector
+        status:
+          type: string
+          description: Lifecycle status, for example SYNCING or DELETING
+          nullable: true
+        pendingFullSync:
+          type: boolean
+        desktopOnline:
+          type: boolean
+        ownerDeviceId:
+          type: string
+          description: Local FS only. The desktop device that owns this connector
+          nullable: true
+        ownerDeviceName:
+          type: string
+          description: Local FS only. Display name of the desktop device that owns this connector
+          nullable: true
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+          description: Epoch milliseconds
+        updatedAtTimestamp:
+          type: integer
+          description: Epoch milliseconds
+        config:
+          $ref: '#/components/schemas/ConnectorSchema'
+
+    ConnectorConfig:
+      type: object
+      properties:
+        connector_id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        appGroup:
+          type: string
+        authType:
+          $ref: '#/components/schemas/ConnectorAuthType'
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        iconPath:
+          type: string
+        config:
+          $ref: '#/components/schemas/ConnectorStoredConfig'
+        isActive:
+          type: boolean
+        isConfigured:
+          type: boolean
+        isAuthenticated:
+          type: boolean
+        createdAtTimestamp:
+          type: integer
+        updatedAtTimestamp:
+          type: integer
+
+    ConnectorSchema:
+      type: object
+      description: 'Configuration form for a connector type: the auth fields per auth type, the sync strategies
+        and settings, and the sync and indexing filters.'
+      properties:
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        hideConnector:
+          type: boolean
+        permissionModel:
+          type: string
+        isAdminAccessRequired:
+          type: boolean
+        personalConnectorType:
+          type: string
+          nullable: true
         supportsConnectionCheck:
           type: boolean
-          description: |
-            Whether <code>POST /connectors/registry/{connectorType}/test-connection</code>
-            can try this connector's auth settings before they are saved.
-
-
-    # Sub-schemas for connector configuration
+          description: Whether POST /connectors/registry/{connectorType}/test-connection works for this type
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorDocumentationLink'
+        auth:
+          type: object
+          properties:
+            supportedAuthTypes:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConnectorAuthType'
+            schemas:
+              type: object
+              description: Auth form per auth type, keyed by ConnectorAuthType
+              additionalProperties:
+                $ref: '#/components/schemas/ConnectorAuthSchemaForType'
+            values:
+              type: object
+              additionalProperties: true
+            customFields:
+              type: array
+              items: {}
+            customValues:
+              type: object
+              additionalProperties: true
+            conditionalDisplay:
+              type: object
+              additionalProperties: true
+            authorizeUrl:
+              type: string
+              description: Instance reads only
+            tokenUrl:
+              type: string
+              description: Instance reads only
+            oauthConfigs:
+              type: object
+              description: 'Instance reads only: provider endpoints per auth type'
+              additionalProperties:
+                type: object
+                properties:
+                  authorizeUrl:
+                    type: string
+                  tokenUrl:
+                    type: string
+                  redirectUri:
+                    type: string
+                  scopes:
+                    type: array
+                    items:
+                      type: string
+        sync:
+          type: object
+          properties:
+            supportedStrategies:
+              type: array
+              items:
+                type: string
+                enum: &id001
+                  - MANUAL
+                  - SCHEDULED
+                  - WEBHOOK
+            selectedStrategy:
+              type: string
+              enum: *id001
+            webhookConfig:
+              type: object
+              properties:
+                supported:
+                  type: boolean
+                webhookUrl:
+                  type: string
+                events:
+                  type: array
+                  items:
+                    type: string
+                verificationToken:
+                  type: string
+                secretKey:
+                  type: string
+            scheduledConfig:
+              type: object
+              properties:
+                intervalMinutes:
+                  type: integer
+                cronExpression:
+                  type: string
+                timezone:
+                  type: string
+                startTime:
+                  type: integer
+                nextTime:
+                  type: integer
+                endTime:
+                  type: integer
+                maxRepetitions:
+                  type: integer
+                repetitionCount:
+                  type: integer
+            realtimeConfig:
+              type: object
+              properties:
+                supported:
+                  type: boolean
+                connectionType:
+                  type: string
+            customFields:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConnectorSyncCustomField'
+            customValues:
+              type: object
+              additionalProperties: true
+            values:
+              type: object
+              additionalProperties: true
+        filters:
+          type: object
+          properties:
+            sync:
+              $ref: '#/components/schemas/ConnectorFilterSection'
+            indexing:
+              $ref: '#/components/schemas/ConnectorFilterSection'
     ConnectorAuthConfig:
       type: object
-      description: "Authentication configuration for a connector instance. A secret field sent as `••••••••` (the mask the config routes return) keeps the stored value; send a new value to replace it."
+      description: 'Auth settings, flat: send each field listed under `auth.schemas.<authType>.fields` in
+        GET /connectors/registry/{connectorType}/schema by its `name`. For OAuth, an admin may send the OAuth
+        app''s credentials here (the app is saved and linked), or anyone may send `oauthConfigId` to use a
+        saved app.'
+      additionalProperties: true
       properties:
-        values:
-          type: object
-          description: Authentication values (keys depend on connector's auth schema)
-          additionalProperties: true
-          example:
-            apiKey: "sk-xxxxx"
-            baseUrl: "https://api.example.com"
         oauthConfigId:
           type: string
-          description: ID of admin-created OAuth configuration to use
-          example: "oauth_config_123"
-        customValues:
-          type: object
-          description: Custom authentication values specific to the connector
-          additionalProperties: true
+          description: A saved OAuth app (GET /oauth/{connectorType})
+        oauthInstanceName:
+          type: string
+          description: Name for the OAuth app saved from inline credentials
 
     ConnectorSyncConfig:
       type: object
-      description: Synchronization configuration for a connector instance
+      description: 'Sync strategy plus connector-specific sync settings, flat: send each field listed under
+        `sync.customFields` in the registry schema by its `name`.'
+      additionalProperties: true
       properties:
         selectedStrategy:
           type: string
-          enum: [MANUAL, SCHEDULED, WEBHOOK, REALTIME]
-          description: "Sync strategy: MANUAL (user-triggered), SCHEDULED (interval/cron), WEBHOOK (event-driven), REALTIME (WebSocket)"
-          default: MANUAL
+          enum:
+            - MANUAL
+            - SCHEDULED
+            - WEBHOOK
         scheduledConfig:
           type: object
-          description: Configuration for scheduled sync strategy
           properties:
             intervalMinutes:
               type: integer
-              description: Sync interval in minutes
-              minimum: 5
-              default: 60
-              example: 60
-            cronExpression:
-              type: string
-              description: Cron expression for advanced scheduling
-              example: "0 */6 * * *"
+              minimum: 1
             timezone:
               type: string
-              description: Timezone for scheduled sync
               default: UTC
-              example: "America/New_York"
+            startTime:
+              type: integer
+              description: Epoch milliseconds
         webhookConfig:
           type: object
-          description: Configuration for webhook-based sync
           properties:
             webhookUrl:
               type: string
-              description: URL to receive webhook events (auto-generated)
             events:
               type: array
               items:
                 type: string
-              description: Subscribed event types
-              example: ["file.created", "file.modified", "file.deleted"]
-        values:
-          type: object
-          description: Sync setting values specific to the connector
-          additionalProperties: true
-        customValues:
-          type: object
-          description: Custom sync values
-          additionalProperties: true
 
     ConnectorFiltersConfig:
       type: object
-      description: "Filter configuration to control what data is synced (sync filters and indexing filters)"
       properties:
         sync:
           type: object
-          description: Sync filter selections
           properties:
             values:
               type: object
-              description: Selected filter values (keys are filter field names)
-              additionalProperties: true
-              example:
-                folders: ["folder_id_1", "folder_id_2"]
-                fileTypes: ["pdf", "docx", "xlsx"]
-                includeShared: true
+              additionalProperties:
+                $ref: '#/components/schemas/ConnectorFilterValue'
         indexing:
           type: object
-          description: Indexing filter selections
           properties:
             values:
               type: object
-              additionalProperties: true
+              additionalProperties:
+                $ref: '#/components/schemas/ConnectorFilterValue'
 
     CreateConnectorRequest:
       type: object
-      description: Request to create a new connector instance
       required:
         - connectorType
         - instanceName
@@ -13967,28 +14089,19 @@ components:
       properties:
         connectorType:
           type: string
-          description: "Connector type from registry (e.g., google-drive, confluence, slack)"
-          example: "google-drive"
+          minLength: 1
+          description: '`type` from the registry'
         instanceName:
           type: string
-          description: Display name for this connector instance
           minLength: 1
-          maxLength: 100
-          example: "Marketing Team Drive"
         scope:
           $ref: '#/components/schemas/ConnectorScope'
         authType:
-          type: string
-          description: "Authentication type (required if connector supports multiple auth methods)"
-          enum: [OAUTH, OAUTH_ADMIN_CONSENT, API_TOKEN, USERNAME_PASSWORD, SERVICE_ACCOUNT]
-          example: "OAUTH"
-        oauthConfigId:
-          type: string
-          description: "ID of admin-created OAuth App to use (required for non-admin users creating OAuth connectors, optional for admins)"
-          example: "oauth_config_123"
+          allOf:
+            - $ref: '#/components/schemas/ConnectorAuthType'
+          description: One of the type's `supportedAuthTypes`; defaults to the first
         config:
           type: object
-          description: Initial configuration (can also be set after creation)
           properties:
             auth:
               $ref: '#/components/schemas/ConnectorAuthConfig'
@@ -13998,9 +14111,9 @@ components:
               $ref: '#/components/schemas/ConnectorFiltersConfig'
         baseUrl:
           type: string
-          description: "Base URL for self-hosted instances (e.g., Confluence Server, GitLab Self-Managed)"
           format: uri
-          example: "https://confluence.mycompany.com"
+          description: Origin of the page the OAuth provider redirects back to. The redirect URI is `{baseUrl}/{redirectUri}`;
+            defaults to the PipesHub frontend URL.
 
     UpdateConnectorConfigRequest:
       type: object
@@ -14020,7 +14133,6 @@ components:
 
     UpdateConnectorAuthRequest:
       type: object
-      description: "Request to update authentication config (clears OAuth tokens, requires re-auth)"
       required:
         - auth
       properties:
@@ -14028,20 +14140,19 @@ components:
           $ref: '#/components/schemas/ConnectorAuthConfig'
         baseUrl:
           type: string
-          description: Base URL (if changed with auth update)
           format: uri
+          description: Recomputes the OAuth redirect URI
 
     UpdateConnectorFiltersSyncRequest:
       type: object
-      description: "Request to update filters and sync config (connector must be authenticated and inactive)"
+      minProperties: 1
+      description: At least one of `sync` and `filters`. `filters.sync` and `filters.indexing` replace the
+        saved ones.
       properties:
         sync:
           $ref: '#/components/schemas/ConnectorSyncConfig'
         filters:
           $ref: '#/components/schemas/ConnectorFiltersConfig'
-        baseUrl:
-          type: string
-          format: uri
 
     SaveConnectorFiltersRequest:
       type: object
@@ -14077,24 +14188,27 @@ components:
 
     ConnectorToggleRequest:
       type: object
-      description: Request to toggle connector active status
       required:
         - type
       properties:
         type:
           type: string
-          enum: [sync, agent]
-          description: "Toggle type: 'sync' for data synchronization, 'agent' for AI agent integration"
+          enum:
+            - sync
+            - agent
+          description: '''sync'' flips data synchronization; ''agent'' flips use by agents'
+        fullSync:
+          type: boolean
+          description: When turning sync on, start from scratch
         deviceId:
           type: string
-          description: |
-            Sent by the desktop app. Required when enabling sync on a Local FS
-            connector with no owner yet; must match `ownerDeviceId` afterwards.
+          minLength: 1
+          maxLength: 255
+          description: Local FS only
         deviceName:
           type: string
-          description: |
-            Sent by the desktop app with `deviceId`. Stored as `ownerDeviceName`
-            when the device claims the connector.
+          maxLength: 255
+          description: Local FS only
 
     LocalFsDesktopRefusal:
       type: object
@@ -14205,45 +14319,62 @@ components:
 
     OAuthConfig:
       type: object
-      description: |
-        OAuth configuration for a connector type. Created by admins to enable
-        OAuth authentication for connectors.
+      description: A saved OAuth app for a connector type. Admins also get `config` (secrets masked when HIDE_SECRET_CONFIG
+        is on) and, in lists, the provider endpoints.
       properties:
-        configId:
+        _id:
           type: string
-          description: Unique configuration ID
-        connectorType:
-          type: string
-          description: Connector type this config applies to
+          description: 'OAuth app ID: the `oauthConfigId` to link a connector to'
         oauthInstanceName:
           type: string
-          description: Name for this OAuth configuration
-          example: "Production Google OAuth"
-        orgId:
+        connectorType:
           type: string
-        createdBy:
+        iconPath:
           type: string
+        appGroup:
+          type: string
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
         config:
           type: object
-          description: OAuth credentials (admin-only view)
+          description: OAuth app credentials; keys follow the connector type's OAuth fields
+          additionalProperties: true
           properties:
             clientId:
               type: string
             clientSecret:
               type: string
-              description: Redacted for non-admin users
-            tenantId:
+        userId:
+          type: string
+        orgId:
+          type: string
+        createdBy:
+          type: string
+        updatedBy:
+          type: string
+        createdAtTimestamp:
+          type: integer
+          description: Epoch milliseconds
+        updatedAtTimestamp:
+          type: integer
+          description: Epoch milliseconds
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+        redirectUri:
+          type: string
+        scopes:
+          type: object
+          description: Provider scopes requested per use
+          additionalProperties:
+            type: array
+            items:
               type: string
-              description: For Microsoft/Azure connectors
-        baseUrl:
-          type: string
-          description: Base URL for self-hosted instances
-        createdAt:
-          type: string
-          format: date-time
-        updatedAt:
-          type: string
-          format: date-time
 
     CreateOAuthConfigRequest:
       type: object
@@ -14285,22 +14416,36 @@ components:
 
     ConnectorPagination:
       type: object
-      description: Pagination information for connector lists
+      required:
+        - page
+        - limit
+        - totalCount
+        - totalPages
+        - hasPrev
+        - hasNext
       properties:
         page:
           type: integer
-          description: Current page number
         limit:
           type: integer
-          description: Items per page
-        total:
+        search:
+          type: string
+          description: The search term the list was filtered by
+          nullable: true
+        totalCount:
           type: integer
-          description: Total number of items
-        hasMore:
+        totalPages:
+          type: integer
+        hasPrev:
           type: boolean
-          description: Whether more pages exist
-
-    # ==================== CONFIGURATION MANAGER SCHEMAS ====================
+        hasNext:
+          type: boolean
+        prevPage:
+          type: integer
+          nullable: true
+        nextPage:
+          type: integer
+          nullable: true
 
 
 
@@ -16725,6 +16870,260 @@ components:
         totalPages:
           type: integer
           description: Total number of pages
+    OAuthCallbackResult:
+      type: object
+      required:
+        - success
+      properties:
+        success:
+          type: boolean
+        redirectUrl:
+          type: string
+          description: Where the web app would send the user next
+        error:
+          type: string
+        errorMessage:
+          type: string
+    ConnectorFilterValue:
+      type: object
+      required:
+        - operator
+        - value
+      properties:
+        operator:
+          type: string
+          description: One of the field's `operators`, for example `in` or `is_after`
+        value:
+          description: The filter value; its type follows the field's `filterType`
+    ConnectorStoredConfig:
+      type: object
+      description: A connector instance's saved settings. Secret auth fields come back masked; saving the
+        mask back keeps the stored value. Provider OAuth tokens are never returned.
+      properties:
+        auth:
+          type: object
+          description: Auth fields for the instance's auth type, keyed by field name
+          additionalProperties: true
+          properties:
+            authType:
+              $ref: '#/components/schemas/ConnectorAuthType'
+            connectorType:
+              type: string
+            connectorScope:
+              $ref: '#/components/schemas/ConnectorScope'
+            oauthConfigId:
+              type: string
+              description: The shared OAuth app the instance signs in with
+            oauthInstanceName:
+              type: string
+            redirectUri:
+              type: string
+        sync:
+          type: object
+          description: Sync strategy plus connector-specific sync settings
+          additionalProperties: true
+        filters:
+          type: object
+          additionalProperties: true
+    ConnectorCreated:
+      type: object
+      required:
+        - connectorId
+        - connectorType
+        - instanceName
+        - scope
+      properties:
+        connectorId:
+          type: string
+        connectorType:
+          type: string
+        instanceName:
+          type: string
+        created:
+          type: boolean
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+        createdBy:
+          type: string
+        isAuthenticated:
+          type: boolean
+        isConfigured:
+          type: boolean
+    ConnectorSyncCustomField:
+      type: object
+      description: A connector-specific sync setting. Send its value in `config.sync` under `name`.
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        description:
+          type: string
+        fieldType:
+          type: string
+        required:
+          type: boolean
+        defaultValue: {}
+        validation:
+          type: object
+          additionalProperties: true
+        isSecret:
+          type: boolean
+        nonEditable:
+          type: boolean
+        options:
+          type: array
+          items:
+            type: string
+    ConnectorFilterSection:
+      type: object
+      properties:
+        schema:
+          type: object
+          properties:
+            fields:
+              type: array
+              items:
+                $ref: '#/components/schemas/ConnectorFilterField'
+        values:
+          type: object
+          additionalProperties: true
+    ConnectorFilterField:
+      type: object
+      properties:
+        name:
+          type: string
+          description: 'Filter key: the key in `filters.<sync|indexing>.values`'
+        displayName:
+          type: string
+        description:
+          type: string
+        filterType:
+          type: string
+        category:
+          type: string
+        required:
+          type: boolean
+        defaultValue: {}
+        defaultOperator:
+          type: string
+          nullable: true
+        fallbackOperator:
+          type: string
+        noImplicitOperatorDefault:
+          type: boolean
+        operators:
+          type: array
+          items:
+            type: string
+        optionSourceType:
+          type: string
+          enum:
+            - manual
+            - static
+            - dynamic
+          description: '`dynamic` options come from GET /connectors/{connectorId}/filters/{filterKey}/options'
+        options:
+          type: array
+          items: {}
+    ConnectorAuthSchemaForType:
+      type: object
+      properties:
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorAuthField'
+        redirectUri:
+          type: string
+          description: OAuth only. Path appended to the `baseUrl` the connector is created with; the result
+            must be registered as a redirect URI with the provider.
+        displayRedirectUri:
+          type: boolean
+    ConnectorAuthField:
+      type: object
+      description: One field of an auth form. Send its value in `config.auth` under `name`.
+      properties:
+        name:
+          type: string
+        displayName:
+          type: string
+        placeholder:
+          type: string
+        description:
+          type: string
+        fieldType:
+          type: string
+          description: Input type, for example TEXT, PASSWORD, URL, SELECT, CHECKBOX
+        required:
+          type: boolean
+        usage:
+          type: string
+        defaultValue:
+          description: Default value; its type follows `fieldType`
+        validation:
+          type: object
+          additionalProperties: true
+        isSecret:
+          type: boolean
+          description: Stored values come back masked
+        options:
+          type: array
+          items: {}
+    ConnectorRegistryEntry:
+      type: object
+      description: A connector type the org can add.
+      properties:
+        name:
+          type: string
+          description: Display name
+        type:
+          type: string
+          description: 'Connector type: the value to pass as `connectorType`'
+        appGroup:
+          type: string
+        supportedAuthTypes:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorAuthType'
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        iconPath:
+          type: string
+        supportsRealtime:
+          type: boolean
+        supportsSync:
+          type: boolean
+        supportsAgent:
+          type: boolean
+        documentationLinks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ConnectorDocumentationLink'
+        isAdminAccessRequired:
+          type: boolean
+        personalConnectorType:
+          type: string
+          description: For a team connector type, its personal counterpart, if any
+          nullable: true
+        connectorInfo:
+          type: string
+          description: Guidance shown before setup
+          nullable: true
+        scope:
+          $ref: '#/components/schemas/ConnectorScope'
+    ConnectorDocumentationLink:
+      type: object
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        type:
+          type: string
 
 security:
   - bearerAuth: []
@@ -35709,9 +36108,11 @@ paths:
       parameters:
         - name: scope
           in: query
-          description: Filter by scope type
+          description: Which connector types to list. Defaults to `team`.
           schema:
-            $ref: '#/components/schemas/ConnectorScope'
+            allOf:
+              - $ref: '#/components/schemas/ConnectorScope'
+            default: team
         - name: page
           in: query
           description: Page number
@@ -35745,11 +36146,45 @@ paths:
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorType'
+                      $ref: '#/components/schemas/ConnectorRegistryEntry'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                  registryCountsByScope:
+                    type: object
+                    description: How many connector types each scope offers
+                    properties:
+                      team:
+                        type: integer
+                      personal:
+                        type: integer
+                required:
+                  - success
+                  - connectors
+                  - pagination
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The registry has no connector types
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/registry/{connectorType}/schema:
     get:
@@ -35778,10 +36213,11 @@ paths:
           description: Connector type identifier
           schema:
             type: string
-          example: "google-drive"
+            pattern: ^(?!\.{1,2}$)[^/\\?#%\x00-\x1f\x7f]+$
+          example: google-drive
       responses:
         '200':
-          description: Schema retrieved
+          description: Connector schema retrieved
           content:
             application/json:
               schema:
@@ -35791,10 +36227,33 @@ paths:
                     type: boolean
                   schema:
                     $ref: '#/components/schemas/ConnectorSchema'
+                required:
+                  - success
+                  - schema
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector type not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/registry/{connectorType}/test-connection:
     post:
@@ -35881,6 +36340,12 @@ paths:
           description: Connector type or instance not found
         '503':
           description: Service unavailable - Connector service is unreachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
           content:
             application/json:
               schema:
@@ -36031,11 +36496,15 @@ paths:
         - Connector Instances
       summary: Create connector instance
       description: |
-        Create a new connector instance from a registry type.<br><br>
-        <b>Overview:</b><br>
-        Creates a new connector instance that can then be configured and enabled.
-        The instance is created in an unconfigured state and needs authentication
-        and filter setup before it can be activated.<br><br>
+        Create a connector instance from a registry type.<br><br>
+        <b>Body:</b><br>
+        Put the auth fields the registry schema lists for <code>authType</code> in <code>config.auth</code>,
+        flat, and the connector's own sync settings in <code>config.sync</code>. A connector that needs no
+        OAuth sign-in is configured on creation.<br><br>
+        <b>OAuth:</b><br>
+        An admin may send the OAuth app's credentials in <code>config.auth</code>: the app is saved and
+        linked. Anyone may send <code>config.auth.oauthConfigId</code> to use a saved app; non-admins must.
+        Send <code>baseUrl</code>: the provider redirects to <code>{baseUrl}/{redirectUri}</code>.<br><br>
         <b>Scope Permissions:</b><br>
         <ul>
         <li><code>team</code> scope requires admin privileges</li>
@@ -36043,10 +36512,9 @@ paths:
         </ul>
         <b>Next Steps After Creation:</b><br>
         <ol>
-        <li>Configure authentication via <code>PUT /{id}/config/auth</code></li>
-        <li>Complete OAuth flow if needed via <code>GET /{id}/oauth/authorize</code></li>
-        <li>Set up filters via <code>POST /{id}/filters</code></li>
-        <li>Enable connector via <code>POST /{id}/toggle</code></li>
+        <li>OAuth only: <code>GET /{id}/oauth/authorize</code>, then <code>GET /oauth/callback</code></li>
+        <li>Optionally set sync and filters via <code>PUT /{id}/config/filters-sync</code></li>
+        <li>Turn sync on via <code>POST /{id}/toggle</code></li>
         </ol>
       operationId: createConnectorInstance
       security:
@@ -36083,8 +36551,8 @@ paths:
                   authType: "OAUTH"
                   oauthConfigId: "oauth_config_123"
       responses:
-        '201':
-          description: Instance created
+        '200':
+          description: Connector instance created. It is not syncing yet.
           content:
             application/json:
               schema:
@@ -36093,27 +36561,49 @@ paths:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
+                    $ref: '#/components/schemas/ConnectorCreated'
+                  message:
+                    type: string
+                required:
+                  - success
+                  - connector
         '400':
-          description: |
-            Invalid request. Possible reasons:<br>
-            <ul>
-            <li>Invalid connector type</li>
-            <li>Scope not supported by connector</li>
-            <li>Duplicate instance name</li>
-            <li>Non-admin users must select an OAuth App when creating OAuth connectors</li>
-            </ul>
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: |
-            Forbidden. Possible reasons:<br>
-            <ul>
-            <li>Admin privileges required for team-scope connectors</li>
-            <li>Non-admin users cannot provide OAuth credentials (clientId, clientSecret, etc.)</li>
-            </ul>
+          description: Team scope needs an admin; non-admins cannot send OAuth app credentials; or a missing
+            scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Selected OAuth App not found or not accessible
+          description: Unknown connector type or OAuth app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: An OAuth app with that name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/active:
     get:
@@ -36300,10 +36790,10 @@ paths:
           description: Connector instance ID
           schema:
             type: string
-          example: "conn_abc123"
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       responses:
         '200':
-          description: Instance retrieved
+          description: Connector instance
           content:
             application/json:
               schema:
@@ -36313,12 +36803,33 @@ paths:
                     type: boolean
                   connector:
                     $ref: '#/components/schemas/ConnectorInstance'
+                required:
+                  - success
+                  - connector
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: No access to this connector
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:
@@ -37100,11 +37611,13 @@ paths:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       responses:
         '200':
-          description: Configuration retrieved
+          description: Saved configuration
           content:
             application/json:
               schema:
@@ -37114,12 +37627,33 @@ paths:
                     type: boolean
                   config:
                     $ref: '#/components/schemas/ConnectorConfig'
+                required:
+                  - success
+                  - config
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: No access to this connector
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
@@ -37235,8 +37769,10 @@ paths:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       requestBody:
         required: true
         description: "Request payload"
@@ -37246,7 +37782,7 @@ paths:
               $ref: '#/components/schemas/UpdateConnectorAuthRequest'
       responses:
         '200':
-          description: Auth configuration updated
+          description: Auth settings saved. The connector is signed out and turned off.
           content:
             application/json:
               schema:
@@ -37255,13 +37791,48 @@ paths:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConnectorStoredConfig'
+                  message:
+                    type: string
+                required:
+                  - success
+                  - config
         '400':
-          description: Connector must be disabled first
+          description: Invalid auth settings, or the connector is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The connector is locked by a sync or deletion in progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the body or `auth` is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/config/filters-sync:
     put:
@@ -37276,13 +37847,17 @@ paths:
       operationId: updateConnectorFiltersSyncConfig
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
+        - oauth2:
+            - connector:write
+            - connector:read
       parameters:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       requestBody:
         required: true
         description: "Request payload"
@@ -37292,7 +37867,7 @@ paths:
               $ref: '#/components/schemas/UpdateConnectorFiltersSyncRequest'
       responses:
         '200':
-          description: Configuration updated
+          description: Sync and filter settings saved; the connector is configured
           content:
             application/json:
               schema:
@@ -37301,36 +37876,71 @@ paths:
                   success:
                     type: boolean
                   config:
-                    $ref: '#/components/schemas/ConnectorConfig'
+                    $ref: '#/components/schemas/ConnectorStoredConfig'
                   message:
                     type: string
-                    description: Success message
                   syncFiltersChanged:
                     type: boolean
-                    description: Indicates whether sync filters changed, requiring a full resync
+                    description: The next sync is a full sync
+                required:
+                  - success
+                  - config
+        '400':
+          description: Invalid settings, a required sync filter is missing, or the connector is active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
-
-  # -------------------- Connector Control --------------------
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: The connector is locked by a sync or deletion in progress
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the body or `filters` is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/toggle:
     post:
       tags:
         - Connector Control
       summary: Toggle connector sync or agent
       description: |
-        Enable or disable a connector for sync or agent functionality.<br><br>
+        Flip a connector's sync or agent use: each call turns it on when it is off and
+        off when it is on. Read <code>isActive</code> / <code>isAgentActive</code> first. Turning sync on
+        starts the first sync.<br><br>
         <b>Toggle Types:</b><br>
         <ul>
-        <li><code>sync</code> - Enable/disable data synchronization</li>
-        <li><code>agent</code> - Enable/disable AI agent integration</li>
+        <li><code>sync</code> - data synchronization</li>
+        <li><code>agent</code> - use by AI agents</li>
         </ul>
-        <b>Prerequisites for Enabling:</b><br>
+        <b>Before Sync Can Be Turned On:</b><br>
         <ul>
-        <li>Connector must be configured (<code>isConfigured: true</code>)</li>
-        <li>For OAuth connectors: Must be authenticated (<code>isAuthenticated: true</code>)</li>
-        <li>For agent: Connector must support agent (<code>supportsAgent: true</code>)</li>
+        <li>The connector is configured (<code>isConfigured: true</code>)</li>
+        <li>OAuth connectors: sign-in has completed</li>
+        <li>The connection test against the source passes</li>
+        <li>For agent: the connector supports agents (<code>supportsAgent: true</code>)</li>
         <li>Local FS: must be enabled from the owner device via the desktop app, which sends <code>deviceId</code> and <code>deviceName</code>. The first enable claims that device as owner.</li>
         </ul>
         <b>Permissions:</b><br>
@@ -37341,13 +37951,17 @@ paths:
       operationId: toggleConnector
       security:
         - bearerAuth: []
-        - oauth2: [connector:write]
+        - oauth2:
+            - connector:sync
+            - connector:read
       parameters:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       requestBody:
         required: true
         description: "Request payload"
@@ -37357,7 +37971,7 @@ paths:
               $ref: '#/components/schemas/ConnectorToggleRequest'
       responses:
         '200':
-          description: Connector toggled
+          description: Flipped
           content:
             application/json:
               schema:
@@ -37367,73 +37981,79 @@ paths:
                     type: boolean
                   message:
                     type: string
-                    example: "Sync enabled successfully"
-                  connector:
-                    $ref: '#/components/schemas/ConnectorInstance'
+                required:
+                  - success
         '400':
-          description: |
-            Cannot toggle. Possible reasons:<br>
-            <ul>
-            <li>Connector not configured</li>
-            <li>OAuth not authenticated</li>
-            <li>Agent not supported</li>
-            </ul>
-        '401':
-          description: Unauthorized
-        '403':
-          description: Permission denied
-        '404':
-          description: Connector not found
-        '409':
-          description: |
-            Local FS sync cannot be enabled. <code>details.code</code> is one of:<br>
-            <ul>
-            <li><code>DESKTOP_OFFLINE</code> - the owner device's desktop app is not connected</li>
-            <li><code>DESKTOP_UNCLAIMED</code> - the connector has no owner yet and no <code>deviceId</code> was sent</li>
-            <li><code>DESKTOP_OWNED_BY_OTHER_DEVICE</code> - <code>deviceId</code> differs from <code>ownerDeviceId</code>; <code>details.ownerDeviceName</code> names the owner</li>
-            </ul>
+          description: 'Invalid body, or the connector cannot be turned on yet: OAuth sign-in is not complete,
+            it is not configured, or its connection test failed'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LocalFsDesktopRefusal'
-
-  # -------------------- Connector OAuth --------------------
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: A Local FS desktop refusal, or the connector is locked
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/LocalFsDesktopRefusal'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/oauth/authorize:
     get:
       tags:
         - Connector OAuth
       summary: Get OAuth authorization URL
       description: |
-        Generate an OAuth authorization URL to start the OAuth flow.<br><br>
+        Start the OAuth sign-in for a connector instance.<br><br>
         <b>Flow:</b><br>
         <ol>
-        <li>Call this endpoint to get the authorization URL</li>
-        <li>Redirect user's browser to the URL</li>
-        <li>User authenticates with the provider</li>
-        <li>Provider redirects to callback with authorization code</li>
-        <li>Callback exchanges code for tokens automatically</li>
+        <li>Call this endpoint to get <code>authorizationUrl</code> and <code>state</code></li>
+        <li>A person opens the URL and gives consent at the provider</li>
+        <li>The provider redirects to <code>{baseUrl}/{redirectUri}</code> with <code>code</code> and <code>state</code></li>
+        <li>Pass both to <code>GET /connectors/oauth/callback</code> with a bearer token</li>
         </ol>
-        <b>State Parameter:</b><br>
-        The response includes a <code>state</code> value that encodes the
-        connector ID. This is validated in the callback.
+        The redirect URI is fixed when the connector is created (its <code>baseUrl</code>) and must be
+        registered with the provider.
       operationId: getOAuthAuthorizationUrl
       security:
         - bearerAuth: []
-        - oauth2: [connector:read]
+        - oauth2:
+            - connector:write
       parameters:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
-        - name: baseUrl
-          in: query
-          description: Base URL for self-hosted instances
-          schema:
-            type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
       responses:
         '200':
-          description: Authorization URL generated
+          description: Provider consent URL
           content:
             application/json:
               schema:
@@ -37443,16 +38063,44 @@ paths:
                     type: boolean
                   authorizationUrl:
                     type: string
-                    description: Redirect user to this URL
+                    description: Open in a browser to give consent
                   state:
                     type: string
-                    description: State parameter for validation
+                    description: Pass back with the provider's code to the callback
+                required:
+                  - success
+                  - authorizationUrl
+                  - state
         '400':
-          description: Connector doesn't support OAuth
+          description: The connector does not use OAuth, or its OAuth app is missing
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the saved `oauthConfigId` is not a string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/oauth/callback:
     get:
@@ -37460,29 +38108,32 @@ paths:
         - Connector OAuth
       summary: OAuth callback handler
       description: |
-        Handle the OAuth callback from the identity provider.<br><br>
-        <b>Note:</b><br>
-        This endpoint is called by the OAuth provider after user authentication.
-        The state parameter contains the encoded connector ID.<br><br>
-        <b>Success:</b><br>
-        On success, tokens are stored and the connector becomes authenticated.
-        User is redirected to the frontend success page.<br><br>
-        <b>Error:</b><br>
-        If the provider returns an error (e.g., user denied access),
-        user is redirected with error information.
+        Finish the OAuth sign-in: exchange the provider's <code>code</code> for tokens and store
+        them. Call it with the <code>code</code> and <code>state</code> the provider sent to the redirect URI,
+        as the connector's creator or an admin.<br><br>
+        <b>Result:</b><br>
+        Always JSON. <code>success</code> is true when the connector is signed in; otherwise
+        <code>error</code> and <code>errorMessage</code> say why. Provider tokens are never returned.
       operationId: handleOAuthCallback
-      security: []
+      security:
+        - bearerAuth: []
+        - oauth2:
+            - connector:write
       parameters:
         - name: code
           in: query
           description: Authorization code from provider
           schema:
             type: string
+            minLength: 1
+          required: true
         - name: state
           in: query
           description: State parameter (contains connector ID)
           schema:
             type: string
+            minLength: 1
+          required: true
         - name: error
           in: query
           description: Error code if authorization failed
@@ -37494,17 +38145,42 @@ paths:
           schema:
             type: string
       responses:
-        '302':
-          description: Redirect to frontend with result
-          headers:
-            Location:
-              description: Frontend URL with success/error params
+        '200':
+          description: Result of exchanging the code. `success` is false when the provider refused it.
+          content:
+            application/json:
               schema:
-                type: string
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  redirectUrl:
+                    type: string
+                    description: Where the web app would send the user next
+                  error:
+                    type: string
+                  errorMessage:
+                    type: string
+                required:
+                  - success
         '400':
-          description: Invalid or missing state parameter
-
-  # -------------------- Connector Filters --------------------
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/filters:
     get:
       tags:
@@ -37626,15 +38302,18 @@ paths:
         - name: connectorId
           in: path
           required: true
+          description: Connector instance ID
           schema:
             type: string
+            pattern: ^[A-Za-z0-9_-]{1,64}$
         - name: filterKey
           in: path
           required: true
           description: Filter field key
           schema:
             type: string
-          example: "folders"
+            pattern: ^(?!\.{1,2}$)[^/\\?#%\x00-\x1f\x7f]+$
+          example: folders
         - name: page
           in: query
           schema:
@@ -37689,7 +38368,7 @@ paths:
           explode: true
       responses:
         '200':
-          description: Options retrieved
+          description: Filter options
           content:
             application/json:
               schema:
@@ -37704,28 +38383,48 @@ paths:
                       properties:
                         id:
                           type: string
-                        value:
-                          type: string
                         label:
                           type: string
-                  pagination:
-                    type: object
-                    properties:
-                      page:
-                        type: integer
-                      limit:
-                        type: integer
-                      hasMore:
-                        type: boolean
-                      cursor:
-                        type: string
+                  page:
+                    type: integer
+                  limit:
+                    type: integer
+                  hasMore:
+                    type: boolean
+                  cursor:
+                    type: string
+                    description: Pass back to get the next page
+                    nullable: true
+                  message:
+                    type: string
+                    nullable: true
+                required:
+                  - success
+                  - options
+        '400':
+          description: Invalid parameters, the filter is not dynamic, or an OAuth connector is not signed in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector or filter not found
-
-  # -------------------- Legacy Token Exchange --------------------
-  # TODO: to remove this from backend
+          description: Unknown connector or filter
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/getTokenFromCode:
     post:
       tags:
@@ -41214,12 +41913,20 @@ paths:
       operationId: listOAuthConfigsByType
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:read
       parameters:
         - name: connectorType
           in: path
           required: true
           schema:
             type: string
+        - name: scope
+          in: query
+          required: false
+          description: Only OAuth apps usable for this connector scope
+          schema:
+            $ref: '#/components/schemas/ConnectorScope'
         - name: page
           in: query
           schema:
@@ -41240,7 +41947,7 @@ paths:
         - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
-          description: OAuth configurations retrieved
+          description: Saved OAuth apps
           content:
             application/json:
               schema:
@@ -41254,10 +41961,33 @@ paths:
                       $ref: '#/components/schemas/OAuthConfig'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                required:
+                  - success
+                  - oauthConfigs
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector type not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -41320,6 +42050,8 @@ paths:
       operationId: getOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:read
       parameters:
         - name: connectorType
           in: path
@@ -41334,7 +42066,7 @@ paths:
         - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
-          description: OAuth configuration retrieved
+          description: Saved OAuth app
           content:
             application/json:
               schema:
@@ -41344,10 +42076,33 @@ paths:
                     type: boolean
                   oauthConfig:
                     $ref: '#/components/schemas/OAuthConfig'
+                required:
+                  - success
+                  - oauthConfig
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Configuration not found
+          description: Not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     put:
       tags:
