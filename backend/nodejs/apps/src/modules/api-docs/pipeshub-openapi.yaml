@@ -6423,8 +6423,12 @@ components:
       properties:
         connectorName:
           type: string
-          description: Connector type name (e.g. `Google Drive`, `DRIVE`).
-          example: "DRIVE"
+          minLength: 1
+          description: |
+            The connector's type as the registry lists it, for example `RSS` or
+            `Jira`. It names the sync event; the connector synced is always the
+            one in the path.
+          example: RSS
         fullSync:
           type: boolean
           description: When true, triggers a full sync instead of incremental.
@@ -6433,11 +6437,20 @@ components:
     ConnectorStats:
       type: object
       description: Statistics for a connector's records
+      required:
+        - success
+        - data
       properties:
         success:
           type: boolean
         data:
           type: object
+          required:
+            - orgId
+            - connectorId
+            - origin
+            - stats
+            - byRecordType
           properties:
             orgId:
               type: string
@@ -6445,19 +6458,63 @@ components:
               type: string
             origin:
               type: string
+              description: Where the records come from; `CONNECTOR` for a connector.
+              example: CONNECTOR
             stats:
               type: object
+              required:
+                - total
+                - indexingStatus
               properties:
                 total:
                   type: integer
+                  description: Records synced from the connector
                 indexingStatus:
-                  type: object
-                  additionalProperties:
-                    type: integer
+                  $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
             byRecordType:
               type: array
+              description: The same counts per record type; empty before the first sync.
               items:
                 type: object
+                required:
+                  - recordType
+                  - total
+                  - indexingStatus
+                properties:
+                  recordType:
+                    type: string
+                    example: FILE
+                  total:
+                    type: integer
+                  indexingStatus:
+                    $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+
+    ConnectorIndexingStatusCounts:
+      type: object
+      description: Number of records in each indexing status.
+      additionalProperties:
+        type: integer
+      properties:
+        NOT_STARTED:
+          type: integer
+        PAUSED:
+          type: integer
+        IN_PROGRESS:
+          type: integer
+        COMPLETED:
+          type: integer
+        FAILED:
+          type: integer
+        FILE_TYPE_NOT_SUPPORTED:
+          type: integer
+        AUTO_INDEX_OFF:
+          type: integer
+        EMPTY:
+          type: integer
+        ENABLE_MULTIMODAL_MODELS:
+          type: integer
+        QUEUED:
+          type: integer
 
     DateRangeFilter:
       type: object
@@ -36427,9 +36484,20 @@ paths:
                     type: array
                     items:
                       type: string
-                    example: ["203.0.113.10"]
+                    example:
+                      - 203.0.113.10
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: Service unavailable - Connector service is unreachable
           content:
@@ -36468,6 +36536,7 @@ paths:
           description: |
             Filter by scope. Defaults to <code>team</code> when omitted.
           schema:
+            title: ConnectorInstanceListScope
             allOf:
               - $ref: '#/components/schemas/ConnectorScope'
             default: team
@@ -36522,6 +36591,10 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - connectors
+                  - pagination
                 properties:
                   success:
                     type: boolean
@@ -36531,8 +36604,26 @@ paths:
                       $ref: '#/components/schemas/ConnectorInstance'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+        '400':
+          description: |
+            A query parameter failed validation, for example an unknown `scope`, a
+            non-boolean `isActive` or a `limit` above 200
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     post:
       tags:
@@ -36945,6 +37036,11 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - message
+                  - connectorId
+                  - status
                 properties:
                   success:
                     type: boolean
@@ -36954,28 +37050,45 @@ paths:
                     type: string
                   status:
                     type: string
-                    enum: [DELETING]
+                    enum:
+                      - DELETING
               example:
                 success: true
                 message: Connector deletion initiated
                 connectorId: 3f1c9a52-7d0e-4b8a-9c1e-2a6b5d4e7f80
                 status: DELETING
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             An OAuth or personal access token without the `connector:delete`
             scope, or a beta connector while beta connectors are turned off.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            The connector doesn't exist, or the caller is neither its creator
-            nor an admin. The two answers are the same, so the route doesn't
-            reveal connectors the caller can't delete.
+            The connector doesn't exist (or was already deleted), or the caller is
+            neither its creator nor an admin. The two answers are the same, so the
+            route doesn't reveal connectors the caller can't delete.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
             A deletion is already in progress, a sync is running, or an agent
             uses the connector as a knowledge source (the message names the
             agents; remove the connector from them first).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/stats:
     get:
@@ -37004,15 +37117,27 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConnectorStats'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
             Insufficient OAuth scope, or a collection the caller has a role on
             other than OWNER, WRITER or READER
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             Connector not found, or one the caller cannot open (another user's
             personal connector, admins included)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/record/{recordId}/content:
     get:
@@ -37532,36 +37657,72 @@ paths:
               $ref: '#/components/schemas/ResyncConnectorRequestBody'
       responses:
         '200':
-          description: Resync initiated
+          description: Resync queued
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - resyncConnectorResponse
                 properties:
                   resyncConnectorResponse:
                     type: object
-                    description: Connector resync job acknowledgement from the relation service.
+                    description: Acknowledgement that the sync was queued.
+                    required:
+                      - success
+                    properties:
+                      success:
+                        type: boolean
         '400':
-          description: Invalid connector parameters
+          description: |
+            The connector's sync is off or the connector doesn't exist (both
+            answered as "not allowed"), or the body failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
             Conflict. Possible reasons:<br>
             <ul>
-            <li>The connector instance is disabled or locked</li>
+            <li>A sync is already running, or the connector is locked</li>
             <li><code>DESKTOP_OFFLINE</code> - Local FS: the owner device's desktop app is not connected</li>
             <li><code>DESKTOP_UNCLAIMED</code> - Local FS: no device owns the connector yet</li>
             </ul>
-            Local FS refusals carry <code>details.code</code> and use the body below.
+            Local FS refusals carry <code>details.code</code> and use the
+            LocalFsDesktopRefusal body; the others use the standard error body.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/LocalFsDesktopRefusal'
+                oneOf:
+                  - $ref: '#/components/schemas/LocalFsDesktopRefusal'
+                  - $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: |
             The sync could not be queued, so nothing was synced. Try again in a
             minute.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /connectors/{connectorId}/sync/stop:
     post:
@@ -37602,27 +37763,46 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - stopped
+                  - status
+                  - message
                 properties:
                   success:
                     type: boolean
                   stopped:
                     type: boolean
-                    description: >-
-                      Whether a sync was running and has been asked to stop.
-                      False is a normal answer, not an error.
+                    description: Whether a sync was running and has been asked to stop. False is a normal answer, not an error.
                   status:
                     type: string
-                    description: >-
-                      The status the connector is actually left in.
-                    enum: [IDLE, SYNCING, FULL_SYNCING, QUEUED, DELETING]
+                    description: The status the connector is actually left in.
+                    enum:
+                      - IDLE
+                      - SYNCING
+                      - FULL_SYNCING
+                      - QUEUED
+                      - DELETING
                   message:
                     type: string
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: Insufficient scope (connector:sync is required)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Connector instance not found or not accessible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/{connectorId}/name:
     put:
       tags:
@@ -42214,6 +42394,7 @@ paths:
       operationId: updateOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2: [connector:write]
       parameters:
         - name: connectorType
           in: path
@@ -42227,16 +42408,28 @@ paths:
             type: string
       requestBody:
         required: true
-        description: "Request payload"
+        description: |
+          Send `oauthInstanceName`, `config`, or both; a body with neither is
+          refused, even if it carries `baseUrl`.
         content:
           application/json:
             schema:
               type: object
+              anyOf:
+                - required: [oauthInstanceName]
+                - required: [config]
               properties:
                 oauthInstanceName:
                   type: string
+                  minLength: 1
+                  description: New name; must not be taken by another of the org's apps for this connector type.
                 config:
                   type: object
+                  description: |
+                    OAuth app fields to change, merged over the saved ones. Keys follow
+                    the connector type's OAuth fields; a masked secret sent back as
+                    returned is ignored, so the saved value is kept.
+                  additionalProperties: true
                   properties:
                     clientId:
                       type: string
@@ -42254,19 +42447,56 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - oauthConfig
+                  - message
                 properties:
                   success:
                     type: boolean
                   oauthConfig:
                     $ref: '#/components/schemas/OAuthConfig'
+                  message:
+                    type: string
+                    example: OAuth configuration updated successfully
         '400':
-          description: Invalid configuration
+          description: |
+            Invalid configuration: neither `oauthInstanceName` nor `config` was
+            sent, or `oauthInstanceName` is empty.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: The token lacks `connector:write`, or the caller is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Configuration not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another of the org's OAuth apps for this connector type already has the new `oauthInstanceName`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
     delete:
       tags:

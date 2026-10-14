@@ -228,13 +228,20 @@ class TestSavedOAuthApps:
         assert updated["oauthConfig"]["oauthInstanceName"] == body["oauthInstanceName"], updated
         assert_response_strictly_matches_openapi_operation(updated, _UPDATE_OAUTH_CONFIG)
 
+    @pytest.mark.parametrize("body", [{}, {"baseUrl": "http://localhost:3001"}])
     def test_update_oauth_config_without_changes_is_400(
-        self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
+        self,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        jira_oauth_connector: Any,
+        body: dict[str, Any],
     ) -> None:
-        resp = oauth_configs_api.update_config("Jira", jira_oauth_connector.oauth_config_id, {})
+        """Neither ``oauthInstanceName`` nor ``config``: nothing to update."""
+        resp = oauth_configs_api.update_config("Jira", jira_oauth_connector.oauth_config_id, body)
         assert resp.status_code == 400, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 400)
-        assert request_body_violations({}, _UPDATE_OAUTH_CONFIG), "the spec accepts an empty body"
+        assert request_body_violations(body, _UPDATE_OAUTH_CONFIG), (
+            f"the spec accepts {body} with nothing to update"
+        )
 
     def test_update_oauth_config_with_empty_name_is_400(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
@@ -256,6 +263,63 @@ class TestSavedOAuthApps:
         )
         assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
         assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 500)
+
+    def test_update_oauth_config_with_array_config_is_500(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
+    ) -> None:
+        body = {"config": [None]}
+        assert request_body_violations(body, _UPDATE_OAUTH_CONFIG)
+        resp = oauth_configs_api.update_config("Jira", jira_oauth_connector.oauth_config_id, body)
+        assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 500)
+
+    def test_update_oauth_config_saves_a_non_string_tenant_id(
+        self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
+    ) -> None:
+        """Outside the documented request schema, yet saved (200)."""
+        body = {"config": {"tenantId": {"x": 1}}}
+        assert request_body_violations(body, _UPDATE_OAUTH_CONFIG)
+        try:
+            resp = oauth_configs_api.update_config(
+                "Jira", jira_oauth_connector.oauth_config_id, body
+            )
+            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+            assert_response_strictly_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG)
+        finally:
+            oauth_configs_api.update_config(
+                "Jira", jira_oauth_connector.oauth_config_id, {"config": {"tenantId": ""}}
+            )
+
+    def test_update_oauth_config_to_a_taken_name_is_409(
+        self,
+        connectors_api: ConnectorsClient,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        jira_oauth_connector: Any,
+        linked_oauth_config_id: Callable[[str], str | None],
+    ) -> None:
+        taken = f"connector-spec-it-jira-app-{uuid4().hex[:8]}"
+        auth = dict(jira_oauth_connector.request_body["config"]["auth"], oauthInstanceName=taken)
+        body = {
+            **jira_oauth_connector.request_body,
+            "instanceName": f"connector-spec-it-jira-{uuid4().hex[:8]}",
+            "config": {"auth": auth},
+        }
+        created = connectors_api.create_instance(body)
+        assert created.status_code < 300, created.text
+        connector_id = created.json()["connector"]["connectorId"]
+        other_app = None
+        try:
+            other_app = linked_oauth_config_id(connector_id)
+            assert other_app, "the second OAuth app was not saved"
+            resp = oauth_configs_api.update_config(
+                "Jira", jira_oauth_connector.oauth_config_id, {"oauthInstanceName": taken}
+            )
+            assert resp.status_code == 409, resp.text
+            assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_OAUTH_CONFIG, 409)
+        finally:
+            connectors_api.delete_instance(connector_id)
+            if other_app:
+                oauth_configs_api.delete_config("Jira", other_app)
 
     def test_update_unknown_oauth_config_is_404(
         self, oauth_configs_api: ConnectorOAuthConfigsClient
