@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 
-def find_message_part(parts: Any, part_id: str) -> dict[str, Any] | None:
+def find_message_part(parts: object, part_id: str) -> dict[str, Any] | None:
     """The part with ``part_id`` at any depth. Sync records attachments from
     nested parts too (a forwarded message, inline images in multipart/related),
     whose ids look like ``1.2``, so a top-level search misses them."""
