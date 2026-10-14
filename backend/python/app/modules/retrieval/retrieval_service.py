@@ -770,10 +770,13 @@ class RetrievalService:
                         if knowledge_search:
                             meta = result.get("metadata")
                             is_block_group = meta.get("isBlockGroup")
-                            if is_block_group is not None and virtual_id not in virtual_record_id_to_record:
-                                await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
-                                record = virtual_record_id_to_record[virtual_id]
-                                if record is None:
+                            if is_block_group is not None:
+                                # Fetch the record once, but flatten every hit on it:
+                                # a later hit left raw was neither expanded nor known
+                                # as a match, and could repeat a passage already shown.
+                                if virtual_id not in virtual_record_id_to_record:
+                                    await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
+                                if virtual_record_id_to_record[virtual_id] is None:
                                     continue
                                 new_type_results.append(result)
                                 continue
