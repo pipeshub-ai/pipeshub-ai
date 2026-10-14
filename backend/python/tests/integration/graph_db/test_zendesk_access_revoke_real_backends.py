@@ -191,6 +191,17 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
             "2": {"id": 2, "role": "end-user", "email": users["requester"]["email"], "name": "requester"},
             "3": {"id": 3, "role": "end-user", "email": users["cc"]["email"], "name": "cc"},
         }
+        connector._user_id_to_app_user = {
+            source_id: AppUser(
+                app_name=Connectors.ZENDESK,
+                connector_id=connector_id,
+                source_user_id=source_id,
+                email=users[name]["email"],
+                full_name=name,
+                org_id=org_id,
+            )
+            for source_id, name in (("1", "agent"), ("2", "requester"), ("3", "cc"))
+        }
         yield _Env(graph, connector, org_id, users)
 
 
@@ -210,6 +221,9 @@ async def _sync_group(env: _Env, *, agent_is_member: bool) -> None:
     record_groups, user_groups, complete = await env.connector._fetch_groups({"1": agent})
     assert complete
     processor = env.connector.data_entities_processor
+    await processor.on_new_user_groups(
+        env.connector._build_person_groups(), replace_members=True
+    )
     await processor.on_new_user_groups(user_groups, replace_members=True)
     await processor.on_new_record_groups(record_groups)
 

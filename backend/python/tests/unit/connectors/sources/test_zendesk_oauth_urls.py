@@ -28,7 +28,7 @@ AUTHORIZE = "https://acme.zendesk.com/oauth/authorizations/new"
 TOKEN = "https://acme.zendesk.com/oauth/tokens"
 
 
-def _auth(**overrides: Any) -> dict[str, Any]:
+def _auth(**overrides: object) -> dict[str, Any]:
     return {
         "subdomain": "acme",
         "clientId": "c",

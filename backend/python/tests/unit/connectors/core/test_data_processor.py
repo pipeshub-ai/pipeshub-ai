@@ -2039,7 +2039,7 @@ class TestOnNewUserGroups:
         tx_store.delete_edges_to.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_keeps_existing_members_when_not_replacing(self):
+    async def test_keeps_existing_members_when_not_replacing(self) -> None:
         """A caller that sees only part of a group's members must not wipe the rest."""
         proc = _make_processor()
         tx_store = _make_tx_store()
