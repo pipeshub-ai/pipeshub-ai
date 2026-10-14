@@ -15068,6 +15068,9 @@ components:
         defaultEnabled:
           type: boolean
           description: Default enabled state
+        advanced:
+          type: boolean
+          description: When true, Labs shows this flag only after "Show advanced feature flags" is opened.
 
     # -------------------- Skills Schemas --------------------
     SkillMetadata:
@@ -43595,7 +43598,8 @@ paths:
       description: |
         List all user-toggleable feature flags with their descriptions and default values,
         for the Labs admin UI. Admin-only — hidden flags (internal/legacy) are seeded with
-        their defaults but never returned here.
+        their defaults but never returned here. Flags with `advanced: true` stay in this
+        list so Labs can render them under "Show advanced feature flags".
       operationId: getAvailableFeatureFlags
       security:
         - bearerAuth: []

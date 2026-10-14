@@ -2306,7 +2306,9 @@
       },
       "featureFlags": {
         "title": "功能旗標",
-        "subtitle": "為此工作區中的每個代理程式開啟或關閉實驗性功能。"
+        "subtitle": "為此工作區中的每個代理程式開啟或關閉實驗性功能。",
+        "advancedTitle": "顯示進階功能旗標",
+        "advancedSubtitle": "大多數工作區可以維持預設值的內部旗標。"
       },
       "vectorStore": {
         "title": "向量儲存庫",

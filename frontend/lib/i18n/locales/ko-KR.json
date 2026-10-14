@@ -2306,7 +2306,9 @@
       },
       "featureFlags": {
         "title": "기능 플래그",
-        "subtitle": "이 워크스페이스의 모든 에이전트에 대해 실험적 기능을 켜거나 끕니다."
+        "subtitle": "이 워크스페이스의 모든 에이전트에 대해 실험적 기능을 켜거나 끕니다.",
+        "advancedTitle": "고급 기능 플래그 표시",
+        "advancedSubtitle": "대부분의 워크스페이스에서 기본값으로 두어도 되는 내부 플래그입니다."
       },
       "vectorStore": {
         "title": "벡터 스토어",
