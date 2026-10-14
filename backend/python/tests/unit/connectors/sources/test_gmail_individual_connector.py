@@ -804,10 +804,12 @@ class TestStreamAttachmentRecordEdgeCases:
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_attachment_id_not_found_in_part_body(self):
@@ -839,10 +841,12 @@ class TestStreamAttachmentRecordEdgeCases:
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.UNPROCESSABLE_ENTITY.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_general_exception_after_get_attachment(self):
@@ -951,10 +955,12 @@ class TestStreamAttachmentRecordEdgeCases:
             new_callable=AsyncMock,
             return_value=MagicMock(),
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
 
 # ===========================================================================

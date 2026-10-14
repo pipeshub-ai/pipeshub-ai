@@ -1763,6 +1763,41 @@ class TestStreamAttachmentRecord:
             )
 
     @pytest.mark.asyncio
+    async def test_attachment_in_a_nested_part_streams(self, connector):
+        """Sync records attachments at any depth (partId `0.1`), so download must find them there."""
+        record = _make_mock_record(
+            external_record_id="msg123~0.1",
+            parent_external_record_id="msg123",
+        )
+        parent_record = MagicMock()
+        parent_record.external_record_id = "msg123"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=parent_record
+        )
+
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {
+                "parts": [
+                    {"partId": "0", "mimeType": "multipart/related", "parts": [
+                        {"partId": "0.0", "body": {"data": "aGk="}},
+                        {"partId": "0.1", "filename": "logo.png", "body": {"attachmentId": "nested-att"}},
+                    ]},
+                ],
+            }
+        }
+        gmail_service.users().messages().attachments().get().execute.return_value = {
+            "data": base64.urlsafe_b64encode(b"png").decode()
+        }
+
+        with patch("app.connectors.sources.google.gmail.team.connector.create_stream_record_response") as mock_stream:
+            await connector._stream_attachment_record(
+                gmail_service, "msg123~0.1", record, "logo.png", "image/png"
+            )
+        assert list(mock_stream.call_args.args[0]) == [b"png"]
+        assert gmail_service.users().messages().attachments().get.call_args.kwargs["id"] == "nested-att"
+
+    @pytest.mark.asyncio
     async def test_part_not_found_in_message(self, connector):
         record = _make_mock_record(
             external_record_id="msg123~99",
