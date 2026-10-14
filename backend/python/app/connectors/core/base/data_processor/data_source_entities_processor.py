@@ -868,6 +868,10 @@ class DataSourceEntitiesProcessor:
             for mention, key in keys.items():
                 if sites:
                     targets[mention] = tuple(f"{site}/browse/{key}" for site in sites)
+        # A ticket's own site comes first for the keys it names.
+        own_site = None
+        if isinstance(record.weburl, str) and "/browse/" in record.weburl:
+            own_site = record.weburl.rsplit("/browse/", 1)[0]
         if not targets:
             return {}
         candidates = list(dict.fromkeys(c for cands in targets.values() for c in cands))
@@ -876,14 +880,27 @@ class DataSourceEntitiesProcessor:
         for row in rows or []:
             if row.get("id") and row["id"] != record.id:
                 by_address.setdefault(row.get("webUrl"), []).append(row)
+        def best(rows: list[dict]) -> str:
+            return min(rows, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))["id"]
+
         found: dict[str, str] = {}
         for mention, cands in targets.items():
-            for candidate in cands:
-                here = by_address.get(candidate)
-                if here:
-                    best = min(here, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))
-                    found[mention] = best["id"]
-                    break
+            matched = [(candidate, by_address[candidate]) for candidate in cands if by_address.get(candidate)]
+            if not matched:
+                continue
+            if mention in keys:
+                # One key can name an issue on two Jira sites. Join the record's
+                # own site when it has the key, else only a key exactly one site
+                # has: guessing would join the wrong issue, and the next save
+                # could move the edge.
+                own = [rows for candidate, rows in matched if own_site and candidate.startswith(own_site + "/browse/")]
+                if own:
+                    found[mention] = best(own[0])
+                elif len(matched) == 1:
+                    found[mention] = best(matched[0][1])
+                continue
+            # An address: its candidates are forms of one record, most likely first.
+            found[mention] = best(matched[0][1])
         return found
 
     async def _join_records_linking_here(self, record: Record, tx_store: TransactionStore) -> None:

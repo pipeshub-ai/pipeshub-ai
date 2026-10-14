@@ -2137,7 +2137,7 @@ class IGraphDBProvider(ABC):
         self,
         org_id: str,
         connector_names: list[str],
-        limit: int = 20,
+        limit: int | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         """The Jira sites the org syncs, read from its live tickets' addresses.
@@ -2150,11 +2150,11 @@ class IGraphDBProvider(ABC):
         Args:
             org_id: Organization scope. Empty returns ``[]`` without querying.
             connector_names: Only tickets of these connectors are read.
-            limit: Most sites returned.
+            limit: Most sites returned; None returns every one.
             transaction: Optional transaction ID.
 
         Returns:
-            Distinct site prefixes.
+            Distinct site prefixes, sorted.
 
         Raises:
             Exception: on a query failure, so it is never cached as "no site".

@@ -231,5 +231,5 @@ async def test_issue_sites_are_read_from_the_orgs_jira_tickets(seeded: _Graph) -
 
     # The live ticket's site and a server under a path; not the deleted ticket's
     # duplicate, not GitHub's issues, not another org's site.
-    assert sorted(sites) == ["https://acme.atlassian.net", "https://jira.corp.example/jira"]
+    assert sites == ["https://acme.atlassian.net", "https://jira.corp.example/jira"]
     assert await seeded.graph.get_issue_sites(seeded.org_id, []) == []

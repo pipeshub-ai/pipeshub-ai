@@ -525,3 +525,34 @@ class TestIssueSitesCache:
             assert await proc._issue_sites("org-1", tx) == []
             assert await proc._issue_sites("org-1", tx) == ["https://acme.atlassian.net"]
         assert tx.get_issue_sites.await_count == 2
+
+
+class TestAKeyOnTwoSites:
+    def _tx(self) -> AsyncMock:
+        tx = _tx_store(at_address=[
+            {"id": "cloud-issue", "webUrl": "https://acme.atlassian.net/browse/OPS-9", "isDependentNode": False},
+            {"id": "server-issue", "webUrl": "https://jira.corp.example/browse/OPS-9", "isDependentNode": False},
+        ])
+        tx.get_issue_sites = AsyncMock(return_value=["https://acme.atlassian.net", "https://jira.corp.example"])
+        return tx
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_key_joins_nothing(self) -> None:
+        proc = _processor()
+        tx = self._tx()
+        pr = _pull_request()
+
+        await proc._handle_related_external_records(pr, _by_key("OPS-9"), tx)
+
+        assert _edges(tx) == []
+
+    @pytest.mark.asyncio
+    async def test_a_ticket_resolves_a_key_on_its_own_site(self) -> None:
+        proc = _processor()
+        tx = self._tx()
+        ticket = _pull_request("ticket-1")
+        ticket.weburl = "https://jira.corp.example/browse/OPS-1"
+
+        await proc._handle_related_external_records(ticket, _by_key("OPS-9"), tx)
+
+        assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/server-issue"]

@@ -16769,7 +16769,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         org_id: str,
         connector_names: list[str],
-        limit: int = 20,
+        limit: int | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         if not org_id or not connector_names:
@@ -16785,7 +16785,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ) AS site
         WHERE size(site) > 0
         RETURN site
-        LIMIT $limit
+        ORDER BY site
+        {"LIMIT $limit" if limit is not None else ""}
         """
         try:
             rows = await self.client.execute_query(

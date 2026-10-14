@@ -5409,7 +5409,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         org_id: str,
         connector_names: list[str],
-        limit: int = 20,
+        limit: int | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         if not org_id or not connector_names:
@@ -5425,13 +5425,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET at = FIND_LAST(record.webUrl, "/browse/")
             FILTER at > 0
             COLLECT site = SUBSTRING(record.webUrl, 0, at)
-            LIMIT @limit
+            SORT site
+            {"LIMIT @limit" if limit is not None else ""}
             RETURN site
         """
         try:
             return await self.http_client.execute_aql(
                 query,
-                {"org_id": org_id, "connector_names": list(connector_names), "limit": limit},
+                {"org_id": org_id, "connector_names": list(connector_names)}
+                | ({"limit": limit} if limit is not None else {}),
                 txn_id=transaction,
             ) or []
         except Exception as e:
