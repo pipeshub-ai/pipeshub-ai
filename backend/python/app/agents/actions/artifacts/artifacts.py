@@ -56,6 +56,34 @@ _MAX_ARTIFACT_CONTENT_CHARS = 40_000
 # through a legitimately long program.
 _MAX_ARTIFACT_FETCH_BYTES = 5_000_000
 
+# Binary document formats a model can name but cannot write as text: their
+# files must start with these bytes, or the saved file will not open.
+_ZIP_MAGIC = b"PK\x03\x04"
+_BINARY_DOCUMENT_FORMATS: dict[str, tuple[str, bytes, str]] = {
+    ".docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", _ZIP_MAGIC, "Word"),
+    ".xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", _ZIP_MAGIC, "Excel"),
+    ".pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", _ZIP_MAGIC, "PowerPoint"),
+    ".pdf": ("application/pdf", b"%PDF-", "PDF"),
+}
+
+
+def _not_a_real_document(name: str | None, mime_type: str | None, raw: bytes) -> str | None:
+    """The error for content that is not the binary document its name or MIME type claims."""
+    lowered = (name or "").lower()
+    for extension, (document_mime, magic, label) in _BINARY_DOCUMENT_FORMATS.items():
+        if not (lowered.endswith(extension) or mime_type == document_mime):
+            continue
+        if raw.startswith(magic):
+            return None
+        return (
+            f"This content is not a real {label} file, so it would not open in {label}. "
+            f"To make a {extension} file, generate it with run_code (for example with "
+            "python-docx, openpyxl, python-pptx or reportlab); the file it writes is "
+            "attached automatically. To save the text itself, use a .md or .txt name "
+            "with mime_type 'text/markdown' or 'text/plain'."
+        )
+    return None
+
 
 @ToolsetBuilder("Artifact Manager")\
     .in_group("Internal Tools")\
@@ -158,6 +186,10 @@ class ArtifactManager:
         raw = self._decode(content, is_base64)
         if isinstance(raw, str):
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
+
+        refusal = _not_a_real_document(name, mime_type, raw)
+        if refusal:
+            return _result(False, {"success": False, "error": refusal})
 
         try:
             vis = ArtifactVisibility(visibility.upper())
@@ -262,6 +294,10 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
 
         try:
+            current = await registry.resolve(actor=self._actor(), ref=artifact_id)
+            refusal = _not_a_real_document(current.name, mime_type or current.mime_type, raw)
+            if refusal:
+                return _result(False, {"success": False, "error": refusal})
             version, metadata = await registry.add_version(
                 actor=self._actor(),
                 artifact_id=artifact_id,
