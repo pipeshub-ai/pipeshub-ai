@@ -1763,7 +1763,7 @@ class TestStreamAttachmentRecord:
             )
 
     @pytest.mark.asyncio
-    async def test_attachment_in_a_nested_part_streams(self, connector):
+    async def test_attachment_in_a_nested_part_streams(self, connector) -> None:
         """Sync records attachments at any depth (partId `0.1`), so download must find them there."""
         record = _make_mock_record(
             external_record_id="msg123~0.1",

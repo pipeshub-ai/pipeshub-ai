@@ -1208,7 +1208,7 @@ class TestStreamAttachmentRecord:
             mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_attachment_in_a_nested_part_is_downloaded(self, connector):
+    async def test_attachment_in_a_nested_part_is_downloaded(self, connector) -> None:
         """Sync records attachments at any depth (partId `0.1`), so download must find them there."""
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
@@ -1247,7 +1247,7 @@ class TestStreamAttachmentRecord:
         assert gmail_service.users().messages().attachments().get.call_args.kwargs["id"] == "nested-att"
 
     @pytest.mark.asyncio
-    async def test_part_without_attachment_id_is_not_downloadable(self, connector):
+    async def test_part_without_attachment_id_is_not_downloadable(self, connector) -> None:
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.return_value = {
             "payload": {"parts": [{"partId": "1", "body": {"data": "aGk="}}]}
