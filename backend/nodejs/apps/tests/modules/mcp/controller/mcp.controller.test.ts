@@ -604,6 +604,12 @@ describe('MCP Controller — handleMCPRequest', () => {
     let infoStub: sinon.SinonStub
     let errorStub: sinon.SinonStub
 
+    // The stubs sit on Logger.prototype, so they also catch log lines that
+    // other code in this worker (an earlier test file's late async work)
+    // writes while a test runs. Assert on the controller's own line only.
+    const callsWith = (stub: sinon.SinonStub, message: string) =>
+      stub.getCalls().filter((call) => call.args[0] === message)
+
     beforeEach(() => {
       if (typeof (Logger.prototype.info as any).restore === 'function') {
         (Logger.prototype.info as any).restore()
@@ -639,13 +645,41 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handleMCPRequest(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
+      const logged = callsWith(infoStub, 'MCP request completed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.equal({
         method: 'initialize',
         requestId: 'pilot-1',
       })
       expect(next.called).to.be.false
+    })
+
+    it('should find its completion line when other code logs during the request', async () => {
+      // Another logger in this worker writing while the request runs, as an
+      // earlier test file's late async work can on CI.
+      mcpServerExports.createMCPServer = sinon.stub().returns({
+        server: {
+          connect: sinon.stub().callsFake(async () => {
+            new Logger({ service: 'unrelated' }).info('unrelated work finished')
+          }),
+          server: {},
+        },
+      })
+
+      const req = createMockRequest({
+        headers: { 'x-request-id': 'pilot-2' },
+        context: { requestId: 'pilot-2' },
+        body: { jsonrpc: '2.0', method: 'initialize', id: 3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handleMCPRequest(appConfig)(req, res as any, next)
+
+      expect(infoStub.callCount).to.equal(2)
+      const logged = callsWith(infoStub, 'MCP request completed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.equal({ method: 'initialize', requestId: 'pilot-2' })
     })
 
     it('should log success with requestId when parsed via requestContextMiddleware', async () => {
@@ -668,9 +702,9 @@ describe('MCP Controller — handleMCPRequest', () => {
       requestContextMiddleware(req, res as any, () => {})
       await handleMCPRequest(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
+      const logged = callsWith(infoStub, 'MCP request completed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.equal({
         method: 'tools/call',
         requestId: 'pilot-1',
       })
@@ -690,9 +724,9 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handleMCPRequest(appConfig)(req, res as any, next)
 
-      expect(infoStub.calledOnce).to.be.true
-      expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
-      expect(infoStub.firstCall.args[1]).to.deep.equal({
+      const logged = callsWith(infoStub, 'MCP request completed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.equal({
         method: 'tools/list',
         requestId: undefined,
       })
@@ -723,9 +757,9 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handleMCPRequest(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
+      const logged = callsWith(errorStub, 'MCP request failed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.include({
         error: 'transport failure',
         method: 'POST',
         userId: 'user-42',
@@ -749,9 +783,9 @@ describe('MCP Controller — handleMCPRequest', () => {
 
       await handleMCPRequest(appConfig)(req, res as any, next)
 
-      expect(errorStub.calledOnce).to.be.true
-      expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
-      expect(errorStub.firstCall.args[1]).to.deep.include({
+      const logged = callsWith(errorStub, 'MCP request failed')
+      expect(logged).to.have.length(1)
+      expect(logged[0].args[1]).to.deep.include({
         error: 'init failure',
         method: 'POST',
         userId: 'user-42',
