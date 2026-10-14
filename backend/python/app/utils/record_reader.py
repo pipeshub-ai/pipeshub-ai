@@ -54,27 +54,33 @@ MIN_READ_CHARS = 2_000
 # The assistant's own ceiling for one fetch.
 MAX_READ_CHARS = FETCH_MAX_CHARS
 
-# A citation label at the start of a rendered line: `[ref3] ` before a block,
-# `[12|ref3] ` (or `[12|] `) before a table row or a group's child.
-_LEADING_REF = re.compile(r"^\[(?:ref\d+)\] ", re.MULTILINE)
-_ROW_REF = re.compile(r"^\[([^\[\]|\n]*)\|(?:ref\d+)?\]", re.MULTILINE)
+# The citation labels the renderer puts in front of what it emits: `[ref3] `
+# at the start of each block it prints, and `[12|ref3] ` (or `[12|] ` on a
+# line it adds itself) in front of each table row or group child.
+_BLOCK_LABEL = re.compile(r"\[(ref\d+)\] ")
+_ROW_LABEL = re.compile(r"^\[(\d+|…)\|(ref\d+)?\] ", re.MULTILINE)
 
 
-def _strip_refs(text: str, refs: set[str]) -> str:
-    """The rendered text without the citation labels this render minted.
+def _strip_labels(item: str, refs: set[str]) -> str:
+    """One emitted piece of the render without the labels the renderer put on it.
 
-    Only labels the mapper actually issued are touched, so a document line
-    that happens to begin with "[ref1]" keeps it. Removing text never pushes
-    a read past its budget.
+    A block's label is only ever at the very start of the piece the renderer
+    emitted for it, so only that position is looked at: a line inside the
+    document that happens to begin "[ref1]" is the document's text and is
+    kept. A row label is the renderer's `[<block index>|<ref>]` at the start
+    of a line, with a ref this render minted (or none); anything else in that
+    shape, such as "[note|]", is left alone. Removing text never pushes a
+    read past its budget.
     """
-    def _leading(match: re.Match[str]) -> str:
-        return "" if match.group(0)[1:-2] in refs else match.group(0)
+    lead = _BLOCK_LABEL.match(item)
+    if lead and lead.group(1) in refs:
+        item = item[lead.end():]
 
     def _row(match: re.Match[str]) -> str:
-        ref = match.group(0).rsplit("|", 1)[1][:-1]
-        return f"[{match.group(1)}]" if ref == "" or ref in refs else match.group(0)
+        ref = match.group(2)
+        return f"[{match.group(1)}] " if ref is None or ref in refs else match.group(0)
 
-    return _ROW_REF.sub(_row, _LEADING_REF.sub(_leading, text))
+    return _ROW_LABEL.sub(_row, item)
 
 
 def _ranges(indices: frozenset[int] | set[int]) -> list[list[int]]:
@@ -108,8 +114,11 @@ def _render(
         include_blocks=include_blocks,
         hints=API_READ_HINTS,
     )
-    text = "".join(item.get("text", "") for item in content if item.get("type") == "text")
-    return _strip_refs(text, set(mapper.ref_to_url))
+    refs = set(mapper.ref_to_url)
+    return "".join(
+        _strip_labels(item.get("text", ""), refs)
+        for item in content if item.get("type") == "text"
+    )
 
 
 def _truncated_by(outcome: RecordRenderOutcome) -> str | None:
@@ -196,6 +205,35 @@ def _thread_note(
     )
 
 
+def _oversized_note(record_id: object, block: int, max_chars: int) -> str:
+    if max_chars >= MAX_READ_CHARS:
+        return (
+            f"\n[Block {block} of record {record_id} is larger than the largest "
+            f"maxChars ({MAX_READ_CHARS}) and was cut; the rest of that block "
+            f"cannot be returned.]\n"
+        )
+    return (
+        f"\n[Block {block} of record {record_id} is larger than maxChars={max_chars} "
+        f"and was cut. To read it whole, request the same startRecord and "
+        f"startBlock with a larger maxChars (up to {MAX_READ_CHARS}).]\n"
+    )
+
+
+def _clipped_block(record: dict[str, Any], outcome: RecordRenderOutcome, offset: int) -> int | None:
+    """The block a read cut short because it alone was larger than the budget.
+
+    Only the first block a read shows for a record can be clipped, and a
+    clipped block is never counted as shown, so it is the first block from
+    `offset` that the read did not show.
+    """
+    if not outcome.clipped:
+        return None
+    return next(
+        (i for i in _renderable_block_indices(record) if i >= offset and i not in outcome.shown_blocks),
+        None,
+    )
+
+
 def _widest_block(records: list[dict[str, Any]]) -> int:
     """The largest block offset a thread cursor can name, for reserving room."""
     return max((max(_renderable_block_indices(r), default=0) for r in records), default=0) + 1
@@ -224,14 +262,17 @@ async def read_thread(
     widest_record = 10 ** len(str(total + 1)) - 1
     widest_block = 10 ** len(str(_widest_block(records))) - 1
     # Held back so the closing note always fits.
+    widest_id = max((len(str(r.get("id") or "")) for r in records), default=0)
     budget.charge_framing_chars(
-        len(_thread_note(widest_record, widest_record, total, widest_record, widest_block)),
+        len(_thread_note(widest_record, widest_record, total, widest_record, widest_block))
+        + len(_oversized_note("x" * widest_id, widest_block, 1))
     )
 
     parts: list[str] = []
     shown: list[dict[str, Any]] = []
     next_record: int | None = None
     next_block = 0
+    oversized = ""
     for position in range(start_record, total):
         record = records[position]
         key = _record_key(record)
@@ -244,6 +285,15 @@ async def read_thread(
         parts.append(_render(record, budget, start_block=offset, include_blocks=None))
         outcome = budget.outcome(key)
         resume = None if outcome.complete else outcome.stopped_at_block
+        clipped = _clipped_block(record, outcome, offset)
+        if clipped is not None:
+            # A block larger than the whole budget was cut. Its rest is not at
+            # any later block, so the cursor stays on it: the same cursor with
+            # a larger `maxChars` reads it whole. At the largest `maxChars`
+            # nothing can, and the cursor moves on.
+            oversized = _oversized_note(record.get("id"), clipped, max_chars)
+            if max_chars < MAX_READ_CHARS:
+                resume = clipped
         shown.append({
             "recordId": record.get("id"),
             "recordName": record.get("record_name"),
@@ -253,17 +303,14 @@ async def read_thread(
         })
         if not outcome.complete:
             # Nothing after a record that was cut short: the cursor stays on
-            # it, at the block where it stopped. A record with nowhere to
-            # resume (one block larger than the whole budget) cannot be read
-            # further at this `max_chars`, so the cursor moves past it rather
-            # than return the same block forever.
-            if resume is not None and (position != start_record or resume > offset):
+            # it, at the block where it stopped, until it is read to its end.
+            if resume is not None and (clipped is not None or position != start_record or resume > offset):
                 next_record, next_block = position, resume
             elif position + 1 < total:
                 next_record, next_block = position + 1, 0
             break
 
-    text = "\n".join(parts)
+    text = "\n".join(parts) + oversized
     if next_record is not None and shown:
         text += _thread_note(
             start_record, start_record + len(shown) - 1, total, next_record, next_block,
@@ -280,7 +327,7 @@ async def read_thread(
         "records": shown,
         # Nothing of the thread is left after this read, and all of it was
         # read in full. Null `nextStartRecord` with `complete` false means a
-        # single block was larger than `max_chars`.
+        # single block was larger than the largest `maxChars`.
         "complete": next_record is None and all(r["complete"] for r in shown),
         "nextStartRecord": next_record,
         "nextStartBlock": next_block if next_record is not None else None,

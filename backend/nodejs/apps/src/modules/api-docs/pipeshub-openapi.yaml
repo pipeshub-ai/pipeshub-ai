@@ -5549,9 +5549,12 @@ components:
           description: >-
             Thread reads only. Pass as `startRecord`, with `nextStartBlock` as
             `startBlock`, to read on. It stays on a record that was cut short
-            until that record has been read to its end. Null when nothing is
-            left to read; `complete` is then true, unless a single block was
-            larger than `maxChars` (raise it to read that block in full).
+            until that record has been read to its end. A block larger than
+            `maxChars` holds the cursor on that block; send the same cursor
+            with a larger `maxChars` to read it. Null when nothing is left to
+            read; `complete` is then true, unless a single block was larger
+            than the largest `maxChars` (140000) and could not be returned
+            in full.
         records:
           type: array
           description: Thread reads only. The records shown, oldest first.

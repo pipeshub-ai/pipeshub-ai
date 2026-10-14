@@ -193,11 +193,15 @@ class TestWhatTheCallerReads:
         assert "after the table" in read["content"]
 
     async def test_a_document_line_that_looks_like_a_label_is_kept(self) -> None:
-        record = _record("doc-1", [_text_block(0, "intro\n[ref99] is cited in the appendix")])
+        """`ref1` is minted by every render, so a document line starting with
+        it must survive -- as must a line that only looks like a row label."""
+        record = _record("doc-1", [_text_block(0, "intro\n[ref1] is cited\n[note|] keep")])
 
         read = await read_record(record, max_chars=40_000)
 
-        assert "[ref99] is cited" in read["content"]
+        assert "\n[ref1] is cited" in read["content"]
+        assert "\n[note|] keep" in read["content"]
+        assert "[ref1] intro" not in read["content"], "the renderer's own label is still removed"
 
 
 def _burst(record_id: str, created: int, *messages: str) -> dict:
@@ -264,6 +268,28 @@ class TestReadingAThread:
 
         assert seen == [str(i) for i in range(40)]
         assert reads > 3, "the large records took several reads each"
+
+    async def test_a_block_larger_than_the_budget_holds_the_cursor_until_it_fits(self) -> None:
+        """A block cut because it alone exceeds `maxChars` has no later block
+        to resume from. Following the cursor at that budget never skips past
+        it to the next record; a budget that covers it reads it, and then the
+        next record, once."""
+        records = [
+            _burst("t-0", 1, "<m0> " + "z" * 9_000),
+            _burst("t-1", 2, "<m1> the next reply"),
+        ]
+
+        record, block = 0, 0
+        for _ in range(5):
+            read = await read_thread(records, max_chars=5_000, start_record=record, start_block=block)
+            assert "<m1>" not in read["content"]
+            assert read["complete"] is False
+            assert (read["nextStartRecord"], read["nextStartBlock"]) == (0, 0)
+            assert "larger than maxChars=5000" in read["content"]
+            record, block = read["nextStartRecord"], read["nextStartBlock"]
+
+        seen, _ = await self._follow(records, max_chars=20_000)
+        assert seen == ["0", "1"]
 
     async def test_the_cursor_stays_on_a_cut_record(self) -> None:
         records = [
