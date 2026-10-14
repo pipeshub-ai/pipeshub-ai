@@ -145,7 +145,7 @@ class TestEmbeddingServerRoutes:
             priority=EncodePriority.BULK,
         )
 
-    def test_a_marked_query_is_encoded_as_a_query(self, client):
+    def test_a_marked_query_is_encoded_as_a_query(self, client) -> None:
         test_client, mock_manager = client
         response = test_client.post(
             "/v1/embeddings",
@@ -157,7 +157,7 @@ class TestEmbeddingServerRoutes:
             mock_manager.encode.await_args.kwargs["priority"] is EncodePriority.QUERY
         )
 
-    def test_an_unknown_priority_is_bulk(self, client):
+    def test_an_unknown_priority_is_bulk(self, client) -> None:
         test_client, mock_manager = client
         test_client.post(
             "/v1/embeddings",
@@ -777,7 +777,7 @@ class TestEncodeGate:
             await asyncio.sleep(0)
 
     @pytest.mark.asyncio
-    async def test_bulk_leaves_a_slot_free_for_queries(self):
+    async def test_bulk_leaves_a_slot_free_for_queries(self) -> None:
         gate = EncodeGate(capacity=3, reserved_for_queries=1)
         await gate.acquire(EncodePriority.BULK)
         await gate.acquire(EncodePriority.BULK)
@@ -791,7 +791,7 @@ class TestEncodeGate:
         third_bulk.cancel()
 
     @pytest.mark.asyncio
-    async def test_a_query_goes_ahead_of_bulk_already_waiting(self):
+    async def test_a_query_goes_ahead_of_bulk_already_waiting(self) -> None:
         gate = EncodeGate(capacity=1, reserved_for_queries=1)
         await gate.acquire(EncodePriority.BULK)
         order: list[str] = []
@@ -811,14 +811,14 @@ class TestEncodeGate:
         assert order == ["query", "bulk-0", "bulk-1", "bulk-2"]
 
     @pytest.mark.asyncio
-    async def test_bulk_always_keeps_one_slot(self):
+    async def test_bulk_always_keeps_one_slot(self) -> None:
         """A reservation as large as the pool must not stop indexing."""
         gate = EncodeGate(capacity=2, reserved_for_queries=5)
         assert gate.bulk_limit == 1
         await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
 
     @pytest.mark.asyncio
-    async def test_bulk_waits_while_a_query_is_waiting(self):
+    async def test_bulk_waits_while_a_query_is_waiting(self) -> None:
         gate = EncodeGate(capacity=2, reserved_for_queries=0)
         await gate.acquire(EncodePriority.QUERY)
         await gate.acquire(EncodePriority.QUERY)
@@ -833,7 +833,7 @@ class TestEncodeGate:
         await asyncio.wait_for(bulk, timeout=1)
 
     @pytest.mark.asyncio
-    async def test_a_cancelled_waiter_does_not_hold_a_slot(self):
+    async def test_a_cancelled_waiter_does_not_hold_a_slot(self) -> None:
         gate = EncodeGate(capacity=1, reserved_for_queries=0)
         await gate.acquire(EncodePriority.BULK)
         gone = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
@@ -846,7 +846,7 @@ class TestEncodeGate:
         await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
 
     @pytest.mark.asyncio
-    async def test_a_waiter_cancelled_after_its_grant_hands_it_back(self):
+    async def test_a_waiter_cancelled_after_its_grant_hands_it_back(self) -> None:
         gate = EncodeGate(capacity=1, reserved_for_queries=0)
         await gate.acquire(EncodePriority.BULK)
         waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
@@ -857,7 +857,7 @@ class TestEncodeGate:
             await waiter
         assert gate.in_use == 0
 
-    def test_priority_header_values(self):
+    def test_priority_header_values(self) -> None:
         assert EncodePriority.from_header("query") is EncodePriority.QUERY
         assert EncodePriority.from_header(" Query ") is EncodePriority.QUERY
         assert EncodePriority.from_header(None) is EncodePriority.BULK
@@ -869,14 +869,14 @@ class TestQueriesDuringIndexing:
     real (thread) time per call, as a CPU model does."""
 
     @pytest.mark.asyncio
-    async def test_a_query_does_not_wait_for_queued_indexing_batches(self):
+    async def test_a_query_does_not_wait_for_queued_indexing_batches(self) -> None:
         manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
         release_bulk = threading.Event()
         encoded: list[str] = []
 
         model = MagicMock()
 
-        def encode(texts, **_kwargs):
+        def encode(texts: list[str], **_kwargs: object) -> np.ndarray:
             if texts[0].startswith("batch"):
                 release_bulk.wait(timeout=5)
             encoded.append(texts[0])

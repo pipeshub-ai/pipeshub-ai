@@ -464,15 +464,15 @@ class TestEmbeddingServerEmbeddings:
         assert client.timeout == EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
         assert client.trust_remote_code is False
         documents_call, query_call = mock_openai_cls.call_args_list
-        expected = dict(
-            model=DEFAULT_EMBEDDING_MODEL,
-            api_key="not-needed",
-            base_url=_embedding_server_base_url(),
-            check_embedding_ctx_length=False,
-            max_retries=0,
-            timeout=EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
-            extra_body=None,
-        )
+        expected = {
+            "model": DEFAULT_EMBEDDING_MODEL,
+            "api_key": "not-needed",
+            "base_url": _embedding_server_base_url(),
+            "check_embedding_ctx_length": False,
+            "max_retries": 0,
+            "timeout": EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
+            "extra_body": None,
+        }
         assert documents_call.kwargs == expected
         assert query_call.kwargs == {
             **expected,
@@ -493,15 +493,15 @@ class TestEmbeddingServerEmbeddings:
         assert client.timeout == 120.0
         assert client.trust_remote_code is True
         documents_call, query_call = mock_openai_cls.call_args_list
-        expected = dict(
-            model="custom-model",
-            api_key="not-needed",
-            base_url=_embedding_server_base_url(),
-            check_embedding_ctx_length=False,
-            max_retries=0,
-            timeout=120.0,
-            extra_body={"trust_remote_code": True},
-        )
+        expected = {
+            "model": "custom-model",
+            "api_key": "not-needed",
+            "base_url": _embedding_server_base_url(),
+            "check_embedding_ctx_length": False,
+            "max_retries": 0,
+            "timeout": 120.0,
+            "extra_body": {"trust_remote_code": True},
+        }
         assert documents_call.kwargs == expected
         assert query_call.kwargs == {
             **expected,
@@ -509,7 +509,7 @@ class TestEmbeddingServerEmbeddings:
         }
 
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
-    def test_queries_are_marked_and_documents_are_not(self, mock_openai_cls):
+    def test_queries_are_marked_and_documents_are_not(self, mock_openai_cls) -> None:
         """The server encodes marked requests ahead of indexing batches."""
         documents_client, query_client = MagicMock(), MagicMock()
         mock_openai_cls.side_effect = [documents_client, query_client]
@@ -526,7 +526,7 @@ class TestEmbeddingServerEmbeddings:
 
     @pytest.mark.asyncio
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
-    async def test_async_queries_are_marked_too(self, mock_openai_cls):
+    async def test_async_queries_are_marked_too(self, mock_openai_cls) -> None:
         documents_client, query_client = MagicMock(), MagicMock()
         mock_openai_cls.side_effect = [documents_client, query_client]
         query_client.aembed_query = AsyncMock(return_value=[0.2])
