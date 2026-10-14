@@ -173,11 +173,6 @@ DOWNSTREAM_TIMEOUT_SHRINK_FACTOR = 0.75
 DOWNSTREAM_GROW_CONFIRM_SAMPLES = 2
 DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
 HOLD_EWMA_ALPHA = 0.3
-# The latency hold judges the typical permit hold by the median of the most
-# recent samples' reported holds: at least HOLD_MIN_SAMPLES samples, widened
-# further back until they hold HOLD_MIN_HOLDS (see _typical_hold).
-HOLD_MIN_SAMPLES = 2
-HOLD_MIN_HOLDS = 4
 HOLD_BASELINE_DRIFT = 0.05
 
 MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
@@ -737,25 +732,8 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
     return False
 
 
-def _typical_hold(demand: PoolDemand) -> float | None:
-    """The median of the most recent reported permit holds, or None when
-    fewer than ``HOLD_MIN_HOLDS`` were reported across every retained sample.
-
-    The window is the newest ``HOLD_MIN_SAMPLES`` samples, widened further
-    back until it holds ``HOLD_MIN_HOLDS``. Two samples, so a burst of large
-    records finishing together in one sample is weighed against the sample
-    before it rather than standing for the pool. A few holds, so a pool that
-    releases one or two permits a sample is not judged by one record. And no
-    further back than that, so when every record slows down the median moves
-    within two or three samples, before slow start has doubled the pool more
-    than once or twice, however few permits each sample releases.
-    """
-    window: list[float] = []
-    for used, sample in enumerate(reversed(demand.hold_seconds_by_sample), start=1):
-        window[:0] = sample
-        if used >= HOLD_MIN_SAMPLES and len(window) >= HOLD_MIN_HOLDS:
-            break
-    return statistics.median(window) if len(window) >= HOLD_MIN_HOLDS else None
+def _mostly_slow(holds: tuple[float, ...], threshold: float) -> bool:
+    return sum(1 for hold in holds if hold > threshold) * 2 > len(holds)
 
 
 def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
@@ -765,33 +743,63 @@ def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
     than the one before it becomes the new normal within a few minutes
     instead of pinning growth for the life of the process.
 
-    Typical means the median of the most recent reported holds
-    (``_typical_hold``). The mean, ``permit_seconds / completions``, is what a
-    slow downstream raises, but a handful of very large records raise it just
-    as far: pull requests holding their permits for ten minutes next to chat
-    messages that take fifteen seconds read as a pool whose every record has
-    slowed down, and the pool stops growing for as long as they run. A
-    downstream slowdown moves the median with everything else; a few large
-    records do not. The mean remains the fallback when no hold times were
-    reported."""
+    When holders report how long each permit was held
+    (``PoolDemand.hold_seconds_by_sample``), each sample's new holds are
+    judged against the baseline. A hold over ``DOWNSTREAM_LATENCY_HOLD_FACTOR``
+    times the baseline is slow.
+
+    - Most of the sample's holds are fast: the median of the fast ones feeds
+      the EWMA. The few slow ones are large records, not a slow pool: pull
+      requests holding a permit for ten minutes beside chat messages that
+      take fifteen seconds. Read by the mean, ``permit_seconds /
+      completions``, they look exactly like a slowdown and stop the pool
+      growing for as long as they run.
+    - Most are slow, and so were most of the previous sample's: every
+      record is slowing down. The EWMA goes straight to the median of the
+      slow holds, so the hold engages on that sample, before slow start has
+      doubled the pool, however few permits each sample releases.
+    - Most are slow but the previous sample's were not: possibly a batch of
+      large records finishing together. Nothing changes until the next
+      sample says which it is.
+
+    The mean is still used when no hold times were reported at all."""
     if demand.completions <= 0:
         return state
-    typical = _typical_hold(demand)
-    if typical is None and any(demand.hold_seconds_by_sample):
-        # Holds were reported, but too few to say what a typical record
-        # takes: one large record must not stand for the pool, and the mean
-        # would read it the same way. Leave the estimate where it is.
+    samples = demand.hold_seconds_by_sample
+    if not any(samples):
+        mean_hold = demand.permit_seconds / demand.completions
+        return _fold_hold(state, mean_hold)
+    current = samples[-1]
+    if not current:
         return state
-    mean_hold = (
-        typical
-        if typical is not None
-        else demand.permit_seconds / demand.completions
+    if not state.hold_baseline:
+        return _fold_hold(state, statistics.median(current))
+
+    threshold = DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
+    if not _mostly_slow(current, threshold):
+        return _fold_hold(
+            state, statistics.median([hold for hold in current if hold <= threshold])
+        )
+    previous = next((sample for sample in reversed(samples[:-1]) if sample), ())
+    if not previous or not _mostly_slow(previous, threshold):
+        return state
+    slow_median = statistics.median([hold for hold in current if hold > threshold])
+    return _fold_hold(
+        state, slow_median, ewma=max(slow_median, state.hold_ewma or 0.0)
     )
-    ewma = (
-        mean_hold
-        if state.hold_ewma is None
-        else HOLD_EWMA_ALPHA * mean_hold + (1.0 - HOLD_EWMA_ALPHA) * state.hold_ewma
-    )
+
+
+def _fold_hold(
+    state: PoolState, hold: float, *, ewma: float | None = None
+) -> PoolState:
+    """Move the EWMA toward *hold* (or set it to *ewma*), then let the
+    baseline drift toward it."""
+    if ewma is None:
+        ewma = (
+            hold
+            if state.hold_ewma is None
+            else HOLD_EWMA_ALPHA * hold + (1.0 - HOLD_EWMA_ALPHA) * state.hold_ewma
+        )
     if state.hold_baseline is None:
         baseline = ewma
     else:

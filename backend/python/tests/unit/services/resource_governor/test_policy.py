@@ -1506,11 +1506,13 @@ class TestDownstreamBrake:
         _limits, held = self._mixed_run(report_holds=True, downstream_factor=3.0)
         assert held
 
-    def _slowdown_from_15(self, factor: float) -> tuple[int, bool]:
+    def _slowdown_from_15(
+        self, factor: float, per_sample: float | None = None
+    ) -> tuple[int, bool]:
         """A pool of 15 at the start of slow start with a learned chat
-        baseline; then every record takes ``factor`` times as long, the
-        slots stay full, and each sample releases what a full pool of such
-        records would. Returns the limit when the hold first engages."""
+        baseline; then every record takes ``factor`` times as long, and each
+        sample releases ``per_sample`` holds (by default what a full pool of
+        such records would). Returns the limit when the hold first engages."""
         ceilings = self._index_ceilings()
         snap = self._healthy_snapshot()
         limits = self._limits(16, 15)
@@ -1524,10 +1526,10 @@ class TestDownstreamBrake:
         state = ControllerState(pools={**state.pools, Pool.INDEX_LIGHT: learned})
         samples: deque[tuple[float, ...]] = deque([(self._CHAT_HOLD,) * 13] * 4, maxlen=4)
         hold = self._CHAT_HOLD * factor
-        per_sample = 15 * INTERVAL / hold
+        rate = per_sample if per_sample is not None else 15 * INTERVAL / hold
         owed = 0.0
         for i in range(12):
-            owed += per_sample
+            owed += rate
             released = int(owed)
             owed -= released
             holds = (hold,) * released
@@ -1549,22 +1551,62 @@ class TestDownstreamBrake:
         return limits.get(Pool.INDEX_LIGHT), False
 
     @pytest.mark.parametrize(
-        ("factor", "highest_limit"),
-        # Four, three and one or two releases a sample. Each holds within
-        # a doubling or two of 15, where the 32-hold window let 4x and 8x
-        # reach 30 and 46 and a 3x one reach the ceiling.
-        [(3.0, 22), (4.0, 18), (8.0, 18)],
+        ("factor", "per_sample"),
+        [
+            (3.0, None),  # a full pool: about four releases a sample
+            (3.0, 1.5),
+            (3.0, 1.0),
+            (4.0, None),
+            (8.0, None),  # one or two releases a sample
+        ],
     )
     def test_a_slowdown_holds_growth_before_slow_start_runs_away(
-        self, factor: float, highest_limit: int
+        self, factor: float, per_sample: float | None
     ) -> None:
-        limit, held = self._slowdown_from_15(factor)
+        """The second slow sample engages the hold, while the pool is still
+        where the slowdown found it, however few permits a sample releases."""
+        limit, held = self._slowdown_from_15(factor, per_sample)
         assert held
-        assert limit <= highest_limit
+        assert limit <= 16
 
-    def test_too_few_holds_leave_the_estimate_alone(self) -> None:
-        """After sparse samples one large record is all there is: it must
-        not stand for the pool, and neither may the mean."""
+    @pytest.mark.parametrize("burst", [2, 4])
+    def test_large_records_finishing_together_do_not_move_the_estimate(
+        self, burst: int
+    ) -> None:
+        """A sample in which only pull requests finished, after a sample of
+        chat, changes nothing; nor does the chat sample after it."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        chat = (self._CHAT_HOLD,) * 13
+        for history in (
+            (chat, chat, (self._PR_HOLD,) * burst),
+            (chat, (self._PR_HOLD,) * burst, chat),
+        ):
+            demand = PoolDemand(
+                permit_seconds=15 * INTERVAL,
+                blocked_acquires=3,
+                completions=len(history[-1]),
+                hold_seconds_by_sample=history,
+            )
+            state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(self._CHAT_HOLD)
+
+    def test_a_few_slow_holds_among_fast_ones_are_left_out(self) -> None:
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=6,
+            hold_seconds_by_sample=(
+                (self._CHAT_HOLD,) * 4 + (self._PR_HOLD,) * 2,
+            ),
+        )
+        assert policy_mod._track_hold_time(state, demand).hold_ewma == pytest.approx(
+            self._CHAT_HOLD
+        )
+
+    def test_one_long_hold_after_sparse_samples_waits_for_the_next(self) -> None:
+        """One large record is all there is: it must not stand for the pool,
+        and neither may the mean."""
         state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
         demand = PoolDemand(
             permit_seconds=15 * INTERVAL,
@@ -1572,31 +1614,12 @@ class TestDownstreamBrake:
             completions=1,
             hold_seconds_by_sample=((), (), (), (self._CHAT_HOLD,), (self._PR_HOLD,)),
         )
-        assert policy_mod._typical_hold(demand) is None
         assert policy_mod._track_hold_time(state, demand) == state
 
     def test_without_reported_holds_the_mean_is_still_used(self) -> None:
         state = PoolState(hold_ewma=2.0, hold_baseline=2.0)
         demand = PoolDemand(permit_seconds=400.0, blocked_acquires=0, completions=40)
         assert policy_mod._track_hold_time(state, demand).hold_ewma > 2.0
-
-    @pytest.mark.parametrize("burst", [2, 4])
-    def test_large_records_finishing_together_do_not_move_the_typical_hold(
-        self, burst: int
-    ) -> None:
-        """A sample in which only pull requests finished is weighed against
-        the sample before it."""
-        demand = PoolDemand(
-            permit_seconds=15 * INTERVAL,
-            blocked_acquires=3,
-            completions=burst,
-            hold_seconds_by_sample=(
-                (self._CHAT_HOLD,) * 13,
-                (self._CHAT_HOLD,) * 13,
-                (self._PR_HOLD,) * burst,
-            ),
-        )
-        assert policy_mod._typical_hold(demand) == pytest.approx(self._CHAT_HOLD)
 
     def test_no_feedback_argument_keeps_the_old_behaviour(self) -> None:
         limits, _ = next_limits(
