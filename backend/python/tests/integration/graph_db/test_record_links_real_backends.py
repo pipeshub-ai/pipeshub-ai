@@ -272,3 +272,5 @@ async def test_address_links_count_records_not_edges(seeded: _Graph) -> None:
     links = await seeded.graph.get_address_links_batch([ids["ticket"]], seeded.org_id, limit_per_record=2)
 
     assert links[ids["ticket"]]["mentioned_in"] == sorted([ids["message"], ids["pr"]])
+    unlimited = await seeded.graph.get_address_links_batch([ids["ticket"]], seeded.org_id)
+    assert unlimited[ids["ticket"]]["mentioned_in"] == sorted([ids["message"], ids["pr"]])

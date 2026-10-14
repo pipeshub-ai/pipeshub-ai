@@ -1940,9 +1940,6 @@ def build_parent_info(result: dict[str, Any]) -> str:
 
 # Records shown per direction under a hit's "Mentioned in" / "Links to".
 MAX_ADDRESS_LINKS_PER_HIT = 10
-# Joined records read per direction per hit before the access check, so that
-# records the user cannot open do not crowd out the ones they can.
-ADDRESS_LINKS_READ_PER_HIT = 200
 # A linked record's name is one line of data in the header: no line breaks.
 _MAX_LINKED_NAME_CHARS = 200
 _ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
@@ -1979,9 +1976,9 @@ async def enrich_records_with_address_links(
     if not hits:
         return
     try:
-        links = await graph_provider.get_address_links_batch(
-            list(hits), org_id, limit_per_record=ADDRESS_LINKS_READ_PER_HIT,
-        )
+        # Every joined record: access is checked before the cap, so a record the
+        # user cannot open never takes the place of one they can.
+        links = await graph_provider.get_address_links_batch(list(hits), org_id)
     except Exception as e:
         logger.warning("Address link enrichment skipped: %s", e)
         return

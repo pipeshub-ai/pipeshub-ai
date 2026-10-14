@@ -2137,7 +2137,7 @@ class IGraphDBProvider(ABC):
         self,
         record_ids: list[str],
         org_id: str,
-        limit_per_record: int = 20,
+        limit_per_record: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, dict[str, list[str]]]:
         """For each record, the live records joined to it because one names the
@@ -2149,7 +2149,9 @@ class IGraphDBProvider(ABC):
         Args:
             record_ids: Records to read. Empty returns ``{}`` without querying.
             org_id: Organization scope. Empty returns ``{}`` without querying.
-            limit_per_record: Most ids per direction per record.
+            limit_per_record: Most ids per direction per record, smallest ids
+                first; None returns every one, so a caller that filters by
+                access before it caps sees them all.
             transaction: Optional transaction ID.
 
         Returns:

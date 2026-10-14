@@ -146,7 +146,8 @@ class TestEnrichmentIsDecidedAfresh:
         await enrich_records_with_address_links(hits, graph, "org-1", user_id="user-1")
 
         assert [r["record_id"] for r in hits["vrid-pr"]["address_links"]["mentioned_in"]] == ["slack-open"]
-        assert graph.get_address_links_batch.await_args.kwargs["limit_per_record"] > MAX_ADDRESS_LINKS_PER_HIT
+        # Every joined record is read; only the access check decides what is shown.
+        assert graph.get_address_links_batch.await_args.kwargs.get("limit_per_record") is None
 
     @pytest.mark.asyncio
     async def test_a_reused_record_keeps_nothing_from_an_earlier_user(self) -> None:

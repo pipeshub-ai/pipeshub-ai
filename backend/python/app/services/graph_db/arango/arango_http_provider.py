@@ -5409,11 +5409,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_ids: list[str],
         org_id: str,
-        limit_per_record: int = 20,
+        limit_per_record: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, dict[str, list[str]]]:
         if not record_ids or not org_id:
             return {}
+        limit_clause = "LIMIT @limit" if limit_per_record is not None else ""
         query = f"""
         FOR anchor_id IN @record_ids
             LET anchor = CONCAT("{CollectionNames.RECORDS.value}/", anchor_id)
@@ -5424,7 +5425,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
                     COLLECT key = other._key
                     SORT key
-                    LIMIT @limit
+                    {limit_clause}
                     RETURN key
             )
             LET links_to = (
@@ -5434,7 +5435,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
                     COLLECT key = other._key
                     SORT key
-                    LIMIT @limit
+                    {limit_clause}
                     RETURN key
             )
             RETURN {{id: anchor_id, mentioned_in: mentioned_in, links_to: links_to}}
@@ -5442,7 +5443,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             rows = await self.http_client.execute_aql(
                 query,
-                {"record_ids": list(dict.fromkeys(record_ids)), "org_id": org_id, "limit": limit_per_record},
+                {"record_ids": list(dict.fromkeys(record_ids)), "org_id": org_id}
+                | ({"limit": limit_per_record} if limit_per_record is not None else {}),
                 txn_id=transaction,
             ) or []
             return {

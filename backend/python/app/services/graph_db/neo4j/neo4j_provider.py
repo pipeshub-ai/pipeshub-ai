@@ -16769,21 +16769,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_ids: list[str],
         org_id: str,
-        limit_per_record: int = 20,
+        limit_per_record: int | None = None,
         transaction: str | None = None,
     ) -> dict[str, dict[str, list[str]]]:
         if not record_ids or not org_id:
             return {}
+        slice_ = "[0..$limit]" if limit_per_record is not None else ""
         query = f"""
         UNWIND $record_ids AS anchor_id
         OPTIONAL MATCH (other:Record)-[edge:RECORD_RELATION]->(:Record {{id: anchor_id}})
         WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
         WITH anchor_id, other.id AS other_id ORDER BY other_id
-        WITH anchor_id, collect(DISTINCT other_id)[0..$limit] AS mentioned_in
+        WITH anchor_id, collect(DISTINCT other_id){slice_} AS mentioned_in
         OPTIONAL MATCH (:Record {{id: anchor_id}})-[edge:RECORD_RELATION]->(other:Record)
         WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
         WITH anchor_id, mentioned_in, other.id AS other_id ORDER BY other_id
-        WITH anchor_id, mentioned_in, collect(DISTINCT other_id)[0..$limit] AS links_to
+        WITH anchor_id, mentioned_in, collect(DISTINCT other_id){slice_} AS links_to
         RETURN anchor_id AS id, mentioned_in, links_to
         """
         try:
