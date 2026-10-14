@@ -276,6 +276,11 @@ def _interleave(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     return merged
 
 
+class _ConfigMovedError(Exception):
+    """The stored embedding config is not the one this store is initialising
+    for: this process's cached copy is stale, so it must not drop anything."""
+
+
 class EntityVectorStore:
     """Manages embedding and retrieval of knowledge-graph entities in the
     dedicated ``entities`` vector collection.
@@ -300,8 +305,8 @@ class EntityVectorStore:
         self.collection_name = collection_name
         # Only the indexing service sets this: it runs the rebuild that
         # repopulates the collection (app.modules.indexing.entity_index_rebuild).
-        # Even there, a collection that does not match the model is dropped
-        # only on the rebuild leader's request; see ``_ensure_initialized``.
+        # Even there, a mismatched collection that holds entities is dropped
+        # only on the rebuild leader's request; see ``_recreate_mismatched``.
         self.recreate_on_dimension_mismatch = recreate_on_dimension_mismatch
         self._model_id = ""
         self._embedding_size = 0
@@ -350,10 +355,11 @@ class EntityVectorStore:
         config that cannot be read keeps the current model.
 
         ``recreate`` lets a store built with ``recreate_on_dimension_mismatch``
-        drop a collection another model wrote. Only the rebuild leader passes
-        it (``EntityIndexRebuilder.tick``): two replicas dropping in turn would
-        lose the points the first refilled. It also skips the retry window,
-        since the leader is the one that clears the mismatch."""
+        drop a collection another model wrote, entities and all. Only the
+        rebuild leader passes it (``EntityIndexRebuilder.tick``). It also
+        skips the retry window, since the leader is the one that clears the
+        mismatch. Without it such a store drops only a collection holding no
+        entities (``_recreate_mismatched``)."""
         read = await self._read_embedding_config()
         if self._is_current(read):
             return
@@ -390,7 +396,14 @@ class EntityVectorStore:
                 if self._shared_collection is not None:
                     await self._init_collection(
                         self._shared_collection, recreate=recreate and self.recreate_on_dimension_mismatch,
+                        config_hash=config_hash,
                     )
+            except _ConfigMovedError:
+                raise VectorStoreError(
+                    "The embedding model config changed while the entity store was initialising; "
+                    "it re-reads the config on the next call",
+                    details={"collection": self.collection_name},
+                ) from None
             except Exception:
                 self._init_failed_at = time.monotonic()
                 self._init_failed_hash = config_hash
@@ -542,16 +555,27 @@ class EntityVectorStore:
         Nothing to do for a store with a collection per org."""
         if self._shared_collection is None:
             return
-        await self._ensure_initialized(recreate=True)
-        async with self._init_lock:
-            if not self._initialized:
-                raise VectorStoreError(
-                    "Entity vector store is re-initialising; the collection is set up when it has",
-                    details={"collection": self.collection_name},
-                )
-            await self._init_collection(
-                self._shared_collection, recreate=self.recreate_on_dimension_mismatch,
-            )
+        for _ in range(2):
+            await self._ensure_initialized(recreate=True)
+            async with self._init_lock:
+                if not self._initialized:
+                    raise VectorStoreError(
+                        "Entity vector store is re-initialising; the collection is set up when it has",
+                        details={"collection": self.collection_name},
+                    )
+                try:
+                    await self._init_collection(
+                        self._shared_collection, recreate=self.recreate_on_dimension_mismatch,
+                        config_hash=self._config_hash,
+                    )
+                    return
+                except _ConfigMovedError:
+                    # This process held a stale model; take the stored one and decide again.
+                    self._invalidate()
+        raise VectorStoreError(
+            "The embedding model config keeps changing; the entity collection is set up on a later call",
+            details={"collection": self.collection_name},
+        )
 
     async def _existing_collection(self, org_id: str) -> str | None:
         """*org_id*'s collection, or None when it does not exist. For the
@@ -587,9 +611,18 @@ class EntityVectorStore:
                 # collection at that model's dimension nor drop one already
                 # recreated for the new model.
                 await self._raise_if_config_moved(self._config_hash)
-            if not await self._init_collection(
-                name, recreate=recreate and self.recreate_on_dimension_mismatch, create=create,
-            ):
+            try:
+                ready = await self._init_collection(
+                    name, recreate=recreate and self.recreate_on_dimension_mismatch, create=create,
+                    config_hash=self._config_hash,
+                )
+            except _ConfigMovedError:
+                raise VectorStoreError(
+                    "The embedding model config changed while preparing the entity collection; "
+                    "it re-reads the config on the next call",
+                    details={"collection": name},
+                ) from None
+            if not ready:
                 return False
             self._ready_collections.add(name)
             return True
@@ -640,9 +673,12 @@ class EntityVectorStore:
 
     async def _init_collection(
         self, name: str | None = None, *, recreate: bool = False, create: bool = True,
+        config_hash: str | None = None,
     ) -> bool:
         """False, with nothing done, when ``name`` is missing and ``create``
-        is off. A collection dropped here is always created again."""
+        is off. A collection dropped here is always created again.
+        ``config_hash`` is the config the model was built from; a drop is
+        refused when the stored config has moved on (``_ConfigMovedError``)."""
         name = name or self.collection_name
         info = await self.vector_db_service.get_collection_info(name)
         if info.exists:
@@ -654,14 +690,16 @@ class EntityVectorStore:
             await self._ensure_payload_indexes(name)
         mismatch = await self._collection_mismatch(name, info)
         if mismatch:
-            await self._recreate_mismatched(name, mismatch, leader=recreate)
+            await self._recreate_mismatched(name, mismatch, leader=recreate, config_hash=config_hash)
         elif not info.exists:
             if not create:
                 return False
             await self._create_collection(name)
         return True
 
-    async def _recreate_mismatched(self, name: str, mismatch: str, *, leader: bool) -> None:
+    async def _recreate_mismatched(
+        self, name: str, mismatch: str, *, leader: bool, config_hash: str | None,
+    ) -> None:
         """Drop and re-create a collection that cannot serve the configured model.
 
         One that holds entities is dropped only on the rebuild leader's
@@ -696,7 +734,9 @@ class EntityVectorStore:
                     details={"collection": name},
                 )
             try:
-                await self._drop_and_create_under_lock(name, mismatch, holds_entities=holds_entities)
+                await self._drop_and_create_under_lock(
+                    name, mismatch, holds_entities=holds_entities, config_hash=config_hash,
+                )
             finally:
                 try:
                     await lock.release()
@@ -706,7 +746,15 @@ class EntityVectorStore:
             with contextlib.suppress(Exception):
                 await redis.aclose()
 
-    async def _drop_and_create_under_lock(self, name: str, mismatch: str, *, holds_entities: bool) -> None:
+    async def _drop_and_create_under_lock(
+        self, name: str, mismatch: str, *, holds_entities: bool, config_hash: str | None,
+    ) -> None:
+        # The mismatch is judged against this process's model, read from its
+        # config cache. A stale cache (a missed change notification) would
+        # drop the collection another replica recreated for the new model.
+        if await self._stored_config_hash() != config_hash:
+            self._config_read_at = None
+            raise _ConfigMovedError
         # Read again under the lock: another replica may have recreated it for
         # this model since the read that found the mismatch.
         current = await self.vector_db_service.get_collection_info(name)
@@ -1091,17 +1139,22 @@ class EntityVectorStore:
         process cannot tell whether the collection now belongs to another
         model. The batch is counted failed and the rebuild writes it again."""
         try:
-            embedding_configs = await self._load_embedding_configs(use_cache=False)
+            stored = await self._stored_config_hash()
         except Exception as exc:
             raise VectorStoreError(
                 "Cannot confirm the embedding model before an entity write",
                 details={"collection": self.collection_name, "error": str(exc)},
             ) from exc
-        if embedding_config_hash(embedding_configs) != config_hash:
+        if stored != config_hash:
             raise VectorStoreError(
                 "Embedding model config changed since this entity write was embedded",
                 details={"collection": self.collection_name},
             )
+
+    async def _stored_config_hash(self) -> str:
+        """``embedding_config_hash`` of the config in the key-value store, not
+        this process's cache. Raises when it cannot be read."""
+        return embedding_config_hash(await self._load_embedding_configs(use_cache=False))
 
     def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
         for name in ("written", "membership_only", "unchanged", "skipped", "failed"):

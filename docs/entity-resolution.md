@@ -344,7 +344,11 @@ are re-embedded in place.
   delete a collection by name only: a replica acting on a stale read would
   otherwise drop a collection another had just recreated and written to.
   Under the lock the store reads the collection again and keeps it if
-  another replica has already recreated it for the new model. A store that
+  another replica has already recreated it for the new model. It also reads
+  the embedding config from the key-value store, not its cache: a process
+  that missed the change notification would otherwise judge the new
+  collection against the old model and drop it. Such a process drops
+  nothing and takes the stored model instead. A store that
   cannot take the lock, or cannot reach Redis, drops nothing; its call fails
   and the next one after the 30-second retry window tries again. "Holds" is what a filtered scroll
   sees: on OpenSearch, points written since the last refresh do not count,
@@ -364,8 +368,9 @@ are re-embedded in place.
   leader. The retry is driven by calls, not a timer: for
   30 seconds after a failed initialisation, entity calls fail without
   retrying, and the first call after that tries again.
-  After a restart that finds a mismatched collection, entity writes fail
-  until the leader's first tick, which comes after a 60-second startup grace.
+  After a restart that finds a mismatched collection holding entities,
+  entity writes fail until the leader's first tick, which comes after a
+  60-second startup grace.
 - If the stored point cannot be read, the switch fails, and the first entity
   call more than 30 seconds later tries again. The store does not adopt the
   new model on an unread collection.

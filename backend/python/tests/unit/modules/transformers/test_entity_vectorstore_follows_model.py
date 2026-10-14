@@ -361,6 +361,57 @@ class TestFreshInstall:
         assert any("rebuild leader" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
 
 
+OLD = FakeEmbeddingModel(4.0, 4)
+OLD_CONFIG = embedding_config("openAI", "old-model")
+
+
+class TestAStaleModelDropsNothing:
+    """A process that missed the change notification still holds the old
+    model in its config cache. Judged against that model, the collection
+    another replica recreated for the new one looks mismatched."""
+
+    @pytest.fixture(autouse=True)
+    def _old_model(self) -> Iterator[None]:
+        with embedding_models({**MODELS, "old-model": OLD}):
+            yield
+
+    async def _recreated_by_a_replica(self) -> tuple[FakeEntityVectorDB, EntityVectorStore]:
+        db, config = FakeEntityVectorDB(), config_service(OLD_CONFIG)
+        leader = _store(db, config)
+        await _leader_tick(leader)
+        await leader.collection_stamp()
+        replica_config = another_process(config)
+        # Only the replica hears of the change.
+        await switch_embedding_model(replica_config, SMALL_CONFIG)
+        await _store(db, replica_config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert db.dimension == SMALL.dimension
+        return db, leader
+
+    async def test_the_leader_takes_the_stored_model_instead_of_dropping(self) -> None:
+        db, leader = await self._recreated_by_a_replica()
+        old_fp = await _leader_tick(leader)
+        assert old_fp.endswith(":4")
+
+        await leader.collection_stamp()
+
+        assert db.dimension == SMALL.dimension
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+        assert db.deletions == 1
+        assert await leader.embedding_fingerprint() == SMALL_FP
+
+    async def test_a_replica_reinitialising_drops_nothing_and_takes_the_stored_model(self) -> None:
+        db, stale = await self._recreated_by_a_replica()
+        stale._invalidate()  # as a failed search on the recreated collection does
+        db.points.clear()  # written, but not yet visible to a search (OpenSearch)
+
+        with pytest.raises(VectorStoreError, match="changed while the entity store was initialising"):
+            await stale.upsert_entities_batch([_topic("t2")], merge_membership=False)
+        assert (db.deletions, db.dimension) == (1, SMALL.dimension)
+
+        assert (await stale.upsert_entities_batch([_topic("t2")], merge_membership=False)).written == 1
+        assert db.dimension == SMALL.dimension
+
+
 class TestOneRecreateAtATime:
     """The vector stores delete a collection by name only, so drops and
     re-creates by different replicas are serialised by a Redis lock."""
