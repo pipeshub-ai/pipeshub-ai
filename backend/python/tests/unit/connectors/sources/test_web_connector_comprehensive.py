@@ -33,7 +33,6 @@ from app.connectors.sources.web.connector import (
 )
 from app.connectors.sources.web.fetch_strategy import MAX_RATE_LIMIT_BACKOFF, FetchResponse
 from app.models.entities import RecordType
-from app.models.permission import EntityType, Permission, PermissionType
 from PIL import Image as PILImage
 
 _TINY_PNG = base64.b64decode(
@@ -820,34 +819,14 @@ class TestCleanDataUris:
 # ===========================================================================
 class TestCreateWebPermissions:
     @pytest.mark.asyncio
-    async def test_team_scope_org_read(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
+    @pytest.mark.parametrize("scope", [ConnectorScope.TEAM.value, ConnectorScope.PERSONAL.value])
+    async def test_group_inherits_the_app_and_has_no_grants(self, scope):
+        c = _make_connector(scope=scope)
         c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-
-    @pytest.mark.asyncio
-    async def test_personal_with_app_users_grants_user_read(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        app_user = MagicMock()
-        app_user.email = "owner@example.com"
-        await c.create_record_group([app_user])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "owner@example.com"
-
-    @pytest.mark.asyncio
-    async def test_personal_without_creator_yields_no_permissions(self):
-        c = _make_connector()
-        c.url = "https://example.com"
-        await c.create_record_group([])
-        _, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        await c.create_record_group()
+        group, perms = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
+        assert group.inherit_permissions is True
+        # [] rather than None, so a re-sync clears grants an older version stored.
         assert perms == []
 
     @pytest.mark.asyncio
@@ -858,18 +837,7 @@ class TestCreateWebPermissions:
             side_effect=RuntimeError("perm fail")
         )
         with pytest.raises(RuntimeError, match="perm fail"):
-            await c.create_record_group([])
-
-
-class TestCreateRecordGroupTeam:
-    @pytest.mark.asyncio
-    async def test_team_without_app_users_uses_org_permission(self):
-        c = _make_connector(scope=ConnectorScope.TEAM.value)
-        c.url = "https://example.com"
-        c.connector_name = Connectors.WEB
-        await c.create_record_group([])
-        _, permissions = c.data_entities_processor.on_new_record_groups.call_args[0][0][0]
-        assert permissions[0].entity_type == EntityType.ORG
+            await c.create_record_group()
 
 
 class TestReloadConfigOrchestration:
