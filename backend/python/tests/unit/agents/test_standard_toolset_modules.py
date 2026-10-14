@@ -19,7 +19,10 @@ def test_module_imports_and_defines_a_toolset(module_path: str) -> None:
     toolsets = [
         name
         for name, obj in inspect.getmembers(module)
-        if inspect.isclass(obj) and hasattr(obj, "_toolset_metadata")
+        if inspect.isclass(obj)
+        and hasattr(obj, "_toolset_metadata")
+        # A class imported from elsewhere would hide that this module defines none.
+        and obj.__module__ == module_path
     ]
     assert toolsets, f"{module_path} defines no toolset class"
 
