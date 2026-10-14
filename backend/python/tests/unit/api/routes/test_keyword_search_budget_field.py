@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 
 @pytest.fixture(params=["app.api.routes.agent", "app.api.routes.chatbot"])
-def chat_query_cls(request):
+def chat_query_cls(request: pytest.FixtureRequest) -> type:
     module = __import__(request.param, fromlist=["ChatQuery"])
     return module.ChatQuery
 

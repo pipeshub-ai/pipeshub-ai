@@ -394,7 +394,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
-    ...keywordSearchFieldsSchema,
+  ...keywordSearchFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -550,7 +550,7 @@ const addMessageBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
-    ...keywordSearchFieldsSchema,
+  ...keywordSearchFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
