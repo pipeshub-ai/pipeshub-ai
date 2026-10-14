@@ -65,7 +65,6 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_processor.record_links import (
-    LinkRecordsUnreadableError,
     canonical_address,
     related_for_urls,
 )
@@ -3424,14 +3423,13 @@ class SlackIndividualConnector(BaseConnector):
                 if md.get("thread_ts") and md.get("thread_ts") != ts:
                     continue
 
-                # ── A / B: edits ───────────────────────────────────────────
-                # Not caught: a failed edit fails the channel's scan, so its
-                # checkpoint stays and the edit is read again. The scan reads by
-                # message time, so an edit skipped here would never come back.
-                if self._is_edited(md):
-                    updated += await self._handle_edited_message(md, channel_id, ts)
-
                 try:
+                    # ── A / B: edits ───────────────────────────────────────
+                    if self._is_edited(md):
+                        updated += await self._handle_edited_message(
+                            md, channel_id, ts
+                        )
+
                     # ── C: newly-threaded or grown thread ──────────────────
                     # reply_count > 0 and thread_ts == ts → this is a thread root.
                     if md.get("reply_count", 0) > 0 and md.get("thread_ts") == ts:
@@ -3538,10 +3536,6 @@ class SlackIndividualConnector(BaseConnector):
                 involved_user_source_ids=[md.get("user", "")] if md.get("user") else [],
                 related_external_records=self._related_for_messages([md]),
             )
-            held = await self._held_link_records(updated_rec)
-            # Links first: if the content write then fails, the edit is still
-            # unsaved, so the retry finds it changed and runs both again.
-            await self._sync_edited_links(updated_rec, [md], ctx, held)
             await self.data_entities_processor.on_record_content_update(updated_rec)
             return 1
 
@@ -3555,8 +3549,16 @@ class SlackIndividualConnector(BaseConnector):
         # Fetch all messages in the burst window from Slack and rebuild block_containers
         # (block_containers are NOT stored in the DB; we must reconstruct them).
         try:
-            fetched = await self._fetch_burst_window(channel_id, burst_rec.start_ts, burst_rec.end_ts)
-            if fetched is None:
+            await self.rate_limiter.acquire(Tier.T3)
+            ds   = await self._fresh_datasource()
+            resp = await ds.conversations_history(
+                channel=channel_id,
+                oldest=burst_rec.start_ts,
+                latest=burst_rec.end_ts,
+                inclusive=True,
+                limit=200,
+            )
+            if not resp or not resp.success:
                 self.logger.warning(
                     f"Could not fetch burst messages for channel={channel_id} "
                     f"ts={ts}; skipping burst update"
@@ -3565,7 +3567,7 @@ class SlackIndividualConnector(BaseConnector):
 
             burst_msgs = sorted(
                 [
-                    m for m in fetched
+                    m for m in resp.data.get("messages", [])
                     if (
                         m.get("ts")
                         and burst_rec.start_ts <= m["ts"] <= burst_rec.end_ts
@@ -3599,95 +3601,9 @@ class SlackIndividualConnector(BaseConnector):
         # Synthetic revision forces _handle_updated_record to DB-upsert
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
 
-        held = await self._held_link_records(burst_rec)
-        # Links first, as for a single message: a failed content write leaves the
-        # edit unsaved, so the retry runs both again.
-        await self._sync_edited_links(burst_rec, burst_msgs, ctx, held)
         await self.data_entities_processor.on_record_content_update(burst_rec)
         return 1
 
-
-    # Pages read to rebuild one burst on an edit. A burst is a five-minute window,
-    # so even one page is rarely full; a window still unread after these is not
-    # rebuilt at all, rather than rebuilt from part of its messages.
-    _EDIT_BURST_MAX_PAGES = 10
-
-    async def _fetch_burst_window(
-        self, channel_id: str, oldest: Optional[str], latest: Optional[str]
-    ) -> Optional[list[dict[str, Any]]]:
-        """Every message in [oldest, latest], or None when they could not all be read.
-
-        An edit rebuilds the burst from these, its links included, so a partial
-        read would drop the links of the messages it missed."""
-        messages: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
-        for _page in range(self._EDIT_BURST_MAX_PAGES):
-            await self.rate_limiter.acquire(Tier.T3)
-            ds = await self._fresh_datasource()
-            kwargs: dict[str, Any] = {
-                "channel": channel_id, "oldest": oldest, "latest": latest,
-                "inclusive": True, "limit": 200,
-            }
-            if cursor:
-                kwargs["cursor"] = cursor
-            resp = await ds.conversations_history(**kwargs)
-            if not resp or not resp.success:
-                return None
-            messages.extend(resp.data.get("messages", []))
-            cursor = (resp.data.get("response_metadata") or {}).get("next_cursor") or None
-            if not cursor:
-                return messages
-        return None
-
-    async def _held_link_records(self, rec: MessageRecord) -> list[Record]:
-        """The link records stored under ``rec``. Read before an edit writes
-        anything. A failed read raises LinkRecordsUnreadableError, which fails the
-        channel's change scan so its window is scanned again: the edit is not
-        applied half done, and not lost."""
-        try:
-            return list(await self.data_entities_processor.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=rec.external_record_id,
-                record_type=RecordType.LINK.value,
-            ) or [])
-        except Exception as exc:
-            raise LinkRecordsUnreadableError(
-                f"Link records of {rec.external_record_id} could not be read"
-            ) from exc
-
-    async def _sync_edited_links(
-        self,
-        rec: MessageRecord,
-        msgs: list[dict[str, Any]],
-        ctx: ProcessingContext,
-        held: list[Record],
-    ) -> None:
-        """After an edit, keep the record's link records in step with its text.
-
-        A link added by the edit gets its link record; a link the edit removed
-        loses it. Otherwise a record indexed later would find the old link record
-        and join the message to an address it no longer pastes."""
-        links: list[LinkRecord] = []
-        for msg in msgs:
-            for url in self._extract_urls(msg.get("text", "")):
-                lr = await self._process_link(url, rec, ctx, msg)
-                if lr:
-                    links.append(lr)
-        if links:
-            pairs: list[tuple[Record, list[Permission]]] = [(lr, []) for lr in links]
-            # The same filters a normal sync applies, the channel's own included
-            # (a direct message with DM indexing off stays unindexed).
-            self._apply_record_indexing_filters(
-                pairs, ctx.channel_id, message_key=IndexingFilterKey.MESSAGES
-            )
-            await self._enrich_link_records_linked_id(pairs)
-            await self.data_entities_processor.on_new_records(pairs)
-        kept = {lr.external_record_id for lr in links}
-        for old in held:
-            if old.external_record_id not in kept:
-                await self.data_entities_processor.delete_record_by_external_id(
-                    self.connector_id, old.external_record_id
-                )
 
     def _root_rg_id(self, ctx: ProcessingContext) -> Optional[str]:
         """Channel record group id: the root of a Slack record's group chain."""

@@ -327,3 +327,29 @@ class TestBackfillJoinsOnlyThePickedRecord:
         await proc._join_records_linking_here(ticket, tx)
 
         assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/ticket-1"]
+
+
+class TestATicketAndItsAttachmentBothSaved:
+    @pytest.mark.asyncio
+    async def test_the_only_edge_from_the_message_goes_to_the_ticket(self) -> None:
+        """A message pasted the issue's address before either was indexed. The
+        ticket and its attachment (stored at the same address) are then both
+        saved, in either order: only the ticket is joined."""
+        stored = [
+            {"id": "ticket-1", "webUrl": JIRA, "isDependentNode": False},
+            {"id": "attachment-1", "webUrl": JIRA, "isDependentNode": True},
+        ]
+        ticket = _pull_request("ticket-1")
+        ticket.weburl = JIRA
+        attachment = _pull_request("attachment-1")
+        attachment.weburl = JIRA
+        attachment.is_dependent_node = True
+
+        for order in ((attachment, ticket), (ticket, attachment)):
+            proc = _processor()
+            tx = _tx_store(holders=["msg-1"], at_address=stored)
+            for record in order:
+                await proc._join_records_linking_here(record, tx)
+            assert [(e["_from"], e["_to"]) for e in _edges(tx)] == [
+                (f"{CollectionNames.RECORDS.value}/msg-1", f"{CollectionNames.RECORDS.value}/ticket-1"),
+            ]
