@@ -289,7 +289,9 @@ without extraction or model calls other than embedding:
   record-group points are checked against the graph in batches. A point is
   deleted when its node is gone or belongs to another org. Points of legacy
   nodes without an org are kept, because records still link to them. Record
-  points are not swept; single-record delete removes them.
+  points are not swept; single-record delete removes them, and a
+  knowledge-base record's delete also removes the taxonomy points no other
+  record reaches (see "Operational notes").
 
 A document is done when its `entityIndexState` equals
 `v<ENTITY_INDEX_VERSION>@<stamp>:<provider>:<model>:<dimension>`, so changing
@@ -458,6 +460,38 @@ line.
   - deploy the indexing service before the connector service: an older
     indexing service dead-letters `deleteConnectorEntities`, and those
     messages then need replaying.
+- Deleting a knowledge-base record (a file, the files under a deleted folder,
+  a bulk delete, or the trash purge of any of them) removes the taxonomy
+  points only that record reached:
+  - the delete reads the record's `belongsTo*` links (category, subcategory,
+    topic, language and department) before it removes the edges, and its
+    `deleteRecord` event names them in `taxonomyRefs`. A failed read never
+    fails the delete; the event then names none. A global department's point
+    is per org like every other, so only the org's own records keep it;
+  - the indexing service asks the graph which of them no non-deleted record of
+    the org reaches any more (`get_unreached_taxonomy_entities`) and deletes
+    those points. Another record of the same knowledge base, a record of
+    another knowledge base or connector, and a copy of the record (a duplicate
+    keeps its own copied edges) each keep a point; a record in the trash does
+    not. Each entity stops at its first live record, so a language most of the
+    org links to costs one edge read;
+  - a point still reached keeps its membership. It is a recall hint every
+    search re-checks against the graph, and narrowing it exactly would read
+    every record linked to the entity;
+  - the check runs under the entities' locks, so a record indexed on the same
+    indexing instance meanwhile keeps its point; another instance's can be lost
+    until that record is indexed again, as with connector cleanup;
+  - a failure is retried, then dead-lettered. A lost publish leaves the points,
+    as it leaves the record's vectors;
+  - moving a record to the trash changes nothing: the graph already ignores
+    trashed records, and a restore keeps everything. The purge cleans up;
+  - the graph's taxonomy nodes stay, as on connector delete. Named entities
+    need nothing here: the delete removes the record's `mentionsEntity` edges,
+    and the orphan sweep removes the nodes and their points
+    (`named-entity-extraction.md`, "Cleanup");
+  - connector record deletes name no `taxonomyRefs` yet
+    (`cleans_taxonomy_points`). An older indexing service ignores the field, so
+    the services deploy in any order.
 - Embedding runs before the per-entity locks are taken. The locks only cover
   the read, merge and write, so records sharing a popular entity do not wait
   on each other's embedding call.

@@ -117,9 +117,12 @@ from app.services.graph_db.common.utils import (
     EntityCandidateRows,
     PermittedEntityRows,
     build_connector_stats_response,
+    cleans_taxonomy_points,
     dedupe_agents_by_id,
+    deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
+    record_taxonomy_refs,
     restore_items,
     select_canonical_chain_names,
     soft_delete_request_result,
@@ -8881,6 +8884,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             attachment_ids, attachment_payloads = await self._attachments_to_delete(
                 record_id, org_id, transaction
             )
+            taxonomy_refs = await deleted_record_taxonomy_refs(self, [record], self.logger)
 
             # Create event payload for router to publish
             event_data = None
@@ -8895,6 +8899,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         payload["connectorName"] = connector_name
                     if origin:
                         payload["origin"] = origin
+                    if refs := taxonomy_refs.get(record_id):
+                        payload["taxonomyRefs"] = refs
 
                     event_data = {
                         "eventType": "deleteRecord",
@@ -12640,6 +12646,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "connector_id": connector_id,
                     "deleted_ids": record_keys,
                 }
+                # Read before the DETACH DELETE below removes them.
+                taxonomy_refs = await deleted_record_taxonomy_refs(
+                    self, [rt["record"] for rt in records_with_type if rt.get("record")], self.logger
+                )
 
                 if within_folder_id and record_keys:
                     # The client auto-commits each query unless explicit transactions
@@ -12713,6 +12723,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
                             delete_payload["origin"] = rec.get("origin")
+                            if refs := taxonomy_refs.get(rec.get("id")):
+                                delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
                     self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
@@ -13017,10 +13029,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return [row["id"] for row in rows or []]
 
-    async def _trash_purge_row(self, rec: dict, type_doc: dict | None) -> dict:
+    async def _trash_purge_row(
+        self, rec: dict, type_doc: dict | None, taxonomy_refs: list[dict[str, str]] | None = None,
+    ) -> dict:
         rec = {k: v for k, v in rec.items() if k != _PURGE_LOCK}
         type_doc = dict(type_doc) if type_doc else None
         payload = await self._create_deleted_record_event_payload(rec, type_doc)
+        if payload and taxonomy_refs:
+            payload["taxonomyRefs"] = taxonomy_refs
         return trash_purge_row(rec["id"], rec, type_doc, payload)
 
     async def _purge_write(self, query: str, *, parameters: dict, txn_id: str | None) -> list:
@@ -13090,9 +13106,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             warning="The purge's index %s is not ready; walking the trash without it until it is: %s",
         )
         rows = rows or []
+        listed = [row for row in rows if not row.get("skip") and not row.get("held")]
+        # The purge outbox keeps these payloads, and publishes them if the purge's own answer is lost.
+        taxonomy_refs = await deleted_record_taxonomy_refs(self, [row["rec"] for row in listed], self.logger)
         records = [
-            await self._trash_purge_row(row["rec"], row.get("type_doc"))
-            for row in rows if not row.get("skip") and not row.get("held")
+            await self._trash_purge_row(row["rec"], row.get("type_doc"), taxonomy_refs.get(row["rec"]["id"]))
+            for row in listed
         ]
         last = rows[-1]["rec"] if len(rows) >= limit else None
         return {
@@ -13128,6 +13147,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See ``IGraphDBProvider.purge_trashed_records``."""
         if not record_ids:
             return {"purged": [], "kept": []}
+        # Read by key before the statement below deletes the edges: only it knows
+        # which records are due, so the knowledge-base check waits for its rows.
+        taxonomy_refs = await record_taxonomy_refs(self, record_ids, self.logger)
         # One statement, because each commits on its own unless explicit transactions
         # are on. Setting a property takes the record's write lock, so the checks
         # after it read a restore that committed after the MATCH, and a restore
@@ -13173,7 +13195,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         rows = rows or []
-        purged = [await self._trash_purge_row(row["rec"], row.get("type_doc")) for row in rows if row["due"]]
+        purged = [
+            await self._trash_purge_row(
+                row["rec"], row.get("type_doc"),
+                taxonomy_refs.get(row["id"]) if cleans_taxonomy_points(row["rec"]) else None,
+            )
+            for row in rows if row["due"]
+        ]
         # A missing id is in neither list: it may be one an earlier attempt already removed.
         return {"purged": purged, "kept": [row["id"] for row in rows if not row["due"]]}
 
@@ -18421,6 +18449,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_keys: list[str],
         transaction: str | None = None,
+        *,
+        include_departments: bool = False,
     ) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_record_taxonomy_links`."""
         keys = sorted({str(k) for k in record_keys or [] if k})
@@ -18428,17 +18458,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
         if not self.client:
             raise RuntimeError("Neo4j client is not connected")
-        label_to_collection = {collection_to_label(c): c for c in TAXONOMY_COLLECTIONS}
-        relationships = "|".join(sorted({
-            edge_collection_to_relationship(e) for e in TAXONOMY_EDGE_COLLECTIONS.values()
-        }))
+        collections = set(TAXONOMY_COLLECTIONS)
+        edges = set(TAXONOMY_EDGE_COLLECTIONS.values())
+        if include_departments:
+            collections.add(CollectionNames.DEPARTMENTS.value)
+            edges.add(CollectionNames.BELONGS_TO_DEPARTMENT.value)
+        label_to_collection = {collection_to_label(c): c for c in collections}
+        relationships = "|".join(sorted({edge_collection_to_relationship(e) for e in edges}))
         record_label = collection_to_label(CollectionNames.RECORDS.value)
         query = f"""
             UNWIND $keys AS key
             MATCH (rec:{record_label} {{id: key}})-[link:{relationships}]->(n)
             WHERE any(l IN labels(n) WHERE l IN $labels)
             RETURN rec.id AS recordId, n.id AS entityId, labels(n) AS nodeLabels,
-                   n.name AS name, n.normalizedName IS NOT NULL AS canonical,
+                   coalesce(n.name, n.departmentName) AS name, n.normalizedName IS NOT NULL AS canonical,
                    link.extractedName AS extractedName,
                    link.extractedNames AS extractedNames,
                    link.migratedFrom IS NOT NULL AS migrated
@@ -18783,6 +18816,51 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "recordGroupIds": [str(g) for g in row.get("group_ids") or []],
                     }
         return results
+
+    async def get_unreached_taxonomy_entities(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """See :meth:`IGraphDBProvider.get_unreached_taxonomy_entities`."""
+        if not refs or not org_id:
+            return set()
+        if not self.client:
+            raise RuntimeError("Neo4j client is not connected")
+        ids_by_type: dict[str, list[str]] = {}
+        for ref in refs:
+            ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
+            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES:
+                bucket = ids_by_type.setdefault(ref_type, [])
+                if ref_id not in bucket:
+                    bucket.append(ref_id)
+
+        unreached: set[tuple[str, str]] = set()
+        for ref_type, ref_ids in ids_by_type.items():
+            relationship, entity_match = self._entity_node_match(ref_type)
+            # Only reached refs come back: one whose node is gone, or that no
+            # live record links to, yields no row from the CALL.
+            query = f"""
+            UNWIND $refs AS ref
+            CALL {{
+              WITH ref
+              {entity_match}
+              MATCH (rec:Record)-[:{relationship}]->(e)
+              WHERE rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false
+              RETURN rec.id AS reached_by
+              LIMIT 1
+            }}
+            RETURN ref.id AS id
+            """
+            rows = await self.client.execute_query(
+                query,
+                parameters={"refs": [{"id": ref_id} for ref_id in ref_ids], "org_id": org_id},
+                txn_id=transaction,
+            )
+            reached = {str(row.get("id")) for row in rows or []}
+            unreached.update((ref_type, ref_id) for ref_id in ref_ids if ref_id not in reached)
+        return unreached
 
     async def find_taxonomy_nodes(
         self,

@@ -178,6 +178,7 @@ from app.services.graph_db.common.utils import (
     PermittedEntityRows,
     build_connector_stats_response,
     dedupe_agents_by_id,
+    deleted_record_taxonomy_refs,
     empty_soft_delete_result,
     jira_issue_browse_url_regex,
     restore_items,
@@ -14319,6 +14320,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             transaction=txn_id,
                         )
 
+                # Read before the edge sweep below removes them.
+                taxonomy_refs = await deleted_record_taxonomy_refs(
+                    self, [rt["record"] for rt in records_with_type], self.logger
+                )
                 node_ids = [f"records/{k}" for k in record_keys]
                 writes_started = True
                 if node_ids:
@@ -14358,6 +14363,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
                             delete_payload["origin"] = rec.get("origin")
+                            if refs := taxonomy_refs.get(rec["_key"]):
+                                delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
                     self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
@@ -14808,8 +14815,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         ) or []
         return [key for key in rows if key is not None]
 
-    async def _trash_purge_row(self, rec: dict, type_doc: dict | None) -> dict:
+    async def _trash_purge_row(
+        self, rec: dict, type_doc: dict | None, taxonomy_refs: list[dict[str, str]] | None = None,
+    ) -> dict:
         payload = await self._create_deleted_record_event_payload(rec, type_doc)
+        if payload and taxonomy_refs:
+            payload["taxonomyRefs"] = taxonomy_refs
         return trash_purge_row(rec["_key"], rec, type_doc, payload)
 
     async def _begin_purge_transaction(self, *, read: list[str], write: list[str], exclusive: list[str]) -> str:
@@ -14891,9 +14902,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             },
             transaction=transaction,
         ) or []
+        listed = [row for row in rows if not row.get("skip") and not row.get("held")]
+        # The purge outbox keeps these payloads, and publishes them if the purge's own answer is lost.
+        taxonomy_refs = await deleted_record_taxonomy_refs(self, [row["rec"] for row in listed], self.logger)
         records = [
-            await self._trash_purge_row(row["rec"], row.get("type_doc"))
-            for row in rows if not row.get("skip") and not row.get("held")
+            await self._trash_purge_row(row["rec"], row.get("type_doc"), taxonomy_refs.get(row["rec"]["_key"]))
+            for row in listed
         ]
         last = rows[-1]["rec"] if len(rows) >= limit else None
         return {
@@ -14998,6 +15012,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             kept = [row["record"]["_key"] for row in due if not row["due"]]
             due = [row for row in due if row["due"]]
             keys = [row["record"]["_key"] for row in due]
+            # Read before the edges go below.
+            taxonomy_refs = await deleted_record_taxonomy_refs(self, [row["record"] for row in due], self.logger)
             if keys:
                 _, failed_edges = await self._delete_edges_by_node_ids(
                     txn_id, [f"{CollectionNames.RECORDS.value}/{k}" for k in keys], edge_collections
@@ -15019,7 +15035,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 await self.rollback_transaction(txn_id)
             raise
         purged = [
-            await self._trash_purge_row(row["record"], (row.get("type_target") or {}).get("doc")) for row in due
+            await self._trash_purge_row(
+                row["record"], (row.get("type_target") or {}).get("doc"), taxonomy_refs.get(row["record"]["_key"]),
+            )
+            for row in due
         ]
         # A missing id is in neither list: it may be one an earlier attempt already removed.
         return {"purged": purged, "kept": kept}
@@ -16822,6 +16841,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             # Get file record for event publishing before deletion
             file_record = await self.get_document(record_id, CollectionNames.FILES.value)
+            taxonomy_refs = await deleted_record_taxonomy_refs(self, [record], self.logger)
 
             # Delete KB-specific edges
             await self._delete_kb_specific_edges(record_id, transaction)
@@ -16840,6 +16860,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if payload:
                     payload["connectorName"] = Connectors.KNOWLEDGE_BASE.value
                     payload["origin"] = OriginTypes.UPLOAD.value
+                    if refs := taxonomy_refs.get(record_id):
+                        payload["taxonomyRefs"] = refs
                     event_data = {
                         "eventType": "deleteRecord",
                         "topic": "record-events",
@@ -18911,12 +18933,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         record_keys: list[str],
         transaction: str | None = None,
+        *,
+        include_departments: bool = False,
     ) -> list[dict[str, Any]]:
         """See :meth:`IGraphDBProvider.get_record_taxonomy_links`."""
         keys = sorted({str(k) for k in record_keys or [] if k})
         if not keys:
             return []
-        edge_collections = ", ".join(sorted(set(TAXONOMY_EDGE_COLLECTIONS.values())))
+        edges = set(TAXONOMY_EDGE_COLLECTIONS.values())
+        collections = set(TAXONOMY_COLLECTIONS)
+        if include_departments:
+            edges.add(CollectionNames.BELONGS_TO_DEPARTMENT.value)
+            collections.add(CollectionNames.DEPARTMENTS.value)
+        edge_collections = ", ".join(sorted(edges))
         query = f"""
             FOR key IN @keys
                 FOR v, link IN 1..1 OUTBOUND CONCAT("{CollectionNames.RECORDS.value}/", key)
@@ -18927,7 +18956,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         recordId: key,
                         collection: collection,
                         entityId: v._key,
-                        name: v.name,
+                        name: NOT_NULL(v.name, v.departmentName),
                         canonical: v.normalizedName != null,
                         extractedName: link.extractedName,
                         extractedNames: link.extractedNames,
@@ -18936,7 +18965,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         rows = await self.execute_query(
             query,
-            bind_vars={"keys": keys, "collections": sorted(TAXONOMY_COLLECTIONS)},
+            bind_vars={"keys": keys, "collections": sorted(collections)},
             transaction=transaction,
         )
         return [dict(row) for row in rows or [] if row.get("entityId")]
@@ -19347,6 +19376,49 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         "recordGroupIds": [str(g) for g in row.get("recordGroupIds") or []],
                     }
         return results
+
+    async def get_unreached_taxonomy_entities(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """See :meth:`IGraphDBProvider.get_unreached_taxonomy_entities`."""
+        if not refs or not org_id:
+            return set()
+        ids_by_type: dict[str, list[str]] = defaultdict(list)
+        for ref in refs:
+            ref_id, ref_type = str(ref.get("id") or ""), ref.get("type")
+            if ref_id and ref_type in TAXONOMY_ENTITY_TYPES and ref_id not in ids_by_type[ref_type]:
+                ids_by_type[ref_type].append(ref_id)
+
+        records = CollectionNames.RECORDS.value
+        unreached: set[tuple[str, str]] = set()
+        for ref_type, ref_ids in ids_by_type.items():
+            edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[ref_type]
+            targets = ", ".join(f'CONCAT("{c}/", ref_id)' for c in target_collections)
+            query = f"""
+            FOR ref_id IN @ref_ids
+                LET targets = [{targets}]
+                LET reached = FIRST(
+                    FOR edge IN {edge_collection}
+                        FILTER edge._to IN targets
+                        FILTER STARTS_WITH(edge._from, "{records}/")
+                        LET rec = DOCUMENT(edge._from)
+                        FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
+                        LIMIT 1
+                        RETURN true
+                )
+                FILTER reached == null
+                RETURN ref_id
+            """
+            rows = await self.execute_query(
+                query,
+                bind_vars={"ref_ids": ref_ids, "org_id": org_id},
+                transaction=transaction,
+            )
+            unreached.update((ref_type, str(ref_id)) for ref_id in rows or [])
+        return unreached
 
     # ------------------------------------------------------------------
     # Taxonomy entity resolution (per-org canonical nodes)

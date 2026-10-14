@@ -95,6 +95,9 @@ if TYPE_CHECKING:
 MembershipLookup = Callable[
     [list[dict[str, str]]], Awaitable[dict[tuple[str, str], dict[str, list[str]]]]
 ]
+# (entity refs) -> {(type, id)} no live record reaches, from the graph; see
+# IGraphDBProvider.get_unreached_taxonomy_entities.
+UnreachedLookup = Callable[[list[dict[str, str]]], Awaitable[set[tuple[str, str]]]]
 
 
 class _MembershipReadError(Exception):
@@ -1077,6 +1080,47 @@ class EntityVectorStore:
         await self.vector_db_service.delete_points(
             self.collection_name, await self._entities_filter(org_id, entity_type, ids),
         )
+
+    async def delete_unreached_entities(
+        self, org_id: str, refs: list[dict[str, Any]], unreached_lookup: UnreachedLookup,
+    ) -> None:
+        """Delete the points of ``refs`` (``{"id", "type"}``, the entities a
+        deleted record linked to) that no live record reaches any more, as
+        ``unreached_lookup`` reads it from the graph. A point still reached
+        keeps its membership: it is a recall hint every search re-checks
+        against the graph, and an exact one would cost a read of every record
+        linked to the entity.
+
+        The lookup runs under the entities' locks. Indexing commits a record's
+        edges before it writes their points, so a record of this process linked
+        to one of them shows in the lookup, or rewrites the point after the
+        delete. A record indexed on another instance meanwhile can lose its
+        point until it is indexed again, as in connector cleanup.
+
+        Raises on failure so the caller can retry. Needs no embeddings.
+        """
+        wanted = sorted({
+            (str(ref["type"]), str(ref["id"]))
+            for ref in refs or []
+            if isinstance(ref, dict) and ref.get("type") and ref.get("id")
+        })
+        if not org_id or not wanted or not await self.collection_exists():
+            return
+        gone: dict[str, list[str]] = {}
+        async with contextlib.AsyncExitStack() as locks:
+            for key in sorted({self._entity_key(org_id, t, i) for t, i in wanted}):
+                await locks.enter_async_context(self._entity_lock(key))
+            unreached = await unreached_lookup([{"id": i, "type": t} for t, i in wanted])
+            # Only what was asked for: a lookup can never widen the delete.
+            for entity_type, entity_id in sorted(set(unreached) & set(wanted)):
+                gone.setdefault(entity_type, []).append(entity_id)
+            for entity_type, entity_ids in gone.items():
+                await self.delete_entities(org_id, entity_type, entity_ids)
+        if gone:
+            self.logger.info(
+                "Deleted %d entity point(s) no record reaches any more | org=%s",
+                sum(len(ids) for ids in gone.values()), org_id,
+            )
 
     async def page_entity_points(
         self,

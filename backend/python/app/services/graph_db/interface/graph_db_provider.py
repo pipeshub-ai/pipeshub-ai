@@ -6699,6 +6699,8 @@ class IGraphDBProvider(ABC):
         self,
         record_keys: list[str],
         transaction: str | None = None,
+        *,
+        include_departments: bool = False,
     ) -> list[dict[str, Any]]:
         """Every ``belongsTo*`` edge from the given records to a category,
         subcategory, topic or language node, with the spelling the record's
@@ -6710,7 +6712,9 @@ class IGraphDBProvider(ABC):
         ``normalizedName``), ``extractedName`` the edge's own spelling or
         None, and ``migrated`` whether the edge was moved off a legacy node.
         ``app.services.graph_db.taxonomy.TaxonomyLink`` reads them.
-        Departments are not included.
+        Departments are included only with ``include_departments`` (the
+        record-delete cleanup); their rows carry the department's name and
+        no spelling.
 
         Raises:
             Exception: on query failure; a partial answer would read as the
@@ -6863,6 +6867,38 @@ class IGraphDBProvider(ABC):
 
         Raises:
             Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_unreached_taxonomy_entities(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """The taxonomy entities in ``refs`` that no non-deleted record of
+        ``org_id`` reaches over a ``belongsTo*`` edge any more, or whose node
+        is gone. The record-delete cleanup deletes their entity points.
+
+        Reaching is counted over every connector, knowledge base and copy of a
+        record, as in ``get_taxonomy_entity_membership``, but each entity stops
+        at its first live record, so an entity most of the org links to (a
+        language) costs one edge read, not one per record.
+
+        Args:
+            refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
+                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
+                types are never returned.
+            org_id: Organization scope. Empty returns an empty set without
+                querying.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{(entity_type, entity_id)}`` of the unreached refs.
+
+        Raises:
+            Exception: on any query failure, never an empty answer.
         """
         pass
 

@@ -7,6 +7,7 @@ uploads are deleted only for a write role in the caller's org.
 
 import inspect
 import re
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -16,6 +17,7 @@ from fastapi import HTTPException
 import app.connectors.api.router as router_mod
 import app.edition_config  # noqa: F401  (binds the edition seams before the router loads)
 from app.config.constants.arangodb import GraphNames
+from app.config.constants.neo4j import collection_to_label
 from app.connectors.api.router import delete_record
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -24,6 +26,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS
 
 ORG_A = "org-A"
 ORG_B = "org-B"
@@ -65,6 +68,8 @@ LEGACY_NEITHER = _record(connectorId="conn-1")
 KB_ACCESS = [{"type": "KNOWLEDGE_BASE", "source": KB_APP, "role": "WRITER", "folder": None}]
 DIRECT_ACCESS = [{"type": "DIRECT", "source": USER, "role": "OWNER"}]
 KB_CONTEXT = {"kb_id": "kb-1", "kb_name": "Handbook", "org_id": ORG_A}
+# The edge collection each linked node is reached over.
+LINK_EDGES = {**TAXONOMY_EDGE_COLLECTIONS, "departments": "belongsToDepartment"}
 
 
 class _Neo4jDriver:
@@ -79,6 +84,8 @@ class _Neo4jDriver:
         self.deleted: set[str] = set()
         self.transactions: list[tuple[str, str]] = []
         self.statements: list[tuple[str, dict]] = []
+        # (record id, taxonomy collection, node id): the record's belongsTo* edges.
+        self.links: list[tuple[str, str, str]] = []
 
     async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self.transactions.append(("begin", "txn-1"))
@@ -93,6 +100,14 @@ class _Neo4jDriver:
     async def execute_query(self, query: str, parameters: dict | None = None, txn_id: str | None = None) -> list:
         self.statements.append((query, parameters or {}))
         parameters = parameters or {}
+        if "AS nodeLabels" in query:
+            # A deleted record has no edges left to read.
+            return [
+                {"recordId": rec, "entityId": node, "nodeLabels": [collection_to_label(collection)], "name": node}
+                for rec, collection, node in self.links
+                if rec in parameters.get("keys", []) and rec not in self.deleted
+                and collection_to_label(collection) in parameters.get("labels", [])
+            ]
         if "DETACH DELETE" in query:
             keys = set(parameters.get("record_ids") or []) | {parameters.get("record_key")} - {None}
             if self.fail_deleting in keys:
@@ -137,6 +152,8 @@ class _ArangoDriver:
         self.record, self.access, self.kb_context, self.kb_role = record, access, kb_context, kb_role
         self.record_role: str | None = None
         self.statements: list[tuple[str, dict]] = []
+        # (record id, taxonomy collection, node id): the record's belongsTo* edges.
+        self.links: list[tuple[str, str, str]] = []
 
     async def get_document(self, collection: str, key: str, txn_id: str | None = None, **_: Any) -> dict | None:
         if collection == "records" and self.record is not None:
@@ -145,6 +162,14 @@ class _ArangoDriver:
 
     async def execute_aql(self, query: str, bind_vars: dict | None = None, txn_id: str | None = None, **_: Any) -> list:
         self.statements.append((query, bind_vars or {}))
+        if "extractedNames: link.extractedNames" in query:
+            return [
+                {"recordId": rec, "collection": collection, "entityId": node, "name": node}
+                for rec, collection, node in self.links
+                if rec in (bind_vars or {}).get("keys", [])
+                and LINK_EDGES[collection] not in self.edge_collections_cleared
+                and collection in (bind_vars or {}).get("collections", [])
+            ]
         if "directAccessPermissionEdge" in query:
             return [self.access if self.access else None]
         if "FILTER user.userId == @user_id" in query:
@@ -214,6 +239,7 @@ def _arango(record: dict | None, access: list | None, kb_context: dict | None, k
 
 
 BACKENDS = [pytest.param(_neo4j, id="neo4j"), pytest.param(_arango, id="arango")]
+Backend = Callable[[dict | None, list | None, dict | None, str | None], tuple[Any, Any]]
 
 
 def _request(user_id: str = "user-a", org_id: str = ORG_A) -> MagicMock:
@@ -301,6 +327,63 @@ async def test_kb_upload_is_deleted_for_a_writer(backend: Any, record: dict, kb_
     assert event["eventType"] == "deleteRecord"
     assert event["payload"]["recordId"] == RECORD_ID
     assert event["payload"]["virtualRecordId"] == "vr-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_kb_upload_delete_names_the_taxonomy_entities_it_linked_to(backend: Backend) -> None:
+    """Read before the edges go: the fakes answer a deleted record with no links,
+    so a read after the delete would publish none."""
+    provider, driver = backend(KB_FILE, KB_ACCESS, KB_CONTEXT, "WRITER")
+    driver.links = [
+        (RECORD_ID, "topics", "t1"),
+        (RECORD_ID, "categories", "c1"),
+        (RECORD_ID, "subcategories2", "s2"),
+        (RECORD_ID, "languages", "l1"),
+        (RECORD_ID, "departments", "d1"),
+    ]
+    kafka = AsyncMock()
+
+    await _delete(provider, kafka)
+
+    _, event = kafka.publish_event.await_args.args
+    assert event["payload"]["taxonomyRefs"] == [
+        {"id": "t1", "type": "topic"},
+        {"id": "c1", "type": "category"},
+        {"id": "s2", "type": "subcategory"},
+        {"id": "l1", "type": "language"},
+        {"id": "d1", "type": "department"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_kb_upload_without_taxonomy_publishes_no_refs(backend: Backend) -> None:
+    provider, _ = backend(KB_FILE, KB_ACCESS, KB_CONTEXT, "WRITER")
+    kafka = AsyncMock()
+
+    await _delete(provider, kafka)
+
+    _, event = kafka.publish_event.await_args.args
+    assert "taxonomyRefs" not in event["payload"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_failed_link_read_still_deletes_and_publishes(backend: Backend) -> None:
+    """The refs are a cleanup hint; without them the points stay as before."""
+    provider, driver = backend(KB_FILE, KB_ACCESS, KB_CONTEXT, "WRITER")
+    driver.links = [(RECORD_ID, "topics", "t1")]
+    kafka = AsyncMock()
+
+    with patch.object(provider, "get_record_taxonomy_links", AsyncMock(side_effect=RuntimeError("graph busy"))):
+        result = await _delete(provider, kafka)
+
+    assert result["success"] is True
+    assert driver.destructive
+    _, event = kafka.publish_event.await_args.args
+    assert event["payload"]["recordId"] == RECORD_ID
+    assert "taxonomyRefs" not in event["payload"]
 
 
 @pytest.mark.asyncio

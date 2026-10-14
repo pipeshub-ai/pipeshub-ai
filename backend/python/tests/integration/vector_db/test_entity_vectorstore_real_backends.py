@@ -403,6 +403,41 @@ class TestDeletesWithoutEmbeddings:
         fresh._init_embeddings.assert_not_called()
 
 
+class TestRecordDeleteCleanup:
+    async def test_only_the_unreached_entities_of_a_deleted_record_go(self, store: EntityVectorStore) -> None:
+        """A deleted knowledge-base record's entities: the ones no other record
+        reaches go, in that org only, with no embedding call; the rest keep
+        their membership."""
+        org, other_org = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
+        await store.upsert_entities_batch([
+            _entity("only", org=org, connectors=["kb-a"], groups=["ga"]),
+            _entity("shared", org=org, connectors=["kb-a", "drive"], groups=["ga", "gd"]),
+            _entity("c1", EntityType.CATEGORY, org=org, connectors=["kb-a"]),
+            _entity("only", org=other_org, connectors=["kb-z"]),
+        ])
+        await _publish_writes(store)
+        fresh = EntityVectorStore(
+            logger=logger, config_service=embedding_config_service(),
+            vector_db_service=store.vector_db_service, collection_name=store.collection_name,
+        )
+        fresh._init_embeddings = AsyncMock(side_effect=RuntimeError("embedding endpoint down"))  # type: ignore[method-assign]
+        lookup = AsyncMock(return_value={("topic", "only"), ("category", "c1")})
+
+        await fresh.delete_unreached_entities(
+            org,
+            [{"id": "only", "type": "topic"}, {"id": "shared", "type": "topic"}, {"id": "c1", "type": "category"}],
+            lookup,
+        )
+
+        assert await _point(store, org, "topic", "only") is None
+        assert await _point(store, org, "category", "c1") is None
+        shared = await _point(store, org, "topic", "shared")
+        assert shared is not None
+        assert sorted(shared["connectorIds"]) == ["drive", "kb-a"]
+        assert await _point(store, other_org, "topic", "only") is not None
+        fresh._init_embeddings.assert_not_called()
+
+
 class TestReplaceMode:
     """Record and record-group points are written with ``merge_membership=False``
     on every indexed record."""

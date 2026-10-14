@@ -4,7 +4,7 @@ import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from logging import Logger
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp  # type: ignore
 
@@ -98,6 +98,9 @@ from app.utils.user_errors import (
     to_user_reason,
     unsupported_file_type,
 )
+
+if TYPE_CHECKING:
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
 RECONCILE_RETRY_DELAY_SECONDS = 1.0
@@ -380,6 +383,28 @@ class RecordEventHandler(BaseEventService):
         if not await clear_pending_entity_cleanup(self.config_service, connector_id):
             # The rebuild loop runs the intent again; cleanup is idempotent.
             self.logger.warning("Entity cleanup intent for connector %s not cleared", connector_id)
+
+    async def _delete_unreached_taxonomy_points(
+        self, store: "EntityVectorStore", org_id: str, record_id: str, refs: object,
+    ) -> None:
+        """Delete the points of the taxonomy entities a deleted record linked to
+        (its ``taxonomyRefs``) that no other live record reaches. Raises so the
+        consumer retries, then dead-letters; every step of the delete is
+        idempotent, so a retry repeats them harmlessly."""
+        if not refs or not isinstance(refs, list):
+            return
+        graph_provider = self.event_processor.graph_provider
+        try:
+            await store.delete_unreached_entities(
+                org_id,
+                refs,
+                lambda wanted: graph_provider.get_unreached_taxonomy_entities(wanted, org_id),
+            )
+        except Exception as exc:
+            raise IndexingError(
+                f"Entity cleanup for deleted record {record_id} did not complete",
+                details={"org_id": org_id, "record_id": record_id},
+            ) from exc
 
     async def _reconcile_pending_duplicates(
         self,
@@ -1223,6 +1248,9 @@ class RecordEventHandler(BaseEventService):
                     if org_id:
                         await entity_store.delete_entity(
                             org_id, EntityType.RECORD.value, record_id
+                        )
+                        await self._delete_unreached_taxonomy_points(
+                            entity_store, org_id, record_id, payload.get("taxonomyRefs"),
                         )
                     else:
                         self.logger.warning(
