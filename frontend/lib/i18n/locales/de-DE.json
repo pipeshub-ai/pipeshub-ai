@@ -1103,9 +1103,9 @@
     "configuredModels": "Konfigurierte Modelle",
     "reasoningEffort": {
       "label": "Reasoning-Aufwand",
-      "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
-      "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
-      "modelDefaultHint": "Ohne Auswahl wird {{level}} verwendet, der eigene Standardwert dieses Modells.",
+      "modelDefaultOption": "Modellstandard",
+      "modelDefaultOptionWithLevel": "Modellstandard ({{level}})",
+      "agentDefaultOption": "Agent-Standard ({{level}})",
       "modelDefaultLabel": "Standard ({{level}})",
       "low": "Niedrig",
       "medium": "Mittel",

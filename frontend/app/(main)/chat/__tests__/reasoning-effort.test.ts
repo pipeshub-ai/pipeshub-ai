@@ -1,13 +1,15 @@
 /**
  * Unit tests for reasoning-effort support:
- *  - `useChatStore`'s per-context localStorage-backed `reasoningEffort` slice
- *    (`setReasoningEffortForCtx` / `hydrateReasoningEffortForCtx`).
+ *  - `useChatStore`'s per-context `reasoningEffort` slice, kept for the
+ *    session only, and the picker that sets and clears it.
  *  - `buildStreamChatRequestForSlot()` and `streamRegenerateForSlot()`
  *    forwarding the resolved reasoning effort, or omitting the field so the
  *    backend applies the model's default.
  *  - The label the chat shows when no effort is picked.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { createElement } from 'react';
+import { render, screen, fireEvent, cleanup } from '@testing-library/react';
 
 // `runtime.ts` transitively pulls in several API modules that ultimately
 // import `lib/store/auth-store.ts`, which eagerly hydrates itself from
@@ -19,6 +21,14 @@ vi.mock('@/lib/store/auth-store', () => ({
   useAuthStore: { getState: () => ({ isHydrated: true }) },
   hydrateAuthStore: vi.fn(),
   LOGIN_NAVIGATION_EVENT: 'pipeshub:request-login-navigation',
+}));
+
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
+  useTranslation: () => ({
+    t: (_key: string, opts?: string | { defaultValue: string; level?: string }) =>
+      typeof opts === 'string' ? opts : (opts?.defaultValue ?? _key).replace('{{level}}', opts?.level ?? ''),
+  }),
 }));
 
 vi.mock('@/lib/api', () => ({
@@ -51,8 +61,8 @@ vi.mock('@/lib/api', () => ({
 // Node 22+'s built-in global `localStorage` shadows jsdom's implementation
 // under Vitest and is a non-functional stub without `--localstorage-file`
 // (see the `--localstorage-file was provided without a valid path`
-// warning). Replace it with a real in-memory `Storage` so the store's
-// localStorage-backed persistence can be exercised directly.
+// warning). Replace it with a real in-memory `Storage` so the tests can plant
+// a value an earlier version saved and check it is ignored.
 function makeMemoryStorage(): Storage {
   const data = new Map<string, string>();
   return {
@@ -87,7 +97,7 @@ const { ChatApi } = await import('../api');
 const { normalizeReasoningEffort } = await import('../types');
 const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
 const { getModelDefaultReasoningEffort } = await import('../store');
-const { getAppliedReasoningEffortLabel } = await import(
+const { getAppliedReasoningEffortLabel, getDefaultEffortOptionLabel, ReasoningEffortSelector } = await import(
   '../components/chat-panel/expansion-panels/model-selector/model-selector-panel'
 );
 
@@ -122,55 +132,16 @@ describe('reasoningEffort store actions', () => {
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('high');
   });
 
-  it('setReasoningEffortForCtx persists to localStorage only for assistant context', () => {
+  it('setReasoningEffortForCtx keeps the pick in memory only', () => {
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
-    expect(localStorage.getItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`)).toBe('medium');
-    // Agent-scoped contexts skip localStorage so admin defaults aren't masked.
     useChatStore.getState().setReasoningEffortForCtx('agent-42', 'medium');
-    expect(localStorage.getItem('pipeshub-reasoning-effort:agent-42')).toBeNull();
+    expect(localStorage.length).toBe(0);
   });
 
-  it('setReasoningEffortForCtx(null) clears the persisted value', () => {
+  it('setReasoningEffortForCtx(null) clears the pick', () => {
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'low');
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, null);
     expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBeNull();
-    expect(localStorage.getItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`)).toBeNull();
-  });
-
-  it('hydrateReasoningEffortForCtx loads a previously persisted value for assistant context', () => {
-    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'max');
-    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('max');
-  });
-
-  it('hydrateReasoningEffortForCtx skips localStorage for agent contexts', () => {
-    localStorage.setItem('pipeshub-reasoning-effort:agent-7', 'max');
-    useChatStore.getState().hydrateReasoningEffortForCtx('agent-7');
-    expect(useChatStore.getState().settings.reasoningEffort['agent-7']).toBeNull();
-  });
-
-  it('hydrateReasoningEffortForCtx resolves to null when nothing is persisted', () => {
-    useChatStore.getState().hydrateReasoningEffortForCtx('agent-unknown');
-    expect(useChatStore.getState().settings.reasoningEffort['agent-unknown']).toBeNull();
-  });
-
-  it('hydrateReasoningEffortForCtx ignores a corrupt/invalid stored value', () => {
-    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'ultra-high');
-    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBeNull();
-  });
-
-  it('hydrateReasoningEffortForCtx floors a legacy persisted "none" to "low" (matches backend flooring)', () => {
-    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'none');
-    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
-  });
-
-  it('hydrateReasoningEffortForCtx does not overwrite an already-hydrated/explicit value', () => {
-    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'low');
-    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'high');
-    useChatStore.getState().hydrateReasoningEffortForCtx(ASSISTANT_CTX);
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
   });
 
   it('scoped (per-agent) and universal contexts are independent', () => {
@@ -195,39 +166,24 @@ describe('normalizeReasoningEffort', () => {
   });
 });
 
-describe('applyConversationModelInfoToStore — reasoningEffort normalization', () => {
-  it('floors a legacy "none" from conversation modelInfo to "low" (avoids showing "· none" in the toolbar)', () => {
-    applyConversationModelInfoToStore(
-      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'none' },
-      ASSISTANT_CTX,
-    );
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
-  });
-
-  it('passes through a non-legacy reasoningEffort from conversation modelInfo unchanged', () => {
+describe('applyConversationModelInfoToStore — reasoningEffort', () => {
+  // A conversation keeps the last effort sent and a turn sent without one
+  // never clears it, so restoring it would bring an old "high" back for good.
+  it("does not restore the effort the conversation recorded", () => {
     applyConversationModelInfoToStore(
       { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'high' },
       ASSISTANT_CTX,
     );
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('high');
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX] ?? null).toBeNull();
   });
 
-  it('does not overwrite an existing user override when modelInfo omits reasoningEffort', () => {
-    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
-    applyConversationModelInfoToStore(
-      { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick' },
-      ASSISTANT_CTX,
-    );
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('medium');
-  });
-
-  it('overwrites an existing override when modelInfo explicitly provides reasoningEffort', () => {
+  it("keeps the effort picked in this session", () => {
     useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'medium');
     applyConversationModelInfoToStore(
       { modelKey: 'openai', modelName: 'gpt-5', chatMode: 'quick', reasoningEffort: 'low' },
       ASSISTANT_CTX,
     );
-    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('low');
+    expect(useChatStore.getState().settings.reasoningEffort[ASSISTANT_CTX]).toBe('medium');
   });
 });
 
@@ -291,6 +247,23 @@ describe('buildStreamChatRequestForSlot — reasoningEffort forwarding', () => {
     const request = buildStreamChatRequestForSlot(slotId, 'hello');
     expect(request).not.toBeNull();
     expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('does not send an effort an earlier version saved in the browser', () => {
+    localStorage.setItem(`pipeshub-reasoning-effort:${ASSISTANT_CTX}`, 'high');
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    const slotId = useChatStore.getState().createSlot(null);
+    const request = buildStreamChatRequestForSlot(slotId, 'hello');
+    expect(request).not.toBeNull();
+    expect(request).not.toHaveProperty('reasoningEffort');
+  });
+
+  it('sends no effort after the pick is cleared', () => {
+    registerModel(ASSISTANT_CTX, { isReasoning: true });
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, 'max');
+    useChatStore.getState().setReasoningEffortForCtx(ASSISTANT_CTX, null);
+    const slotId = useChatStore.getState().createSlot(null);
+    expect(buildStreamChatRequestForSlot(slotId, 'hello')).not.toHaveProperty('reasoningEffort');
   });
 
   // Sending "high" here would override the model's own default on the backend.
@@ -480,5 +453,52 @@ describe('label for the effort a chat runs with', () => {
     setOrgModels('none');
 
     expect(getModelDefaultReasoningEffort(ASSISTANT_CTX, qwen)).toBe('low');
+  });
+});
+
+describe('reasoning effort picker', () => {
+  afterEach(() => cleanup());
+
+  function renderPicker(props: {
+    value: import('../types').ReasoningEffort | null;
+    agentDefault?: import('../types').ReasoningEffort | null;
+    modelDefault?: import('../types').ReasoningEffort | null;
+  }) {
+    const onSelect = vi.fn();
+    render(
+      createElement(ReasoningEffortSelector, {
+        agentDefault: null,
+        modelDefault: null,
+        ...props,
+        onSelect,
+      }),
+    );
+    return onSelect;
+  }
+
+  it('marks the default option when nothing is picked, naming the model default', () => {
+    renderPicker({ value: null, modelDefault: 'medium' });
+    expect(screen.getByRole('radio', { name: 'Model default (Medium)' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Medium' }).getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('clears the pick when the default option is chosen', () => {
+    const onSelect = renderPicker({ value: 'high' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Model default' }));
+    expect(onSelect).toHaveBeenCalledWith(null);
+  });
+
+  it('keeps a pick when its option is chosen again', () => {
+    const onSelect = renderPicker({ value: 'high' });
+    fireEvent.click(screen.getByRole('radio', { name: 'High' }));
+    expect(onSelect).toHaveBeenCalledWith('high');
+  });
+
+  it("names the agent's default over the model's", () => {
+    const t = ((_key: string, opts: string | { defaultValue: string; level: string }) =>
+      typeof opts === 'string' ? opts : opts.defaultValue.replace('{{level}}', opts.level)) as never;
+    expect(getDefaultEffortOptionLabel(t, 'low', 'max')).toBe('Agent default (Low)');
+    expect(getDefaultEffortOptionLabel(t, null, 'max')).toBe('Model default (Max)');
+    expect(getDefaultEffortOptionLabel(t, null, null)).toBe('Model default');
   });
 });

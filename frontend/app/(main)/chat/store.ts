@@ -52,39 +52,6 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
   }
 }
 
-const LS_REASONING_EFFORT_KEY = 'pipeshub-reasoning-effort';
-const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
-
-function lsGetReasoningEffort(ctxKey: string): import('./types').ReasoningEffort | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(`${LS_REASONING_EFFORT_KEY}:${ctxKey}`);
-    if (!raw) return null;
-    return (REASONING_EFFORT_VALUES as readonly string[]).includes(raw)
-      ? normalizeReasoningEffort(raw as import('./types').ReasoningEffort)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function lsSetReasoningEffort(
-  ctxKey: string,
-  effort: import('./types').ReasoningEffort | null,
-): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = `${LS_REASONING_EFFORT_KEY}:${ctxKey}`;
-    if (effort === null) {
-      localStorage.removeItem(key);
-    } else {
-      localStorage.setItem(key, effort);
-    }
-  } catch {
-    // Storage unavailable — silently ignore
-  }
-}
-
 /** Row shape for the Actions / MCP tabs of the scoped resources panel (agent or project). */
 export interface ScopedToolGroupRow {
   label: string;
@@ -677,17 +644,10 @@ interface ChatState {
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
   /**
-   * Set the reasoning effort override for a context (assistant or agent) and
-   * persist it to localStorage under `pipeshub-reasoning-effort:{ctxKey}`.
-   * `null` means "use the model's own default" — clears any explicit choice.
+   * Set the reasoning effort picked for a context (assistant or agent), for
+   * this session only. `null` means "use the default" and clears the pick.
    */
   setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
-  /**
-   * Load a context's persisted reasoning effort from localStorage into the
-   * in-memory store, if it hasn't been loaded yet this session. Call once
-   * when a context's model selector mounts.
-   */
-  hydrateReasoningEffortForCtx: (ctxKey: string) => void;
   /** Store the agent-configured default reasoning effort for a context. */
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
@@ -1528,36 +1488,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
-  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => {
-    // Only persist for the universal assistant. Agent-scoped contexts use the
-    // agent's configured default as baseline — persisting would let a stale
-    // user override mask admin changes to the agent's default.
-    if (ctxKey === ASSISTANT_CTX) {
-      lsSetReasoningEffort(ctxKey, effort);
-    }
-    return {
-      settings: {
-        ...state.settings,
-        reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
-      },
-    };
-  }),
-
-  hydrateReasoningEffortForCtx: (ctxKey) => set((state) => {
-    if (state.settings.reasoningEffort[ctxKey] !== undefined) return state;
-    return {
-      settings: {
-        ...state.settings,
-        reasoningEffort: {
-          ...state.settings.reasoningEffort,
-          // Agent contexts skip localStorage — their default comes from the
-          // agent's config (agentDefaultReasoningEffort), not from a stale
-          // persisted override that would hide admin changes.
-          [ctxKey]: ctxKey === ASSISTANT_CTX ? lsGetReasoningEffort(ctxKey) : null,
-        },
-      },
-    };
-  }),
+  // Not persisted: a pick kept across sessions outlived the reason for it and
+  // hid the model's and the agent's defaults.
+  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => ({
+    settings: {
+      ...state.settings,
+      reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
+    },
+  })),
 
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => set((state) => ({
     settings: {

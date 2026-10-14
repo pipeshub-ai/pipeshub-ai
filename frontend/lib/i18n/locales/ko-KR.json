@@ -1230,9 +1230,9 @@
     "configuredModels": "구성된 모델",
     "reasoningEffort": {
       "label": "추론 강도",
-      "overrideHint": "기본값을 사용하려면 다시 클릭하세요.",
-      "defaultHintWithLevel": "설정하지 않으면 기본값은 {{level}}입니다.",
-      "modelDefaultHint": "설정하지 않으면 이 모델의 기본값({{level}})이 사용됩니다.",
+      "modelDefaultOption": "모델 기본값",
+      "modelDefaultOptionWithLevel": "모델 기본값 ({{level}})",
+      "agentDefaultOption": "에이전트 기본값 ({{level}})",
       "modelDefaultLabel": "기본값 ({{level}})",
       "low": "낮음",
       "medium": "보통",

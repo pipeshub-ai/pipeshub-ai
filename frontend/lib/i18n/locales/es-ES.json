@@ -1160,9 +1160,9 @@
     "configuredModels": "Modelos configurados",
     "reasoningEffort": {
       "label": "Esfuerzo de razonamiento",
-      "overrideHint": "Vuelva a hacer clic para usar el valor predeterminado.",
-      "defaultHintWithLevel": "Si no se define, se usa {{level}}.",
-      "modelDefaultHint": "Si no se define, se usa {{level}}, el valor predeterminado de este modelo.",
+      "modelDefaultOption": "Predeterminado del modelo",
+      "modelDefaultOptionWithLevel": "Predeterminado del modelo ({{level}})",
+      "agentDefaultOption": "Predeterminado del agente ({{level}})",
       "modelDefaultLabel": "Predeterminado ({{level}})",
       "low": "Bajo",
       "medium": "Medio",

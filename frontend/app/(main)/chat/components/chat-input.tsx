@@ -382,11 +382,6 @@ export function ChatInput({
   // Reasoning effort indicator — mirrors ModelSelectorPanel's selector so the
   // toolbar shows what's actually applied without opening the panel, the same
   // way Claude's model picker shows "Sonnet 5 · High" inline.
-  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
-  useEffect(() => {
-    hydrateReasoningEffortForCtx(modelCtxKey);
-  }, [modelCtxKey, hydrateReasoningEffortForCtx]);
-
   const activeModelSupportsReasoning = isModelReasoningCapable(modelCtxKey, displayModel);
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
