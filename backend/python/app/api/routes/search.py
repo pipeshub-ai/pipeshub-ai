@@ -52,8 +52,9 @@ class SearchQuery(BaseModel):
 def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
     """The request's date bounds as the retrieval service's ``time_range``.
 
-    Parsed by the same function as the assistant's search tool, so both accept
-    and refuse the same dates. A bad date is a 400 that says what is wrong.
+    Parsed by the same function as the assistant's search tool and the
+    navigate endpoint, so all three accept and refuse the same dates. A bad
+    date is a 400 that says what is wrong.
     """
     time_range, error = parse_time_range(
         created_after=body.createdAfter,
@@ -62,16 +63,10 @@ def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
         modified_before=body.modifiedBefore,
     )
     if error is not None:
-        message = json.loads(error).get("message", "Invalid date filter.")
-        # The parser names the assistant tool's parameters; name the API's.
-        for tool_name, api_name in (
-            ("created_after", "createdAfter"),
-            ("created_before", "createdBefore"),
-            ("modified_after", "modifiedAfter"),
-            ("modified_before", "modifiedBefore"),
-        ):
-            message = message.replace(tool_name, api_name)
-        raise HTTPException(status_code=400, detail=message)
+        # Reported as navigate reports it: the parser's own wording.
+        raise HTTPException(
+            status_code=400, detail=json.loads(error).get("message", "Invalid date filter.")
+        )
     return time_range
 
 

@@ -572,11 +572,11 @@ class TestSearchEndpoint:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(("field", "value", "said"), [
-        ("modifiedAfter", "last week", "modifiedAfter: 'last week' is not a valid ISO 8601 date"),
-        ("createdBefore", "2026-01-15T08:00:00", "createdBefore: '2026-01-15T08:00:00' has no timezone"),
-        ("modifiedAfter", "2999-01-01", "modifiedAfter cannot be in the future"),
+        ("modifiedAfter", "last week", "modified_after: 'last week' is not a valid ISO 8601 date"),
+        ("createdBefore", "2026-01-15T08:00:00", "created_before: '2026-01-15T08:00:00' has no timezone"),
+        ("modifiedAfter", "2999-01-01", "modified_after cannot be in the future"),
     ])
-    async def test_a_bad_date_is_a_400_that_names_the_field(
+    async def test_a_bad_date_is_a_400_that_says_why(
         self, field: str, value: str, said: str
     ) -> None:
         retrieval = MagicMock()
@@ -603,7 +603,7 @@ class TestSearchEndpoint:
 
         assert caught.value.status_code == 400
         assert caught.value.detail == (
-            "modifiedAfter must be on or before modifiedBefore — got an inverted range."
+            "modified_after must be on or before modified_before — got an inverted range."
         )
 
 
