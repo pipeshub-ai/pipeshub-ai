@@ -70,8 +70,9 @@ _BINARY_DOCUMENT_FORMATS: dict[str, tuple[str, bytes, str, str]] = {
 def _not_a_real_document(name: str | None, mime_type: str | None, raw: bytes) -> str | None:
     """The error for content that is not every binary document its name and MIME type claim."""
     lowered = (name or "").lower()
+    media_type = (mime_type or "").split(";", 1)[0].strip().lower()
     for extension, (document_mime, magic, label, library) in _BINARY_DOCUMENT_FORMATS.items():
-        if not (lowered.endswith(extension) or mime_type == document_mime):
+        if not (lowered.endswith(extension) or media_type == document_mime):
             continue
         if raw.startswith(magic):
             continue

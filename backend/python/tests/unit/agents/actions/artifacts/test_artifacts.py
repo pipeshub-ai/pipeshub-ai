@@ -158,6 +158,17 @@ class TestBinaryDocumentsMustBeReal:
         assert success is False
         registry.register_output.assert_not_awaited()
 
+    async def test_a_pdf_mime_type_in_another_case_or_with_parameters_is_checked(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        for mime_type in ("Application/PDF", "application/pdf; charset=binary"):
+            success, payload = await manager.save_artifact(name="report", content="text", mime_type=mime_type)
+
+            assert success is False
+            assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
     async def test_a_real_docx_is_saved(self) -> None:
         registry = MagicMock()
         registry.register_output = AsyncMock(return_value=(_make_metadata(name="minutes.docx"), None))
