@@ -1,11 +1,13 @@
 """Unit tests for the Zendesk data source's incremental export endpoints."""
 
+# The query helper returns whichever parameter shape the endpoint supplied.
+# ruff: noqa: ANN201, ANN202
+
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
-
 
 BASE_URL = "https://acme.zendesk.com/api/v2"
 
@@ -46,19 +48,19 @@ class TestIncrementalExportsUseCursorEndpoints:
             ("incremental_users", "/incremental/users/cursor.json"),
         ],
     )
-    async def test_targets_cursor_endpoint(self, datasource, method, path):
+    async def test_targets_cursor_endpoint(self, datasource, method, path) -> None:
         await getattr(datasource, method)(start_time=1)
 
         assert _url(datasource) == f"{BASE_URL}{path}"
 
-    async def test_organizations_target_time_based_endpoint(self, datasource):
+    async def test_organizations_target_time_based_endpoint(self, datasource) -> None:
         """Zendesk exposes cursor incremental exports for tickets and users only;
         /incremental/organizations/cursor.json 404s as InvalidEndpoint."""
         await datasource.incremental_organizations(start_time=1)
 
         assert _url(datasource) == f"{BASE_URL}/incremental/organizations.json"
 
-    async def test_organizations_always_send_start_time(self, datasource):
+    async def test_organizations_always_send_start_time(self, datasource) -> None:
         await datasource.incremental_organizations(start_time=1767312000)
 
         query = _query(datasource)
@@ -69,7 +71,7 @@ class TestIncrementalExportsUseCursorEndpoints:
         "method",
         ["incremental_tickets", "incremental_users", "incremental_organizations"],
     )
-    async def test_first_request_seeds_with_start_time(self, datasource, method):
+    async def test_first_request_seeds_with_start_time(self, datasource, method) -> None:
         await getattr(datasource, method)(start_time=1767312000)
 
         query = _query(datasource)
@@ -80,7 +82,7 @@ class TestIncrementalExportsUseCursorEndpoints:
         "method",
         ["incremental_tickets", "incremental_users"],
     )
-    async def test_later_requests_send_cursor_alone(self, datasource, method):
+    async def test_later_requests_send_cursor_alone(self, datasource, method) -> None:
         # Zendesk rejects start_time and cursor together.
         await getattr(datasource, method)(start_time=1767312000, cursor="abc123")
 
@@ -88,7 +90,7 @@ class TestIncrementalExportsUseCursorEndpoints:
         assert query["cursor"] == "abc123"
         assert "start_time" not in query
 
-    async def test_ticket_sideloads_survive_cursor_paging(self, datasource):
+    async def test_ticket_sideloads_survive_cursor_paging(self, datasource) -> None:
         await datasource.incremental_tickets(
             start_time=1, cursor="abc123", include="users,groups"
         )
@@ -100,13 +102,13 @@ class TestListUsersQuery:
     """Staff are listed with role[]=agent&role[]=admin on the cursor-paginated /users.
     A dict cannot repeat a key, and comma-joining reads as one literal role."""
 
-    async def test_repeats_role_for_each_role(self, datasource):
+    async def test_repeats_role_for_each_role(self, datasource) -> None:
         await datasource.list_users(roles_=["agent", "admin"])
 
         assert _url(datasource) == f"{BASE_URL}/users.json"
         assert _query(datasource) == [("role[]", "agent"), ("role[]", "admin")]
 
-    async def test_sends_cursor_params(self, datasource):
+    async def test_sends_cursor_params(self, datasource) -> None:
         await datasource.list_users(
             roles_=["agent", "admin"], page_size=100, page_after="abc"
         )
@@ -116,12 +118,12 @@ class TestListUsersQuery:
         assert ("page[after]", "abc") in query
         assert query.count(("role[]", "agent")) == 1
 
-    async def test_no_roles_sends_no_role_param(self, datasource):
+    async def test_no_roles_sends_no_role_param(self, datasource) -> None:
         await datasource.list_users(page_size=100)
 
         assert not any(key.startswith("role") for key, _ in _query(datasource))
 
-    async def test_single_role_filter_still_works(self, datasource):
+    async def test_single_role_filter_still_works(self, datasource) -> None:
         await datasource.list_users(role="agent", include="organizations")
 
         assert ("role", "agent") in _query(datasource)

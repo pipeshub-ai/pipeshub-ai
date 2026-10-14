@@ -1,5 +1,8 @@
 """Zendesk connector implementation."""
 
+# Zendesk API responses contain fields whose types vary by endpoint and account.
+# ruff: noqa: ANN401
+
 import asyncio
 import base64
 import hashlib
@@ -7,10 +10,11 @@ import json
 import mimetypes
 import re
 from collections import OrderedDict, defaultdict
+from collections.abc import AsyncGenerator
 from datetime import datetime, timezone
 from functools import partial
 from logging import Logger
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -114,7 +118,6 @@ from app.sources.client.zendesk.zendesk import (
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
-
 
 SYNC_POINT_KEY = "zendesk_incremental"
 ARTICLES_SYNC_POINT_KEY = "zendesk_articles_incremental"
@@ -331,31 +334,31 @@ class ZendeskConnector(BaseConnector):
             scope,
             created_by,
         )
-        self.external_client: Optional[ZendeskClient] = None
-        self.data_source: Optional[ZendeskDataSource] = None
-        self.base_url: Optional[str] = None
+        self.external_client: ZendeskClient | None = None
+        self.data_source: ZendeskDataSource | None = None
+        self.base_url: str | None = None
         self.connector_name = Connectors.ZENDESK
         self.value_mapper = ValueMapper()
         self.sync_filters: Any = None
         self.indexing_filters: Any = None
-        self._user_id_to_data: Dict[str, Dict[str, Any]] = {}
-        self._sideloaded_users: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
-        self._group_id_to_data: Dict[str, Dict[str, Any]] = {}
-        self._section_id_to_data: Dict[str, Dict[str, Any]] = {}
-        self._category_id_to_data: Dict[str, Dict[str, Any]] = {}
-        self._org_id_to_data: Dict[str, Dict[str, Any]] = {}
-        self._user_id_to_app_user: Dict[str, AppUser] = {}
+        self._user_id_to_data: dict[str, dict[str, Any]] = {}
+        self._sideloaded_users: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+        self._group_id_to_data: dict[str, dict[str, Any]] = {}
+        self._section_id_to_data: dict[str, dict[str, Any]] = {}
+        self._category_id_to_data: dict[str, dict[str, Any]] = {}
+        self._org_id_to_data: dict[str, dict[str, Any]] = {}
+        self._user_id_to_app_user: dict[str, AppUser] = {}
         self._rebuild_ticket_edges = False
         self._rebuild_article_edges = False
         self._refresh_ticket_grants = False
-        self._role_ticket_access: Dict[str, str] = {}
+        self._role_ticket_access: dict[str, str] = {}
         self._roles_complete = False
         self._ticket_sync_complete = False
-        self._stale_help_center_group_ids: List[str] = []
-        self._current_help_center_group_ids: List[str] = []
-        self._current_ticket_group_ids: List[str] = []
+        self._stale_help_center_group_ids: list[str] = []
+        self._current_help_center_group_ids: list[str] = []
+        self._current_ticket_group_ids: list[str] = []
         self._deleted_ticket_group_ids: set[str] = set()
-        self._skipped_this_sync: List[str] = []
+        self._skipped_this_sync: list[str] = []
         self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
             connector_id=self.connector_id,
@@ -399,7 +402,7 @@ class ZendeskConnector(BaseConnector):
             self.external_client.get_client().set_access_token(rotated_token)
         return self.data_source
 
-    async def _rotated_access_token(self) -> Optional[str]:
+    async def _rotated_access_token(self) -> str | None:
         """The stored access token when it differs from the one in use, else None."""
         client = self.external_client.get_client()
         in_use = getattr(client, "access_token", None)
@@ -534,8 +537,8 @@ class ZendeskConnector(BaseConnector):
                     RETIRED_STAFF_GROUP_PREFIX,
                 ),
             )
-            role_based: List[Tuple[AppUserGroup, List[AppUser]]] = []
-            role_free: List[Tuple[AppUserGroup, List[AppUser]]] = []
+            role_based: list[tuple[AppUserGroup, list[AppUser]]] = []
+            role_free: list[tuple[AppUserGroup, list[AppUser]]] = []
             for entry in person_groups:
                 assigned = entry[0].source_user_group_id.startswith(ASSIGNED_STAFF_GROUP_PREFIX)
                 (role_based if assigned else role_free).append(entry)
@@ -578,7 +581,7 @@ class ZendeskConnector(BaseConnector):
                     org_agent_groups, replace_members=replace_members
                 )
         if org_user_groups:
-            shared_org_groups: List[AppUserGroup] = []
+            shared_org_groups: list[AppUserGroup] = []
             emptied_org_groups = []
             for group, _ in org_user_groups:
                 org_id = group.source_user_group_id.removeprefix("org_")
@@ -601,7 +604,7 @@ class ZendeskConnector(BaseConnector):
 
         # Without those AppUserGroups (organizations' too) the grant is dropped, and the
         # advanced sync point would stop any later run repairing it.
-        ticket_error: Optional[Exception] = None
+        ticket_error: Exception | None = None
         if users_complete and memberships_complete and orgs_complete:
             try:
                 self._refresh_ticket_grants, users_checkpoint = (
@@ -648,7 +651,7 @@ class ZendeskConnector(BaseConnector):
             f"{ticket_count} tickets, {article_count} articles"
         )
 
-    async def _fetch_users(self) -> Tuple[List[AppUser], Dict[str, AppUser], bool]:
+    async def _fetch_users(self) -> tuple[list[AppUser], dict[str, AppUser], bool]:
         """Agents and admins only — the people who can hold a group or all-tickets grant.
 
         The full list every sync, not just changed users: on_new_user_groups rebuilds
@@ -664,8 +667,8 @@ class ZendeskConnector(BaseConnector):
         # demoted, and a stale entry would keep their all-tickets access until restart.
         self._user_id_to_data = {}
         self._user_id_to_app_user = {}
-        users: List[AppUser] = []
-        user_email_map: Dict[str, AppUser] = {}
+        users: list[AppUser] = []
+        user_email_map: dict[str, AppUser] = {}
         for user_data in users_data:
             app_user = self._to_app_user(user_data)
             if not app_user:
@@ -697,10 +700,10 @@ class ZendeskConnector(BaseConnector):
 
     async def _append_empty_removed_user_groups(
         self,
-        current_groups: List[Tuple[AppUserGroup, List[AppUser]]],
+        current_groups: list[tuple[AppUserGroup, list[AppUser]]],
         *,
-        prefixes: Tuple[str, ...],
-    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        prefixes: tuple[str, ...],
+    ) -> list[tuple[AppUserGroup, list[AppUser]]]:
         """Keep removed Zendesk groups as empty nodes so stale grants are withdrawn."""
         current_ids = {group.source_user_group_id for group, _ in current_groups}
         async with self.data_store_provider.transaction() as tx_store:
@@ -717,7 +720,7 @@ class ZendeskConnector(BaseConnector):
                 current_groups.append((old_group, []))
         return current_groups
 
-    def _to_app_user(self, user_data: Dict[str, Any]) -> Optional[AppUser]:
+    def _to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         user_id = user_data.get("id")
         email = user_data.get("email")
         # Permissions resolve by email; a synthesised address matches nobody.
@@ -735,17 +738,17 @@ class ZendeskConnector(BaseConnector):
             source_updated_at=self._parse_datetime(user_data.get("updated_at")),
         )
 
-    def _user_data(self, user_id: int | str | None) -> Dict[str, Any]:
+    def _user_data(self, user_id: int | str | None) -> dict[str, Any]:
         """A user's record: staff from the sync, anyone else from the page that named them."""
         key = str(user_id)
         return self._user_id_to_data.get(key) or self._sideloaded_users.get(key) or {}
 
     async def _fetch_groups(
         self,
-        user_email_map: Dict[str, AppUser],
-    ) -> Tuple[
-        List[Tuple[RecordGroup, List[Permission]]],
-        List[Tuple[AppUserGroup, List[AppUser]]],
+        user_email_map: dict[str, AppUser],
+    ) -> tuple[
+        list[tuple[RecordGroup, list[Permission]]],
+        list[tuple[AppUserGroup, list[AppUser]]],
         bool,
     ]:
         # Both lists are walked to the very end every sync, never windowed: they feed
@@ -767,7 +770,7 @@ class ZendeskConnector(BaseConnector):
             datasource.list_group_memberships,
             "group_memberships",
         )
-        members_by_group: Dict[str, List[AppUser]] = defaultdict(list)
+        members_by_group: dict[str, list[AppUser]] = defaultdict(list)
         for membership in memberships:
             group_id = str(membership.get("group_id", ""))
             user_id = str(membership.get("user_id", ""))
@@ -779,8 +782,8 @@ class ZendeskConnector(BaseConnector):
                 members_by_group[group_id].append(user)
         public_groups_agents = self._public_groups_agents(user_email_map)
 
-        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
-        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        record_groups: list[tuple[RecordGroup, list[Permission]]] = []
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
         self._current_ticket_group_ids = []
         for group_data in groups_data:
             group_id = str(group_data.get("id", ""))
@@ -840,7 +843,7 @@ class ZendeskConnector(BaseConnector):
         # Both feed a rebuild-from-scratch that would revoke whatever fell off the end.
         return record_groups, user_groups, groups_complete and memberships_complete
 
-    def _build_unassigned_record_group(self) -> Tuple[RecordGroup, List[Permission]]:
+    def _build_unassigned_record_group(self) -> tuple[RecordGroup, list[Permission]]:
         """Home for tickets with no usable group (every new ticket before triage).
 
         A record with no record group gets no App edge and drops out of the tree, so
@@ -856,7 +859,7 @@ class ZendeskConnector(BaseConnector):
         )
         return record_group, [self._all_tickets_permission(), self._public_groups_permission()]
 
-    async def _fetch_custom_role_ticket_access(self) -> Tuple[Dict[str, str], bool]:
+    async def _fetch_custom_role_ticket_access(self) -> tuple[dict[str, str], bool]:
         """Map custom role id -> ticket_access, plus whether the list is trustworthy.
 
         Plans without custom roles answer 403/404 and have no agent carrying a
@@ -887,7 +890,7 @@ class ZendeskConnector(BaseConnector):
         ):
             self.logger.error("Zendesk list_custom_roles omitted custom_roles")
             return {}, False
-        access: Dict[str, str] = {}
+        access: dict[str, str] = {}
         for role in self._extract_list(response.data, "custom_roles"):
             role_id = role.get("id")
             if role_id is None:
@@ -897,7 +900,7 @@ class ZendeskConnector(BaseConnector):
         return access, True
 
     def _has_all_tickets_access(
-        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+        self, user_data: dict[str, Any], role_ticket_access: dict[str, str]
     ) -> bool:
         """Whether Zendesk lets this user read every ticket regardless of group."""
         if user_data.get("active") is False or user_data.get("suspended"):
@@ -911,7 +914,7 @@ class ZendeskConnector(BaseConnector):
         return ticket_access == ALL_TICKETS_ACCESS
 
     def _effective_ticket_access(
-        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+        self, user_data: dict[str, Any], role_ticket_access: dict[str, str]
     ) -> str:
         """Resolve role access while honoring a more restrictive agent override."""
         aliases = {
@@ -961,7 +964,7 @@ class ZendeskConnector(BaseConnector):
         return min(values, key=access_rank.__getitem__)
 
     def _has_group_ticket_access(
-        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+        self, user_data: dict[str, Any], role_ticket_access: dict[str, str]
     ) -> bool:
         if user_data.get("active") is False or user_data.get("suspended"):
             return False
@@ -969,7 +972,7 @@ class ZendeskConnector(BaseConnector):
         return access in {"all", "groups", PUBLIC_GROUPS_ACCESS}
 
     def _has_public_groups_access(
-        self, user_data: Dict[str, Any], role_ticket_access: Dict[str, str]
+        self, user_data: dict[str, Any], role_ticket_access: dict[str, str]
     ) -> bool:
         if user_data.get("active") is False or user_data.get("suspended"):
             return False
@@ -977,9 +980,9 @@ class ZendeskConnector(BaseConnector):
 
     async def _build_all_tickets_group(
         self,
-        role_ticket_access: Optional[Dict[str, str]] = None,
-        roles_complete: Optional[bool] = None,
-    ) -> Tuple[Tuple[AppUserGroup, List[AppUser]], bool]:
+        role_ticket_access: dict[str, str] | None = None,
+        roles_complete: bool | None = None,
+    ) -> tuple[tuple[AppUserGroup, list[AppUser]], bool]:
         """One group of every admin and all-access agent, granted on every ticket.
 
         Always returned, even when empty, so the grant on tickets never points at a
@@ -1006,7 +1009,7 @@ class ZendeskConnector(BaseConnector):
         self.logger.info(f"Zendesk: {len(members)} users have all-tickets access")
         return (group, members), complete
 
-    def _public_groups_agents(self, users: Dict[str, AppUser]) -> List[AppUser]:
+    def _public_groups_agents(self, users: dict[str, AppUser]) -> list[AppUser]:
         return [
             app_user
             for user_id, app_user in users.items()
@@ -1015,7 +1018,7 @@ class ZendeskConnector(BaseConnector):
             )
         ]
 
-    def _build_public_groups_group(self) -> Tuple[AppUserGroup, List[AppUser]]:
+    def _build_public_groups_group(self) -> tuple[AppUserGroup, list[AppUser]]:
         """Agents who may read unassigned tickets; always returned so the grant resolves."""
         group = AppUserGroup(
             app_name=Connectors.ZENDESK,
@@ -1033,14 +1036,14 @@ class ZendeskConnector(BaseConnector):
             entity_type=EntityType.GROUP,
         )
 
-    def _build_person_groups(self) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+    def _build_person_groups(self) -> list[tuple[AppUserGroup, list[AppUser]]]:
         """Two permission groups per staff member, granted by the tickets that name them.
 
         ``named_`` holds them while they can sign in; ``assigned_`` while their access is
         "assigned tickets only". Both are written for every staff member, empty or not,
         so a ticket's grant always lands and only membership has to change later.
         """
-        groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        groups: list[tuple[AppUserGroup, list[AppUser]]] = []
         for user_id, app_user in self._user_id_to_app_user.items():
             user_data = self._user_id_to_data.get(user_id, {})
             active = user_data.get("active") is not False and not user_data.get("suspended")
@@ -1069,14 +1072,14 @@ class ZendeskConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id,
         )
 
-    def _build_org_agent_groups(self, org_ids: List[str]) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+    def _build_org_agent_groups(self, org_ids: list[str]) -> list[tuple[AppUserGroup, list[AppUser]]]:
         """One group per organization holding its organization-limited agents.
 
         Zendesk lets such an agent read the tickets requested by end users in their
         organization, whatever the organization's ticket sharing says (that setting is
         for end users).
         """
-        members: Dict[str, List[AppUser]] = defaultdict(list)
+        members: dict[str, list[AppUser]] = defaultdict(list)
         for user_id, app_user in self._user_id_to_app_user.items():
             user_data = self._user_id_to_data.get(user_id, {})
             if user_data.get("active") is False or user_data.get("suspended"):
@@ -1104,7 +1107,7 @@ class ZendeskConnector(BaseConnector):
             entity_type=EntityType.GROUP,
         )
 
-    async def _fetch_organizations(self) -> Tuple[List[Tuple[AppUserGroup, List[AppUser]]], bool]:
+    async def _fetch_organizations(self) -> tuple[list[tuple[AppUserGroup, list[AppUser]]], bool]:
         """Sync Zendesk organizations as user groups.
 
         Members here are only the agents and admins already fetched. End users join
@@ -1115,7 +1118,7 @@ class ZendeskConnector(BaseConnector):
 
         The second return value flags a truncated export.
         """
-        orgs_data: List[Dict[str, Any]] = []
+        orgs_data: list[dict[str, Any]] = []
         start_time = DEFAULT_INCREMENTAL_START_TIME
         complete = True
         while True:
@@ -1156,9 +1159,9 @@ class ZendeskConnector(BaseConnector):
                 break
             start_time = end_time
 
-        members_by_org: Dict[str, List[AppUser]] = defaultdict(list)
+        members_by_org: dict[str, list[AppUser]] = defaultdict(list)
 
-        user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        user_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
         for org_data in orgs_data:
             org_id = org_data.get("id")
             if not org_id:
@@ -1169,7 +1172,7 @@ class ZendeskConnector(BaseConnector):
 
         return user_groups, complete
 
-    async def _sync_shared_org_members(self, groups: List[AppUserGroup]) -> None:
+    async def _sync_shared_org_members(self, groups: list[AppUserGroup]) -> None:
         """Read every customer of each ticket-sharing organization in this sync.
 
         A colleague who never raised a ticket is never sideloaded by a ticket page, so
@@ -1178,8 +1181,8 @@ class ZendeskConnector(BaseConnector):
         if not groups:
             return
         datasource = await self._get_fresh_datasource()
-        complete_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
-        partial_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
+        complete_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
+        partial_groups: list[tuple[AppUserGroup, list[AppUser]]] = []
         emails: set[str] = set()
         for group in groups:
             org_id = group.source_user_group_id.removeprefix("org_")
@@ -1188,7 +1191,7 @@ class ZendeskConnector(BaseConnector):
                 "users",
                 organization_id=int(org_id),
             )
-            members: List[AppUser] = []
+            members: list[AppUser] = []
             for user_data in users_data:
                 if not self._is_signed_in_customer(user_data):
                     continue
@@ -1212,8 +1215,8 @@ class ZendeskConnector(BaseConnector):
             )
 
     async def _add_organizations_missing_from_export(
-        self, org_user_groups: List[Tuple[AppUserGroup, List[AppUser]]]
-    ) -> List[Tuple[AppUserGroup, List[AppUser]]]:
+        self, org_user_groups: list[tuple[AppUserGroup, list[AppUser]]]
+    ) -> list[tuple[AppUserGroup, list[AppUser]]]:
         """Settle each organization that has groups here but is not in the export.
 
         Absence alone is not deletion: an organization edited moments ago can be missing
@@ -1267,7 +1270,7 @@ class ZendeskConnector(BaseConnector):
         return org_user_groups
 
     @staticmethod
-    def _is_signed_in_customer(user_data: Dict[str, Any]) -> bool:
+    def _is_signed_in_customer(user_data: dict[str, Any]) -> bool:
         """An end user who can sign in. Organization sharing is an end-user rule: an
         agent's reach comes from their access level, never from their organization."""
         return (
@@ -1288,14 +1291,14 @@ class ZendeskConnector(BaseConnector):
             source_updated_at=self._parse_datetime(org_data.get("updated_at")),
         )
 
-    async def _add_sideloaded_org_members(self, payload: Dict[str, Any]) -> None:
+    async def _add_sideloaded_org_members(self, payload: dict[str, Any]) -> None:
         """Put the end users a ticket page names into their organization's group.
 
         Only organizations that share tickets matter: no other org's group is ever
         granted on a ticket. Additive, never a rebuild — a page shows a slice of an
         org's people, and rebuilding from it would drop everyone else.
         """
-        members_by_org: Dict[str, Dict[str, AppUser]] = defaultdict(dict)
+        members_by_org: dict[str, dict[str, AppUser]] = defaultdict(dict)
         for user_data in self._extract_list(payload, "users"):
             org_id = str(user_data.get("organization_id") or "")
             if not self._org_data_shares_tickets(self._org_id_to_data.get(org_id)):
@@ -1314,7 +1317,7 @@ class ZendeskConnector(BaseConnector):
                 replace_members=False,
             )
 
-    async def _users_deleted_since_last_sync(self) -> Tuple[bool, Optional[int]]:
+    async def _users_deleted_since_last_sync(self) -> tuple[bool, int | None]:
         """Whether anyone was deleted since the last completed ticket sync.
 
         Deleting a user drops them from every ticket's CCs without moving the ticket's
@@ -1331,7 +1334,7 @@ class ZendeskConnector(BaseConnector):
         if not start_time:
             return False, checkpoint
         deleted = False
-        cursor: Optional[str] = None
+        cursor: str | None = None
         while True:
             response = await self._call_incremental(
                 "incremental_users", start_time=int(start_time), cursor=cursor
@@ -1364,7 +1367,7 @@ class ZendeskConnector(BaseConnector):
                 SYNC_POINT_KEY,
                 {**saved_state, "resetId": reset_id},
             )
-        cursor: Optional[str] = (
+        cursor: str | None = (
             None if self._refresh_ticket_grants else saved_state.get("lastCursor")
         )
         if self._refresh_ticket_grants:
@@ -1374,7 +1377,7 @@ class ZendeskConnector(BaseConnector):
             )
         max_end_time = start_time
         complete = True
-        seen_ticket_updated: Dict[str, int] = {}
+        seen_ticket_updated: dict[str, int] = {}
         # The export cursor moves past a ticket whose comments failed, so it is kept
         # here and re-read by id every sync until it goes through.
         pending_ticket_ids = await self._retry_pending_tickets(
@@ -1532,8 +1535,8 @@ class ZendeskConnector(BaseConnector):
         return synced
 
     async def _process_ticket_batch(
-        self, tickets: List[Dict[str, Any]], *, replace_grants: bool = False
-    ) -> Tuple[int, int, List[str]]:
+        self, tickets: list[dict[str, Any]], *, replace_grants: bool = False
+    ) -> tuple[int, int, list[str]]:
         """Store tickets with their grants and attachments.
 
         Returns (stored, removed, ids set aside because their comments failed). A
@@ -1548,9 +1551,9 @@ class ZendeskConnector(BaseConnector):
                 removed_ids, self.connector_id
             )
 
-        records_with_permissions: List[Tuple[Record, List[Permission]]] = []
-        public_comments_by_ticket: Dict[str, List[Dict[str, Any]]] = {}
-        failed_ids: List[str] = []
+        records_with_permissions: list[tuple[Record, list[Permission]]] = []
+        public_comments_by_ticket: dict[str, list[dict[str, Any]]] = {}
+        failed_ids: list[str] = []
         external_emails: set[str] = set()
         for ticket_data in tickets:
             ticket_id = ticket_data.get("id")
@@ -1618,7 +1621,7 @@ class ZendeskConnector(BaseConnector):
             )
         return len(records_with_permissions), len(removed_ids), failed_ids
 
-    async def _retry_pending_tickets(self, ticket_ids: List[str]) -> set[str]:
+    async def _retry_pending_tickets(self, ticket_ids: list[str]) -> set[str]:
         """Re-read set-aside tickets by id; returns the ones that still fail."""
         still_pending: set[str] = set()
         if not ticket_ids:
@@ -1665,7 +1668,7 @@ class ZendeskConnector(BaseConnector):
 
     async def _replace_changed_record_permissions(
         self,
-        records_with_permissions: List[Tuple[Record, List[Permission]]],
+        records_with_permissions: list[tuple[Record, list[Permission]]],
         *,
         replace_all: bool = False,
     ) -> None:
@@ -1684,10 +1687,10 @@ class ZendeskConnector(BaseConnector):
                     record, permissions
                 )
 
-    def _is_deleted_ticket(self, ticket_data: Dict[str, Any]) -> bool:
+    def _is_deleted_ticket(self, ticket_data: dict[str, Any]) -> bool:
         return str(ticket_data.get("status") or "").lower() == DELETED_TICKET_STATUS
 
-    def _is_ticket_in_scope(self, ticket_data: Dict[str, Any]) -> bool:
+    def _is_ticket_in_scope(self, ticket_data: dict[str, Any]) -> bool:
         """Whether this ticket belongs in the graph at all under the current filters."""
         if self._is_deleted_ticket(ticket_data):
             return False
@@ -1701,13 +1704,13 @@ class ZendeskConnector(BaseConnector):
             self._parse_datetime(ticket_data.get("updated_at")),
         )
 
-    async def _resolve_removable_record_ids(self, tickets: List[Dict[str, Any]]) -> List[str]:
+    async def _resolve_removable_record_ids(self, tickets: list[dict[str, Any]]) -> list[str]:
         """Record ids for tickets that must not stay in the graph.
 
         Deleted at source, or no longer admitted by the filters. Skipping them instead
         leaves the records unreachable but still answering queries from the vector store.
         """
-        record_ids: List[str] = []
+        record_ids: list[str] = []
         removable = [t for t in tickets if t.get("id") and not self._is_ticket_in_scope(t)]
         if not removable:
             return record_ids
@@ -1737,7 +1740,7 @@ class ZendeskConnector(BaseConnector):
             held = await tx_store.get_records_by_record_type(
                 self.connector_id, record_type.value
             )
-        removed_ids: List[str] = []
+        removed_ids: list[str] = []
         for record in held:
             if not self._is_allowed_by_date_filters(
                 record.source_created_at, record.source_updated_at
@@ -1749,7 +1752,7 @@ class ZendeskConnector(BaseConnector):
             )
         return len(removed_ids)
 
-    async def _with_attachment_ids(self, record: Record) -> List[str]:
+    async def _with_attachment_ids(self, record: Record) -> list[str]:
         """The record's id plus its attachments', for a cascade delete.
 
         Found by parent id, not by edge: a full sync wipes the ATTACHMENT edges the
@@ -1764,12 +1767,12 @@ class ZendeskConnector(BaseConnector):
 
     async def _ticket_to_record(
         self,
-        ticket_data: Dict[str, Any],
+        ticket_data: dict[str, Any],
         *,
         has_public_comment: bool = True,
         include_unchanged: bool = False,
-        comments: Optional[List[Dict[str, Any]]] = None,
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+        comments: list[dict[str, Any]] | None = None,
+    ) -> tuple[Record, list[Permission]] | None:
         ticket_id = ticket_data.get("id")
         group_id = ticket_data.get("group_id")
         if not ticket_id:
@@ -1873,14 +1876,14 @@ class ZendeskConnector(BaseConnector):
         )
         return record, permissions
 
-    def _parse_ticket_links(self, ticket_data: Dict[str, Any]) -> List[RelatedExternalRecord]:
+    def _parse_ticket_links(self, ticket_data: dict[str, Any]) -> list[RelatedExternalRecord]:
         """Map Zendesk's ticket-to-ticket links onto RecordRelations.
 
         Zendesk names its link types structurally rather than as free text, so these
         map directly instead of going through ``map_relationship_type``. Targets that
         have not synced yet are fine — the processor stands up a placeholder record.
         """
-        links: List[Tuple[Any, RecordRelations]] = [
+        links: list[tuple[Any, RecordRelations]] = [
             # problem_id sits on the incident and names its cause, so this edge
             # runs incident -> problem. The incident is also the ticket Zendesk
             # touches when the link changes, so it is the one that owns the edge.
@@ -1891,7 +1894,7 @@ class ZendeskConnector(BaseConnector):
         via_source = ((ticket_data.get("via") or {}).get("source") or {}).get("from") or {}
         links.append((via_source.get("ticket_id"), RecordRelations.RELATED))
 
-        related: List[RelatedExternalRecord] = []
+        related: list[RelatedExternalRecord] = []
         seen: set[str] = set()
         self_id = str(ticket_data.get("id"))
         for target_id, relation_type in links:
@@ -1949,7 +1952,7 @@ class ZendeskConnector(BaseConnector):
 
         await self._resolve_missing_sections(articles)
 
-        records_with_permissions: List[Tuple[Record, List[Permission]]] = []
+        records_with_permissions: list[tuple[Record, list[Permission]]] = []
         # Articles have no retry list, so a failure holds the checkpoint back instead.
         article_failed = False
         for article_data in articles:
@@ -2044,12 +2047,12 @@ class ZendeskConnector(BaseConnector):
         )
         return len(records_with_permissions)
 
-    async def _delete_empty_record_groups(self, external_group_ids: List[str]) -> List[str]:
+    async def _delete_empty_record_groups(self, external_group_ids: list[str]) -> list[str]:
         """Delete removed folders once their records and child folders have moved.
 
         Returns the ones still holding something, to be retried next sync.
         """
-        remaining: List[str] = []
+        remaining: list[str] = []
         for external_group_id in external_group_ids:
             async with self.data_store_provider.transaction() as tx_store:
                 group = await tx_store.get_record_group_by_external_id(
@@ -2117,7 +2120,7 @@ class ZendeskConnector(BaseConnector):
                 r.external_record_id.removeprefix("article_") for r in held
                 if (r.external_record_id or "").startswith("article_")
             }
-        removed_ids: List[str] = []
+        removed_ids: list[str] = []
         for article_id in sorted(previous - current):
             try:
                 response = await self._call_api_with_retry(
@@ -2195,14 +2198,14 @@ class ZendeskConnector(BaseConnector):
             },
         )
 
-    async def _ticket_ids_in_groups(self, external_group_ids: List[str]) -> List[str]:
-        ticket_ids: List[str] = []
+    async def _ticket_ids_in_groups(self, external_group_ids: list[str]) -> list[str]:
+        ticket_ids: list[str] = []
         for external_group_id in external_group_ids:
             async with self.data_store_provider.transaction() as tx_store:
                 group = await tx_store.get_record_group_by_external_id(
                     connector_id=self.connector_id, external_id=external_group_id
                 )
-                after_key: Optional[str] = None
+                after_key: str | None = None
                 while group:
                     records = await tx_store.get_records_by_status(
                         org_id=self.data_entities_processor.org_id,
@@ -2229,14 +2232,14 @@ class ZendeskConnector(BaseConnector):
 
     async def _fetch_incremental_articles(
         self, start_time: int
-    ) -> Tuple[List[Dict[str, Any]], bool, int]:
+    ) -> tuple[list[dict[str, Any]], bool, int]:
         """Walk the Help Center incremental export from ``start_time``.
 
         Not ``list_articles``: that pages by offset and Zendesk 400s past 10,000
         records, so a large Help Center could never finish a first sync.
         """
-        articles: List[Dict[str, Any]] = []
-        articles_by_id: Dict[str, Dict[str, Any]] = {}
+        articles: list[dict[str, Any]] = []
+        articles_by_id: dict[str, dict[str, Any]] = {}
         max_end_time = start_time
         complete = True
         while True:
@@ -2292,7 +2295,7 @@ class ZendeskConnector(BaseConnector):
         return articles, complete, max_end_time
 
     @staticmethod
-    def _export_finished(payload: Dict[str, Any]) -> bool:
+    def _export_finished(payload: dict[str, Any]) -> bool:
         """Whether a time-based export page is the last one.
 
         The Support exports say so with end_of_stream. The Help Center one carries no
@@ -2305,7 +2308,7 @@ class ZendeskConnector(BaseConnector):
 
     def _next_export_start(
         self, start_time: int, end_time: Any, *, page_has_items: bool
-    ) -> Optional[int]:
+    ) -> int | None:
         """Where a time-based export resumes, or None when it cannot go on.
 
         Normally the page's end_time. A page that ends on the second it started on
@@ -2371,7 +2374,7 @@ class ZendeskConnector(BaseConnector):
             key=lambda external_id: external_id.startswith("category_"),
         )
 
-        record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for category_data in categories:
             category_id = category_data.get("id")
             if not category_id:
@@ -2402,8 +2405,8 @@ class ZendeskConnector(BaseConnector):
         return True
 
     def _category_record_group(
-        self, category_data: Dict[str, Any]
-    ) -> Tuple[RecordGroup, List[Permission]]:
+        self, category_data: dict[str, Any]
+    ) -> tuple[RecordGroup, list[Permission]]:
         category_id = category_data.get("id")
         return (
             RecordGroup(
@@ -2422,8 +2425,8 @@ class ZendeskConnector(BaseConnector):
         )
 
     def _section_record_group(
-        self, section_data: Dict[str, Any]
-    ) -> Tuple[RecordGroup, List[Permission]]:
+        self, section_data: dict[str, Any]
+    ) -> tuple[RecordGroup, list[Permission]]:
         section_id = section_data.get("id")
         # A subsection hangs off its parent section, a top-level one off its category.
         parent_section_id = section_data.get("parent_section_id")
@@ -2451,7 +2454,7 @@ class ZendeskConnector(BaseConnector):
             self._kb_permissions(),
         )
 
-    def _kb_permissions(self) -> List[Permission]:
+    def _kb_permissions(self) -> list[Permission]:
         """Categories and sections carry no ACL of their own in Zendesk - visibility is
         derived from the articles inside them, and only public articles are synced."""
         return [Permission(
@@ -2460,7 +2463,7 @@ class ZendeskConnector(BaseConnector):
             external_id=self.data_entities_processor.org_id,
         )]
 
-    async def _resolve_missing_sections(self, articles: List[Dict[str, Any]]) -> None:
+    async def _resolve_missing_sections(self, articles: list[dict[str, Any]]) -> None:
         """Fetch any section an article references that the section list did not return.
 
         Zendesk does not document whether ``list_sections`` includes subsections, and
@@ -2481,7 +2484,7 @@ class ZendeskConnector(BaseConnector):
             "the section list - resolving them individually"
         )
         datasource = await self._get_fresh_datasource()
-        resolved: List[Tuple[RecordGroup, List[Permission]]] = []
+        resolved: list[tuple[RecordGroup, list[Permission]]] = []
         pending = list(wanted)
         while pending:
             section_id = pending.pop()
@@ -2525,7 +2528,7 @@ class ZendeskConnector(BaseConnector):
             )
 
     async def _detach_moved_section_edges(
-        self, groups: List[Tuple[RecordGroup, List[Permission]]]
+        self, groups: list[tuple[RecordGroup, list[Permission]]]
     ) -> None:
         """Replace a section's old parent/app edge when its hierarchy changes."""
         async with self.data_store_provider.transaction() as tx_store:
@@ -2561,7 +2564,7 @@ class ZendeskConnector(BaseConnector):
 
     @staticmethod
     def _section_depth(
-        section_data: Dict[str, Any], sections_by_id: Dict[str, Dict[str, Any]]
+        section_data: dict[str, Any], sections_by_id: dict[str, dict[str, Any]]
     ) -> int:
         depth = 0
         parent_id = section_data.get("parent_section_id")
@@ -2575,7 +2578,7 @@ class ZendeskConnector(BaseConnector):
             parent_id = sections_by_id[parent_key].get("parent_section_id")
         return depth
 
-    def _is_article_in_scope(self, article_data: Dict[str, Any]) -> bool:
+    def _is_article_in_scope(self, article_data: dict[str, Any]) -> bool:
         """Whether this article may be published to the whole tenant.
 
         user_segment_id is the article's entire ACL and segments are not synced, so one
@@ -2595,9 +2598,9 @@ class ZendeskConnector(BaseConnector):
             self._parse_datetime(article_data.get("updated_at")),
         )
 
-    async def _resolve_removable_article_ids(self, articles: List[Dict[str, Any]]) -> List[str]:
+    async def _resolve_removable_article_ids(self, articles: list[dict[str, Any]]) -> list[str]:
         """Record ids for articles that must not stay published."""
-        record_ids: List[str] = []
+        record_ids: list[str] = []
         removable = [a for a in articles if a.get("id") and not self._is_article_in_scope(a)]
         if not removable:
             return record_ids
@@ -2612,10 +2615,10 @@ class ZendeskConnector(BaseConnector):
 
     async def _article_to_record(
         self,
-        article_data: Dict[str, Any],
+        article_data: dict[str, Any],
         *,
         include_unchanged: bool = False,
-    ) -> Optional[Tuple[Record, List[Permission]]]:
+    ) -> tuple[Record, list[Permission]] | None:
         article_id = article_data.get("id")
         if not article_id:
             return None
@@ -2680,7 +2683,7 @@ class ZendeskConnector(BaseConnector):
         # Restricted articles were filtered out above, so ORG is the right grant.
         return record, self._article_permissions()
 
-    def _article_permissions(self) -> List[Permission]:
+    def _article_permissions(self) -> list[Permission]:
         return [
             Permission(
                 type=PermissionType.READ,
@@ -2692,8 +2695,8 @@ class ZendeskConnector(BaseConnector):
     async def stream_record(
         self,
         record: Record,
-        user_id: Optional[str] = None,
-        convertTo: Optional[str] = None,
+        user_id: str | None = None,
+        convertTo: str | None = None,
     ) -> StreamingResponse:
         # After a restart the first download can arrive before any sync loaded these.
         if self.indexing_filters is None:
@@ -2729,7 +2732,7 @@ class ZendeskConnector(BaseConnector):
             ) from e
         return StreamingResponse(iter([content]), media_type=MimeTypes.BLOCKS.value)
 
-    async def _fetch_public_comments(self, ticket_id: str) -> List[Dict[str, Any]]:
+    async def _fetch_public_comments(self, ticket_id: str) -> list[dict[str, Any]]:
         """A ticket's public comments, oldest first.
 
         public=False is an internal agent note. This ticket grants the requester READ,
@@ -2752,9 +2755,9 @@ class ZendeskConnector(BaseConnector):
     async def _sync_ticket_attachments(
         self,
         ticket_record: Record,
-        permissions: List[Permission],
+        permissions: list[Permission],
         *,
-        comments: Optional[List[Dict[str, Any]]] = None,
+        comments: list[dict[str, Any]] | None = None,
     ) -> None:
         """Publish the ticket's comment attachments as records during the sync.
 
@@ -2781,7 +2784,7 @@ class ZendeskConnector(BaseConnector):
                 stale_ids, self.connector_id
             )
 
-    async def _fetch_ticket_permissions(self, ticket_id: str) -> List[Permission]:
+    async def _fetch_ticket_permissions(self, ticket_id: str) -> list[Permission]:
         """Re-derive a ticket's grants for the streaming path, which only has its Record."""
         datasource = await self._get_fresh_datasource()
         # The requester is usually an end user, who is not held between syncs.
@@ -2806,10 +2809,10 @@ class ZendeskConnector(BaseConnector):
 
     async def _process_ticket_blockgroups_for_streaming(self, record: Record) -> bytes:
         comments = await self._fetch_public_comments(record.external_record_id)
-        permissions: List[Permission] = []
+        permissions: list[Permission] = []
         if any(comment.get("attachments") for comment in comments):
             permissions = await self._fetch_ticket_permissions(record.external_record_id)
-        block_groups: List[BlockGroup] = []
+        block_groups: list[BlockGroup] = []
         for index, comment in enumerate(comments):
             body = comment.get("html_body") or comment.get("body") or ""
             if "<" in body and ">" in body:
@@ -2879,7 +2882,7 @@ class ZendeskConnector(BaseConnector):
             self._article_permissions(),
             publish_records=False,
         )
-        block_groups: List[BlockGroup] = [BlockGroup(
+        block_groups: list[BlockGroup] = [BlockGroup(
             id=str(uuid4()),
             index=0,
             name=article.get("title") or record.record_name,
@@ -2938,7 +2941,7 @@ class ZendeskConnector(BaseConnector):
         if not html or "<img" not in html.lower():
             return html
         datasource = await self._get_fresh_datasource()
-        resolved: Dict[str, str] = {}
+        resolved: dict[str, str] = {}
         for match in IMG_SRC_PATTERN.finditer(html):
             url = match.group(2)
             if url in resolved or url.startswith("data:"):
@@ -2958,7 +2961,7 @@ class ZendeskConnector(BaseConnector):
             html,
         )
 
-    async def _fetch_image_as_data_uri(self, datasource: ZendeskDataSource, url: str) -> Optional[str]:
+    async def _fetch_image_as_data_uri(self, datasource: ZendeskDataSource, url: str) -> str | None:
         safe_url = redact_attachment_url(url)
         try:
             status, raw, mime = await self._fetch_asset(datasource, url)
@@ -2979,13 +2982,13 @@ class ZendeskConnector(BaseConnector):
 
     async def _build_attachment_child_records(
         self,
-        comment: Dict[str, Any],
+        comment: dict[str, Any],
         parent_record: Record,
-        permissions: List[Permission],
+        permissions: list[Permission],
         *,
         refresh_permissions: bool = False,
         publish_records: bool = True,
-    ) -> List[ChildRecord]:
+    ) -> list[ChildRecord]:
         # An attachment has no ACL of its own — it inherits its comment's.
         if comment.get("public") is not True:
             return []
@@ -2993,8 +2996,8 @@ class ZendeskConnector(BaseConnector):
             comment.get("attachments") or [],
             parent_record,
             f"ticket_{parent_record.external_record_id}_comment_{comment.get('id')}",
-            self._rebuild_ticket_edges,
             permissions,
+            rebuild_edges=self._rebuild_ticket_edges,
             refresh_permissions=refresh_permissions,
             publish_records=publish_records,
         )
@@ -3003,11 +3006,11 @@ class ZendeskConnector(BaseConnector):
         self,
         article_id: str,
         parent_record: Record,
-        permissions: List[Permission],
+        permissions: list[Permission],
         *,
         refresh_permissions: bool = False,
         publish_records: bool = True,
-    ) -> List[ChildRecord]:
+    ) -> list[ChildRecord]:
         """FileRecords for an article's non-inline attachments.
 
         Inline ones are already embedded in the body as base64 by
@@ -3027,23 +3030,23 @@ class ZendeskConnector(BaseConnector):
             attachments,
             parent_record,
             parent_record.external_record_id,
-            self._rebuild_article_edges,
             permissions,
+            rebuild_edges=self._rebuild_article_edges,
             refresh_permissions=refresh_permissions,
             publish_records=publish_records,
         )
 
     async def _emit_attachment_records(
         self,
-        attachments: List[Dict[str, Any]],
+        attachments: list[dict[str, Any]],
         parent_record: Record,
         external_id_prefix: str,
-        rebuild_edges: bool,
-        permissions: List[Permission],
+        permissions: list[Permission],
         *,
+        rebuild_edges: bool,
         refresh_permissions: bool = False,
         publish_records: bool = True,
-    ) -> List[ChildRecord]:
+    ) -> list[ChildRecord]:
         """Publish FileRecords for a parent's attachments and return their child links.
 
         One attachment has one home: an image referenced from the content is embedded
@@ -3055,9 +3058,9 @@ class ZendeskConnector(BaseConnector):
         ``refresh_permissions`` replaces the grants of attachments that already exist —
         only the sync path, which knows the parent's current grants, asks for it.
         """
-        child_records: List[ChildRecord] = []
-        records_with_permissions: List[Tuple[Record, List[Permission]]] = []
-        existing_records: List[Record] = []
+        child_records: list[ChildRecord] = []
+        records_with_permissions: list[tuple[Record, list[Permission]]] = []
+        existing_records: list[Record] = []
         for attachment in attachments:
             attachment_id = attachment.get("id")
             content_url = attachment.get("content_url")
@@ -3224,7 +3227,7 @@ class ZendeskConnector(BaseConnector):
 
     async def _fetch_asset(
         self, datasource: ZendeskDataSource, url: str
-    ) -> Tuple[int, bytes, str]:
+    ) -> tuple[int, bytes, str]:
         """Fetch a Zendesk asset, sending the token only to this tenant's own host.
 
         The shared CDN is reachable by other tenants, so it gets a client that never
@@ -3241,7 +3244,7 @@ class ZendeskConnector(BaseConnector):
         mime = (cdn_response.headers.get("content-type") or "").split(";")[0].strip()
         return cdn_response.status_code, cdn_response.content, mime
 
-    async def _resolve_attachment_url(self, record: Record) -> Optional[str]:
+    async def _resolve_attachment_url(self, record: Record) -> str | None:
         """Ask Zendesk for the attachment's current content_url.
 
         Fetched per download so the capability never sits in the graph beside
@@ -3285,10 +3288,10 @@ class ZendeskConnector(BaseConnector):
         filter_key: str,
         page: int = 1,
         limit: int = 20,
-        search: Optional[str] = None,
-        cursor: Optional[str] = None,
+        search: str | None = None,
+        cursor: str | None = None,
     ) -> FilterOptionsResponse:
-        options: List[FilterOption] = []
+        options: list[FilterOption] = []
         if filter_key == SyncFilterKey.GROUP_IDS.value:
             datasource = await self._get_fresh_datasource()
             groups, complete = await self._fetch_paginated_list_checked(
@@ -3376,7 +3379,7 @@ class ZendeskConnector(BaseConnector):
         return True
 
     @staticmethod
-    def _zendesk_error_description(body: Optional[str]) -> str:
+    def _zendesk_error_description(body: str | None) -> str:
         try:
             parsed = json.loads(body or "")
         except ValueError:
@@ -3385,14 +3388,14 @@ class ZendeskConnector(BaseConnector):
             return f"Zendesk: {str(parsed['description']).rstrip('.')}."
         return "Zendesk denied access with this token."
 
-    async def get_signed_url(self, record: Record) -> Optional[str]:
+    async def get_signed_url(self, record: Record) -> str | None:
         # Zendesk's content_url is a bearer link, so downloads are proxied by stream_record.
         return None
 
-    async def handle_webhook_notification(self, notification: Dict) -> None:
+    async def handle_webhook_notification(self, notification: dict) -> None:
         pass
 
-    async def reindex_records(self, record_results: List[Record]) -> None:
+    async def reindex_records(self, record_results: list[Record]) -> None:
         # Index events only: on_new_records would re-run permission handling.
         if not record_results:
             return
@@ -3502,7 +3505,7 @@ class ZendeskConnector(BaseConnector):
     async def _call_page(self, api_method: Any, page: int, **kwargs: Any) -> Any:
         return await self._call_api(api_method, page=page, per_page=PAGE_SIZE, **kwargs)
 
-    async def _call_cursor_page(self, api_method: Any, after: Optional[str], **kwargs: Any) -> Any:
+    async def _call_cursor_page(self, api_method: Any, after: str | None, **kwargs: Any) -> Any:
         return await self._call_api(
             api_method, page_size=PAGE_SIZE, page_after=after, **kwargs
         )
@@ -3525,13 +3528,13 @@ class ZendeskConnector(BaseConnector):
             self.logger.error(f"Zendesk {method_name} gave up after retries: {e}")
             return None
 
-    async def _fetch_paginated_list(self, api_method: Any, key: str, **kwargs: Any) -> List[Dict[str, Any]]:
+    async def _fetch_paginated_list(self, api_method: Any, key: str, **kwargs: Any) -> list[dict[str, Any]]:
         items, _ = await self._fetch_paginated_list_checked(api_method, key, **kwargs)
         return items
 
     async def _fetch_paginated_list_checked(
         self, api_method: Any, key: str, *, offset_only: bool = False, **kwargs: Any
-    ) -> Tuple[List[Dict[str, Any]], bool]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Walk an endpoint to the end, reporting whether it got there.
 
         Cursor pagination (``page[size]``/``page[after]``) has no ceiling; offset
@@ -3544,13 +3547,13 @@ class ZendeskConnector(BaseConnector):
         must not treat a truncated list as authoritative, hence the second value.
         """
         label = getattr(api_method, "__name__", key)
-        results: List[Dict[str, Any]] = []
-        after: Optional[str] = None
+        results: list[dict[str, Any]] = []
+        after: str | None = None
         page = 1
         # offset_only: the datasource method takes no page[size]/page[after] at all.
         by_cursor = not offset_only
         seen_ids: set[str] = set()
-        seen_offset_pages: set[Tuple[str, ...]] = set()
+        seen_offset_pages: set[tuple[str, ...]] = set()
         while True:
             if page > MAX_OFFSET_PAGES:
                 self.logger.error(
@@ -3645,7 +3648,7 @@ class ZendeskConnector(BaseConnector):
                 page += 1
         return results, True
 
-    def _extract_list(self, payload: Any, key: str) -> List[Dict[str, Any]]:
+    def _extract_list(self, payload: Any, key: str) -> list[dict[str, Any]]:
         if isinstance(payload, list):
             return [item for item in payload if isinstance(item, dict)]
         if isinstance(payload, dict):
@@ -3656,7 +3659,7 @@ class ZendeskConnector(BaseConnector):
                 return [value]
         return []
 
-    def _extract_object(self, payload: Any, key: str) -> Dict[str, Any]:
+    def _extract_object(self, payload: Any, key: str) -> dict[str, Any]:
         if isinstance(payload, dict):
             value = payload.get(key)
             if isinstance(value, dict):
@@ -3664,13 +3667,13 @@ class ZendeskConnector(BaseConnector):
             return payload
         return {}
 
-    def _extract_required_object(self, payload: Any, key: str) -> Dict[str, Any]:
+    def _extract_required_object(self, payload: Any, key: str) -> dict[str, Any]:
         """Return only the named API object; malformed 200s are not empty records."""
         if isinstance(payload, dict) and isinstance(payload.get(key), dict):
             return payload[key]
         return {}
 
-    def _cache_sideloads(self, payload: Dict[str, Any]) -> None:
+    def _cache_sideloads(self, payload: dict[str, Any]) -> None:
         for user in self._extract_list(payload, "users"):
             if user.get("id") is not None:
                 key = str(user["id"])
@@ -3713,7 +3716,7 @@ class ZendeskConnector(BaseConnector):
         return self._org_data_shares_tickets(org_data)
 
     @staticmethod
-    def _org_data_shares_tickets(org_data: Optional[Dict[str, Any]]) -> bool:
+    def _org_data_shares_tickets(org_data: dict[str, Any] | None) -> bool:
         # The incremental export keeps deleted organizations, with shared_tickets intact.
         return bool(
             org_data
@@ -3724,15 +3727,15 @@ class ZendeskConnector(BaseConnector):
     def _record_permissions(
         self,
         group_id: Any,
-        requester: Dict[str, Any],
+        requester: dict[str, Any],
         organization_id: Any = None,
         *,
-        collaborators: Optional[List[Any]] = None,
+        collaborators: list[Any] | None = None,
         include_customer_access: bool = True,
         assignee_id: Any = None,
         requester_id: Any = None,
-    ) -> List[Permission]:
-        permissions: List[Permission] = [self._all_tickets_permission()]
+    ) -> list[Permission]:
+        permissions: list[Permission] = [self._all_tickets_permission()]
         granted: set[str] = set()
 
         def grant_group(external_id: str) -> None:
@@ -3763,7 +3766,7 @@ class ZendeskConnector(BaseConnector):
 
         emails: set[str] = set()
 
-        def grant_person(user_id: Any, user_data: Dict[str, Any], *, works_the_ticket: bool) -> None:
+        def grant_person(user_id: Any, user_data: dict[str, Any], *, works_the_ticket: bool) -> None:
             if str(user_id) in self._user_id_to_data:
                 # A CC or follower works the ticket; an agent who only requested it
                 # sees it the way an end user would.
@@ -3822,8 +3825,8 @@ class ZendeskConnector(BaseConnector):
 
     def _is_allowed_by_date_filters(
         self,
-        created_at: Optional[int],
-        updated_at: Optional[int],
+        created_at: int | None,
+        updated_at: int | None,
     ) -> bool:
         if not self.sync_filters:
             return True
@@ -3850,8 +3853,8 @@ class ZendeskConnector(BaseConnector):
 
     def _timestamp_in_range(
         self,
-        timestamp: Optional[int],
-        date_range: tuple[Optional[int], Optional[int]],
+        timestamp: int | None,
+        date_range: tuple[int | None, int | None],
     ) -> bool:
         if timestamp is None:
             return True
@@ -3860,7 +3863,7 @@ class ZendeskConnector(BaseConnector):
             return False
         return not (end is not None and timestamp > end)
 
-    def _parse_datetime(self, value: Any) -> Optional[int]:
+    def _parse_datetime(self, value: Any) -> int | None:
         if not value:
             return None
         if isinstance(value, (int, float)):
@@ -3876,15 +3879,15 @@ class ZendeskConnector(BaseConnector):
                 return None
         return None
 
-    def _ticket_web_url(self, ticket_id: Any) -> Optional[str]:
+    def _ticket_web_url(self, ticket_id: Any) -> str | None:
         subdomain = self._subdomain()
         return f"https://{subdomain}.zendesk.com/agent/tickets/{ticket_id}" if subdomain else None
 
-    def _agent_group_url(self, group_id: str) -> Optional[str]:
+    def _agent_group_url(self, group_id: str) -> str | None:
         subdomain = self._subdomain()
         return f"https://{subdomain}.zendesk.com/admin/people/team/groups/{group_id}" if subdomain else None
 
-    def _subdomain(self) -> Optional[str]:
+    def _subdomain(self) -> str | None:
         if not self.external_client:
             return None
         try:
@@ -3914,7 +3917,7 @@ class ZendeskConnector(BaseConnector):
         )
 
     @staticmethod
-    def _is_embedded_image(attachment: Dict[str, Any]) -> bool:
+    def _is_embedded_image(attachment: dict[str, Any]) -> bool:
         """Whether this attachment already lives in the body as a base64 data URI.
 
         Zendesk marks an attachment referenced from the content ``inline``, and
@@ -3935,7 +3938,7 @@ class ZendeskConnector(BaseConnector):
 
     @classmethod
     def _ticket_content_revision(
-        cls, ticket_data: Dict[str, Any], comments: List[Dict[str, Any]]
+        cls, ticket_data: dict[str, Any], comments: list[dict[str, Any]]
     ) -> str:
         if not comments:
             # The streamed body falls back to the subject, so it is the content here.
@@ -3950,7 +3953,7 @@ class ZendeskConnector(BaseConnector):
         ])
 
     @staticmethod
-    def _attachment_mime_type(attachment: Dict[str, Any]) -> str:
+    def _attachment_mime_type(attachment: dict[str, Any]) -> str:
         """Zendesk reports application/unknown for files uploaded without a type."""
         content_type = attachment.get("content_type")
         if content_type and content_type not in UNRELIABLE_MIME_TYPES:
@@ -3958,13 +3961,13 @@ class ZendeskConnector(BaseConnector):
         guessed, _ = mimetypes.guess_type(attachment.get("file_name") or "", strict=False)
         return guessed or content_type or MimeTypes.UNKNOWN.value
 
-    def _extension(self, file_name: str) -> Optional[str]:
+    def _extension(self, file_name: str) -> str | None:
         if "." not in file_name:
             return None
         return file_name.rsplit(".", 1)[-1].lower()
 
-    def _populate_block_group_children(self, block_groups: List[BlockGroup]) -> None:
-        children_by_parent: Dict[int, List[int]] = defaultdict(list)
+    def _populate_block_group_children(self, block_groups: list[BlockGroup]) -> None:
+        children_by_parent: dict[int, list[int]] = defaultdict(list)
         for block_group in block_groups:
             if block_group.parent_index is not None:
                 children_by_parent[block_group.parent_index].append(block_group.index)
@@ -3982,8 +3985,8 @@ class ZendeskConnector(BaseConnector):
         connector_id: str,
         scope: str,
         created_by: str,
-        data_entities_processor,
-        **kwargs,
+        data_entities_processor: DataSourceEntitiesProcessor,
+        **kwargs: object,
     ) -> "BaseConnector":
         """Factory method to create ZendeskConnector instance"""
         return ZendeskConnector(
