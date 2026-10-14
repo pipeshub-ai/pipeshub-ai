@@ -110,6 +110,25 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
+# OpenAI and Azure OpenAI batches are bounded by tokens instead of by document
+# count. Records are mostly many small documents (every sentence of a long
+# block is embedded on its own as well as the block), so the 50-document cap,
+# not the size budget, decided how many requests a record made: a typical pull
+# request's diffs came to about 11 requests of roughly 1,000 tokens each.
+# These two providers take far larger requests (langchain_openai packs up to
+# 1,000 inputs per request for OpenAI and 2,048 for Azure, within 300k
+# tokens), and their tokenizer is the one ``_token_len`` counts with.
+# The budget is about what the 100k-character cap allowed for prose, so the
+# largest request is no bigger than before; only small documents pack tighter.
+# Fewer requests also means fewer vector upserts and record-presence checks,
+# which run once per batch.
+_TOKEN_BATCHED_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.OPENAI.value,
+    EmbeddingProvider.AZURE_OPENAI.value,
+})
+_TOKEN_BATCH_MAX_DOCUMENTS = 1000
+_TOKEN_BATCH_MAX_TOKENS = 25_000
+
 # One positive answer to "does the record still exist" covers the batches of
 # that record starting within this many seconds. Each check is a graph read on
 # the indexing loop (about 1 ms of driver CPU on Neo4j), and a large record
@@ -170,6 +189,39 @@ def _batch_documents_by_size(
             current_chars = 0
         current.append(document)
         current_chars += size
+
+    if current:
+        batches.append((current_start, current))
+    return batches
+
+
+def _batch_documents_by_tokens(
+    documents: list[Document], max_documents: int, max_tokens: int
+) -> list[tuple[int, list[Document]]]:
+    """Pack *documents* into ``(start_index, batch)`` pairs of at most
+    *max_tokens* tokens and *max_documents* documents.
+
+    The token-counted counterpart of ``_batch_documents_by_size``, with the
+    same contract: order is kept, a single document over the budget gets a
+    batch to itself, and ``start_index`` indexes into *documents*. Counting
+    tokens is CPU work, so async callers should run this in a thread.
+    """
+    batches: list[tuple[int, list[Document]]] = []
+    current: list[Document] = []
+    current_start = 0
+    current_tokens = 0
+
+    for index, document in enumerate(documents):
+        tokens = _token_len(document.page_content)
+        if current and (
+            len(current) >= max_documents or current_tokens + tokens > max_tokens
+        ):
+            batches.append((current_start, current))
+            current = []
+            current_start = index
+            current_tokens = 0
+        current.append(document)
+        current_tokens += tokens
 
     if current:
         batches.append((current_start, current))
@@ -276,7 +328,10 @@ def _token_len(text: str) -> int:
     encoder = _token_encoder()
     if encoder is None:
         return len(text.encode("utf-8"))
-    return len(encoder.encode(text))
+    # disallowed_special=(): this counts text, it does not prompt a model.
+    # By default tiktoken raises on any text that spells a special token such
+    # as "<|endoftext|>", which source code and chat logs about models do.
+    return len(encoder.encode(text, disallowed_special=()))
 
 
 def _exceeds_token_ceiling(text: str, ceiling: int) -> bool:
@@ -1385,6 +1440,17 @@ class VectorStore(Transformer):
             self.embedding_provider, self.embedding_endpoint
         )
 
+    def _batches_by_tokens(self) -> bool:
+        """Whether this provider's batches are bounded by tokens (see
+        ``_TOKEN_BATCHED_EMBEDDING_PROVIDERS``). OpenAI only on its own API: a
+        custom endpoint may be any OpenAI-shaped server, with its own limit
+        on inputs per request."""
+        if self.embedding_provider not in _TOKEN_BATCHED_EMBEDDING_PROVIDERS:
+            return False
+        if self.embedding_provider == EmbeddingProvider.OPENAI.value:
+            return not (self.embedding_endpoint or "").strip()
+        return True
+
     async def _compute_sparse_embeddings(
         self, texts: List[str]
     ) -> List[SparseVector | None]:
@@ -1534,9 +1600,17 @@ class VectorStore(Transformer):
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
                 raise
 
-        batches = _batch_documents_by_size(
-            langchain_document_chunks, max_documents, max_chars
-        )
+        if not use_local_sequential and self._batches_by_tokens():
+            batches = await asyncio.to_thread(
+                _batch_documents_by_tokens,
+                langchain_document_chunks,
+                _TOKEN_BATCH_MAX_DOCUMENTS,
+                _TOKEN_BATCH_MAX_TOKENS,
+            )
+        else:
+            batches = _batch_documents_by_size(
+                langchain_document_chunks, max_documents, max_chars
+            )
 
         if use_local_sequential:
             for idx, (start, batch) in enumerate(batches):
