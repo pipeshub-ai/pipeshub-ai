@@ -4,6 +4,8 @@
 
 The Authentication settings page (`/workspace/authentication`) lets admins configure which authentication method is active for their organisation, and configure OAuth/SAML providers.
 
+> **SAML and generic OAuth/OIDC sign-in are being removed in PipesHub 0.11.0.** Password, email OTP, Google and Microsoft sign-in stay. Until then the page shows a notice (`components/sign-in-removal-notice.tsx`) when the workspace has SAML or generic OAuth turned on or set up, and tags both rows with the release that removes them. The release is set in one place, `SIGN_IN_REMOVAL_VERSION`. Before upgrading, admins should turn on another sign-in method; people who only ever signed in through SAML or OAuth have no password and need email OTP or a password reset, which both require SMTP.
+
 ### Route
 
 `app/(main)/workspace/authentication/`
@@ -16,6 +18,7 @@ The Authentication settings page (`/workspace/authentication`) lets admins confi
 | `api.ts` | All API calls (typed) |
 | `types.ts` | TypeScript types & per-method metadata |
 | `components/auth-method-row.tsx` | Row for a single auth method |
+| `components/sign-in-removal-notice.tsx` | Notice for sign-in methods being removed, and the release that removes them |
 | `components/configure-panel.tsx` | Right-side panel (reuses `WorkspaceRightPanel`) |
 | `components/forms/google-config-form.tsx` | Google OAuth config form |
 | `components/forms/microsoft-config-form.tsx` | Microsoft OAuth config form |

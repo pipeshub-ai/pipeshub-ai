@@ -2248,6 +2248,12 @@
       "userMethods": {
         "heading": "Métodos de inicio de sesión de los usuarios",
         "subtitle": "Controla qué métodos de inicio de sesión están disponibles para todos los usuarios, en todas las organizaciones."
+      },
+      "removal": {
+        "title": "El inicio de sesión con SAML y OAuth personalizado se eliminará en PipesHub {{version}}",
+        "body": "Este espacio de trabajo usa {{methods}}. Antes de actualizar a {{version}}, activa el inicio de sesión con contraseña, OTP por correo, Google o Microsoft y asegúrate de que todos puedan usarlo. Quienes solo han iniciado sesión con {{methods}} todavía no tienen contraseña: pueden usar OTP por correo o restablecer su contraseña, y ambas opciones requieren tener el correo (SMTP) configurado.",
+        "rowBadge": "Se elimina en {{version}}",
+        "listSeparator": " y "
       }
     },
     "connectors": {

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text, Switch, Badge, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { AuthMethodMeta, AuthMethodState, ConfigurableMethod, ConfigStatus } from '../types';
+import { isMethodBeingRemoved, SIGN_IN_REMOVAL_VERSION } from './sign-in-removal-notice';
 
 // ========================================
 // Types
@@ -116,6 +117,12 @@ export function AuthMethodRow({
 
       {/* Right side: config badge + gear + toggle */}
       <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+        {isMethodBeingRemoved(meta.type) && (
+          <Badge color="amber" variant="soft" size="1">
+            {t('workspace.authentication.removal.rowBadge', { version: SIGN_IN_REMOVAL_VERSION })}
+          </Badge>
+        )}
+
         {/* Config status badge (only for configurable methods) */}
         {isConfigurable && (
           <Badge color={badgeColor} variant="soft" size="1">

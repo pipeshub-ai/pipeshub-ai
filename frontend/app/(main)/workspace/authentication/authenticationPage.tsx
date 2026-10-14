@@ -18,6 +18,7 @@ import { ConfirmationDialog } from '../components/confirmation-dialog';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { AuthMethodRow } from './components/auth-method-row';
 import { ConfigurePanel } from './components/configure-panel';
+import { SignInRemovalNotice, methodsBeingRemovedInUse } from './components/sign-in-removal-notice';
 import { useToastStore } from '@/lib/store/toast-store';
 import {
   AuthMethodsApi,
@@ -293,6 +294,8 @@ export default function AuthenticationPage() {
             {t('workspaceMenu.documentation')}
           </Button>
         </Flex>
+
+        <SignInRemovalNotice inUse={methodsBeingRemovedInUse(savedMethods, configStatus)} />
 
         {/* ── Authentication Methods section ── */}
         <Flex

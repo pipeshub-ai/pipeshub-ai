@@ -2221,6 +2221,12 @@
       "userMethods": {
         "heading": "User Sign-In Methods",
         "subtitle": "Controls which sign-in methods are available to every user, across every organisation."
+      },
+      "removal": {
+        "title": "SAML and custom OAuth sign-in will be removed in PipesHub {{version}}",
+        "body": "This workspace uses {{methods}}. Before you upgrade to {{version}}, turn on password, email OTP, Google or Microsoft sign-in and make sure everyone can use it. People who have only ever signed in through {{methods}} have no password yet: they can use email OTP or reset their password, and both need email (SMTP) set up.",
+        "rowBadge": "Removed in {{version}}",
+        "listSeparator": " and "
       }
     },
     "connectors": {

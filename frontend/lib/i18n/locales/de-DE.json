@@ -2230,6 +2230,12 @@
       "userMethods": {
         "heading": "Anmeldemethoden für Benutzer",
         "subtitle": "Legen Sie fest, welche Anmeldemethoden allen Benutzern in allen Organisationen zur Verfügung stehen."
+      },
+      "removal": {
+        "title": "Die Anmeldung über SAML und benutzerdefiniertes OAuth wird in PipesHub {{version}} entfernt",
+        "body": "Dieser Arbeitsbereich verwendet {{methods}}. Aktivieren Sie vor dem Upgrade auf {{version}} die Anmeldung per Passwort, E-Mail-OTP, Google oder Microsoft und stellen Sie sicher, dass alle sie nutzen können. Wer sich bisher nur über {{methods}} angemeldet hat, hat noch kein Passwort: Diese Personen können E-Mail-OTP verwenden oder ihr Passwort zurücksetzen. Beides setzt eingerichtete E-Mail (SMTP) voraus.",
+        "rowBadge": "Entfällt in {{version}}",
+        "listSeparator": " und "
       }
     },
     "connectors": {

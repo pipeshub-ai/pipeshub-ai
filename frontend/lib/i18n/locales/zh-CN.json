@@ -2367,6 +2367,12 @@
       "userMethods": {
         "heading": "用户登录方式",
         "subtitle": "控制所有组织中所有用户可使用的登录方式。"
+      },
+      "removal": {
+        "title": "PipesHub {{version}} 将移除 SAML 和自定义 OAuth 登录",
+        "body": "此工作区正在使用 {{methods}}。升级到 {{version}} 之前，请启用密码、邮箱 OTP、Google 或 Microsoft 登录，并确保所有人都能使用。只通过 {{methods}} 登录过的用户还没有密码：他们可以使用邮箱 OTP 或重置密码，这两种方式都需要先配置邮件（SMTP）。",
+        "rowBadge": "将在 {{version}} 中移除",
+        "listSeparator": "和"
       }
     },
     "connectors": {
