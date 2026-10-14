@@ -603,17 +603,25 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('request-ID logging', () => {
     let infoStub: sinon.SinonStub
     let errorStub: sinon.SinonStub
-    const loggerInstance = Logger.getInstance()
 
     beforeEach(() => {
-      if (typeof (loggerInstance.info as any).restore === 'function') {
-        (loggerInstance.info as any).restore()
+      if (typeof (Logger.prototype.info as any).restore === 'function') {
+        (Logger.prototype.info as any).restore()
       }
-      if (typeof (loggerInstance.error as any).restore === 'function') {
-        (loggerInstance.error as any).restore()
+      if (typeof (Logger.prototype.error as any).restore === 'function') {
+        (Logger.prototype.error as any).restore()
       }
-      infoStub = sinon.stub(loggerInstance, 'info')
-      errorStub = sinon.stub(loggerInstance, 'error')
+      infoStub = sinon.stub(Logger.prototype, 'info')
+      errorStub = sinon.stub(Logger.prototype, 'error')
+    })
+
+    afterEach(() => {
+      if (typeof (Logger.prototype.info as any).restore === 'function') {
+        (Logger.prototype.info as any).restore()
+      }
+      if (typeof (Logger.prototype.error as any).restore === 'function') {
+        (Logger.prototype.error as any).restore()
+      }
     })
 
     it('should log success with requestId and JSON-RPC method when x-request-id header is provided', async () => {
@@ -757,19 +765,19 @@ describe('MCP Controller — handleMCPRequest', () => {
   // Error handling — negative tests
   // =========================================================================
   describe('error handling', () => {
-    // Stub the singleton instance directly — Logger.getInstance() always
-    // returns the same object, so stubbing its `error` method ensures we
-    // intercept calls from the controller (which holds a reference to the
-    // same singleton).
     let errorStub: sinon.SinonStub
-    const loggerInstance = Logger.getInstance()
 
     beforeEach(() => {
-      // Defensively restore any lingering stub
-      if (typeof (loggerInstance.error as any).restore === 'function') {
-        (loggerInstance.error as any).restore()
+      if (typeof (Logger.prototype.error as any).restore === 'function') {
+        (Logger.prototype.error as any).restore()
       }
-      errorStub = sinon.stub(loggerInstance, 'error')
+      errorStub = sinon.stub(Logger.prototype, 'error')
+    })
+
+    afterEach(() => {
+      if (typeof (Logger.prototype.error as any).restore === 'function') {
+        (Logger.prototype.error as any).restore()
+      }
     })
 
     it('should call next(error) when createMCPServer throws', async () => {
