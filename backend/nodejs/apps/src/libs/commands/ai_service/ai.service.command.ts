@@ -79,7 +79,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
 
       // Assuming the response is JSON; adjust if needed.
       const data = await response.json();
-      const retryAfter = response.headers?.get('retry-after');
+      const retryAfter = response.headers.get('retry-after');
       return {
         statusCode: response.status,
         data: data,
