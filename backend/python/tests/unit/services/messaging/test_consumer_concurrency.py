@@ -352,8 +352,13 @@ class TestAcquireDistributedSlot:
             main_loop=asyncio.get_running_loop(),
         )
         # base 0.01s growing to a 0.2s cap, mirroring the shipped 0.5s->5s
-        # ratio at a scale a unit test can wait out.
-        with _lease_env(max_backoff=0.2):
+        # ratio at a scale a unit test can wait out. Jitter's floor is the base
+        # poll, so real draws only bound the attempts on average (about 1 run
+        # in 300 made 13); each draw is pinned to the middle of its range.
+        with _lease_env(max_backoff=0.2), patch(
+            "app.services.messaging.consumer_concurrency.random.uniform",
+            side_effect=lambda low, high: (low + high) / 2,
+        ):
             result = await acquire_distributed_slot(
                 host, "parsing:light", "owner", 5, deadline_seconds=0.5
             )
