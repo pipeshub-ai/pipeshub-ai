@@ -183,9 +183,10 @@ test.describe('First run', () => {
       expect(org.ok(), `reading the organization failed: ${org.status()}`).toBe(true);
       expect(((await org.json()) as { registeredName?: string }).registeredName).toBe(WORKSPACE_NAME);
 
+      // 400 until a storage type is saved. A signed-in caller gets an empty body
+      // by design (cm_controller.ts), so the 200 is the check.
       const storage = await api.get('/api/v1/configurationManager/storageConfig');
-      expect(storage.ok(), `reading the storage config failed: ${storage.status()}`).toBe(true);
-      expect(((await storage.json()) as { storageType?: string }).storageType).toBe('local');
+      expect(storage.status(), `no storage config was saved: ${await storage.text()}`).toBe(200);
 
       for (const [type, key] of [['llm', llmKey], ['embedding', embeddingKey]] as const) {
         const listed = await api.get(`${MODELS_API}/${type}`);
