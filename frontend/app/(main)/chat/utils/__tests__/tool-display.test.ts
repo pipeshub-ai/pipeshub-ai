@@ -10,7 +10,7 @@
  *  - NEW chats: a backend-provided `displayName` always wins outright.
  */
 import { describe, it, expect } from 'vitest';
-import { extractToolsetLabel, isSkillTool, isWebTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
+import { extractSqlQuery, extractToolsetLabel, isSkillTool, isWebTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
 
 describe('isSkillTool', () => {
   it('is true for exactly the five built-in skill tools', () => {
@@ -111,5 +111,36 @@ describe('isWebTool', () => {
     expect(isWebTool('mcp_web_search')).toBe(false);
     expect(isWebTool('knowledgegraph__search')).toBe(false);
     expect(isWebTool(undefined)).toBe(false);
+  });
+});
+
+describe('extractSqlQuery', () => {
+  const args = (query: string) => JSON.stringify({ query, source_name: 'PostgreSQL', connector_id: 'conn-1' });
+
+  it('returns the query of a SQL tool call', () => {
+    expect(extractSqlQuery('sql__execute_sql_query', args('SELECT 1'))).toBe('SELECT 1');
+    expect(extractSqlQuery('execute_sql_query', args('SELECT 1'))).toBe('SELECT 1');
+  });
+
+  it('ignores other tools, even with a "query" argument', () => {
+    expect(extractSqlQuery('web_search', JSON.stringify({ query: 'weather' }))).toBeUndefined();
+    expect(extractSqlQuery(undefined, args('SELECT 1'))).toBeUndefined();
+  });
+
+  it('returns undefined for missing, blank or non-string queries', () => {
+    expect(extractSqlQuery('sql__execute_sql_query', undefined)).toBeUndefined();
+    expect(extractSqlQuery('sql__execute_sql_query', args('  '))).toBeUndefined();
+    expect(extractSqlQuery('sql__execute_sql_query', JSON.stringify({ query: 3 }))).toBeUndefined();
+    expect(extractSqlQuery('sql__execute_sql_query', 'null')).toBeUndefined();
+  });
+
+  it('recovers the query from args cut off by the length cap', () => {
+    const full = args('SELECT "name",\n  id FROM users');
+    expect(extractSqlQuery('sql__execute_sql_query', full.slice(0, full.indexOf('FROM') + 4))).toBe(
+      'SELECT "name",\n  id FROM',
+    );
+    const cutInEscape = JSON.stringify({ query: 'SELECT \'é\'' }).replace('é', '\\u00e9').slice(0, -6);
+    expect(extractSqlQuery('sql__execute_sql_query', cutInEscape)).toBe("SELECT '");
+    expect(extractSqlQuery('sql__execute_sql_query', '{"query": "SELECT \\')).toBe('SELECT ');
   });
 });

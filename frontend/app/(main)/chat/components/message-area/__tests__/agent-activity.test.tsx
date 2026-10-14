@@ -514,6 +514,36 @@ describe('ToolCallCard — a tool that is not from an MCP server', () => {
   });
 });
 
+describe('ToolCallCard — SQL query section', () => {
+  function expand(part: MessagePart) {
+    const { container } = renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+    return container;
+  }
+
+  it('shows the executed SQL in a Query section', () => {
+    const container = expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'sql__execute_sql_query',
+      status: 'completed',
+      argsSummary: 'Running SQL query on "PostgreSQL"',
+      args: JSON.stringify({ query: 'SELECT id, name FROM users WHERE active = true', source_name: 'PostgreSQL' }),
+    });
+
+    expect(screen.getByText('Query')).toBeTruthy();
+    expect(screen.getByText('Running SQL query on "PostgreSQL"')).toBeTruthy();
+    // Syntax highlighting splits the SQL across token spans.
+    expect(container.textContent).toContain('SELECT id, name FROM users WHERE active = true');
+  });
+
+  it('has no Query section for another tool with a "query" argument', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'web_search', status: 'completed', args: '{"query":"weather"}' });
+
+    expect(screen.queryByText('Query')).toBeNull();
+  });
+});
+
 describe('ToolCallCard — a readable result', () => {
   function expand(part: MessagePart) {
     renderCard(part);

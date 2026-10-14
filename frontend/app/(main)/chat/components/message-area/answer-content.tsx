@@ -617,7 +617,17 @@ function CodeHeaderButton({
  * Fenced code block with a header bar (language label + download and copy buttons)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
-function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
+export function CodeBlock({
+  language,
+  codeText,
+  maxHeight = '480px',
+  style,
+}: {
+  language: string;
+  codeText: string;
+  maxHeight?: string;
+  style?: React.CSSProperties;
+}) {
   const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
@@ -636,6 +646,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         borderRadius: 'var(--radius-2)',
         overflow: 'hidden',
         border: `1px solid ${headerBorder}`,
+        ...style,
       }}
     >
       {/* Header bar */}
@@ -682,7 +693,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
           backgroundColor: bodyBg,
           overflowX: 'auto',
           overflowY: 'auto',
-          maxHeight: '480px',
+          maxHeight,
         }}
       >
         <SyntaxHighlighter
