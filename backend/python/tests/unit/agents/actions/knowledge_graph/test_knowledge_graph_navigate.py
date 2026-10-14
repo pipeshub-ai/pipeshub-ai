@@ -337,6 +337,34 @@ class TestNavigateExposesRecordMetadata:
         assert "External ID: PA-1787" in text
 
     @pytest.mark.asyncio
+    async def test_pull_request_merge_state_is_shown(self):
+        """A PR node used to show only the base header, so the model guessed
+        whether it was merged."""
+        from app.models.entities import PullRequestRecord
+        pr = PullRequestRecord(
+            id="rec1",
+            record_name="Fix login redirect",
+            record_type=RecordType.PULL_REQUEST,
+            external_record_id="123/pull/42",
+            version=1,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.GITHUB,
+            connector_id="gh-conn",
+            weburl="https://github.com/org/repo/pull/42",
+            status="DONE",
+            creator_name="octocat",
+            merged_by="hubot",
+        )
+        state = self._state_on_ticket(pr)
+
+        success, text = await self._navigate(state)
+
+        assert success
+        assert "* Status: Merged" in text
+        assert "* Author: octocat" in text
+        assert "* Merged By: hubot" in text
+
+    @pytest.mark.asyncio
     async def test_read_step_is_offered_for_a_record_node(self):
         state = self._state_on_ticket(_ticket_record())
 
@@ -420,6 +448,101 @@ class TestNavigateRemembersRecordIds:
             await KnowledgeGraph(state=state).navigate(node_id="rec1")
 
         assert state["known_record_ids"] == {"rec1", "child1"}
+
+    @pytest.mark.asyncio
+    async def test_rows_cut_by_the_byte_cap_never_reach_a_recovery_reply(self) -> None:
+        """The fetch reply for an unknown id lists remembered records; a row the
+        25KB cap cut was never shown, so it must not be listed there."""
+        from types import SimpleNamespace
+
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+
+        state = _make_state(enable_record_id_shortening=False)
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "Epic", "nodeType": "record", "subType": "TICKET",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        children = []
+        for i in range(200):
+            item = _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}")
+            item.webUrl = "https://example.atlassian.net/browse/" + "x" * 300
+            children.append(item)
+        mock_resp = _make_knowledge_hub_response(items=children, total=200)
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            ok, text = await KnowledgeGraph(state=state).navigate(node_id="rec1", limit=200)
+
+        cut = [c.id for c in children if c.id not in text]
+        assert ok is True and cut, "the listing must be long enough to be cut"
+        assert not set(cut) & state["known_record_ids"]
+
+        context = SimpleNamespace(
+            org_id="org-1", user_id="user-1", graph_provider=gp, full_records_fetched=set(),
+            tool_state=state, is_multimodal_llm=False, context_length=128_000, query="",
+            retrieval_service=None,
+        )
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=["deadbeef-0000-4000-8000-000000000000"],
+        )
+        assert "Records returned earlier in this conversation:" in output.error
+        assert not [rid for rid in cut if rid in output.error]
+
+    @pytest.mark.asyncio
+    async def test_the_viewed_record_stays_listed_on_a_full_page(self) -> None:
+        """The header and the read hint name the viewed record first; a full
+        50-row page must not push it out of the 20 the recovery reply lists."""
+        import re
+        from types import SimpleNamespace
+
+        from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+
+        current = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+        state = _make_state(enable_record_id_shortening=False)
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": current, "name": "Call notes", "nodeType": "record", "subType": "TICKET",
+            "connector": "JIRA", "webUrl": None, "indexingStatus": "COMPLETED",
+        })
+        gp.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[])
+        gp.get_linked_records = AsyncMock(return_value=[
+            {"id": f"{i:08x}-2222-4222-8333-944445555666", "name": f"Linked {i}"} for i in range(5)
+        ])
+        gp.get_record_by_id = AsyncMock(return_value=None)
+        gp.check_record_access_with_details = AsyncMock(return_value=None)
+        children = [
+            _make_node_item(f"{i:08x}-1111-4222-8333-944445555666", f"Story {i}") for i in range(50)
+        ]
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=children, total=50)),
+        ):
+            ok, text = await KnowledgeGraph(state=state).navigate(node_id=current)
+
+        context = SimpleNamespace(
+            org_id="org-1", user_id="user-1", graph_provider=gp, full_records_fetched=set(),
+            tool_state=state, is_multimodal_llm=False, context_length=128_000, query="",
+            retrieval_service=None,
+        )
+        output, _ = await execute_fetch_record(
+            context=context, virtual_records={}, citation_ref_mapper=None,
+            record_ids=["8a2cfb7d-04fc-4647-8d43-5d0527800009"],
+        )
+
+        bullets = [line[2:].split(" ")[0] for line in output.error.splitlines() if line.startswith("- ")]
+        hinted = re.findall(r'"([0-9a-f-]{36})"', text.split("knowledgegraph__fetch_record(", 1)[1].split(")")[0])
+        assert ok is True and current in bullets
+        assert hinted and set(hinted) <= set(bullets)
+        assert f"The closest to the id you used is {current} (Call notes)." in output.error
 
     @pytest.mark.asyncio
     async def test_container_node_ids_are_not_remembered(self):

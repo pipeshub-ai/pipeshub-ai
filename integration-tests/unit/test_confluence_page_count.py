@@ -15,6 +15,8 @@ import pytest
 from app.models.entities import RecordType
 from connectors.confluence.confluence_v1_test_utils import (
     assert_confluence_pages_match_graph_records,
+    count_confluence_space_pages_v1_search,
+    wait_for_space_page_count_at_least,
 )
 
 pytestmark = pytest.mark.unit
@@ -77,3 +79,35 @@ async def test_a_page_missing_from_the_graph_is_reported() -> None:
             _Datasource([str(i) for i in range(33)]), _Graph(_space(32)),  # type: ignore[arg-type]
             CONNECTOR, "SPACE", phase="after sync",
         )
+
+
+class _LaggingDatasource:
+    """The space-wide listing leaves out pages just created, then catches up."""
+
+    def __init__(self, listings: list[int]) -> None:
+        self.listings = listings
+        self.reads = 0
+
+    async def get_pages_v1(self, **_: Any) -> _Resp:
+        count = self.listings[min(self.reads, len(self.listings) - 1)]
+        self.reads += 1
+        return _Resp([str(i) for i in range(count)])
+
+
+async def test_one_read_right_after_creating_two_pages_can_count_one() -> None:
+    # Nightly 37826872241: 35 pages, two created and both found by id, and the
+    # next listing counted 36.
+    assert await count_confluence_space_pages_v1_search(_LaggingDatasource([36, 37]), "SPACE") == 36  # type: ignore[arg-type]
+
+
+async def test_the_count_is_read_again_until_the_new_pages_are_listed() -> None:
+    source = _LaggingDatasource([36, 36, 37])
+    count = await wait_for_space_page_count_at_least(source, "SPACE", 37, timeout=5, poll_interval=0)  # type: ignore[arg-type]
+    assert count == 37
+    assert source.reads == 3
+
+
+async def test_a_count_that_never_gets_there_is_returned_at_the_deadline() -> None:
+    source = _LaggingDatasource([36])
+    assert await wait_for_space_page_count_at_least(source, "SPACE", 37, timeout=0, poll_interval=0) == 36  # type: ignore[arg-type]
+    assert source.reads == 1

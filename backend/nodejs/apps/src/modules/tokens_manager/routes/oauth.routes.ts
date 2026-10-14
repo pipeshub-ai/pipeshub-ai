@@ -78,6 +78,7 @@ const oauthConfigListSchema = z.object({
       .optional(),
     search: z.string().optional(),
     scope: z.enum(['personal', 'team']).optional(),
+    reveal: z.string().optional(),
   }),
 });
 

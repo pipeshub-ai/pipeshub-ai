@@ -1,13 +1,17 @@
 """Unit tests for app.api.routes.entity module."""
 
+import asyncio
+import copy
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from app.api.routes.entity import (
+    UserEmailUpdateRequest,
     _validate_and_filter_owner_updates,
     _validate_owner_removal,
     create_team,
@@ -18,6 +22,7 @@ from app.api.routes.entity import (
     get_user_teams,
     get_users,
     update_team,
+    update_user_email,
 )
 
 
@@ -503,11 +508,15 @@ class TestCreateTeam:
         gp.rollback_transaction.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_conflict_on_the_edge_write_is_retried_into_one_team(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """On Neo4j the team node commits before its edges; a retry must finish that team, not add one."""
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_conflict_on_the_edge_write_is_retried_into_one_team(
+        self, monkeypatch: pytest.MonkeyPatch, honours_explicit: bool,
+    ) -> None:
+        """With NEO4J_CREATE_TRANSACTIONS=false the team node commits before its edges;
+        a retry must finish that team, not add one."""
         monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
         req = _make_request({"name": "Team"})
-        graph = _TeamGraph(conflicts_on=2)
+        graph = _TeamGraph(conflicts_on=2, honours_explicit=honours_explicit)
         req.app.state.graph_provider = graph
 
         resp = await create_team(req)
@@ -518,45 +527,80 @@ class TestCreateTeam:
         assert graph.edges == {("permission", "user-key-1", team_key)}
         assert graph.read_back == [team_key]
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    async def test_a_failure_on_the_edge_write_leaves_no_team_unless_the_kill_switch_is_off(
+        self, honours_explicit: bool,
+    ) -> None:
+        req = _make_request({"name": "Team"})
+        graph = _TeamGraph(fails_on=2, honours_explicit=honours_explicit)
+        req.app.state.graph_provider = graph
+
+        with pytest.raises(HTTPException) as exc:
+            await create_team(req)
+
+        assert exc.value.status_code == 500
+        assert graph.explicit_requests == [True]
+        assert graph.edges == set()
+        # With the kill switch off, today's auto-commit keeps the team node without its owner.
+        assert len(graph.teams) == (0 if honours_explicit else 1)
+
 
 class _Conflict(RuntimeError):
     pass
 
 
 class _TeamGraph:
-    """One user's teams on a graph where each statement lands as it runs (Neo4j's
-    default) and the write numbered *conflicts_on* hits another writer."""
+    """One user's teams on Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off: each statement
+    lands as it runs, except inside begin_transaction(explicit=True) while
+    *honours_explicit* (NEO4J_CREATE_TRANSACTIONS) is on. The write numbered
+    *conflicts_on* hits another writer; the one numbered *fails_on* hits an outage."""
 
-    def __init__(self, *, conflicts_on: int | None = None) -> None:
+    def __init__(self, *, conflicts_on: int | None = None, fails_on: int | None = None,
+                 honours_explicit: bool = True) -> None:
         self.logger = MagicMock()
         self.teams: dict[str, dict] = {}
         self.edges: set[tuple[str, str, str]] = set()
         self.read_back: list[str] = []
         self.writes = 0
         self.conflicts_on = conflicts_on
+        self.fails_on = fails_on
+        self.honours_explicit = honours_explicit
+        self.explicit_requests: list[bool | None] = []
+        self._snapshots: dict[str, tuple[dict, set]] = {}
 
     async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> dict:
         return {"_key": "user-key-1"}
 
-    async def begin_transaction(self, read: list | None = None, write: list | None = None) -> str:
-        return "txn"
+    async def begin_transaction(self, read: list | None = None, write: list | None = None,
+                                explicit: bool | None = None) -> str:
+        self.explicit_requests.append(explicit)
+        txn = f"txn-{len(self.explicit_requests)}"
+        if explicit and self.honours_explicit:
+            self._snapshots[txn] = (copy.deepcopy(self.teams), set(self.edges))
+        return txn
 
     async def commit_transaction(self, txn: str) -> None:
-        pass
+        self._snapshots.pop(txn, None)
 
     async def rollback_transaction(self, txn: str) -> None:
-        pass  # Nothing to undo: every statement already committed.
+        # Without a real transaction there is nothing to undo: every statement committed.
+        snapshot = self._snapshots.pop(txn, None)
+        if snapshot is not None:
+            self.teams, self.edges = snapshot
 
     def is_write_conflict(self, error: BaseException) -> bool:
         return isinstance(error, _Conflict)
 
-    def is_transient_error(self, error: BaseException) -> bool:
-        return False
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return isinstance(error, _Conflict) and bool(explicit) and self.honours_explicit
 
     def _statement(self) -> None:
         self.writes += 1
         if self.writes == self.conflicts_on:
             raise _Conflict("DeadlockDetected")
+        if self.writes == self.fails_on:
+            raise RuntimeError("connection reset")
 
     async def batch_upsert_nodes(self, nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
         self._statement()
@@ -1335,4 +1379,158 @@ class TestGetTeamUsers:
             await get_team_users(req, "team-1")
         assert exc.value.status_code == 403
 
+
+class TestUpdateUserEmail:
+    def test_updates_graph_email(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = {
+                "email": "new@example.com",
+                "mergedStubKeys": [],
+            }
+            body = UserEmailUpdateRequest(email="New@Example.com")
+
+            resp = await update_user_email(req, body)
+
+            assert resp.status_code == 200
+            gp.apply_verified_user_email.assert_awaited_once_with(
+                "user-1", "org-1", "new@example.com"
+            )
+            payload = json.loads(resp.body.decode())
+            assert payload["email"] == "new@example.com"
+            assert payload["mergedStubKeys"] == []
+
+        asyncio.run(_run())
+
+    def test_clears_accessible_records_cache_of_merged_connectors(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = {
+                "email": "new@example.com",
+                "mergedStubKeys": ["stub-1"],
+                "connectorIds": ["conn-1", "conn-2"],
+            }
+            with patch(
+                "app.api.routes.entity.notify_connector_sync_completed", new_callable=AsyncMock
+            ) as notify:
+                resp = await update_user_email(req, UserEmailUpdateRequest(email="new@example.com"))
+
+            assert resp.status_code == 200
+            assert [c.args for c in notify.await_args_list] == [
+                ("conn-1", "org-1"),
+                ("conn-2", "org-1"),
+            ]
+
+        asyncio.run(_run())
+
+    def test_does_not_clear_cache_when_the_graph_update_fails(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = RuntimeError("boom")
+            with patch(
+                "app.api.routes.entity.notify_connector_sync_completed", new_callable=AsyncMock
+            ) as notify:
+                with pytest.raises(HTTPException) as exc:
+                    await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 500
+            notify.assert_not_awaited()
+
+        asyncio.run(_run())
+
+    def test_404_when_graph_user_missing(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.return_value = None
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 404
+
+        asyncio.run(_run())
+
+    def test_409_when_email_belongs_to_another_login(self):
+        async def _run() -> None:
+            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = GraphUserEmailConflictError(
+                "Email already belongs to another login user in the graph",
+                conflicting_user_id="other",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+            assert exc.value.status_code == 409
+
+        asyncio.run(_run())
+
+    @pytest.mark.parametrize(
+        "user",
+        [
+            {"orgId": "org-1"},
+            {"userId": "user-1"},
+            {"userId": "", "orgId": "org-1"},
+            {},
+        ],
+    )
+    def test_400_when_token_has_no_user_or_org(self, user):
+        async def _run() -> None:
+            req = _make_request()
+            req.state.user = user
+            gp = _graph_provider(req)
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 400
+            gp.apply_verified_user_email.assert_not_called()
+
+        asyncio.run(_run())
+
+    def test_500_hides_the_graph_error_text(self):
+        async def _run() -> None:
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = RuntimeError("neo4j://secret-host down")
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 500
+            assert "secret-host" not in str(exc.value.detail)
+
+        asyncio.run(_run())
+
+    def test_409_does_not_leak_the_other_users_id(self):
+        async def _run() -> None:
+            from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+
+            req = _make_request()
+            gp = _graph_provider(req)
+            gp.apply_verified_user_email.side_effect = GraphUserEmailConflictError(
+                "Email already belongs to another login user in the graph",
+                conflicting_user_id="507f1f77bcf86cd799439011",
+            )
+
+            with pytest.raises(HTTPException) as exc:
+                await update_user_email(req, UserEmailUpdateRequest(email="a@b.com"))
+
+            assert exc.value.status_code == 409
+            assert "507f1f77bcf86cd799439011" not in str(exc.value.detail)
+
+        asyncio.run(_run())
+
+    def test_400_when_email_invalid(self):
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="not-an-email")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="user@")
+        with pytest.raises(ValidationError):
+            UserEmailUpdateRequest(email="@example.com")
 

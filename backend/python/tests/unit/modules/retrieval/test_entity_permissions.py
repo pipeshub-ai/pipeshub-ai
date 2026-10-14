@@ -7,6 +7,7 @@ calls, and any failure raises ``EntityAccessError`` instead of looking like
 """
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -19,7 +20,10 @@ from app.modules.retrieval.entity_permissions import (
     list_accessible_entity_records,
     search_entities_for_user,
 )
-from tests.unit.modules.retrieval.entity_access_fakes import permitted_records
+from tests.unit.modules.retrieval.entity_access_fakes import (
+    permitted_records,
+    record_spellings,
+)
 
 ORG = "org-1"
 USER = "user-1"
@@ -57,9 +61,9 @@ def _graph(candidates=None, permitted=None) -> MagicMock:
     """``candidates`` builds the candidate fixture (keyed by entity id); the
     in-query permission check is applied to it by ``permitted_records``."""
     graph = MagicMock()
-    graph.get_permitted_entity_records = AsyncMock(side_effect=permitted_records(
-        candidates or (lambda *a, **k: {}), permitted=permitted or (),
-    ))
+    fake = permitted_records(candidates or (lambda *a, **k: {}), permitted=permitted or ())
+    graph.get_permitted_entity_records = AsyncMock(side_effect=fake)
+    graph.get_record_taxonomy_links = AsyncMock(side_effect=record_spellings(fake))
     return graph
 
 
@@ -538,6 +542,7 @@ class TestReadPathRoundTrips:
         import asyncio
 
         monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
         store = _store([_hit("t1", "topic", 0.9)])
 
         async def _slow(*args: object, **kwargs: object) -> dict:
@@ -548,9 +553,9 @@ class TestReadPathRoundTrips:
         graph.get_permitted_entity_records = AsyncMock(side_effect=_slow)
         started = asyncio.get_running_loop().time()
 
-        hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
         assert asyncio.get_running_loop().time() - started < 2
 
     @pytest.mark.asyncio
@@ -568,10 +573,27 @@ class TestReadPathRoundTrips:
         store = _store([_hit("t1", "topic", 0.9)])
         graph = _graph(candidates=_slow_round)
 
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "q", top_k=5)
+
+        assert graph.get_permitted_entity_records.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_vector_search_that_uses_the_deadline_still_leaves_time_to_probe(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        store = _store([_hit("t1", "topic", 0.9)])
+
+        async def _slow_vectors(*args: object, **kwargs: object) -> list:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + 0.5
+            return [[_hit("t1", "topic", 0.9)]]
+
+        store.search_entities_passes = AsyncMock(side_effect=_slow_vectors)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r", "kb-1")]})
+
         hits = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
 
-        assert hits == []
-        assert graph.get_permitted_entity_records.await_count == 1
+        assert [h.entity_id for h in hits] == ["t1"]
 
 
 class TestListingDeadline:
@@ -720,3 +742,256 @@ async def test_a_hits_aliases_are_not_carried_to_the_tools() -> None:
     graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "kb-1")]})
     (hit,) = await search_entities_for_user(store, graph, _context(), "q", top_k=5)
     assert not hasattr(hit, "aliases")
+
+
+class TestNamesShownComeFromReadableRecords:
+    """A category, subcategory, topic or language node is named by the record
+    that created it; the user sees a spelling from a record they can read."""
+
+    def _graph(self, links: list[dict]) -> MagicMock:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "t1": [_row("r-open", "conf-1")], "t2": [_row("r-open", "conf-1")],
+            },
+            permitted={"r-open"},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(return_value=links)
+        return graph
+
+    @staticmethod
+    def _link(entity_id: str, name: str, extracted: str | None, *, canonical: bool = True) -> dict:
+        return {
+            "recordId": "r-open", "collection": "topics", "entityId": entity_id, "name": name,
+            "canonical": canonical, "extractedName": extracted, "migrated": False,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_readable_records_spelling_is_shown_and_the_stored_name_filters(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        graph = self._graph([self._link("t1", "Project Falcon", "Launch plan")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+        assert hit.graph_filter_name == "Project Falcon"
+        assert graph.get_record_taxonomy_links.await_args.args[0] == ["r-open"]
+
+    @pytest.mark.asyncio
+    async def test_the_stored_name_is_shown_when_a_readable_record_spells_it(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Launch plan")])
+        graph = self._graph([self._link("t1", "Launch plan", "launch plan.")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+
+    @pytest.mark.asyncio
+    async def test_a_node_no_readable_record_spells_is_left_out(self) -> None:
+        store = _store([
+            _hit("t1", "topic", 0.9, name="Project Falcon"),
+            _hit("t2", "topic", 0.8, name="Legacy name"),
+        ])
+        graph = self._graph([
+            self._link("t1", "Project Falcon", None),
+            self._link("t2", "Legacy name", None, canonical=False),
+        ])
+
+        hits = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert [(h.entity_id, h.name) for h in hits] == [("t2", "Legacy name")]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_name_lookup_is_an_access_error(self) -> None:
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        graph = self._graph([])
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with pytest.raises(EntityAccessError):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+
+class TestNamesWalkPastRecordsWithoutASpelling:
+    @pytest.mark.asyncio
+    async def test_an_older_readable_record_names_the_entity(self) -> None:
+        """The newest readable records are copies whose edges carry no
+        spelling; an older readable record does spell the node."""
+        copies = [_row(f"copy-{i}", "conf-1", sourceLastModifiedTimestamp=100 - i) for i in range(6)]
+        original = _row("original", "conf-1", sourceLastModifiedTimestamp=1)
+        rows = [*copies, original]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+
+        async def _links(record_keys: list[str], transaction: str | None = None) -> list[dict]:
+            return [
+                {
+                    "recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+                    "canonical": True, "migrated": False,
+                    "extractedName": "Launch plan" if key == "original" else None,
+                }
+                for key in record_keys
+            ]
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_links)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+        assert [r["_key"] for r in hit.records] == ["copy-0", "copy-1", "copy-2"]
+
+    @pytest.mark.asyncio
+    async def test_it_is_left_out_once_every_readable_record_is_walked(self) -> None:
+        rows = [_row(f"copy-{i}", "conf-1") for i in range(6)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=lambda keys, transaction=None: [
+            {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False, "extractedName": None}
+            for key in keys
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        assert await search_entities_for_user(store, graph, _context(), "launch", top_k=5) == []
+        walked = {k for call in graph.get_record_taxonomy_links.await_args_list for k in call.args[0]}
+        assert walked == {r["_key"] for r in rows}
+
+    @pytest.mark.asyncio
+    async def test_a_naming_walk_stopped_by_the_deadline_is_a_timeout(self, monkeypatch) -> None:
+        """The probes confirm access in time, but the walk for a spelling
+        does not finish: that is not an empty result."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+
+        async def _slow_links(keys: list[str], transaction: str | None = None) -> list[dict]:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return [
+                {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+                 "canonical": True, "migrated": False, "extractedName": None}
+                for key in keys
+            ]
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_slow_links)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_name_lookup_is_a_timeout(self, monkeypatch) -> None:
+        import asyncio
+
+        monkeypatch.setattr(ep, "SEARCH_DEADLINE_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "PROBE_MIN_SECONDS", 0.2)
+        monkeypatch.setattr(ep, "NAME_LOOKUP_MIN_SECONDS", 0.2)
+        graph = _graph(candidates=lambda refs, org, **k: {"t1": [_row("r1", "conf-1")]}, permitted={"r1"})
+
+        async def _stalled(keys: list[str], transaction: str | None = None) -> list[dict]:
+            await asyncio.sleep(3)
+            return []
+
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=_stalled)
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+        started = asyncio.get_running_loop().time()
+
+        with pytest.raises(ep.EntitySearchTimedOut):
+            await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert asyncio.get_running_loop().time() - started < 2
+
+    @pytest.mark.asyncio
+    async def test_probes_that_use_the_deadline_still_leave_time_to_name(self, monkeypatch) -> None:
+        clock = {"t": 0.0}
+        monkeypatch.setattr(ep, "time", SimpleNamespace(monotonic=lambda: clock["t"]))
+        rows = [_row("r1", "conf-1")]
+
+        def _slow_probe(refs: list, org: str, **k: object) -> dict:
+            clock["t"] += ep.SEARCH_DEADLINE_SECONDS + ep.PROBE_MIN_SECONDS
+            return {"t1": rows}
+
+        graph = _graph(candidates=_slow_probe, permitted={"r1"})
+        graph.get_record_taxonomy_links = AsyncMock(return_value=[
+            {"recordId": "r1", "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False, "extractedName": "Launch plan"},
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+
+    @pytest.mark.asyncio
+    async def test_the_walk_goes_on_past_the_probe_windows(self) -> None:
+        """1,100 newer readable records without a spelling, then one with it."""
+        copies = [_row(f"copy-{i:04d}", "conf-1") for i in range(1100)]
+        rows = [*copies, _row("original", "conf-1")]
+        graph = _graph(
+            candidates=lambda refs, org, **k: {"t1": rows[k["offset"]:k["offset"] + k["limit_per_entity"]]},
+            permitted={r["_key"] for r in rows},
+        )
+        graph.get_record_taxonomy_links = AsyncMock(side_effect=lambda keys, transaction=None: [
+            {"recordId": key, "collection": "topics", "entityId": "t1", "name": "Project Falcon",
+             "canonical": True, "migrated": False,
+             "extractedName": "Launch plan" if key == "original" else None}
+            for key in keys
+        ])
+        store = _store([_hit("t1", "topic", 0.9, name="Project Falcon")])
+
+        (hit,) = await search_entities_for_user(store, graph, _context(), "launch", top_k=5)
+
+        assert hit.name == "Launch plan"
+
+
+class TestProbePermittedEntities:
+    @pytest.mark.asyncio
+    async def test_only_entities_with_a_readable_record_are_kept(self) -> None:
+        graph = _graph(
+            candidates=lambda refs, org, **k: {
+                "ne-open": [_row("r1", "kb-1")],
+                "ne-closed": [_row("r2", "conf-1")],
+                "ne-none": [],
+            },
+        )
+
+        probe = await ep.probe_permitted_entities(
+            graph, _context(), [("ne-open", "named_entity"), ("ne-closed", "named_entity"), ("ne-none", "named_entity")],
+        )
+
+        assert set(probe.permitted) == {"ne-open"}
+        assert [row["_key"] for row in probe.permitted["ne-open"].records] == ["r1"]
+        assert probe.permitted["ne-open"].more_records is False
+        assert probe.timed_out is False
+
+    @pytest.mark.asyncio
+    async def test_a_check_cut_short_keeps_nothing_it_did_not_confirm(self) -> None:
+        graph = _graph(candidates=lambda refs, org, **k: {"ne-1": [_row("r1", "kb-1")]})
+
+        probe = await ep.probe_permitted_entities(graph, _context(), [("ne-1", "named_entity")], deadline_seconds=0)
+
+        assert probe.permitted == {}
+        assert probe.timed_out is True
+
+    @pytest.mark.asyncio
+    async def test_unknown_types_and_empty_input_query_nothing(self) -> None:
+        graph = _graph()
+
+        probe = await ep.probe_permitted_entities(graph, _context(), [("x", "not_a_type"), ("", "named_entity")])
+
+        assert probe.permitted == {} and probe.timed_out is False
+        graph.get_permitted_entity_records.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_failure_is_an_error_not_no_access(self) -> None:
+        graph = MagicMock()
+        graph.get_permitted_entity_records = AsyncMock(side_effect=RuntimeError("down"))
+
+        with pytest.raises(EntityAccessError):
+            await ep.probe_permitted_entities(graph, _context(), [("ne-1", "named_entity")])

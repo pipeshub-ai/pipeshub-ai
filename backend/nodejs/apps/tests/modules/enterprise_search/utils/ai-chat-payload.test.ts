@@ -73,6 +73,15 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       expect(payload).not.to.have.property('agentCapabilities')
     })
 
+    it('forwards includeRetrievalContext on a non-agent assistant turn', () => {
+      const { payload } = buildAiChatRequest(
+        { kind: 'assistant' },
+        { query: 'q', chatMode: 'internal_search', includeRetrievalContext: true },
+        context(),
+      )
+      expect(payload.includeRetrievalContext).to.equal(true)
+    })
+
     it('sends an agent turn to its own route, escaping the key, with caller context', () => {
       const { path, payload } = buildAiChatRequest(
         { kind: 'agent', agentKey: 'a/b c' },
@@ -85,6 +94,18 @@ describe('enterprise_search/utils/ai-chat-payload', () => {
       // agent is quick-only, so an omitted mode must not fall through to it.
       expect(payload).to.include({ chatMode: 'quick', quickMode: true, callerDisplayName: 'Ada', callerEmail: 'ada@example.com' })
       expect(payload.tools, 'an explicit empty list disables tools').to.deep.equal([])
+    })
+
+    it('forwards the answer to a tool approval card on both agent paths', () => {
+      const toolApproval = { approvalId: 'ap-1', decision: 'allow', remember: true }
+      const agent = buildAiChatRequest({ kind: 'agent', agentKey: 'a1' }, { query: 'q', toolApproval }, context())
+      const assistantAgent = buildAiChatRequest({ kind: 'assistant' }, { query: 'q', chatMode: 'agent', toolApproval }, context())
+      const search = buildAiChatRequest({ kind: 'assistant' }, { query: 'q', toolApproval }, context())
+
+      expect(agent.payload.toolApproval).to.deep.equal(toolApproval)
+      expect(assistantAgent.payload.toolApproval).to.deep.equal(toolApproval)
+      // No MCP tools run on the search path.
+      expect(search.payload).not.to.have.property('toolApproval')
     })
 
     it('omits quickMode on an agent follow-up and tools when none were sent', () => {

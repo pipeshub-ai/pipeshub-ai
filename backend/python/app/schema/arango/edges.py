@@ -391,6 +391,33 @@ basic_edge_schema = {
     "message": "Document does not match the basic edge schema.",
 }
 
+mentions_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "orgId": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "mergedFrom": {"type": ["string", "null"]},
+            "migratedFrom": {"type": ["string", "null"]},
+        },
+        "required": ["orgId", "createdAtTimestamp", "mentionCount"],
+        # Open, as recordRelations and entityRelations are: see named_entity_schema.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the mentionsEntity schema.",
+}
+
 # Record -> category / subcategory / language / topic. Carries the raw name the
 # model extracted for that record, so a wrong merge can be undone per record.
 taxonomy_edge_schema = {
@@ -401,6 +428,8 @@ taxonomy_edge_schema = {
             "_to": {"type": "string", "minLength": 1},
             "createdAtTimestamp": {"type": "number"},
             "extractedName": {"type": ["string", "null"]},
+            # Every spelling the record used for the node, extractedName first.
+            "extractedNames": {"type": ["array", "null"], "items": {"type": "string"}},
             # The node this edge was moved from by a taxonomy merge or
             # migration (app.modules.entity_resolution.consolidation).
             "mergedFrom": {"type": ["string", "null"]},

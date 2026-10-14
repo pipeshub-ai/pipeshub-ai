@@ -4,6 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
+    DEFAULT_MAX_RESULT_CHARS,
+)
+
 
 class BudgetConfig(BaseModel):
     max_tokens: int = 100_000
@@ -37,7 +41,7 @@ class ContextEngineConfig(BaseModel):
     """
 
     enable_budget_reduction: bool = True
-    max_result_chars: int = 64_000
+    max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
 
     enable_artifact_registration: bool = True
     artifact_threshold_tokens: int = 2_000

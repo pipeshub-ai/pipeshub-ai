@@ -1784,6 +1784,11 @@ class WebConnector(BaseConnector):
         except BrowserUnavailableError as e:
             self.logger.warning("⚠️ Headless fallback skipped for %s: %s", url, e)
             return None
+        except Exception as e:
+            # Raising here would skip the plain-HTTP answer's validation, which is
+            # what queues a rate-limited or failed page for retry.
+            self.logger.warning("⚠️ Headless fallback failed for %s: %s", url, type(e).__name__)
+            return None
 
     async def _headless_fetch_many(self, urls: list[str]) -> list[FetchResponse | None]:
         """Fetch a batch of URLs via crawl4ai concurrently; documents go over plain HTTP."""

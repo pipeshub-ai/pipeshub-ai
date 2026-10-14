@@ -1,8 +1,9 @@
 """``EntityResolver``: map extracted taxonomy names to canonical per-org nodes.
 
-Runs once per record, after classification and before any write, so the
-blob, the graph and the entity vector points all see canonical names. See
-the package docstring for the three tiers.
+Runs once per record, after classification and before any write. The
+record keeps the names extracted from its own content; the resolution decides
+which canonical node each of them links to in the graph and the entity index.
+See the package docstring for the three tiers.
 
 Failure policy: a vector-store or model failure never fails the record. The
 names involved simply become new nodes and a counter is bumped. A graph
@@ -106,9 +107,11 @@ class EntityResolver:
     async def resolve(self, ctx: TransformContext) -> EntityResolution | None:
         """Resolve ``ctx.record.semantic_metadata``.
 
-        In ``APPLY`` mode the metadata is rewritten to canonical names and the
-        resolution is attached to ``ctx.entity_resolution``. Returns the
-        resolution (also in shadow mode) or ``None`` when nothing ran.
+        In ``APPLY`` mode the metadata keeps the record's own cleaned names
+        (blank, invalid and repeated ones dropped, languages in their ISO
+        form) and the resolution is attached to ``ctx.entity_resolution``.
+        Returns the resolution (also in shadow mode) or ``None`` when nothing
+        ran.
         """
         mode = self.mode
         if mode is ResolutionMode.OFF:
@@ -119,10 +122,14 @@ class EntityResolver:
         if metadata is None or not org_id:
             return None
 
+        if mode is ResolutionMode.APPLY:
+            # The labels are this record's own words whether or not
+            # resolution succeeds, and they are stored either way.
+            metadata.own_labels = True
         started = time.monotonic()
         stats = ResolutionStats()
         try:
-            resolution = await self._resolve(org_id, metadata, mode, stats)
+            names, resolution = await self._resolve(org_id, metadata, mode, stats)
         except Exception:
             if mode is ResolutionMode.SHADOW:
                 self.logger.warning(
@@ -135,7 +142,7 @@ class EntityResolver:
         metrics.record_latency(mode.value, time.monotonic() - started)
 
         if mode is ResolutionMode.APPLY:
-            self._rewrite_metadata(metadata, resolution)
+            self._keep_own_names(metadata, names)
             ctx.entity_resolution = resolution
         else:
             self.logger.info(
@@ -160,7 +167,7 @@ class EntityResolver:
         metadata: SemanticMetadata,
         mode: ResolutionMode,
         stats: ResolutionStats,
-    ) -> EntityResolution:
+    ) -> tuple[list[ExtractedName], EntityResolution]:
         resolution = EntityResolution(org_id=org_id, mode=mode, stats=stats)
         names = self._collect_names(metadata, stats)
 
@@ -186,7 +193,7 @@ class EntityResolver:
         await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
-        return resolution
+        return names, resolution
 
     async def _follow_merge_redirects(
         self, org_id: str, resolution: EntityResolution, names: list[ExtractedName],
@@ -312,8 +319,8 @@ class EntityResolver:
             add(TOPIC, topic)
 
         for raw in metadata.languages or []:
-            if isinstance(raw, str):
-                add(LANGUAGE, canonical_language(raw) or raw)
+            if isinstance(raw, str) and (language := canonical_language(raw)):
+                add(LANGUAGE, language)
         return names
 
     # ---- tier 0 ------------------------------------------------------
@@ -722,6 +729,7 @@ class EntityResolver:
     ) -> None:
         stats = resolution.stats
         resolution.assignments[name.index] = entity
+        resolution.by_extracted[(name.kind.collection, name.normalized)] = entity
         entity.extracted_names.append(name.raw)
         if name.normalized == entity.normalized:
             return
@@ -746,24 +754,23 @@ class EntityResolver:
 
     # ---- apply -------------------------------------------------------
 
-    def _rewrite_metadata(
-        self, metadata: SemanticMetadata, resolution: EntityResolution
-    ) -> None:
-        """Replace extracted names with canonical ones, in place."""
+    @staticmethod
+    def _keep_own_names(metadata: SemanticMetadata, names: list[ExtractedName]) -> None:
+        """Write back the record's own names, cleaned, in place: a canonical
+        node's name is the spelling of whichever record created it, not
+        necessarily this one's."""
         by_slot: dict[str, list[str]] = {}
-        for index in sorted(resolution.assignments):
-            entity = resolution.assignments[index]
-            bucket = by_slot.setdefault(entity.kind.slot, [])
-            if entity.name not in bucket:
-                bucket.append(entity.name)
+        for name in names:
+            by_slot.setdefault(name.kind.slot, []).append(name.display)
 
-        metadata.categories = by_slot.get(CATEGORY.slot, [])
+        metadata.categories = by_slot.get(CATEGORY.slot, [])[:1]
         chain = [by_slot.get(kind.slot, [None])[0] for kind in SUBCATEGORY_CHAIN]
         metadata.sub_category_level_1 = chain[0] or None
         metadata.sub_category_level_2 = (chain[1] if chain[0] else None) or None
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
+        metadata.own_labels = True
 
 
 __all__ = ["LLM_ROLE", "EntityResolver"]

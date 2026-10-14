@@ -228,11 +228,11 @@ class TestTurnLimitEndToEnd:
         await _stream()
 
         assert "task_complete" not in chat_model.bound_tool_names[0]
-        warned = [i for i, call in enumerate(chat_model.calls) if "turns remaining" in _last_message_text(call)]
+        warned = [i for i, call in enumerate(chat_model.calls) if "last tool round" in _last_message_text(call)]
         assert warned == [_MAX_TURNS - 2]
         warning = _last_message_text(chat_model.calls[_MAX_TURNS - 2])
         assert "task_complete" not in warning
-        assert "Reply with your final answer" in warning
+        assert "reply with your final answer as plain text" in warning
 
     async def test_non_streaming_chat_returns_the_final_answer(self, chat_model: _ScriptedChatModel) -> None:
         chat_model.responses = _turn_limit_script(narration=_NARRATION, final=AIMessage(content=_ANSWER))

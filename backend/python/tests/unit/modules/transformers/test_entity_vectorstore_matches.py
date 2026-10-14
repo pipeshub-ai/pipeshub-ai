@@ -592,7 +592,7 @@ class TestTitlesSearchedApart:
         assert len(requests) == 2
         assert requests[0].filter["must_not"] == {"metadata.entityType": "record"}
         assert requests[1].filter["must"]["metadata.entityType"] == "record"
-        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2", "r2", "r3"]
+        assert [h["entityId"] for h in hits] == ["t1", "r1", "t2"]
 
     async def test_asking_for_records_only_is_one_request(self) -> None:
         from app.modules.transformers.entity_vectorstore import EntitySearchPass
@@ -617,6 +617,52 @@ async def test_a_split_pass_keeps_its_overall_top_k() -> None:
     assert [r.limit for r in service.query_nearest_points.await_args.kwargs["requests"]] == [15, 15]
 
 
+async def test_a_pass_split_three_ways_returns_at_most_top_k() -> None:
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+    from app.services.vector_db.models import SearchResult
+
+    def _hits(prefix: str, count: int) -> list[SearchResult]:
+        return [
+            SearchResult(id=f"{prefix}{i}", score=0.5, payload={"metadata": {"entityId": f"{prefix}{i}"}})
+            for i in range(count)
+        ]
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(return_value=[_hits("t", 4), _hits("n", 4), _hits("r", 4)])
+    store = _make_store(service)
+    (hits,) = await store.search_entities_passes(
+        "q", "org-1", [EntitySearchPass(org_wide=True)], top_k=10, kinds=["currency"],
+    )
+    assert [r.limit for r in service.query_nearest_points.await_args.kwargs["requests"]] == [4, 4, 4]
+    assert len(hits) == 10
+
+
+@pytest.mark.parametrize("entity_types", [["named_entity", "topic"], None])
+async def test_kinds_reach_named_entities_in_a_mixed_search(entity_types) -> None:
+    from app.modules.transformers.entity_vectorstore import EntitySearchPass
+
+    service = MagicMock()
+    service.query_nearest_points = AsyncMock(return_value=[[], [], []])
+    store = _make_store(service)
+    await store.search_entities_passes(
+        "q", "org-1", [EntitySearchPass(org_wide=True)], entity_types=entity_types, kinds=["currency"],
+    )
+    for request in service.query_nearest_points.await_args.kwargs["requests"]:
+        must, must_not = request.filter["must"], request.filter.get("must_not") or {}
+        types = must.get("metadata.entityType")
+        if types == ["named_entity"]:
+            assert must["metadata.kind"] == ["currency"]
+        else:
+            assert "metadata.kind" not in must
+            assert types != "named_entity" and "named_entity" not in (types or [])
+            if types is None:
+                assert "named_entity" in must_not["metadata.entityType"]
+    assert any(
+        r.filter["must"].get("metadata.entityType") == ["named_entity"]
+        for r in service.query_nearest_points.await_args.kwargs["requests"]
+    )
+
+
 async def test_an_empty_type_list_means_every_type() -> None:
     from app.modules.transformers.entity_vectorstore import EntitySearchPass
 
@@ -626,3 +672,10 @@ async def test_an_empty_type_list_means_every_type() -> None:
     await store.search_entities_passes("q", "org-1", [EntitySearchPass(org_wide=True)], entity_types=[])
     for request in service.query_nearest_points.await_args.kwargs["requests"]:
         assert request.filter["must"].get("metadata.entityType") != []
+
+
+def test_every_type_leaves_named_entities_out_while_their_flag_is_off():
+    from app.modules.transformers.entity_vectorstore import _type_groups
+
+    assert _type_groups(None) == [(None, "record"), ("record", None)]
+    assert _type_groups(None, include_named=False) == [(None, ["record", "named_entity"]), ("record", None)]

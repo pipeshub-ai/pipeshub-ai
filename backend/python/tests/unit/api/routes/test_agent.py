@@ -1,10 +1,12 @@
 """Tests for app.api.routes.agent helper functions and models."""
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 
@@ -2681,6 +2683,46 @@ class TestDeleteAgent:
                 "a1", "k1", "o1", transaction="txn-1"
             )
 
+    @staticmethod
+    def _services(agent: dict) -> dict:
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": MagicMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=agent)
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+        return services
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("is_service_account", "removes"), [(True, True), (False, False)])
+    async def test_a_service_account_agent_takes_its_mcp_credentials_with_it(
+        self, is_service_account: bool, removes: bool,
+    ) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": is_service_account})
+        remove = AsyncMock(return_value=[])
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=remove):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        if removes:
+            remove.assert_awaited_once_with(services["config_service"], "o1", "a1")
+        else:
+            remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_mcp_cleanup_does_not_fail_the_delete(self) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": True})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=AsyncMock(side_effect=RuntimeError("down"))):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
         from app.api.routes.agent import AgentNotFoundError, delete_agent
@@ -3190,6 +3232,7 @@ class TestCreateAgentWithToolsetsAndKnowledge:
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
         services["graph_provider"].batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db error"))
         services["graph_provider"].rollback_transaction = AsyncMock()
+        services["graph_provider"].is_write_conflict = MagicMock(return_value=False)
 
         request = MagicMock()
         body = json.dumps({
@@ -3206,6 +3249,108 @@ class TestCreateAgentWithToolsetsAndKnowledge:
                 await create_agent(request)
             assert exc.value.status_code == 500
             services["graph_provider"].rollback_transaction.assert_awaited()
+
+
+class TestCreateAgentTransactionOutcome:
+    """Every way the create's transaction can end: commit, rollback on an
+    ordinary failure, rollback on cancellation, and a begin that never opened."""
+
+    @staticmethod
+    def _graph() -> AsyncMock:
+        graph = AsyncMock()
+        graph.begin_transaction = AsyncMock(return_value="txn-1")
+        graph.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph.batch_create_edges = AsyncMock(return_value=True)
+        graph.commit_transaction = AsyncMock()
+        graph.rollback_transaction = AsyncMock()
+        # Synchronous on the real providers.
+        graph.is_write_conflict = MagicMock(return_value=False)
+        graph.is_transient_error = MagicMock(return_value=False)
+        return graph
+
+    @staticmethod
+    async def _create(graph: AsyncMock) -> JSONResponse:
+        from app.api.routes.agent import create_agent
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=json.dumps({
+            "name": "Agent",
+            "models": [{"modelKey": "mk1", "modelName": "mn1", "isReasoning": True}],
+        }).encode())
+        services = {"graph_provider": graph, "logger": MagicMock()}
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            return await create_agent(request)
+
+    async def test_success_commits_the_one_transaction(self) -> None:
+        graph = self._graph()
+
+        result = await self._create(graph)
+
+        assert result.status_code == 200
+        graph.begin_transaction.assert_awaited_once()
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        graph.rollback_transaction.assert_not_awaited()
+        for call in graph.batch_upsert_nodes.await_args_list + graph.batch_create_edges.await_args_list:
+            assert call.kwargs["transaction"] == "txn-1"
+
+    async def test_failed_write_after_the_agent_node_rolls_back_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=RuntimeError("lock wait timed out"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_cancellation_mid_create_rolls_back_and_stays_a_cancellation(self) -> None:
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._create(graph)
+
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_begin_answers_500_without_touching_a_transaction(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.begin_transaction = AsyncMock(side_effect=RuntimeError("Neo4j client not connected"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        assert not isinstance(exc.value.__cause__, NameError)
+        graph.batch_upsert_nodes.assert_not_awaited()
+        graph.rollback_transaction.assert_not_awaited()
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_commit_aborts_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.commit_transaction = AsyncMock(side_effect=RuntimeError("Transaction failed"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        # ArangoDB leaves the transaction open after a failed commit.
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
 
 
 # ===========================================================================

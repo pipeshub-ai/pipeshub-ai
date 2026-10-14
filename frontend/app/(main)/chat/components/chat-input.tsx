@@ -41,6 +41,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
@@ -728,6 +729,10 @@ export function ChatInput({
     const sid = useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
     if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
+    if (liveSlot?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
+      return;
+    }
     // Block submit while any chip is still uploading — every chip must be
     // either `uploaded` (forwarded as a ref) or removed by the user before
     // we hand off to the runtime.
@@ -1318,6 +1323,9 @@ export function ChatInput({
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
     function handleClickOutside(e: MouseEvent) {
       if (expansionViewMode === 'overlay') return;
+      // A dialog opened from a panel (an MCP server's key) is portaled outside the input; closing
+      // the panel on a click inside it would unmount the dialog under the person typing.
+      if ((e.target as Element | null)?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
 
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         dismissExpansionPanelsRef.current();

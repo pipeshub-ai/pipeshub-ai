@@ -93,6 +93,22 @@ sentence 1 also conflicting. Only what the answer itself asserts counts: a \
 view it raises in order to reject, or a source it reports as out of date, \
 neither states the claim nor conflicts with it.
 
+A condition or exception conflicts with a claim when it takes part of the \
+claim back: within the claim's own subject and limits, the claim is no longer \
+true as stated. A step still ahead on the way to an outcome does not take back \
+a claim about where it stands now. For the claim "The migration is on \
+schedule", neither "The migration is on schedule, but cut-over still depends \
+on passing the load test" nor "The migration is on schedule; sign-off is due \
+by 31 May" conflicts: being on schedule means those steps are still ahead and \
+expected. "The migration is on schedule, but only if the board reverses its \
+cancellation" does conflict, because a cancelled migration is not on schedule \
+now. Limits work the same way: "Up to $250, but your manager approves above \
+that" is about amounts beyond the claim and does not conflict with "A purchase \
+of up to $250 needs no approval", while an exception inside the claim's limits, \
+like the card refunds above, does. A step still ahead never makes a claim that \
+the step has already happened true: "Marcus will approve it" still does not \
+support "Marcus approved it".
+
 Be strict. None of these supports a claim:
 - a hedged or uncertain statement ("may", "might", "I think", "probably", \
 "it seems", "please confirm");

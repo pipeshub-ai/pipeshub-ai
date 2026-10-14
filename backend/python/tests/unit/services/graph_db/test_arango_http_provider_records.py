@@ -761,6 +761,20 @@ class TestGetUserBySourceId:
         )
         assert result is None
 
+    async def test_exception_raised_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = ConnectionError("err")
+        with pytest.raises(ConnectionError):
+            await connected_provider.get_user_by_source_id(
+                source_user_id="src1", connector_id="conn1", raise_on_error=True,
+            )
+
+    async def test_not_found_is_none_even_when_asked_to_raise(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_user_by_source_id(
+            source_user_id="src-none", connector_id="conn1", raise_on_error=True,
+        )
+        assert result is None
+
 
 # ===================================================================
 # get_user_by_user_id
@@ -961,6 +975,11 @@ class TestGetAppUsers:
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         result = await connected_provider.get_app_users("org1", "conn1")
         assert result == []
+
+    async def test_exception_raised_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = ConnectionError("err")
+        with pytest.raises(ConnectionError):
+            await connected_provider.get_app_users("org1", "conn1", raise_on_error=True)
 
 
 # ===================================================================
@@ -3705,10 +3724,14 @@ class TestExecuteLocalFsRecordDeletion:
 # ===================================================================
 
 class TestDeleteLocalFsEdges:
-    async def test_success_deletes_three_collections(self, connected_provider):
+    async def test_success_deletes_its_collections_and_the_enrichment_edges(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
         await connected_provider._delete_local_fs_edges("r1")
-        assert connected_provider.http_client.execute_aql.call_count == 3
+        swept = [c.args[1]["@edge_collection"] for c in connected_provider.http_client.execute_aql.await_args_list]
+        assert sorted(swept) == sorted([
+            "isOfType", "permission", "belongsTo",
+            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
+        ])
 
     async def test_exception_propagates(self, connected_provider):
         connected_provider.http_client.execute_aql = AsyncMock(

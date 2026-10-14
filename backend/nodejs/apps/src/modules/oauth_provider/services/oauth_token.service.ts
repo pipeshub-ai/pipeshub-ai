@@ -14,6 +14,7 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidGrantError,
+  InvalidScopeError,
 } from '../../../libs/errors/oauth.errors'
 import {
   OAuthTokenPayload,
@@ -24,6 +25,22 @@ import {
 } from '../types/oauth.types'
 import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
 import { stripTokenDisplayPrefix } from '../constants/constants'
+import { parseScopeString } from './scope.validator.service';
+
+/**
+ * A grant is covered only when it asks for something and every requested
+ * scope is still allowed. An empty list must not count: Array.every is
+ * true for [], which would leave a scopeless token in place.
+ */
+export function isGrantCoveredBy(
+  scopes: readonly string[],
+  allowedScopes: readonly string[] | null | undefined,
+): boolean {
+  if (scopes.length === 0 || allowedScopes == null) {
+    return false;
+  }
+  return scopes.every((scope) => allowedScopes.includes(scope));
+}
 
 
 /** What the personal-token views show; callers that need more pass their own. */
@@ -73,6 +90,10 @@ export class OAuthTokenService {
     accountType?: string,
     opts?: GenerateTokensOptions,
   ): Promise<GeneratedTokens> {
+    if (scopes.length === 0) {
+      throw new InvalidScopeError('A token must carry at least one scope');
+    }
+
     const jti = randomUUID()
     const now = Math.floor(Date.now() / 1000)
     const accessTokenLifetime =
@@ -200,7 +221,7 @@ export class OAuthTokenService {
       .select('allowedScopes')
       .lean()
       .exec()
-    if (current && scopes.every((s) => current.allowedScopes.includes(s))) {
+    if (current && isGrantCoveredBy(scopes, current.allowedScopes)) {
       return
     }
 
@@ -239,6 +260,10 @@ export class OAuthTokenService {
 
       if (payload.isRefreshToken) {
         throw new InvalidTokenError('Invalid token type')
+      }
+
+      if (parseScopeString(payload.scope).length === 0) {
+        throw new InvalidTokenError('Token carries no scopes');
       }
 
       // Check if token is revoked
@@ -344,6 +369,13 @@ export class OAuthTokenService {
     }
     // Nor beyond what the app allows now; it may have lost scopes since the grant.
     scopes = scopes.filter((s) => app.allowedScopes.includes(s))
+    if (scopes.length === 0) {
+      // Before rotation: a refresh that no longer overlaps the app must not
+      // burn the client's still-valid refresh token.
+      throw new InvalidScopeError(
+        'None of the granted scopes are still allowed for this application',
+      );
+    }
 
     // Revoke old refresh token (rotation)
     storedToken.isRevoked = true
@@ -501,6 +533,9 @@ export class OAuthTokenService {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
       }) as OAuthTokenPayload
+      if (parseScopeString(payload.scope).length === 0) {
+        return { active: false };
+      }
       const tokenHash = this.hashToken(token)
 
       // RFC 7662: Validate that the token was issued to the requesting client

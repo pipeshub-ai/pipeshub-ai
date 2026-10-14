@@ -22,10 +22,12 @@ __all__ = ["completion_gate"]
 
 _DEFAULT_MAX_NUDGES = 2
 
+# Worded as a request, not a bracketed "[System: ...]" command: Azure's content
+# filter rejects imperative notes injected as user messages mid-run, while the
+# same ask phrased as a request passes.
 _EMPTY_RESPONSE_NUDGE = (
-    "[System: your previous response had no text and called no tool. "
-    "Either call a tool to make progress, or provide your final answer as "
-    "text now.]"
+    "Your last reply came through empty. Please continue: call a tool if you "
+    "need more information, or reply with your answer as plain text."
 )
 
 

@@ -222,6 +222,11 @@ export interface FilterSchemaField {
   defaultOperator?: string;
   /** When true, empty operator row stays empty (no fallback to operators[0]). */
   noImplicitOperatorDefault?: boolean;
+  /**
+   * The window the connector applies when this filter is not set at all (e.g. a
+   * sync filter that falls back to the last 30 days). Shown while the filter is cleared.
+   */
+  fallbackOperator?: string;
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];

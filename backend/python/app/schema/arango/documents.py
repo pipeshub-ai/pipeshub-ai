@@ -171,6 +171,8 @@ app_schema = {
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
+            # Set when sync is turned on; see toggle_connector_instance.
+            "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
@@ -186,6 +188,25 @@ app_schema = {
             "entityIndexExhausted": {"type": ["boolean", "null"]},
             "entityIndexTarget": {"type": ["string", "null"]},
             "entityIndexErrors": {"type": ["integer", "null"]},
+            # app.modules.indexing.record_label_repair
+            "recordLabelRepairState": {"type": ["string", "null"]},
+            "recordLabelRepairAfterKey": {"type": ["string", "null"]},
+            "recordLabelRepairRepaired": {"type": ["integer", "null"]},
+            "recordLabelRepairSkipped": {"type": ["integer", "null"]},
+            "recordLabelRepairMissing": {"type": ["integer", "null"]},
+            "recordLabelRepairFailures": {"type": ["integer", "null"]},
+            "recordLabelRepairAttempts": {"type": ["integer", "null"]},
+            "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
+            # app.connectors.services.stored_content_heal
+            "storedContentHealState": {"type": ["string", "null"]},
+            "storedContentHealAfterKey": {"type": ["string", "null"]},
+            "storedContentHealChecked": {"type": ["integer", "null"]},
+            "storedContentHealMissing": {"type": ["integer", "null"]},
+            "storedContentHealHealed": {"type": ["integer", "null"]},
+            "storedContentHealOrphaned": {"type": ["integer", "null"]},
+            "storedContentHealFailures": {"type": ["integer", "null"]},
+            "storedContentHealAttempts": {"type": ["integer", "null"]},
+            "storedContentHealExhausted": {"type": ["boolean", "null"]},
             "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
@@ -286,6 +307,11 @@ record_schema = {
             "queuedAtTimestamp": {"type": ["number", "null"]},
             "lastRepublishedAt": {"type": ["number", "null"]},
             "republishCount": {"type": ["number", "null"]},
+            # A record whose source rate-limited its content fetch: when it may
+            # be sent again, and when this run of waits began (see
+            # app/modules/indexing/rate_limit_deferral.py).
+            "retryNotBefore": {"type": ["number", "null"]},
+            "rateLimitedSince": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [
@@ -338,6 +364,12 @@ record_schema = {
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
+            # A pattern, not an enum: widening an enum on this strict schema is a
+            # release that must ship before any writer of the new value.
+            "entityExtractionStatus": {"type": "string", "pattern": "^[A-Z_]{1,32}$"},
+            "lastEntityExtractionTimestamp": {"type": ["number", "null"]},
+            "entityExtractionStrategy": {"type": ["string", "null"]},
+            "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
@@ -531,6 +563,7 @@ ticket_record_schema = {
         "properties": {
             "orgId": {"type": "string"},
             "status": {"type": ["string", "null"]},
+            "sourceStatus": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
             "type": {"type": ["string", "null"]},
             "deliveryStatus": {"type": ["string", "null"]},
@@ -825,6 +858,118 @@ record_group_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record group schema.",
+}
+
+named_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "kind": {"type": "string"},
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "normKey": {"type": "string"},
+            "aliases": {"type": "array", "items": {"type": "string"}},
+            "normalizedAliases": {"type": "array", "items": {"type": "string"}},
+            "schemaVersion": {"type": "integer"},
+            # Reserved: a field added to this strict schema later would break rollback.
+            "keyScheme": {"type": ["integer", "null"]},
+            "mergedInto": {"type": ["string", "null"]},
+            "orphanedAt": {"type": ["number", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mergedAt": {"type": ["number", "null"]},
+            "types": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["orgId", "kind", "name", "normKey"],
+        # Open: a field a later release adds must not make this release's schema,
+        # reapplied on rollback, reject updates to the documents that carry it.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity schema.",
+}
+
+# One typed value (date, amount, quantity, percentage, duration, age) a record
+# mentions. Keyed by record, never shared between records: a shared value node
+# such as "2026" or "USD" becomes a hub every record write locks.
+value_mention_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "kind": {"type": "string"},
+            "normKey": {"type": "string"},
+            "name": {"type": "string"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "schemaVersion": {"type": "integer"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "kind", "normKey"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the value mention schema.",
+}
+
+# A record whose named-entity graph write failed after its retries. Keyed by the
+# record; the recovery pass writes the record's stored extraction again when due.
+named_entity_persist_retry_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            # AQL arithmetic yields a double, so a count it increments is a number.
+            "attempts": {"type": "number"},
+            "dueAt": {"type": "number"},
+            "lastError": {"type": ["string", "null"]},
+            # The job extracts again from the stored blocks instead of re-writing
+            # the stored extraction (app.modules.indexing.named_entity_completion).
+            "reextract": {"type": ["boolean", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "attempts", "dueAt"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity persist retry schema.",
 }
 
 department_schema = {
@@ -1349,6 +1494,7 @@ mcp_server_schema = {
             "displayName": {"type": "string"},
             "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
             "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "allTools": {"type": "boolean"},  # every tool the server offers at chat time, not just the saved list
             "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},

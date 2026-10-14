@@ -19,7 +19,7 @@ from app.utils.aimodels import (
     MAX_OUTPUT_TOKENS_CLAUDE_4_5,
     MAX_OUTPUT_TOKENS_CLAUDE_MODERN,
     ModelType,
-    _bedrock_is_openai_gpt5,
+    _bedrock_is_openai_gpt,
     _create_bedrock_client,
     _detect_bedrock_provider,
     _get_anthropic_max_tokens,
@@ -276,22 +276,32 @@ class TestGetGeneratorModelBedrock:
                 get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
                 assert mock_chat.call_args.kwargs["provider"] == "openai"
 
-    def test_gpt5_pattern_accepts_bedrock_ids(self):
+    def test_openai_gpt_pattern_accepts_bedrock_ids(self):
         for model_id in (
             "openai.gpt-5.4",
             "openai.gpt-5.5",
             "us.openai.gpt-5.6-luna",
             "global.openai.gpt-5.6-sol",
             "gpt-5.6-luna",
+            "us.openai.gpt-6-luna",
+            "global.openai.gpt-6-sol",
+            "global.openai.gpt-6-astra",
+            "openai.gpt-6.1-sol",
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/gpt-6-luna",
+            "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.openai.gpt-6-luna",
         ):
-            assert _bedrock_is_openai_gpt5(model_id), model_id
+            assert _bedrock_is_openai_gpt(model_id), model_id
             assert _detect_bedrock_provider(model_id) == "openai", model_id
 
-    def test_gpt5_pattern_rejects_false_positives(self):
-        assert not _bedrock_is_openai_gpt5("amazon.gpt-50-future")
-        assert not _bedrock_is_openai_gpt5("vendor.my-gpt-5-compatible")
-        assert not _bedrock_is_openai_gpt5("vendor.gpt5-model")
-        assert not _bedrock_is_openai_gpt5("openai.gpt-oss-120b-1:0")
+    def test_openai_gpt_pattern_rejects_false_positives(self):
+        assert not _bedrock_is_openai_gpt("amazon.gpt-50-future")
+        assert not _bedrock_is_openai_gpt("vendor.my-gpt-5-compatible")
+        assert not _bedrock_is_openai_gpt("vendor.my-gpt-6-compatible")
+        assert not _bedrock_is_openai_gpt("amazon.gpt-6-model")
+        assert not _bedrock_is_openai_gpt("us.amazon.gpt-5.6-model")
+        assert _detect_bedrock_provider("amazon.gpt-6-model") == "amazon"
+        assert not _bedrock_is_openai_gpt("vendor.gpt5-model")
+        assert not _bedrock_is_openai_gpt("openai.gpt-oss-120b-1:0")
         assert _detect_bedrock_provider("amazon.gpt-50-future") == "amazon"
         assert _detect_bedrock_provider("vendor.gpt5-model") == LLMProvider.ANTHROPIC.value
 
@@ -365,6 +375,27 @@ class TestBedrockReasoningAndTemperature:
                     "reasoning_effort": "max"
                 }
                 assert "temperature" not in kwargs
+
+    @pytest.mark.parametrize(
+        "model_id",
+        (
+            "global.openai.gpt-6-luna",
+            "us.openai.gpt-6-sol",
+            "us.openai.gpt-6-astra",
+        ),
+    )
+    @pytest.mark.parametrize("is_reasoning", (False, True))
+    def test_gpt6_omits_temperature_even_when_configured(self, model_id, is_reasoning):
+        config = self._make_config(model_id, is_reasoning=is_reasoning)
+        config["configuration"]["temperature"] = 0.7
+        with patch("app.utils.aimodels._create_bedrock_client", return_value=MagicMock()):
+            with patch("langchain_aws.ChatBedrockConverse") as mock_chat:
+                mock_chat.return_value = MagicMock()
+                get_generator_model(LLMProvider.AWS_BEDROCK.value, config)
+                kwargs = mock_chat.call_args.kwargs
+                assert "temperature" not in kwargs
+                assert "top_p" not in kwargs
+                assert kwargs["provider"] == "openai"
 
     def test_openai_max_effort_clamps_to_high(self):
         config = self._make_config(

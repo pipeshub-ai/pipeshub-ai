@@ -258,6 +258,7 @@ class TestAbstractMethodInventory:
         "get_file_record_by_id",
         # Knowledge-graph taxonomy entities
         "get_taxonomy_entities_for_record",
+        "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
         "get_taxonomy_entity_membership",
@@ -269,6 +270,7 @@ class TestAbstractMethodInventory:
         "get_user_by_email",
         "get_user_by_source_id",
         "get_user_by_user_id",
+        "apply_verified_user_email",
         "get_graph_user_keys_by_mongo_user_ids",
         "get_account_type",
         "get_connector_stats",
@@ -340,6 +342,7 @@ class TestAbstractMethodInventory:
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",
+        "get_virtual_record_ids_in_use",
         "get_entity_access_context",
         "get_records_by_record_ids",
         "batch_upsert_record_permissions",
@@ -357,6 +360,7 @@ class TestAbstractMethodInventory:
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
+        "unlink_nodes_missed_by_full_sync",
         # Batch operations
         "batch_upsert_app_users",
         "batch_upsert_user_groups",
@@ -411,6 +415,7 @@ class TestAbstractMethodInventory:
         "get_failed_records_with_active_users",
         "get_failed_records_by_org",
         "check_toolset_instance_in_use",
+        "check_mcp_instance_in_use",
         "check_connector_in_use",
         # Knowledge hub operations
         "get_knowledge_hub_root_nodes",
@@ -461,6 +466,29 @@ class TestAbstractMethodInventory:
         "filter_accessible_virtual_record_ids",
         "filter_accessible_record_ids",
         "get_record_parent_adjacency",
+        # Named entities (NamedEntityGraphMixin implements them for both providers)
+        "create_named_entities_if_absent",
+        "find_named_entities",
+        "get_named_entities_by_ids",
+        "find_named_entities_by_key_prefix",
+        "get_named_entity_mentions_in_records",
+        "add_named_entity_aliases",
+        "query_named_entities",
+        "get_records_for_named_entities",
+        "get_named_entities_for_record",
+        "copy_named_entity_mentions",
+        "find_orphan_named_entities",
+        "delete_orphan_named_entities",
+        "mark_orphan_named_entities",
+        "clear_orphan_named_entity_marks",
+        "delete_dangling_named_entity_mentions",
+        "resolve_named_entity_redirects",
+        "replace_named_entity_values",
+        "delete_dangling_named_entity_values",
+        "schedule_named_entity_persist_retry",
+        "get_due_named_entity_persist_retries",
+        "clear_named_entity_persist_retry",
+        "schedule_named_entity_reextract",
     ]
 
     def test_all_expected_methods_are_abstract(self):
@@ -662,6 +690,33 @@ class TestRecordLinkDefaults:
         instance.create_record_group_relation.assert_awaited_once_with("r1", "new", "tx")
         instance.create_inherit_permissions_relation_record_group.assert_not_awaited()
         instance.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_counts_only_the_inherit_edges_it_removed(self) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.side_effect = [1, 1, 1]
+
+        removed = await instance.link_record_to_group(
+            "r1", "new", inherit=False, leaving_group_id="old", transaction="tx"
+        )
+
+        assert [call.args[1] for call in instance.batch_delete_edges.await_args_list] == [
+            "belongsTo", "inheritPermissions", "inheritPermissions"
+        ]
+        assert removed == 2
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("inherit", "deleted", "removed"), [(False, 1, 1), (False, 0, 0), (True, 0, 0), (None, 0, 0)]
+    )
+    async def test_joining_a_group_reports_the_inherit_edge_it_removed(
+        self, inherit: bool | None, deleted: int, removed: int
+    ) -> None:
+        instance = _make_concrete_class()()
+        instance.batch_delete_edges.return_value = deleted
+
+        assert await instance.link_record_to_group("r1", "g1", inherit=inherit, transaction="tx") == removed
+        assert instance.batch_delete_edges.await_count == (1 if inherit is False else 0)
 
     @staticmethod
     def _recording(instance: IGraphDBProvider) -> list[tuple]:

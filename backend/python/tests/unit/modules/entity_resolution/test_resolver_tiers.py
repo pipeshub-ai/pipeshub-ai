@@ -110,9 +110,10 @@ class TestCollection:
     ) -> None:
         model = scripted_model()
         resolver = make_resolver()
-        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon"])
+        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon", "Python"])
         resolution = await resolver.resolve(ctx_factory("r1", "acme", meta))
-        assert meta.languages == ["English", "French", "Klingon"]
+        # Not natural languages: extraction also reports code and made-up ones.
+        assert meta.languages == ["English", "French"]
         assert fake_store.match_calls == []
         assert model.calls == []
         assert resolution.stats.names_deduped == 1
@@ -135,7 +136,8 @@ class TestTier0:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["BUG BASH TESTING"]
+        assert resolution.get(TOPICS, "BUG BASH TESTING").key == key
 
     async def test_hit_carries_existing_aliases(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model

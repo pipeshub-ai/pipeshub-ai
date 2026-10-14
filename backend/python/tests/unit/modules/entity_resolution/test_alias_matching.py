@@ -47,7 +47,8 @@ class TestTier0AliasMatch:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["bug bash session"]
+        assert meta.topics == ["Bug Bash Testing Session"]
+        assert resolution.get(TOPICS, "Bug Bash Testing Session").key == key
 
     async def test_name_match_wins_over_alias_match(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model

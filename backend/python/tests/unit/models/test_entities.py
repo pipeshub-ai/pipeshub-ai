@@ -124,6 +124,20 @@ class TestTimestampDefaults:
         doc["republishCount"] = 2
         jsonschema.validate(instance=doc, schema=schema)
 
+    def test_a_rate_limit_wait_is_declared_in_the_record_schema(self) -> None:
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["retryNotBefore"] = 1_800_000_000_000
+        doc["rateLimitedSince"] = 1_799_990_000_000
+        jsonschema.validate(instance=doc, schema=schema)
+        doc["retryNotBefore"] = None
+        doc["rateLimitedSince"] = None
+        jsonschema.validate(instance=doc, schema=schema)
+
 
 # ============================================================================
 # Record tests
@@ -1497,6 +1511,99 @@ class TestPullRequestRecord:
         assert isinstance(rec.updated_at, int)
 
 
+class TestPullRequestRecordToLlmContext:
+    """A PR's merge state, author and reviewers are stored on the record but
+    used to be left out of the model's context, so it guessed whether a PR
+    was merged. Tickets already show their status the same way."""
+
+    def _pr(self, **overrides):
+        from app.models.entities import PullRequestRecord
+        kwargs = {
+            "record_name": "Fix login redirect",
+            "record_type": RecordType.PULL_REQUEST,
+            "connector_name": Connectors.GITHUB,
+            "external_record_id": "123/pull/42",
+            **overrides,
+        }
+        return PullRequestRecord(**_record_kwargs(**kwargs))
+
+    @pytest.mark.parametrize("stored, shown", [
+        # The three values `_status_from_pr` in the GitHub connector writes.
+        ("DONE", "Merged"),
+        ("CANCELLED", "Closed without merging"),
+        ("OPEN", "Open"),
+    ])
+    def test_github_status_is_spelled_out(self, stored, shown):
+        ctx = self._pr(status=stored).to_llm_context()
+        assert "Pull Request Information:" in ctx
+        assert f"* Status: {shown}" in ctx
+
+    def test_unknown_status_is_shown_as_stored(self):
+        """GitLab stores its own state words; they pass through unchanged."""
+        ctx = self._pr(status="opened").to_llm_context()
+        assert "* Status: opened" in ctx
+
+    def test_people_and_labels_are_shown(self):
+        ctx = self._pr(
+            status="DONE",
+            creator_name="octocat",
+            creator_email="octo@example.com",
+            merged_by="hubot",
+            assignee=["alice"],
+            review_name=["bob", "carol"],
+            labels=["bug", "backend"],
+        ).to_llm_context()
+        assert "* Author: octocat (octo@example.com)" in ctx
+        assert "* Merged By: hubot" in ctx
+        assert "* Assignees: alice" in ctx
+        assert "* Requested Reviewers: bob, carol" in ctx
+        assert "* Labels: bug, backend" in ctx
+
+    @pytest.mark.parametrize("connector", [Connectors.GITHUB, Connectors.GITHUB_TEAMS])
+    def test_github_reviewers_are_requested_reviewers(self, connector):
+        """GitHub's `requested_reviewers` only lists people yet to review."""
+        ctx = self._pr(connector_name=connector, review_name=["bob"]).to_llm_context()
+        assert "* Requested Reviewers: bob" in ctx
+
+    def test_gitlab_reviewers_are_plain_reviewers(self):
+        """GitLab's `reviewers` keeps people after they review, so calling
+        them "requested" would be wrong."""
+        ctx = self._pr(connector_name=Connectors.GITLAB, review_name=["bob"]).to_llm_context()
+        assert "* Reviewers: bob" in ctx
+        assert "Requested" not in ctx
+
+    def test_base_header_is_kept(self):
+        ctx = self._pr(status="OPEN").to_llm_context()
+        assert "Name: Fix login redirect" in ctx
+        assert "Type: PULL_REQUEST" in ctx
+        assert "External ID: 123/pull/42" in ctx
+
+    def test_no_section_when_nothing_is_stored(self):
+        """A placeholder PR (no fields yet) gets no empty section."""
+        ctx = self._pr().to_llm_context()
+        assert "Pull Request Information:" not in ctx
+
+    def test_from_arango_record_round_trips_into_context(self):
+        """The navigate/lookup header loads PRs through `from_arango_record`."""
+        from app.models.entities import PullRequestRecord
+        record_doc = {
+            "_key": "pr-1",
+            "orgId": "org-1",
+            "recordName": "Fix login redirect",
+            "recordType": "PULL_REQUEST",
+            "externalRecordId": "123/pull/42",
+            "version": 0,
+            "origin": "CONNECTOR",
+            "connectorName": "GITHUB",
+            "connectorId": "conn-1",
+        }
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "mergedBy": None}
+        ctx = PullRequestRecord.from_arango_record(pr_doc, record_doc).to_llm_context()
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "Merged By" not in ctx
+
+
 # ============================================================================
 # RecordGroup tests (lines 1265, 1286)
 # ============================================================================
@@ -1787,6 +1894,40 @@ class TestAppRole:
         assert ar.source_role_id == "role-1"
 
 
+class TestRecordHeaderWeekdays:
+    """Record headers carry each date's weekday, worked out in code.
+
+    Answers are asked for dates like "Mon, Jul 27, 3:45 PM PDT", but the
+    header gave only "2026-07-27 03:00:00 UTC", so the model guessed the
+    weekday. Monday 03:00 UTC is Sunday evening in California, so the weekday
+    is taken in the user's time zone when the run has one.
+    """
+
+    MON_0300_UTC = 1785121200000  # 2026-07-27 03:00:00 UTC, a Monday
+    TUE_1500_UTC = 1785250800000  # 2026-07-28 15:00:00 UTC
+
+    def _ctx(self) -> str:
+        return Record(**_record_kwargs(
+            source_created_at=self.MON_0300_UTC, source_updated_at=self.TUE_1500_UTC,
+        )).to_llm_context()
+
+    def test_header_dates_carry_their_weekday(self) -> None:
+        ctx = self._ctx()
+        assert "Created At: 2026-07-27 03:00:00 UTC (Mon, Jul 27, 2026, 3:00 AM UTC)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 3:00 PM UTC)" in ctx
+
+    def test_weekday_is_taken_in_the_users_time_zone(self) -> None:
+        from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+
+        token = set_llm_time_zone("America/Los_Angeles")
+        try:
+            ctx = self._ctx()
+        finally:
+            reset_llm_time_zone(token)
+        assert "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 8:00 AM PDT)" in ctx
+
+
 # ============================================================================
 # Record.to_llm_context edge cases (lines 232->235 branch, mime_type)
 # ============================================================================
@@ -1844,6 +1985,67 @@ class TestRecordToLlmContextEdgeCases:
 # ============================================================================
 # TicketRecord.to_llm_context with Enum values (lines 850-879)
 # ============================================================================
+
+
+class TestTicketRecordSourceStatus:
+    """Jira's own status name is shown beside the normalised one.
+
+    The value mapper stores Jira's "Backlog" and "To Do" both as NEW, and
+    "In Review" and "Testing" both as QA. With only the mapped value in its
+    context, the model answered "NEW" where Jira says "Backlog".
+    """
+
+    def _ticket(self, **overrides: object) -> TicketRecord:
+        from app.models.entities import Status
+        kwargs = {
+            "record_type": RecordType.TICKET,
+            "connector_name": Connectors.JIRA,
+            "status": Status.NEW,
+            **overrides,
+        }
+        return TicketRecord(**_record_kwargs(**kwargs))
+
+    def test_backlog_issue_shows_both_values(self) -> None:
+        ctx = self._ticket(source_status="Backlog").to_llm_context()
+        assert "* Status: NEW (Jira: Backlog)" in ctx
+
+    def test_in_review_issue_shows_both_values(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.QA, source_status="In Review").to_llm_context()
+        assert "* Status: QA (Jira: In Review)" in ctx
+
+    def test_same_name_is_not_repeated(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.IN_PROGRESS, source_status="In Progress").to_llm_context()
+        assert "* Status: IN_PROGRESS\n" in ctx + "\n"
+        assert "(Jira:" not in ctx
+
+    def test_unmapped_status_kept_as_is_is_not_repeated(self) -> None:
+        # map_status returns Jira's own name when it has no mapping for it.
+        ctx = self._ticket(status="Ready for Deploy", source_status="Ready for Deploy").to_llm_context()
+        assert "* Status: Ready for Deploy" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_record_stored_before_the_field_shows_status_alone(self) -> None:
+        ctx = self._ticket().to_llm_context()
+        assert "* Status: NEW" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_survives_the_graph_round_trip(self) -> None:
+        rec = self._ticket(id="t-1", org_id="org-1", source_status="Backlog")
+        ticket_doc = rec.to_arango_record()
+        assert ticket_doc["sourceStatus"] == "Backlog"
+        jsonschema.validate(instance=ticket_doc, schema=get_node_schema(CollectionNames.TICKETS.value))
+        record_doc = {
+            "_key": "t-1", "orgId": "org-1", "recordName": "[PROJ-1] Issue",
+            "recordType": "TICKET", "externalRecordId": "ext-123", "version": 1,
+            "origin": "CONNECTOR", "connectorName": Connectors.JIRA.value,
+            "webUrl": "https://example.atlassian.net/browse/PROJ-1", "connectorId": "conn-1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }
+        back = TicketRecord.from_arango_record(ticket_doc, record_doc)
+        assert back.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in back.to_llm_context()
 
 
 class TestTicketRecordToLlmContextEnum:

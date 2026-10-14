@@ -11,6 +11,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -54,7 +55,7 @@ class TeamDb(RemovalRecordsDb):
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> object:
         return next((g for g, _ in reversed(self.user_groups) if g.source_user_group_id == external_id), None)
 
-    async def get_all_app_users(self, connector_id: str) -> list[Any]:
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
         return list(self.app_users)
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
@@ -328,6 +329,35 @@ class TestUsersAndGroups:
         assert b"/group/eng%20team/member" in member_calls[0].url.raw_path
         (lookup,) = atlassian_api.calls("GET", f"{API}/user")
         assert AtlassianApiStub.query(lookup) == {"key": "ldap"}
+
+    async def test_a_failed_user_lookup_does_not_empty_the_group(self, atlassian_api, db, store) -> None:
+        ana = user("ana", "ana@example.com")
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ana], {"eng": [ana]})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert db.members_of("eng") == ["ana@example.com"]
+
+        db.get_all_app_users = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert db.members_of("eng") == ["ana@example.com"]
+
+    async def test_a_lookup_that_finds_no_users_still_empties_the_group(self, atlassian_api, db, store) -> None:
+        ana = user("ana", "ana@example.com")
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [ana], {"eng": [ana]})
+        await connector._sync_users()
+        await connector._sync_user_groups()
+        assert db.members_of("eng") == ["ana@example.com"]
+
+        db.app_users.clear()
+        await connector._sync_user_groups()
+
+        assert db.user_groups[-1][0].name == "eng"
+        assert db.members_of("eng") == []
 
     async def test_groups_are_read_to_the_end(self, atlassian_api, db, store) -> None:
         connector = await make_connector(atlassian_api, db, store)
@@ -972,6 +1002,46 @@ class TestFiltersAndIndexingSwitches:
         blog_cql = [c for c in search.cql if c.startswith("type=blogpost")]
         assert len(blog_cql) == 1 and "id in (b1, b2)" in blog_cql[0] and "created <" in blog_cql[0]
 
+    async def test_date_filters_reach_the_search_as_set(self, atlassian_api, db, store, search) -> None:
+        def ms(*parts: int) -> int:
+            return int(datetime(*parts, tzinfo=timezone.utc).timestamp() * 1000)
+
+        filters = _filters(sync={
+            "modified": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2024, 3, 1, 9, 30), "end": ms(2024, 6, 1, 18)}},
+            "created": {"operator": "is_between", "type": "datetime", "value": {"start": ms(2023, 1, 1), "end": ms(2024, 2, 1, 12)}},
+        })
+        connector = await make_connector(atlassian_api, db, store, filters=filters)
+        search.add("page", 0, listing([content("p1")]))
+
+        await connector.run_sync()
+
+        for ctype in ("page", "blogpost"):
+            cql = next(c for c in search.cql if c.startswith(f"type={ctype}"))
+            assert 'lastModified > "2024-03-01 09:30"' in cql
+            assert 'lastModified < "2024-06-01 18:00"' in cql, "not a day early"
+            assert 'created > "2023-01-01 00:00"' in cql
+            assert 'created < "2024-02-01 12:00"' in cql, "not a day early"
+
+    async def test_the_later_of_the_modified_filter_and_the_looked_back_checkpoint_bounds_the_search(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        search.add("page", 0, listing([content("p1")]))
+        await connector.run_sync()
+        checkpoint = store.values_for("confluence_pages/ENG")["last_sync_time"]
+        checkpoint_at = datetime.strptime(checkpoint, "%Y-%m-%dT%H:%M:%S.000Z").replace(tzinfo=timezone.utc)
+
+        inside_look_back = checkpoint_at - timedelta(hours=12)
+        connector.config_service.config["filters"] = _filters(sync={
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": int(inside_look_back.timestamp() * 1000)}},
+        })
+        search.cql.clear()
+        await connector.run_sync()
+
+        cql = next(c for c in search.cql if c.startswith("type=page"))
+        assert f'lastModified > "{inside_look_back.strftime("%Y-%m-%d %H:%M")}"' in cql, "nothing from before the filter date"
+        assert cql.count("lastModified >") == 1
+
     async def test_switched_off_pages_and_files_are_kept_but_not_indexed(self, atlassian_api, db, store, search) -> None:
         filters = _filters(indexing={"pages": False, "page_attachments": False})
         connector = await make_connector(atlassian_api, db, store, filters=filters)
@@ -1585,6 +1655,23 @@ class TestRemovalFromSource:
 
         assert "p1" not in db.records, "modified two months before the cutoff"
         assert {"p2", "p3"} <= set(db.records), "a day inside the margin: the filter's own search decides"
+
+    async def test_a_modified_date_filter_removes_what_it_leaves_out_by_more_than_a_day(
+        self, atlassian_api, db, store, search
+    ) -> None:
+        connector = await self._two_pages_synced(atlassian_api, db, store, search)
+        cutoff = int(datetime(2024, 5, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        connector.config_service.config["filters"] = {
+            "sync": {"values": {"modified": {"operator": "is_after", "type": "datetime", "value": {"start": cutoff}}}}
+        }
+        store.sync_points.clear()
+        older = {**content("p1"), "version": {"number": 1, "when": "2024-04-30T18:00:00.000Z"}}
+        search.existing["page"] = [older, content("p2", attachments=[attachment("a2")]), child_of("p3", "p2")]
+
+        await connector.run_sync()
+
+        assert "p1" not in db.records, "30 hours before the cutoff, which the search applies as set"
+        assert {"p2", "p3"} <= set(db.records), "14 hours before it: inside the time-zone margin"
 
     async def test_a_narrowed_space_filter_removes_the_space_and_a_re_added_space_is_read_in_full(
         self, atlassian_api, db, store, search

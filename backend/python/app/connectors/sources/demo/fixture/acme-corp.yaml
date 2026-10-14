@@ -1642,8 +1642,12 @@ pack_questions:
       # #deals thread is the at-risk moment, so it can't stand in for the call notes.
       must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
       answer_must_mention: ["Northwind"]
+      # "On track" is the account plan's own word. "No longer at risk" was failed
+      # as contradicted whenever a right answer added that the renewal still has
+      # to be signed (the call notes' target is 31 May), because any risk at all
+      # conflicts with "no longer at risk"; it does not conflict with "on track".
       answer_must_state:
-        - "The Northwind Traders renewal is no longer at risk."
+        - "The Northwind Traders renewal is now on track."
       must_not_cite: [drive-pricing-2026, drive-billing-resilience]
       personas: { alice: cites, bob: cites }
     - id: s2
@@ -1702,11 +1706,13 @@ pack_questions:
       ask: "How much can I spend on a purchase without my manager's approval?"
       must_cite: [drive-fin-expense-policy]
       # The band includes $250 itself ("under $250" is wrong at the edge), and it
-      # needs no approval ("up to $250 needs your manager" names the amount but is wrong).
+      # needs no manager approval ("up to $250 needs your manager" names the amount
+      # but is wrong). "No approval at all" would be wrong too: a software
+      # subscription needs finance's approval whatever it costs.
       answer_must_state:
-        - "A purchase of up to and including $250 needs no approval."
+        - "A purchase of up to and including $250 needs no manager approval."
       answer_must_not_state:
-        - "Purchases above $250 need no approval."
+        - "Purchases above $250 need no manager approval."
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"

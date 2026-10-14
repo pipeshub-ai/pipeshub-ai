@@ -4,7 +4,6 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
@@ -17,6 +16,7 @@ import {
 } from '../sidebar-toolset-utils';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
@@ -29,13 +29,6 @@ const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
 /** Toolset instance row: collapsed by default; user expands to see tools (Knowledge stops at instance rows). */
 const DEFAULT_TOOLSET_INSTANCE_EXPANDED = false;
 const TOOLSET_SHOW_MORE_LIMIT = 5;
-
-function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
-  e.dataTransfer.effectAllowed = 'move';
-  Object.entries(data).forEach(([k, v]) => {
-    if (v != null) e.dataTransfer.setData(k, v);
-  });
-}
 
 /** Row-level drag/configure flags for one toolset instance (shared by single-type and grouped UI). */
 function getToolsetPaletteRowState(
@@ -102,57 +95,15 @@ function ToolDragRow(props: {
     duplicateTypeDragBlocked,
     onDragBlocked,
   } = props;
-  const payload = buildToolDragPayload(tool, toolset);
   const blocked = needsConfiguration || structureLocked || duplicateTypeDragBlocked;
   return (
-    <Box
-      draggable={!blocked}
-      onDragStart={(e) => {
-        if (blocked) {
-          e.preventDefault();
-          onDragBlocked?.();
-          return;
-        }
-        applyToolDrag(e, payload);
-      }}
+    <SidebarToolDragRow
+      name={tool.name}
+      data={buildToolDragPayload(tool, toolset)}
+      disabled={blocked}
+      onBlocked={onDragBlocked}
       mb="1"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        width: '100%',
-        minWidth: 0,
-        minHeight: CHAT_ITEM_HEIGHT,
-        padding: '0 12px',
-        boxSizing: 'border-box',
-        gap: 8,
-        cursor: blocked ? 'not-allowed' : 'grab',
-        opacity: blocked ? 0.55 : 1,
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid transparent',
-        backgroundColor: 'transparent',
-      }}
-      className={
-        blocked
-          ? 'agent-builder-draggable-row agent-builder-draggable-row--disabled'
-          : 'agent-builder-draggable-row'
-      }
-    >
-      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 14,
-          color: 'var(--slate-11)',
-          whiteSpace: 'normal',
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-          textAlign: 'left',
-        }}
-      >
-        {normalizePaletteLabel(tool.name)}
-      </span>
-    </Box>
+    />
   );
 }
 

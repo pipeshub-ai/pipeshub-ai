@@ -481,10 +481,14 @@ class TestUserAndGroupGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp([]))
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [], "total": 0}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             assert await conn._fetch_groups() == GroupPickerPage([])
+
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp([]))
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            assert await conn._fetch_groups() is None, "an answer that is not a page is not an empty list"
 
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": "bad"}))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):

@@ -309,6 +309,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {
@@ -355,6 +365,34 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, LinkRecord)
         assert result.url == "https://example.com"
         assert result.is_public == LinkPublicStatus.TRUE
+
+    def test_pull_request_record(self):
+        """PRs used to fall through to `None` here, so chat dropped their
+        merge state even when the prs node was loaded."""
+        from app.models.entities import PullRequestRecord
+        d = _base_record_dict(record_type="PULL_REQUEST", connector_name="GITHUB")
+        graph_doc = {
+            "status": "DONE",
+            "creatorName": "octocat",
+            "creatorEmail": "octo@example.com",
+            "mergedBy": "hubot",
+            "mergeable": None,
+            "assignee": ["alice"],
+            "assigneeEmail": [],
+            "reviewName": ["bob"],
+            "reviewEmail": [],
+            "labels": ["bug"],
+            "lastCommitSha": "abc123",
+        }
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, PullRequestRecord)
+        assert result.record_type == RecordType.PULL_REQUEST
+        assert result.status == "DONE"
+        assert result.merged_by == "hubot"
+        assert result.review_name == ["bob"]
+        ctx = result.to_llm_context()
+        assert "* Status: Merged" in ctx
+        assert "* Merged By: hubot" in ctx
 
     def test_unknown_record_type_returns_none(self):
         d = _base_record_dict(record_type="WEBPAGE")
@@ -2327,6 +2365,51 @@ class TestGetRecord:
         assert vr_map["vr-1"].get("context_metadata") is not None
 
     @pytest.mark.asyncio
+    async def test_pull_request_context_shows_merge_state(self):
+        """End to end through chat's record loading: a PR's header carries
+        the status stored on its prs node."""
+        record_blob = _make_record_blob(
+            record_type="PULL_REQUEST", connector_name="GITHUB", record_name="Fix login redirect",
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "labels": ["wontfix"]}
+
+        async def _get_document(document_key, collection):
+            return pr_doc if collection == "prs" else None
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(side_effect=_get_document)
+
+        virtual_to_record_map = {
+            "vr-1": {
+                "_key": "rec-1",
+                "recordType": "PULL_REQUEST",
+                "recordName": "Fix login redirect",
+                "version": 1,
+                "origin": "CONNECTOR",
+                "connectorName": "GITHUB",
+                "connectorId": "conn-1",
+                "webUrl": "https://github.com/org/repo/pull/42",
+                "mimeType": "application/blocks",
+            },
+        }
+        vr_map = {}
+        await get_record(
+            "vr-1", vr_map, blob_store, "org-1",
+            virtual_to_record_map, graph_provider
+        )
+        ctx = vr_map["vr-1"]["context_metadata"]
+        graph_provider.get_document.assert_any_await(document_key="rec-1", collection="prs")
+        # The base header must survive too: with the prs doc loaded but no PR
+        # branch in the factory, the whole header would come back empty.
+        assert "Name: Fix login redirect" in ctx
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "* Labels: wontfix" in ctx
+
+    @pytest.mark.asyncio
     async def test_with_graph_provider_error_graceful(self):
         """Graph provider error should not crash, just log."""
         record_blob = _make_record_blob()
@@ -2634,6 +2717,44 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
+        """Each list-item hit expands to its whole list; a second hit on the same
+        list must not add a duplicate unit that takes another ranked slot."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.9), (1, "ItemB", 0.8))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert [r.get("block_group_index") for r in results] == [0]
+
+    @pytest.mark.asyncio
+    async def test_a_list_hit_twice_keeps_its_best_score(self) -> None:
+        """/search flattens before it sorts, and its query batches are not in score order."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.4), (1, "ItemB", 0.9))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+
+    @pytest.mark.asyncio
     async def test_one_unreadable_record_does_not_fail_the_rest(self):
         """A storage 404 for one hit must drop that record, not the whole search."""
         good = _make_record_blob()
@@ -2916,34 +3037,9 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_from_tool_no_adjacent_chunks(self):
-        """With from_tool=True, adjacent chunks should not be added."""
-        block0 = _make_text_block(index=0, data="Main text")
-        block1 = _make_text_block(index=1, data="Adjacent text")
-        record = _make_record_blob()
-        record["block_containers"]["blocks"] = [block0, block1]
-
-        blob_store = self._make_blob_store(record)
-        vr_map = {"vr-1": record}
-
-        result_set = [
-            {
-                "content": "Main text",
-                "score": 0.9,
-                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
-            },
-        ]
-        results = await get_flattened_results(
-            result_set, blob_store, "org-1", False, vr_map,
-            from_tool=True,
-        )
-        # block_index=1 should not appear as adjacent chunk
-        adjacent_results = [r for r in results if r.get("block_index") == 1]
-        assert len(adjacent_results) == 0
-
-    @pytest.mark.asyncio
-    async def test_adjacent_chunks_added_for_regular_call(self):
-        """Without from_tool/from_retrieval_service, adjacent text blocks should be added."""
+    async def test_no_adjacent_chunks_are_added(self):
+        """Neighbours are added after ranking, around the units kept
+        (`modules/retrieval/context`), never here."""
         block0 = _make_text_block(index=0, data="Adjacent before")
         block1 = _make_text_block(index=1, data="Main text")
         block2 = _make_text_block(index=2, data="Adjacent after")
@@ -2963,11 +3059,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map,
         )
-        # Should contain the main block plus adjacent text blocks
-        block_indices = {r.get("block_index") for r in results}
-        assert 1 in block_indices  # main
-        assert 0 in block_indices  # adjacent before
-        assert 2 in block_indices  # adjacent after
+        assert [r.get("block_index") for r in results] == [1]
 
     @pytest.mark.asyncio
     async def test_config_service_error_graceful(self):
@@ -6287,7 +6379,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6298,7 +6390,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]
@@ -6601,6 +6693,51 @@ class TestBuildMessageContentArraySummaryCitation:
         assert "Citation ID for summary:" in text
 
 
+class TestBuildMessageContentArrayCodeLabel:
+    """GroupType.CODE and BlockType.CODE are both "code"; only the content's shape
+    tells a code group from a code block."""
+
+    @staticmethod
+    def _render(flat: list[dict]) -> str:
+        contents, _ = build_message_content_array(
+            flat, {"vr-1": _make_record_blob()}, is_multimodal_llm=False, from_tool=True
+        )
+        return " ".join(
+            item["text"] for group in contents for item in group if item.get("type") == "text"
+        )
+
+    def test_code_group_renders_its_members_not_the_tuple(self) -> None:
+        child = {
+            "content": "def run(self):\n    pass",
+            "block_type": BlockType.CODE.value,
+            "block_index": 9,
+            "virtual_record_id": "vr-1",
+            "metadata": {},
+        }
+        text = self._render([
+            _make_flattened_result(
+                block_index=9,
+                block_type=GroupType.CODE.value,
+                content=("", [child]),
+                block_group_index=2,
+            )
+        ])
+        assert "('', [" not in text
+        assert "[code #2]" in text
+        assert "def run(self):" in text
+
+    def test_code_block_still_renders_as_a_leaf(self) -> None:
+        text = self._render([
+            _make_flattened_result(
+                block_index=3,
+                block_type=BlockType.CODE.value,
+                content="def main():\n    return 1",
+            )
+        ])
+        assert "def main():\n    return 1" in text
+        assert "[code #" not in text
+
+
 # ===================================================================
 # get_message_content — SQL_TABLE only in vr map (missing from flattened)
 # ===================================================================
@@ -6848,6 +6985,13 @@ class TestCollectionMapMessage:
         from app.utils.chat_helpers import collection_map
         assert collection_map[RecordType.FILE.value] == "files"
         assert collection_map[RecordType.MAIL.value] == "mails"
+
+    def test_pull_request_maps_to_prs(self):
+        """The graph keeps PR fields in the `prs` collection; without this
+        entry chat never loads them."""
+        from app.config.constants.arangodb import CollectionNames
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.PULL_REQUEST.value] == CollectionNames.PULLREQUESTS.value == "prs"
 
 
 class TestValidGroupLabelsConversation:

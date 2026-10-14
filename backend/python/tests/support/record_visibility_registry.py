@@ -48,6 +48,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.PARAM,
         "LIVE decides whether a VRID's vectors may be deleted; the orphan sweeper asks DELETED",
     ),
+    "get_virtual_record_ids_in_use": (
+        Rule.PARAM,
+        "get_records_by_virtual_record_id for a page of VRIDs: the orphan sweeper asks LIVE, then DELETED",
+    ),
     "get_record_by_external_revision_id": (
         Rule.PARAM,
         "rename detection asks LIVE: after a hard delete there is no old record, so the item is new",
@@ -57,10 +61,6 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_accessible_virtual_record_ids": (Rule.LIVE, "the search permission map"),
     "filter_accessible_virtual_record_ids": (Rule.LIVE, "search permission check"),
     "filter_accessible_record_ids": (Rule.LIVE, "search permission check"),
-    "get_virtual_record_ids_shared_outside_connector": (
-        Rule.LIVE,
-        "content a connector delete rebuilds; only a live record elsewhere is re-indexed for it",
-    ),
     "find_duplicate_records": (Rule.LIVE, "a copy must not take COMPLETED from a record without vectors"),
     "find_next_queued_duplicate": (Rule.LIVE, "dedup never hands work to a trashed record"),
     "update_queued_duplicates_status": (Rule.LIVE, "dedup never copies status onto a trashed record"),
@@ -72,6 +72,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "get_records_for_named_entities": (Rule.LIVE, "entity filters and find_records_by_value list these records to users"),
     "filter_nodes_with_permission_role": (
         Rule.LIVE, "the Location trail's ancestor check: a trashed folder ends the trail, unnamed",
     ),
@@ -103,6 +104,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_existing_record_keys": (Rule.ALL, "upsert pre-check by key"),
     "page_records_for_vector_membership_backfill": (Rule.ALL, "backfill walks every stored record"),
     "get_virtual_record_ids_for_record_ids": (Rule.ALL, _BY_KEY),
+    "get_virtual_record_holders": (
+        Rule.ALL,
+        "a deleted connector's shared content is handed to a holder; a trashed one needs it for a restore",
+    ),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_record_relations_batch": (Rule.ALL, _STRUCTURE),
@@ -114,6 +119,15 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "is_record_descendant_of": (Rule.ALL, _STRUCTURE),
     "get_record_owner_source_user_email": (Rule.ALL, _STRUCTURE),
     "get_taxonomy_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_record_taxonomy_links": (
+        Rule.ALL,
+        _STRUCTURE + "; search_entities passes only records the user can open, and the label "
+        "repair restores a trashed record's labels too, so a restore shows its own",
+    ),
+    "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_named_entity_mentions_in_records": (
+        Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),

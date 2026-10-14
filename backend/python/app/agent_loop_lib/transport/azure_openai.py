@@ -28,8 +28,8 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.transport.openai import OpenAITransport, RequestDefaults
 
-if TYPE_CHECKING:  # noqa: F401 - kept for the class docstring's references
-    pass
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,8 @@ class AzureOpenAITransport(OpenAITransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None,
+        on_cache_rejected: Callable[[], None] | None = None,
     ) -> None:
         # Skip OpenAITransport.__init__ (it builds AsyncOpenAI) but keep the
         # LLMTransport base contract and the cumulative counters its callers read.
@@ -91,6 +93,7 @@ class AzureOpenAITransport(OpenAITransport):
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
         self._client = _openai.AsyncAzureOpenAI(**client_kwargs)
+        self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         self.total_input_tokens: int = 0
         self.total_output_tokens: int = 0
         self.total_llm_calls: int = 0
@@ -100,6 +103,7 @@ class AzureOpenAITransport(OpenAITransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
     ) -> "AzureOpenAITransport":
         """Build from an already-configured `AzureChatOpenAI`.
 
@@ -156,6 +160,8 @@ class AzureOpenAITransport(OpenAITransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=getattr(llm, "max_retries", None),
             model_key=model_key,
+            cache_kwargs=cache_kwargs,
+            on_cache_rejected=on_cache_rejected,
         )
 
     @property

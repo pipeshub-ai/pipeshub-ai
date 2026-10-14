@@ -567,7 +567,11 @@ class TestDeleteKnowledgeBase:
 
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
         assert result["success"] is True
-        assert calls == ["intent:/services/entityCleanup/pending/kb1", "graph-delete"]
+        assert calls[:3] == [
+            "intent:/services/entityCleanup/pending/kb1",
+            "intent:/services/storageRelease/pending/kb1",
+            "graph-delete",
+        ]
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service, mock_config_service) -> None:
@@ -654,58 +658,63 @@ class TestDeleteKBStorageCleanup:
         coro = mock_asyncio.create_task.call_args[0][0]
         coro.close()
 
-    @pytest.mark.asyncio
-    async def test_cleanup_deletes_blob_storage_then_repairs_shared_records(
-        self, service, mock_config_service,
-    ):
+    @staticmethod
+    def _helper(result=None, error=None):
+        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+
         helper = AsyncMock()
-        helper.delete_connector_storage = AsyncMock(return_value=5)
-
-        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
-
-        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
-        helper.repair_shared_records.assert_awaited_once_with(
-            "org1", ["v-shared"], service.kafka_service.publish_event
+        helper.release_connector_storage = AsyncMock(
+            return_value=result or StorageReleaseResult(completed=True), side_effect=error,
         )
+        return helper
+
+    async def _cleanup(self, service, helper):
+        with patch(
+            "app.connectors.sources.localKB.handlers.kb_service.StorageCleanupHelper",
+            return_value=helper,
+        ):
+            await service._cleanup_kb_storage("org1", "kb1")
 
     @pytest.mark.asyncio
-    async def test_blob_failure_logs_error_and_still_repairs(self, service, mock_config_service):
-        helper = AsyncMock()
-        helper.delete_connector_storage = AsyncMock(side_effect=RuntimeError("storage unreachable"))
+    async def test_a_completed_release_clears_its_intent(self, service, mock_config_service):
+        helper = self._helper()
 
-        await service._cleanup_kb_storage(helper, "org1", "kb1", ["v-shared"])
+        await self._cleanup(service, helper)
 
-        service.logger.error.assert_called()
-        helper.repair_shared_records.assert_awaited_once()
+        helper.release_connector_storage.assert_awaited_once_with("org1", "kb1")
+        mock_config_service.delete_config.assert_awaited_once_with("/services/storageRelease/pending/kb1")
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_nothing_shared_still_deletes_storage(self, service, mock_config_service):
-        helper = AsyncMock()
-        helper.repair_shared_records = AsyncMock(return_value=0)
+    async def test_an_unfinished_release_keeps_its_intent_for_a_retry(self, service, mock_config_service):
+        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
 
-        await service._cleanup_kb_storage(helper, "org1", "kb1", [])
+        helper = self._helper(StorageReleaseResult(completed=False, failed=1))
 
-        helper.delete_connector_storage.assert_awaited_once_with("org1", "kb1")
+        await self._cleanup(service, helper)
 
-    @pytest.mark.asyncio
-    async def test_unknown_shared_content_keeps_storage(self, service, mock_config_service):
-        helper = AsyncMock()
-
-        await service._cleanup_kb_storage(helper, "org1", "kb1", None)
-
-        helper.delete_connector_storage.assert_not_awaited()
-        helper.repair_shared_records.assert_not_awaited()
+        mock_config_service.delete_config.assert_not_awaited()
+        key, intent = mock_config_service.set_config.await_args.args
+        assert key == "/services/storageRelease/pending/kb1"
+        assert intent["attempts"] == 1 and intent["nextAttemptAt"] > 0
+        helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_shared_vrids_are_read_before_the_kb_records_are_deleted(
+    async def test_a_release_that_raises_keeps_its_intent(self, service, mock_config_service):
+        helper = self._helper(error=RuntimeError("storage unreachable"))
+
+        await self._cleanup(service, helper)
+
+        mock_config_service.delete_config.assert_not_awaited()
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_release_is_recorded_before_the_kb_records_are_deleted(
         self, service, mock_config_service,
     ):
         _setup_kb_owner_resolve(service)
         calls = []
-        service.graph_provider.get_virtual_record_ids_shared_outside_connector = AsyncMock(
-            side_effect=lambda cid: calls.append("shared") or ["v1"]
-        )
+        mock_config_service.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=lambda **kw: calls.append("delete") or {"success": True}
         )
@@ -715,7 +724,47 @@ class TestDeleteKBStorageCleanup:
             await service.delete_knowledge_base("kb1", "user1", "org1")
             mock_asyncio.create_task.call_args[0][0].close()
 
-        assert calls == ["shared", "delete"]
+        assert calls == [
+            "/services/entityCleanup/pending/kb1", "/services/storageRelease/pending/kb1", "delete",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_delete_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
+        # A concurrent delete of the same KB may have committed; its intent must survive this failure.
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": False, "error": "Connector instance kb1 not found"}
+        )
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is False
+        mock_config_service.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_upload_removal_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_uploaded_document_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["code"] == 503
+        service.graph_provider.delete_connector_instance.assert_not_called()
+        mock_config_service.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_storage_intent_that_cannot_be_recorded_stops_the_delete(
+        self, service, mock_config_service,
+    ):
+        _setup_kb_owner_resolve(service)
+        mock_config_service.set_config = AsyncMock(
+            side_effect=lambda key, _v: "storageRelease" not in key
+        )
+
+        result = await service.delete_knowledge_base("kb1", "user1", "org1")
+
+        assert result["success"] is False and result["code"] == 500
+        service.graph_provider.delete_connector_instance.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_delete_response_not_blocked_by_cleanup(self, service, mock_config_service):

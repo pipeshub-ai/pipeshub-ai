@@ -41,8 +41,12 @@ class ModelPricing(BaseModel):
         cache_read_tokens: int = 0,
         cache_write_tokens: int = 0,
     ) -> float:
+        """``input_tokens`` counts every prompt token, cached ones included (the
+        convention every transport reports in); only the uncached remainder is
+        priced as fresh input."""
+        uncached = max(0, input_tokens - cache_read_tokens - cache_write_tokens)
         return (
-            input_tokens * self.input_price_per_mtok
+            uncached * self.input_price_per_mtok
             + output_tokens * self.output_price_per_mtok
             + cache_read_tokens * self.cache_read_price_per_mtok
             + cache_write_tokens * self.cache_write_price_per_mtok
@@ -61,7 +65,9 @@ def get_pricing(model: str | None) -> ModelPricing:
 # hardcoded flat number — the single source of truth other model metadata
 # tables in this file already establish the pattern for.
 MODEL_CONTEXT_WINDOW: dict[str, int] = {
-    "claude-opus-5": 300_000, 
+    "claude-opus-5-5": 300_000,
+    "claude-opus-5": 300_000,
+    "claude-sonnet-5-5": 200_000,
     "claude-sonnet-5": 200_000,
     "claude-sonnet-4-6": 200_000,
     "claude-opus-4-8": 200_000,

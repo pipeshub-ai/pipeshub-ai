@@ -41,6 +41,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import Goo
 from app.models.entities import (
     FileRecord,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -2272,8 +2273,8 @@ class TestInit:
             "auth": {},
             "credentials": {},
         })
-        result = await connector_fullcov.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector_fullcov.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector_fullcov):

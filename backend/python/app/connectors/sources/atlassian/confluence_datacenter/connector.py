@@ -62,6 +62,7 @@ from app.connectors.core.registry.filters import (
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_access import (
     apply_page_access_to_dependents,
+    listing_modified_after,
     unresolved_principal_permission,
     v1_next_start,
 )
@@ -100,8 +101,8 @@ from app.connectors.core.base.error.stream_errors import (
     to_stream_error,
 )
 
-# Time offset (in hours) applied to date filters to handle timezone differences
-# between the application and Confluence server, ensuring no data is missed during sync
+# How far back each incremental sync re-reads before its checkpoint. CQL reads dates
+# in the site's time zone, not UTC; the admin's date filters are used as set.
 TIME_OFFSET_HOURS = 24
 
 # Expand parameters for fetching pages and blogposts with required metadata
@@ -693,7 +694,15 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                             continue
 
                         # Get AppUser objects for members
-                        app_users = await self._get_app_users_by_emails(member_emails)
+                        try:
+                            app_users = await self._get_app_users_by_emails(member_emails)
+                        except Exception as lookup_error:
+                            # Saving the group now would replace its members with an empty list.
+                            self.logger.warning(
+                                f"Keeping the stored members of group {group_name}: "
+                                f"its members could not be looked up ({lookup_error})"
+                            )
+                            continue
 
                         # Save group with members
                         await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -1071,14 +1080,13 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {modified_after}, checkpoint: {last_sync_time})")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching {content_type}s modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all {content_type}s (first time)")
@@ -1155,7 +1163,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
                     )
                 else:  # CONFLUENCE_BLOGPOST
                     response = await datasource.get_blogposts_v1(
@@ -1172,7 +1179,6 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS
                     )
 
                 # Check response
@@ -4257,33 +4263,32 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
 
         Returns:
             List of AppUser objects found in database
+
+        Raises:
+            Whatever the database read raised. A failed read is not "none of
+            these people are users": a group saved from it would lose its members.
         """
         if not emails:
             return []
 
-        try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
+        # Fetch all users from database
+        all_app_users = await self.data_entities_processor.get_all_app_users(
+            connector_id=self.connector_id, raise_on_error=True
+        )
 
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
+        self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
 
-            # Create email lookup map
-            email_set = set(emails)
+        # Create email lookup map
+        email_set = set(emails)
 
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email
+        filtered_users = [user for user in all_app_users if user.email in email_set]
 
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+        if len(filtered_users) < len(emails):
+            missing_count = len(emails) - len(filtered_users)
+            self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
 
-            return filtered_users
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
-            return []
+        return filtered_users
 
     def _transform_to_app_user(self, user_data: dict[str, Any]) -> Optional[AppUser]:
         """

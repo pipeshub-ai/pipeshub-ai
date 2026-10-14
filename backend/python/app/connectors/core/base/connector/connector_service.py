@@ -15,6 +15,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.thread_pool import (
     SharedConnectorThreadPool,
     ThreadPoolLease,
@@ -42,6 +43,19 @@ class ConnectorInitError(Exception):
     just return ``False`` and get the generic message, as before. Background
     callers (factory, event service) already treat any exception from ``init()``
     as a failure, so raising it there is safe."""
+
+
+def oauth_app_not_linked_error() -> ConnectorInitError:
+    """The error for a sign-in connector whose saved settings name no OAuth app.
+
+    Some connectors read their client ID and secret only from a linked OAuth app,
+    never from client credentials saved on the connector itself. Without the link
+    they cannot start, even when sign-in already succeeded."""
+    return ConnectorInitError(
+        "This connector is not linked to an OAuth app, so it cannot start. "
+        "An admin can fix this on the connector's Authenticate Instance tab: choose "
+        "or create an OAuth app and save, then sign in again on the Authorize tab."
+    )
 
 
 class ConnectionCheckResult(BaseModel):
@@ -237,6 +251,17 @@ class BaseConnector(ABC):
     @abstractmethod
     def run_incremental_sync(self) -> None:
         NotImplementedError("This method is not supported")
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """How much of the source the full sync that just returned read.
+
+        Asked once ``run_sync`` has returned from a full sync. The links of the
+        records and groups that sync did not write are then removed, except what
+        this says it did not read. The default says it read everything, so a node
+        it did not write is gone from the source. A connector whose sync reads
+        only a date window, or that carries on past errors, should say so here.
+        """
+        return FullSyncCoverage()
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:

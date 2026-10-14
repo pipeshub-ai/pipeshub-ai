@@ -2300,6 +2300,17 @@ describe('Enterprise Search Utils - coverage', () => {
       const result = formatPreviousConversations(messages as any)
       expect(result[0]).to.not.have.property('referenceData')
     })
+
+    it('replays a call that never ran as not run', () => {
+      const part = (status: string) => ({ type: 'tool_call', toolName: `t_${status}`, toolCallId: status, status })
+      const messages = [{
+        messageType: 'bot_response',
+        content: 'Waiting for your approval to run create_issue on Jira.',
+        parts: [part('completed'), part('failed'), part('blocked'), part('awaiting_approval')],
+      }]
+      const [turn] = formatPreviousConversations(messages as any) as any[]
+      expect(turn.tool_results.map((r: any) => r.status)).to.deep.equal(['success', 'error', 'error', 'error'])
+    })
   })
 
   // -----------------------------------------------------------------------

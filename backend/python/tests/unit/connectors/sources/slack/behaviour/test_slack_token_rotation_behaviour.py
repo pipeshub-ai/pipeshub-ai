@@ -243,7 +243,8 @@ class TestRotatingTokenIsRenewed:
 
         workspace.valid_tokens.discard(new_access)
         assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="invalid_auth"):
+            await connector.run_sync()
 
         assert len(oauth.requests) == 1
 
@@ -435,7 +436,8 @@ class TestRenewalThatCannotWork:
 
         assert await connector.test_connection_and_access() is False
         assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="token_expired"):
+            await connector.run_sync()
 
         assert len(oauth.requests) == 1
         assert "Reconnect Slack" in caplog.text
@@ -451,7 +453,8 @@ class TestTokensThatDoNotRotate:
         workspace.valid_tokens.discard(USER_TOKEN)
 
         assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(RuntimeError, match="invalid_auth"):
+            await connector.run_sync()
 
         assert oauth.requests == []
 

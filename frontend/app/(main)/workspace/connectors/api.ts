@@ -1,4 +1,5 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
@@ -288,9 +289,14 @@ export const ConnectorsApi = {
   },
 
   /** Fetch one OAuth config by id (admin fallback when list entry has no embedded config). */
-  async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<Record<string, unknown>> {
+  async getOAuthConfig(
+    connectorType: string,
+    oauthConfigId: string,
+    options?: { reveal?: boolean }
+  ): Promise<Record<string, unknown>> {
     const { data } = await apiClient.get<{ oauthConfig?: Record<string, unknown> }>(
-      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`
+      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`,
+      { params: options?.reveal ? REVEAL_PARAMS : undefined }
     );
     return (data.oauthConfig ?? {}) as Record<string, unknown>;
   },

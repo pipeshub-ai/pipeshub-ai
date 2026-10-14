@@ -35,7 +35,8 @@ async def test_new_name_on_a_merged_key_resolves_to_the_winner(
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()
     assert (entity.key, entity.is_new, entity.decision) == ("win", False, "redirect")
-    assert entity.name == "English (US)" and meta.languages == ["English (US)"]
+    assert entity.name == "English (US)" and meta.languages == ["English"]
+    assert resolution.get(LANGUAGES, "English").key == "win"
     assert "English" in entity.new_aliases
     assert resolution.stats.new_nodes == 0
 
@@ -92,7 +93,8 @@ async def test_two_names_redirecting_to_one_winner_become_one_entity(
     resolution = await make_resolver().resolve(ctx_factory("r1", ORG, meta))
     (entity,) = resolution.entries.values()
     assert entity.key == "win" and sorted(entity.new_aliases) == ["English", "French"]
-    assert meta.languages == ["Bilingual"]
+    assert meta.languages == ["English", "French"]
+    assert {resolution.get(LANGUAGES, n).key for n in meta.languages} == {"win"}
 
 
 async def test_unmerged_new_names_cost_one_lookup_and_stay_new(

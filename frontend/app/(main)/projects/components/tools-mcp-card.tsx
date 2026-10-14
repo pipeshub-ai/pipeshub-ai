@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Checkbox, Flex, Text } from '@radix-ui/themes';
+import { Checkbox, Flex, IconButton, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -14,7 +14,14 @@ interface ToolGroupRow {
   label: string;
   /** Bare `fullName`s — the wire format `applyProjectScope` intersects against. */
   fullNames: string[];
+  /** Display name per bare `fullName`. */
+  toolLabels: Record<string, string>;
   icon: React.ReactNode;
+}
+
+function toolLabel(bareFullName: string, fromCatalog: string | undefined): string {
+  const raw = fromCatalog ?? (bareFullName.includes('.') ? bareFullName.slice(bareFullName.indexOf('.') + 1) : bareFullName);
+  return raw.replace(/_/g, ' ');
 }
 
 function toCardRows(groups: CatalogToolGroupRow[], kind: 'toolset' | 'mcp'): ToolGroupRow[] {
@@ -22,6 +29,9 @@ function toCardRows(groups: CatalogToolGroupRow[], kind: 'toolset' | 'mcp'): Too
     key: `${kind}:${g.instanceId}`,
     label: g.label,
     fullNames: Array.from(new Set(g.fullNames.map(bareToolFullName))),
+    toolLabels: Object.fromEntries(
+      g.fullNames.map((key) => [bareToolFullName(key), toolLabel(bareToolFullName(key), g.toolLabels?.[key])])
+    ),
     icon:
       kind === 'mcp' ? (
         <MaterialIcon name="hub" size={16} color="var(--gray-11)" />
@@ -49,6 +59,7 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
   const [groups, setGroups] = useState<ToolGroupRow[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +93,16 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
       return 'indeterminate';
     },
     [selectedSet],
+  );
+
+  const toggleTool = useCallback(
+    (fullName: string) => {
+      const next = new Set(selectedSet);
+      if (next.has(fullName)) next.delete(fullName);
+      else next.add(fullName);
+      onChange(Array.from(next));
+    },
+    [selectedSet, onChange],
   );
 
   const toggleGroup = useCallback(
@@ -121,46 +142,89 @@ export function ToolsMcpCard({ selectedTools, canEdit, onChange }: ToolsMcpCardP
     <Flex direction="column" gap="1">
       {groups.map((group) => {
         const checkState = groupCheckState(group.fullNames);
+        const isExpanded = expanded[group.key] ?? false;
         return (
-          <Flex
-            key={group.key}
-            align="center"
-            gap="2"
-            style={{
-              padding: 'var(--space-2)',
-              borderRadius: 'var(--radius-2)',
-              background: 'var(--olive-1)',
-              cursor: canEdit ? 'pointer' : 'default',
-            }}
-            onClick={() => canEdit && toggleGroup(group.fullNames, checkState !== true)}
-          >
-            <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
-              <Checkbox
-                size="1"
-                checked={checkState}
-                disabled={!canEdit}
-                onCheckedChange={(v) => toggleGroup(group.fullNames, v === true)}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </span>
-            {group.icon}
-            <Text
-              size="2"
+          <Flex key={group.key} direction="column" gap="1">
+            <Flex
+              align="center"
+              gap="2"
               style={{
-                color: 'var(--slate-12)',
-                flex: 1,
-                minWidth: 0,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
+                padding: 'var(--space-2)',
+                borderRadius: 'var(--radius-2)',
+                background: 'var(--olive-1)',
+                cursor: canEdit ? 'pointer' : 'default',
               }}
-              truncate
+              onClick={() => canEdit && toggleGroup(group.fullNames, checkState !== true)}
             >
-              {group.label}
-            </Text>
-            <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
-              {group.fullNames.filter((fn) => selectedSet.has(fn)).length}/{group.fullNames.length}
-            </Text>
+              <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                <Checkbox
+                  size="1"
+                  checked={checkState}
+                  disabled={!canEdit}
+                  onCheckedChange={(v) => toggleGroup(group.fullNames, v === true)}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              </span>
+              {group.icon}
+              <Text
+                size="2"
+                style={{
+                  color: 'var(--slate-12)',
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+                truncate
+              >
+                {group.label}
+              </Text>
+              <Text size="1" style={{ color: 'var(--slate-10)', flexShrink: 0 }}>
+                {group.fullNames.filter((fn) => selectedSet.has(fn)).length}/{group.fullNames.length}
+              </Text>
+              <IconButton
+                size="1"
+                variant="ghost"
+                color="gray"
+                aria-label={isExpanded ? t('common.collapse') : t('common.expand')}
+                aria-expanded={isExpanded}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setExpanded((prev) => ({ ...prev, [group.key]: !isExpanded }));
+                }}
+              >
+                <MaterialIcon name={isExpanded ? 'expand_less' : 'expand_more'} size={16} color="var(--gray-11)" />
+              </IconButton>
+            </Flex>
+            {isExpanded &&
+              group.fullNames.map((fullName) => (
+                <Flex
+                  key={fullName}
+                  align="center"
+                  gap="2"
+                  style={{
+                    marginLeft: 'var(--space-5)',
+                    padding: 'var(--space-1) var(--space-2)',
+                    borderRadius: 'var(--radius-2)',
+                    cursor: canEdit ? 'pointer' : 'default',
+                  }}
+                  onClick={() => canEdit && toggleTool(fullName)}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                    <Checkbox
+                      size="1"
+                      checked={selectedSet.has(fullName)}
+                      disabled={!canEdit}
+                      onCheckedChange={() => toggleTool(fullName)}
+                      onClick={(e) => e.stopPropagation()}
+                    />
+                  </span>
+                  <Text size="2" style={{ color: 'var(--slate-11)', minWidth: 0 }} truncate>
+                    {group.toolLabels[fullName]}
+                  </Text>
+                </Flex>
+              ))}
           </Flex>
         );
       })}

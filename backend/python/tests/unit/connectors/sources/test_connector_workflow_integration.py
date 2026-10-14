@@ -506,24 +506,31 @@ class MockTransactionStore:
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
-    ) -> None:
+    ) -> int:
+        """The number of inherit edges removed, as both providers answer."""
+        removed = 0
         if leaving_group_id:
             self._s.delete_edge(
                 CollectionNames.BELONGS_TO.value,
                 record_id, CollectionNames.RECORDS.value,
                 leaving_group_id, CollectionNames.RECORD_GROUPS.value,
             )
-            await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+            removed += await self._set_inheritance(record_id, leaving_group_id, inherit=False)
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id)
             if inherit is not None:
-                await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+                removed += await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+        return removed
 
-    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> None:
+    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
-        else:
-            await self.delete_inherit_permissions_relation_record_group(record_id, record_group_id)
+            return 0
+        return await self.batch_delete_edges(
+            [{"from_id": record_id, "from_collection": CollectionNames.RECORDS.value,
+              "to_id": record_group_id, "to_collection": CollectionNames.RECORD_GROUPS.value}],
+            CollectionNames.INHERIT_PERMISSIONS.value,
+        )
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)

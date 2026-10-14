@@ -108,6 +108,39 @@ describe('ErrorMiddleware', () => {
   })
 
   // -----------------------------------------------------------------------
+  // Log level of an expected answer
+  // -----------------------------------------------------------------------
+  describe('log level', () => {
+    it('logs a not-found the thrower marked as expected at warn, and still answers 404', () => {
+      const res = createMockResponse()
+
+      handler(new NotFoundError('Document not found', { logLevel: 'warn' }), createMockRequest(), res, createMockNext())
+
+      expect(loggerWarnStub.calledOnce).to.be.true
+      expect(loggerErrorStub.called).to.be.false
+      expect(res.status.calledWith(404)).to.be.true
+      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
+    })
+
+    it('keeps logging an unmarked not-found at error', () => {
+      handler(new NotFoundError('Document not found'), createMockRequest(), createMockResponse(), createMockNext())
+
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+    })
+
+    it('never lowers a server error, whatever it is marked', () => {
+      handler(
+        new InternalServerError('Error fetching document information', { logLevel: 'warn' }),
+        createMockRequest(), createMockResponse(), createMockNext(),
+      )
+
+      expect(loggerErrorStub.calledOnce).to.be.true
+      expect(loggerWarnStub.called).to.be.false
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // BaseError handling
   // -----------------------------------------------------------------------
   describe('BaseError handling', () => {
@@ -548,8 +581,57 @@ describe('ErrorMiddleware', () => {
 
       handler(error, req, res, next)
 
-      // Logger should have been called - verify it was called
       expect(loggerErrorStub.called).to.be.true
+      const logged = JSON.stringify(loggerErrorStub.firstCall.args)
+      expect(logged).to.not.contain('secret-token')
+      expect(logged).to.not.contain('session=abc')
+      expect(logged).to.contain('application/json')
     })
+
+    // A Google connector callback that failed auth: the request's query and its
+    // Referer both carried the live authorization code into the error log.
+    for (const [name, makeError] of [
+      ['an application error', () => new UnauthorizedError('No session')],
+      ['an unknown error', () => new Error('boom')],
+    ] as const) {
+      it(`keeps OAuth codes and secret headers out of the log for ${name}`, () => {
+        const fakeCode = '4/0FAKE-auth-code-not-real'
+        const fakeState = 'ZmFrZS1zdGF0ZQ'
+        const req = createMockRequest({
+          path: '/api/v1/connectors/oauth/callback',
+          originalUrl: `/api/v1/connectors/oauth/callback?code=${encodeURIComponent(fakeCode)}&state=${fakeState}`,
+          query: { code: fakeCode, state: fakeState, baseUrl: 'http://localhost:3001' },
+          headers: {
+            referer:
+              `http://localhost:3001/connectors/oauth/callback/Drive?state=${fakeState}` +
+              `&iss=https://accounts.google.com&code=${fakeCode}&scope=drive`,
+            authorization: 'Bearer fake-bearer-value',
+            cookie: 'sid=fake-cookie-value',
+            'x-session-token': 'fake-session-token-value',
+            'x-access-token': 'fake-access-token-value',
+            'user-agent': 'mocha',
+          },
+        })
+
+        handler(makeError(), req, createMockResponse(), createMockNext())
+
+        const calls = [...loggerErrorStub.getCalls(), ...loggerWarnStub.getCalls()]
+        expect(calls).to.have.length(1)
+        const logged = JSON.stringify(calls[0]!.args)
+        for (const secret of [
+          'FAKE-auth-code',
+          fakeState,
+          'fake-bearer-value',
+          'fake-cookie-value',
+          'fake-session-token-value',
+          'fake-access-token-value',
+        ]) {
+          expect(logged).to.not.contain(secret)
+        }
+        expect(logged).to.contain('/api/v1/connectors/oauth/callback')
+        expect(logged).to.contain('/connectors/oauth/callback/Drive')
+        expect(logged).to.contain('mocha')
+      })
+    }
   })
 })

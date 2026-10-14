@@ -1,409 +1,94 @@
-# CLAUDE.md - PipesHub Dashboard UI
+# Frontend — agent guide
 
-When implementing backend or repo-wide changes, also read the repository-root `AGENTS.md`. This file is the UI conventions for `frontend/`.
+UI conventions for `frontend/`. For backend or repo-wide changes, also read the repository-root `AGENTS.md`.
 
-## Project Overview
+The dashboard is a client-rendered Next.js 15 App Router app (React, TypeScript, Radix UI Themes, Zustand, SWR, i18next). In Docker Compose the built UI is served by the Node API on port 3000, on the same origin as `/api` and `/mcp`. `npm run dev` from this directory serves the dashboard separately and calls the API on 3000; contributors usually run it as `PORT=3001 npm run dev`. Do not assume 3001 is where operators open the product.
 
-PipesHub is an AI-powered knowledge management dashboard on **Next.js** (App Router, client-rendered React).
+## Commands
 
-In Docker Compose the built UI is served by Express on port **3000** (same origin as `/api` and `/mcp`). When you run `PORT=3001 npm run dev` from this directory, the dashboard is on 3001 and calls Express on 3000. Do not assume 3001 is where operators open the product.
+```bash
+npm run dev                  # Next dev server (turbopack)
+npm run build                # production build
+npm run lint                 # next lint
+npm run typecheck            # next typegen + tsc --noEmit
+npm run test:unit            # vitest, all app/**/*.test.ts(x) and lib/**/*.test.ts(x)
+npx vitest run lib/i18n/__tests__/formatters.test.ts   # one file
+npm run i18n:check           # locale parity against en-US
+npm run i18n:keys            # translation keys used in code exist
+npm run test:e2e             # Playwright, tests/e2e (needs a running stack)
+npm run test:e2e:smoke       # only @smoke-tagged specs
+```
 
-**Tech Stack:**
-- Next.js 14+ (App Router, CSR-only with `'use client'`)
-- TypeScript (strict mode)
-- Zustand (state management)
-- Radix UI Themes v3.2.1 (styling & components) - **No Tailwind CSS**
-- Google Fonts (Manrope) + Google Material Icons
-- React Hook Form + Zod (complex forms) / Native (simple forms)
-- SSE (chat streaming) + WebSocket (notifications)
-- i18n: German, English, Spanish, Hindi, Korean, Chinese (Taiwan), Chinese (Singapore), Chinese (Mandarin/Simplified, zh-CN)
+Unit tests live in `__tests__/` folders next to the code they test and run under jsdom.
+
+## Where things live
+
+- `app/(main)/` — signed-in app: `chat`, `agents`, `knowledge-base`, `workspace`, `connectors`, `notifications`, `projects`, `record`, `toolsets`. `@sidebar` is a parallel route for the sidebar slot.
+- `app/(public)/` — unauthenticated pages: `login`, `sign-up`, `reset-password`, `oauth`, plus `api.ts` for public auth calls.
+- `app/components/` — shared components; `app/components/ui/` holds primitives such as `MaterialIcon.tsx` and `Select.tsx`.
+- `lib/api/` — HTTP client, SWR fetchers, SSE streaming, error types.
+- `lib/store/` — global Zustand stores (`auth-store.ts`, `language-store.ts`, …).
+- `lib/i18n/` — i18next config and `locales/`.
+- `lib/socket/` — socket.io notification client.
+- `docs/` — longer guides: `style-guide.md`, `i18n-guide.md`, `knowledge-base-architecture.md`, `url-driven-panel-state.md`.
 
 ## Naming: Collections vs Knowledge Base
 
-**Important:** The feature formerly called "Knowledge Base" is now called **"Collections"** in the UI.
+The feature once called "Knowledge Base" is called "Collections" in the UI. Only user-facing text changed.
 
-| Context | Name Used |
-|---------|-----------|
-| UI labels & text | "Collections" or "All Records" |
-| Route path | `/knowledge-base` |
-| API endpoints | `/api/v1/knowledgeBase` |
+| Context | Name |
+| --- | --- |
+| UI labels and translations | "Collections", "All Records" |
+| Route | `/knowledge-base` |
+| API | `/api/v1/knowledgeBase` |
 | Code (types, stores, variables) | `KnowledgeBase`, `kb`, `kbId` |
-| Component files | `sidebar.tsx`, `header.tsx`, `filter-bar.tsx`, `kb-data-table.tsx` |
 
-**Collections mode sidebar sections:**
-- WORKSPACE (user's own collections)
-- SHARED (collections shared by others)
-- PRIVATE (private collections)
+The `/knowledge-base` page has two modes: Collections (folder tree) and All Records (`?view=all-records`, flat list across collections and connectors). Its components take a `pageViewMode` prop. URL state is parsed and serialized in `app/(main)/knowledge-base/url-params.ts`. See `docs/knowledge-base-architecture.md` before changing it.
 
-**All Records mode sidebar sections:**
-- All Records (shows all records across sources)
-- Collections (flat list of collections - clicking filters records)
-- Connectors (Slack, Google Drive, Jira, etc.)
+## Routing
 
-## Folder Structure
+- There are no dynamic route segments. Identify entities with query params (`/chat?conversationId=…`, `/agents?agentId=…`, `/knowledge-base?nodeType=kb&nodeId=…`). The desktop build uses `output: 'export'` (`next.config.mjs`), which cannot emit per-id pages.
+- Pages and components that use hooks or browser APIs start with `'use client'`.
 
-```
-src/
-├── app/                    # Next.js App Router
-│   ├── (auth)/             # Auth route group
-│   │   ├── sign-in/        # Each page has: page.tsx, api.ts, store.ts, types.ts, components/
-│   │   ├── sign-up/
-│   │   └── reset-password/
-│   ├── (dashboard)/        # Main app (uses query params, not dynamic routes)
-│   │   ├── knowledge-base/ # Collections page - Uses ?kbId=xxx&folderId=xxx
-│   │   │   ├── page.tsx
-│   │   │   ├── api.ts      # Page-specific API calls
-│   │   │   ├── store.ts    # Page-specific Zustand store
-│   │   │   ├── types.ts    # Page-specific types
-│   │   │   └── components/ # Page-specific components
-│   │   ├── agents/         # Uses ?agentId=xxx
-│   │   ├── chat/           # Uses ?conversationId=xxx
-│   │   ├── connectors/
-│   │   ├── account/
-│   │   ├── users/
-│   │   ├── groups/
-│   │   └── notifications/
-│   ├── layout.tsx          # Root layout (providers)
-│   └── page.tsx            # Redirect to dashboard or auth
-│
-├── components/             # Shared UI components (stateless)
-│   ├── ui/                 # Radix Themes components (MaterialIcon, Select, etc.)
-│   ├── form/               # React Hook Form wrappers
-│   ├── layout/             # Sidebar, header, breadcrumbs
-│   ├── data-display/       # DataTable, empty/error/loading states
-│   ├── feedback/           # Toast, confirmation dialogs
-│   └── icons/              # Google Material Icons wrapper
-│
-├── lib/                    # Core utilities
-│   ├── api/                # API layer
-│   │   ├── axios-instance.ts  # Axios client with interceptors
-│   │   ├── api-error.ts       # ErrorType & ProcessedError
-│   │   ├── swr-fetcher.ts     # SWR fetcher
-│   │   ├── streaming.ts       # SSE streaming (native fetch)
-│   │   └── index.ts           # Barrel export
-│   ├── store/              # Global Zustand stores
-│   │   └── auth-store.ts      # Auth state (tokens, user)
-│   ├── hooks/              # Global utility hooks
-│   ├── utils/              # formatters, validators
-│   ├── constants/          # Routes, storage keys, API endpoints
-│   └── i18n/               # i18next config and locales
-│
-├── styles/                 # Global CSS and fonts
-├── types/                  # Shared TypeScript types
-├── config/                 # Site config and env variables
-└── middleware.ts           # Auth redirect middleware
-```
+## Page co-location
 
-## Naming Conventions
+A feature folder under `app/(main)/<page>/` keeps its own `page.tsx`, `api.ts`, `store.ts`, `types.ts` and `components/` (with an `index.ts` barrel). Put page-specific code there; move it to `app/components/` or `lib/` only when a second page needs it.
 
-### Files & Folders
-| Type | Convention | Example |
-|------|------------|---------|
-| Folders | kebab-case | `knowledge-base/`, `data-display/` |
-| Components | kebab-case.tsx | `kb-card.tsx`, `message-bubble.tsx` |
-| Hooks | use-*.ts | `use-auth.ts`, `use-debounce.ts` |
-| Stores | store.ts | Page-level store (`app/(dashboard)/chat/store.ts`) |
-| APIs | api.ts | Page-level API (`app/(dashboard)/chat/api.ts`) |
-| Types | types.ts | Page-specific types |
-| Utils | kebab-case.ts | `format-date.ts`, `cn.ts` |
+File and folder names are kebab-case (`kb-data-table.tsx`), hooks are `use-*.ts`, components are PascalCase in code, constants are `SCREAMING_SNAKE_CASE`.
 
-### Code Style
-| Type | Convention | Example |
-|------|------------|---------|
-| Components | PascalCase | `KbCard`, `MessageBubble` |
-| Hooks | camelCase with `use` | `useAuth`, `useDebounce` |
-| Functions | camelCase | `formatDate`, `handleSubmit` |
-| Constants | SCREAMING_SNAKE | `STORAGE_KEYS.JWT_TOKEN` |
-| Types/Interfaces | PascalCase | `KnowledgeBase`, `User` |
+## Styling
 
-## Key Architecture Patterns
+- There is no Tailwind. Use Radix Themes layout and text components (`Flex`, `Box`, `Grid`, `Text`, `Heading`, `Card`) and their props (`gap="2"`, `size="2"`, `color="gray"`, responsive `columns={{ initial: '1', md: '2' }}`).
+- For values outside the Radix scale, use inline `style` with CSS variables from `app/globals.css` (`var(--olive-3)`, `var(--accent-9)`, `var(--space-4)`, `var(--radius-2)`). Check `globals.css` before inventing a color.
+- `className` is only for classes defined in `globals.css`: mainly `material-icons-outlined` (Material Icons font) and `no-scrollbar`, plus a few feature classes for animations and React Flow. Do not add utility-class strings.
+- Hover and active states that Radix props cannot express are done with React state and inline styles.
+- The theme is set once in `app/components/theme-provider.tsx` (accent `jade`, gray `olive`, radius `medium`, light/dark/system appearance). Do not wrap subtrees in another `<Theme>`.
+- Icons: use `MaterialIcon` from `app/components/ui/`.
+- Read `docs/style-guide.md` for Radix usage details.
 
-### Component Types
-- **Stateless** (`/components/ui/`): Pure presentational, no internal state, uses TypeScript union types for variants
-- **Stateful** (`/app/(dashboard)/*/components/`): Page-specific with hooks, state, business logic
+## i18n
 
-### Page-Level Co-location
-Each page folder contains its own resources:
-```
-app/(dashboard)/[page]/
-├── page.tsx        # Main page component (reads query params)
-├── api.ts          # Page-specific API calls
-├── store.ts        # Page-specific Zustand store
-├── types.ts        # Page-specific TypeScript types
-└── components/     # Page-specific React components
-    ├── some-component.tsx
-    └── index.ts    # Barrel export
-```
+- Every user-facing string goes through `useTranslation()` and a key in `lib/i18n/locales/en-US.json`.
+- There are 9 locales: `en-US` (source), `en-IN`, `de-DE`, `es-ES`, `hi-IN`, `ko-KR`, `zh-CN`, `zh-TW`, `zh-SG`. `lib/i18n/locale-policy.json` gates all of them on parity with `en-US`, so a new key must be added to every locale file. Run `npm run i18n:check` and `npm run i18n:keys` after editing strings.
+- Adding a language: follow `docs/i18n-guide.md` (locale file, `lib/i18n/supported-languages.ts`, `lib/i18n/locales/index.ts`).
 
-### Query Params (Not Dynamic Routes)
-Use query params instead of dynamic route segments:
-- `/knowledge-base?nodeType=kb&nodeId=123` (not `/knowledge-base/[kbId]/[folderId]`)
-- `/chat?conversationId=789` (not `/chat/[conversationId]`)
-- `/agents?agentId=001` (not `/agents/[agentId]`)
+## State
 
-#### Knowledge Base Page Modes
+- Zustand. Page stores live in the page's `store.ts`; global stores in `lib/store/`. Most stores use the `immer` and `devtools` middleware; follow the store next to yours.
+- `lib/store/auth-store.ts` persists tokens and is read by the API client. Use stores instead of prop drilling across more than a couple of levels.
 
-The knowledge-base page supports two modes via query params:
+## API and data fetching
 
-| Mode | URL Pattern | Description |
-|------|-------------|-------------|
-| Collections (default) | `/knowledge-base` | Folder tree navigation, CRUD operations |
-| Collections with node | `/knowledge-base?nodeType=kb&nodeId=xxx` | View specific collection/folder |
-| All Records | `/knowledge-base?view=all-records` | Flat view of all records across sources |
+- Components do not call axios directly. Each page exposes calls from its `api.ts` using `apiClient` from `@/lib/api` (`lib/api/axios-instance.ts`).
+- `apiClient` adds the bearer token, refreshes on 401 and retries queued requests, converts failures to `ProcessedError` (`lib/api/api-error.ts`), and sends the user to `/login` when refresh fails. Handle auth and network errors there; handle business errors in the component.
+- Unauthenticated calls use `publicAuthClient` (`lib/api/public-auth-client.ts`), as in `app/(public)/api.ts`.
+- Reads use SWR with the fetchers in `lib/api/fetcher.ts`. Mutations with loading state and toasts use `useMutation` / `withToast` from `@/lib/api`.
+- Chat responses stream over SSE with native `fetch` (`lib/api/streaming.ts`, `app/(main)/chat/streaming.ts`), because axios cannot stream. Notifications use socket.io (`lib/socket/notification-socket.ts`).
 
-**Key differences between modes:**
+## Types
 
-| Feature | Collections Mode | All Records Mode |
-|---------|------------------|------------------|
-| Sidebar | Folder tree (WORKSPACE/SHARED/PRIVATE) | Flat collections + Connectors |
-| Header buttons | Find, Refresh, New, Share, View toggle | Find, Refresh only |
-| Collection click | Navigate into collection | Filter records (stay on page) |
-| Data source | Single KB/folder content | All records across KBs + connectors |
-| Source column | Hidden | Shown (displays source name + icon) |
-
-### Styling - Always with Radix UI Theme
-
-**Important:** Always refer to `app/globals.css` for available CSS variables (colors, spacing, radius) before styling.
-**Important:** Always refer to `docs/style-guide.md` for Radix UI usage guidelines.
-
-**Layout Components:**
-```tsx
-import { Flex, Box, Grid, Text, Heading } from '@radix-ui/themes';
-
-// Instead of: <div className="flex items-center gap-2">
-<Flex align="center" gap="2">
-
-// Instead of: <p className="text-sm text-gray-600">
-<Text size="2" color="gray">
-```
-
-**Inline Styles for Custom Values:**
-```tsx
-// For values outside Radix's scale (fixed widths, gradients, etc.)
-<Box style={{ width: '300px', backgroundColor: 'var(--olive-1)' }}>
-```
-
-**Interactive States with React State:**
-```tsx
-const [isHovered, setIsHovered] = useState(false);
-
-<button
-  onMouseEnter={() => setIsHovered(true)}
-  onMouseLeave={() => setIsHovered(false)}
-  style={{ backgroundColor: isHovered ? 'var(--olive-3)' : 'transparent' }}
->
-```
-
-**Theme Configuration (in layout.tsx):**
-```tsx
-<Theme accentColor="jade" grayColor="olive" appearance="light" radius="medium">
-```
-
-### State Management (Zustand)
-- Uses immer middleware for immutable updates
-- Uses devtools middleware for debugging
-- Auth store persists tokens to localStorage
-- Stores are page-scoped, co-located with their page
-
-### API Layer
-
-**Structure (`lib/api/`):**
-```
-lib/api/
-├── axios-instance.ts   # Configured axios with interceptors
-├── api-error.ts        # ErrorType enum & ProcessedError interface
-├── swr-fetcher.ts      # SWR fetcher using axios
-├── streaming.ts        # SSE streaming (native fetch - axios limitation)
-└── index.ts            # Barrel export
-```
-
-**Axios Instance (`lib/api/axios-instance.ts`):**
-- Centralized axios client with `withCredentials: true`
-- **Request interceptor**: Automatically adds `Authorization: Bearer <token>` from auth store
-- **Response interceptor**:
-  - Handles 401 with automatic token refresh
-  - Queues failed requests during refresh, retries after success
-  - Processes errors into standardized `ProcessedError` format
-  - Redirects to `/login` on auth failure
-
-**Auth Store (`lib/store/auth-store.ts`):**
-- Global Zustand store for authentication
-- Persists `accessToken` and `refreshToken` to localStorage
-- Used by axios interceptors for token management
-
-**Usage in page-level API files:**
-```tsx
-// app/(main)/knowledge-base/api.ts (Collections page)
-import { apiClient } from '@/lib/api';
-
-// Note: API still uses "knowledgeBase" naming, UI shows "Collections"
-export const KnowledgeBaseApi = {
-  async listKnowledgeBases() {
-    const { data } = await apiClient.get<{ knowledgeBases: any[] }>(BASE_URL);
-    return data;
-  },
-};
-```
-
-**Public API (no auth):**
-- `app/(public)/api.ts` uses a separate `publicClient` without interceptors
-- Used for unauthenticated endpoints (OTP login flow)
-
-**SSE Streaming:**
-- Uses native `fetch` in `lib/api/streaming.ts` (axios doesn't support streaming)
-- Gets token from auth store for Authorization header
-
-### Real-Time Communication
-- **SSE (Server-Sent Events)**: Chat message streaming (`app/(dashboard)/chat/streaming-manager.ts`)
-- **WebSocket**: Notifications (`app/(dashboard)/notifications/websocket-manager.ts`)
-
-## Common Commands
-
-```bash
-# Development
-npm run dev
-
-# Build
-npm run build
-
-# Lint
-npm run lint
-
-# Type check
-npm run type-check
-```
-
-## Key Files to Know
-
-- `app/(main)/layout.tsx` - Root layout with Radix Theme provider and SWRConfig
-- `app/globals.css` - CSS variables (colors, spacing, radius) and custom utilities
-- `lib/api/axios-instance.ts` - Centralized axios with request/response interceptors
-- `lib/api/api-error.ts` - ErrorType enum and ProcessedError interface
-- `lib/api/streaming.ts` - SSE streaming helper using native fetch
-- `lib/store/auth-store.ts` - Global auth store (tokens, user, login/logout)
-- `app/(main)/chat/streaming-manager.ts` - SSE chat streaming
-- `app/(main)/notifications/websocket-manager.ts` - WebSocket notifications
-
-## Knowledge Base Page Architecture
-
-The knowledge-base page (`app/(main)/knowledge-base/`) consolidates both "Collections" and "All Records" views into a single page with mode-aware components.
-
-### File Structure
-```
-app/(main)/knowledge-base/
-├── page.tsx              # Main page with view mode detection
-├── api.ts                # API calls for collections and records
-├── store.ts              # Zustand store (collections + all-records state)
-├── types.ts              # Types for both modes (PageViewMode, AllRecordItem, etc.)
-├── mock-data.ts          # Mock data for connectors and records
-└── components/
-    ├── index.ts          # Barrel export
-    ├── sidebar.tsx       # Mode-aware sidebar (tree vs flat list)
-    ├── header.tsx        # Mode-aware header (different action buttons)
-    ├── filter-bar.tsx    # Mode-aware filters (Source filter in all-records)
-    ├── kb-data-table.tsx # Data table with optional Source column
-    ├── create-folder-dialog.tsx
-    ├── upload-data-sidebar.tsx
-    ├── move-folder-sidebar.tsx
-    └── replace-file-dialog.tsx
-```
-
-### Mode-Aware Components
-
-Components accept a `pageViewMode: PageViewMode` prop (`'collections' | 'all-records'`):
-
-| Component | Collections Mode | All Records Mode |
-|-----------|------------------|------------------|
-| `Sidebar` | Folder tree with WORKSPACE/SHARED/PRIVATE | Flat collections list + Connectors |
-| `Header` | Find, Refresh, New dropdown, Share, View toggle | Find, Refresh only |
-| `FilterBar` | Type, Status, Size, Date filters | Same + Source filter |
-| `KbDataTable` | Standard columns | Adds Source column (`showSourceColumn` prop) |
-
-### Key Types
-
-```typescript
-// View mode for the page
-type PageViewMode = 'collections' | 'all-records';
-
-// Connector types for All Records mode
-type ConnectorType = 'slack' | 'google-drive' | 'jira' | 'dropbox' | 'notion';
-
-// Sidebar selection in All Records mode
-type AllRecordsSidebarSelection =
-  | { type: 'all' }
-  | { type: 'collection'; id: string; name: string }
-  | { type: 'connector'; connectorType: ConnectorType; itemId?: string };
-
-// Extended record with source info (All Records mode)
-interface AllRecordItem extends KnowledgeHubTableNode {
-  sourceName: string;
-  sourceType: 'collection' | ConnectorType;
-  sourceIcon?: string;
-}
-```
-
-### Store Structure
-
-The store (`store.ts`) contains state for both modes:
-
-```typescript
-// Collections mode state
-filter, sort, viewMode, selectedItems, breadcrumbs, tableData, ...
-
-// All Records mode state
-allRecords, connectors, flatCollections, allRecordsSidebarSelection,
-selectedRecords, expandedSections, allRecordsFilter, allRecordsSort, ...
-```
-
-## Development Guidelines
-
-1. **Always use `'use client'`** - This is a CSR-only app
-2. **Prefer editing existing files** over creating new ones
-3. **Follow the page-level co-location pattern** - api.ts, store.ts, types.ts, components/ per page
-4. **Use query params** for navigation, not dynamic route segments
-5. **Use Radix UI Themes components** - Flex, Box, Text, Grid, Card, etc.
-6. **Use inline styles** for custom values (widths, gradients, specific colors)
-7. **Use CSS variables** from globals.css: `var(--olive-1)`, `var(--space-4)`, `var(--radius-2)`
-8. **Use Zustand stores** for page state, not prop drilling
-9. **Use the API service pattern** - Don't call axios directly from components
-10. **Error handling**: Global errors (auth, network) in interceptors; business errors in components
-11. **i18n**: All user-facing strings should use translation keys
+`tsconfig.json` has `"strict": false`, so the compiler will not catch nullish access for you. Guard optional values yourself, and do not add new `any`.
 
 ## Responsiveness
 
-**Mobile:** Full mobile support with touch-friendly UI
-
-**Browsers:** Chrome, Brave, Firefox, Safari
-
-**Screen Sizes:**
-- Mobile: 375px - 428px
-- MacBook 13": 1280 x 800
-- MacBook 15": 1440 x 900
-- Desktop 24": 1920 x 1080+
-
-**Guidelines:**
-- Use Radix responsive props: `columns={{ initial: "1", md: "2" }}`
-- Touch targets minimum 44px on mobile
-- Collapsible sidebar on mobile, persistent on desktop
-
-## CSS Variables Reference
-
-Available in `globals.css`:
-
-**Colors:**
-- `--olive-1` to `--olive-12` (gray scale with green tint)
-- `--accent-1` to `--accent-12` (emerald)
-- `--neutral-1` to `--neutral-12`
-
-**Spacing:** `--space-1` to `--space-9`
-
-**Border Radius:** `--radius-1` to `--radius-6`, `--radius-full`
-
-**Font:** Manrope (configured via `.radix-themes { --default-font-family }`)
-
-## Allowed className Usage
-
-Only two className patterns are valid (everything else uses Radix components + inline styles):
-
-1. `className="material-icons-outlined"` - Required for Google Material Icons font
-2. `className="no-scrollbar"` - Custom utility for hiding scrollbars
+Support mobile widths (375–428px) through 1920px desktop. Use Radix responsive props, keep touch targets at least 44px, and collapse the sidebar on mobile.

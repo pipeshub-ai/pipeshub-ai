@@ -57,7 +57,11 @@ test.describe('Set up an AI model', () => {
     await page.getByPlaceholder('e.g., My Custom Model').fill(friendlyName);
     await page.getByPlaceholder('e.g., https://api.together.xyz/v1/').fill(STAND_IN_ENDPOINT);
     await page.getByPlaceholder('Your API Key').fill('fixture-key');
-    await page.getByPlaceholder('e.g. deepseek-ai/DeepSeek-V3').fill(`e2e-stand-in-${suffix}`);
+    // The Model dropdown takes a typed id: Enter picks it ahead of any listed model.
+    const modelField = page.getByTestId('ai-model-combobox').getByRole('combobox');
+    await modelField.fill(`e2e-stand-in-${suffix}`);
+    await modelField.press('Enter');
+    await expect(page.getByRole('button', { name: `Remove e2e-stand-in-${suffix}` })).toBeVisible();
 
     // Saving runs the backend's live health check against the endpoint.
     const saved = page.waitForResponse(
@@ -74,7 +78,8 @@ test.describe('Set up an AI model', () => {
     // It is listed among the configured models...
     // The switch reads "Configured Models <count>".
     await page.getByRole('radio', { name: /^Configured Models/ }).click();
-    await expect(page.getByText(friendlyName)).toBeVisible({ timeout: 20_000 });
+    // Exact: the "Checking <name> with …" toast also holds the name until it is removed.
+    await expect(page.getByText(friendlyName, { exact: true })).toBeVisible({ timeout: 20_000 });
 
     // ...and offered in chat, from the real available-models API.
     await page.goto('/chat/');

@@ -327,6 +327,7 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
+  'semantic:read',
   'semantic:write',
   'conversation:write',
   'conversation:chat',

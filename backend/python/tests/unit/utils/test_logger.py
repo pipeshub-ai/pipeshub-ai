@@ -525,6 +525,24 @@ class TestAccessLogRedactionFilter:
         assert "a.b.c" not in record.getMessage()
         assert "/api/v1/index/o/drive/record/r" in record.getMessage()
 
+    def test_an_oauth_callbacks_code_and_state_are_not_logged(self) -> None:
+        record = logging.LogRecord(
+            name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+            msg='%s - "%s %s HTTP/%s" %d',
+            args=("127.0.0.1:12345", "GET", "/api/v1/mcp-servers/oauth/callback?code=c-secret&state=s-secret", "1.1", 200),
+            exc_info=None,
+        )
+        assert AccessLogRedactionFilter().filter(record) is True
+        message = record.getMessage()
+        assert "c-secret" not in message and "s-secret" not in message
+        assert "/api/v1/mcp-servers/oauth/callback" in message
+
+    def test_a_record_of_another_shape_is_left_alone(self) -> None:
+        record = logging.LogRecord(name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+                                   msg="plain message", args=None, exc_info=None)
+        assert AccessLogRedactionFilter().filter(record) is True
+        assert record.getMessage() == "plain message"
+
     def test_registered_on_uvicorn_access_logger(self):
         """AccessLogRedactionFilter must be registered on uvicorn.access at module import."""
         uvicorn_access = logging.getLogger("uvicorn.access")

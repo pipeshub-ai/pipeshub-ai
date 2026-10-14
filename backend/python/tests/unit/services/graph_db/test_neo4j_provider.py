@@ -221,6 +221,41 @@ class TestCheckToolsetInstanceInUse:
             await neo4j_provider.check_toolset_instance_in_use("inst-1")
 
 
+class TestCheckMcpInstanceInUse:
+    @pytest.mark.asyncio
+    async def test_returns_agent_names_deduped_by_id(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            return_value=[
+                {"agentId": "a1", "agentName": "Sales bot"},
+                {"agentId": "a2", "agentName": "Sales bot"},
+                {"agentId": "a1", "agentName": "Sales bot"},
+            ]
+        )
+
+        assert await neo4j_provider.check_mcp_instance_in_use("inst-1") == ["Sales bot", "Sales bot"]
+
+    @pytest.mark.asyncio
+    async def test_queries_mcp_server_nodes_and_skips_deleted_agents(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+
+        await neo4j_provider.check_mcp_instance_in_use("inst-9", transaction="txn-1")
+
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        kwargs = neo4j_provider.client.execute_query.await_args.kwargs
+        assert "AgentMcpServer" in query
+        assert "AGENT_HAS_MCP_SERVER" in query
+        assert "isDeleted" in query
+        assert kwargs["parameters"] == {"instance_id": "inst-9"}
+        assert kwargs["txn_id"] == "txn-1"
+
+    @pytest.mark.asyncio
+    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
+
+        with pytest.raises(RuntimeError, match="neo4j down"):
+            await neo4j_provider.check_mcp_instance_in_use("inst-1")
+
+
 class TestCheckConnectorInUse:
     @pytest.mark.asyncio
     async def test_returns_empty_when_no_agents(self, neo4j_provider: Neo4jProvider):
@@ -327,6 +362,28 @@ class TestGetAgent:
             "deprecatedReason": None, "replacedBy": None,
         }]
         assert result["shareWithOrg"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_read_is_flagged_on_the_agent(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
+                [],  # toolsets query
+                [],  # knowledge query
+                [],  # skills query
+                [],  # org share query
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
+            return_value={"_key": "agent-1", "name": "Agent One"}
+        )
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(side_effect=RuntimeError("read timed out"))  # type: ignore[method-assign]
+
+        result = await neo4j_provider.get_agent("agent-1")
+
+        assert result is not None
+        assert result["mcpServers"] == []
+        assert result["mcpServersUnavailable"] is True
 
     @pytest.mark.asyncio
     async def test_returns_empty_toolsets_and_knowledge_when_no_rows(
@@ -535,6 +592,46 @@ class TestGetAllAgents:
         assert result[0]["_key"] == "a1"
         assert result[0]["shareWithOrg"] is True
         assert result[0]["can_delete"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_mcp_read_is_flagged_not_passed_off_as_no_servers(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10}, "role": "OWNER",
+                  "access_type": "INDIVIDUAL", "priority": 1}],
+                [{"org_shared_ids": []}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
+        )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a1": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(side_effect=RuntimeError("read timed out"))  # type: ignore[method-assign]
+
+        (agent,) = await neo4j_provider.get_all_agents("user-1", "org-1")
+
+        assert agent["mcpServers"] == []
+        assert agent["mcpServersUnavailable"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_successful_mcp_read_carries_no_flag(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(
+            side_effect=[
+                [{"agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10}, "role": "OWNER",
+                  "access_type": "INDIVIDUAL", "priority": 1}],
+                [{"org_shared_ids": []}],
+            ]
+        )
+        neo4j_provider._neo4j_to_arango_node = MagicMock(  # type: ignore[method-assign]
+            side_effect=lambda data, _collection: {"_key": data["id"], "name": data["name"], "updatedAtTimestamp": data.get("updatedAtTimestamp")}
+        )
+        neo4j_provider._project_agents_toolsets_and_knowledge = AsyncMock(return_value={"a1": {"toolsets": [], "knowledge": []}})  # type: ignore[method-assign]
+        neo4j_provider._project_agents_mcp_servers = AsyncMock(return_value={"a1": [{"instanceId": "i1"}]})  # type: ignore[method-assign]
+
+        (agent,) = await neo4j_provider.get_all_agents("user-1", "org-1")
+
+        assert agent["mcpServers"] == [{"instanceId": "i1"}]
+        assert "mcpServersUnavailable" not in agent
 
     @pytest.mark.asyncio
     async def test_dedupes_and_keeps_highest_priority_permission(self, neo4j_provider: Neo4jProvider):
@@ -1145,6 +1242,15 @@ class TestEdgeOperations:
         result = await neo4j_provider.get_edge("u1", "users", "a1", "agentInstances", "permission")
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_edge_raises_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("db fail"))
+
+        with pytest.raises(RuntimeError, match="db fail"):
+            await neo4j_provider.get_edge(
+                "u1", "users", "a1", "agentInstances", "permission", raise_on_error=True
+            )
 
     @pytest.mark.asyncio
     async def test_delete_edge_returns_true_when_deleted(self, neo4j_provider: Neo4jProvider):
@@ -2003,6 +2109,12 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         assert await neo4j_provider.get_user_by_source_id("src-missing", "conn-1") is None
+        assert await neo4j_provider.get_user_by_source_id("src-missing", "conn-1", raise_on_error=True) is None
+
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("source id fail"))
+        assert await neo4j_provider.get_user_by_source_id("src-1", "conn-1") is None
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_by_source_id("src-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_user_by_user_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2054,6 +2166,8 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("app users fail"))
         assert await neo4j_provider.get_app_users("org-1", "conn-1") == []
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_app_users("org-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_user_group_by_external_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2082,6 +2196,8 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("groups fail"))
         assert await neo4j_provider.get_user_groups("conn-1", "org-1") == []
+        with pytest.raises(RuntimeError, match="groups fail"):
+            await neo4j_provider.get_user_groups("conn-1", "org-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_app_role_by_external_id_success_and_none(self, neo4j_provider: Neo4jProvider):
@@ -2138,6 +2254,59 @@ class TestUserAndOrganizationLookups:
         assert params["connector_id"] == "app-1"
         assert params["status"] == "NOT_STARTED"
         assert params["exclude_statuses"] == ["IN_PROGRESS"]
+        assert "n.reason" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_limited_to_statuses_with_a_reason(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], reason="off"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.indexingStatus IN $only_statuses" in query
+        assert "n.reason = $reason" in query
+        assert params["only_statuses"] == ["QUEUED"]
+        assert params["reason"] == "off"
+        assert "isDeleted" not in query
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_live_only_leaves_the_trash(self, neo4j_provider: Neo4jProvider) -> None:
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=["QUEUED"], visibility=RecordVisibility.LIVE
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        assert "(n.isDeleted IS NULL OR n.isDeleted = false)" in query
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.get_documents_paginated(
+            "records", limit=2, filters={"reason": "off"}, sort_field="_key", after_key="k1"
+        )
+        query = neo4j_provider.client.execute_query.await_args.args[0]
+        params = neo4j_provider.client.execute_query.await_args.kwargs["parameters"]
+        assert "n.id > $after_key" in query
+        # The filtered fields lead, so a (filters..., id) composite index
+        # serves the order; equality filters leave it the same order.
+        assert "ORDER BY n.reason, n.id ASC" in query
+        assert params["after_key"] == "k1"
+
+    @pytest.mark.asyncio
+    async def test_get_documents_paginated_after_key_needs_key_order(self, neo4j_provider: Neo4jProvider) -> None:
+        with pytest.raises(ValueError):
+            await neo4j_provider.get_documents_paginated("records", after_key="k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_indexing_status_with_an_empty_status_list_writes_nothing(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[])
+        await neo4j_provider.reset_indexing_status_for_connector(
+            "app-1", "AUTO_INDEX_OFF", only_statuses=[]
+        )
+        neo4j_provider.client.execute_query.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_get_departments_with_and_without_org(self, neo4j_provider: Neo4jProvider):
@@ -2864,6 +3033,18 @@ class TestDuplicateAndSyncOperations:
         assert await neo4j_provider._get_user_app_ids("user-1") == ["a1", "a2"]
 
     @pytest.mark.asyncio
+    async def test_knowledge_hub_app_lookups_raise_instead_of_returning_no_apps(
+        self, neo4j_provider: Neo4jProvider
+    ) -> None:
+        # An empty list here reads as "this user can reach nothing", which the
+        # Knowledge Hub then reports as "No items found" for files that exist.
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_app_ids("user-1")
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_user_permission_app_ids("user-1", "org-1")
+
+    @pytest.mark.asyncio
     async def test_sync_point_get_upsert_and_remove(self, neo4j_provider: Neo4jProvider):
         neo4j_provider.client.execute_query = AsyncMock(return_value=[{"sp": {"syncPointKey": "k1"}}])
         neo4j_provider._neo4j_to_arango_node = MagicMock(return_value={"_key": "k1"})  # type: ignore[method-assign]
@@ -3538,6 +3719,29 @@ class TestKnowledgeHubSearchThreePhase:
         assert neo4j_provider.client.execute_query.call_count == 3
 
     @pytest.mark.asyncio
+    async def test_search_raises_when_the_app_lookup_fails(self, neo4j_provider: Neo4jProvider) -> None:
+        # An empty result here is a successful search with no hits, which the
+        # Knowledge Hub reports as "No items found" for files that exist.
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1", user_key="user1", skip=0, limit=10, sort_field="name", sort_dir="ASC",
+                search_query="budget",
+            )
+
+    @pytest.mark.asyncio
+    async def test_search_raises_when_a_query_fails(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=[[{"total": 5}], RuntimeError("timeout")])
+
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1", user_key="user1", skip=0, limit=10, sort_field="name", sort_dir="ASC",
+            )
+
+    @pytest.mark.asyncio
     async def test_three_phase_empty_count(self, neo4j_provider: Neo4jProvider):
         """Test early return when count is 0."""
         # Mock Phase 1a: Count query returns 0
@@ -3713,25 +3917,25 @@ class TestKnowledgeHubSearchThreePhase:
             side_effect=RuntimeError("Neo4j connection lost")
         )
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
-        result = await neo4j_provider.get_knowledge_hub_search(
-            org_id="org1",
-            user_key="user1",
-            skip=0,
-            limit=10,
-            sort_field="name",
-            sort_dir="ASC",
-        )
-
-        # Should return empty result on error, not raise
-        assert result["total"] == 0
-        assert result["nodes"] == []
+        # An empty result would read as "no items" to the Knowledge Hub; Arango raises too.
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_knowledge_hub_search(
+                org_id="org1",
+                user_key="user1",
+                skip=0,
+                limit=10,
+                sort_field="name",
+                sort_dir="ASC",
+            )
 
     @pytest.mark.asyncio
     async def test_three_phase_pagination_consistency(self, neo4j_provider: Neo4jProvider):
         """Test that pagination returns non-overlapping results across pages."""
         # Simulate fetching page 1 and page 2
         neo4j_provider.get_user_app_ids = AsyncMock(return_value=["app1"])
+        neo4j_provider.get_user_permission_app_ids = AsyncMock(return_value=[])
 
         # Page 1 (skip=0, limit=10)
         neo4j_provider.client.execute_query = AsyncMock(
@@ -3762,8 +3966,9 @@ class TestKnowledgeHubSearchThreePhase:
         # Verify no overlapping IDs
         page1_ids = {node["id"] for node in page1["nodes"]}
         page2_ids = {node["id"] for node in page2["nodes"]}
+        assert len(page1_ids) == len(page2_ids) == 10
         assert len(page1_ids.intersection(page2_ids)) == 0
-        assert page1["total"] == page2["total"]  # Total should be consistent
+        assert page1["total"] == page2["total"] == 25
 
     @pytest.mark.asyncio
     async def test_three_phase_with_search_query(self, neo4j_provider: Neo4jProvider):
@@ -5835,8 +6040,33 @@ class TestRecordLinksAreOneStatement:
         assert "DELETE old" not in query
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("leaving", "inherit", "returned"),
+        [
+            ("old", False, "RETURN left_inherits + unlinked AS removed"),
+            ("old", True, "RETURN left_inherits AS removed"),
+            (None, False, "RETURN unlinked AS removed"),
+            (None, None, "RETURN 0 AS removed"),
+        ],
+    )
+    async def test_the_statement_counts_the_inherit_edges_it_removed(
+        self, neo4j_provider: Neo4jProvider, leaving: str | None, inherit: bool | None, returned: str
+    ) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"removed": 1}]
+
+        removed = await neo4j_provider.link_record_to_group("r1", "g1", inherit=inherit, leaving_group_id=leaving)
+
+        assert removed == 1
+        neo4j_provider.client.execute_query.assert_awaited_once()
+        call = neo4j_provider.client.execute_query.await_args
+        assert call.args[0].rstrip().endswith(returned)
+        if leaving:
+            assert "count(old_inherit) AS left_inherits" in call.args[0]
+            assert call.kwargs["parameters"]["inherit_type"] == "INHERIT_PERMISSIONS"
+
+    @pytest.mark.asyncio
     async def test_nothing_to_leave_or_join_runs_nothing(self, neo4j_provider: Neo4jProvider) -> None:
-        await neo4j_provider.link_record_to_group("r1", None, inherit=True)
+        assert await neo4j_provider.link_record_to_group("r1", None, inherit=True) == 0
 
         neo4j_provider.client.execute_query.assert_not_awaited()
 

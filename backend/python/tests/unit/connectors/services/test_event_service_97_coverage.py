@@ -165,56 +165,6 @@ class TestFullSyncSyncPointDeletionFailure:
 
 
 # ===========================================================================
-# Lines 270-272: sync edge deletion raises exception
-# ===========================================================================
-
-class TestFullSyncEdgeDeletionException:
-    """Cover the except block for delete_connector_sync_edges."""
-
-    @pytest.mark.asyncio
-    async def test_sync_edges_delete_exception(self, service):
-        """Lines 271-272: sync edge deletion raises exception => error logged."""
-        mock_conn = AsyncMock()
-        mock_conn.run_sync = AsyncMock()
-
-        # Sync edges deletion raises an exception
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
-            side_effect=Exception("edge deletion error")
-        )
-
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
-            mock_stm.side_effect = spawned
-            result = await service._handle_start_sync("gmail", {
-                "orgId": "org1", "connectorId": "c1", "fullSync": True
-            })
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_sync_edges_delete_returns_false(self, service):
-        """Lines 269-270: sync edge deletion returns success=False => warning logged."""
-        mock_conn = AsyncMock()
-        mock_conn.run_sync = AsyncMock()
-
-        # Sync edges returns failure
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
-            return_value=(0, False)
-        )
-
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
-            mock_stm.side_effect = spawned
-            result = await service._handle_start_sync("gmail", {
-                "orgId": "org1", "connectorId": "c1", "fullSync": True
-            })
-            assert result is True
-
-
-# ===========================================================================
 # Lines 278-285: full sync prep general exception + revert lock
 # ===========================================================================
 
@@ -464,6 +414,7 @@ class TestDeleteRevertStatusFailure:
     @pytest.mark.asyncio
     async def test_delete_fails_and_revert_also_fails(self, service):
         """Lines 520-521: delete fails then revert also fails."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "DB error"}
         )
@@ -478,12 +429,14 @@ class TestDeleteRevertStatusFailure:
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": True
             })
             assert result is False
+            service.graph_provider.batch_upsert_nodes.assert_awaited()
             # Verify double-failure error was logged
             service.logger.error.assert_called()
 
     @pytest.mark.asyncio
     async def test_delete_raises_and_revert_also_fails(self, service):
         """Delete raises an exception (not just returns success=False), revert fails too."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=Exception("unexpected DB crash")
         )
@@ -497,6 +450,7 @@ class TestDeleteRevertStatusFailure:
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": False
             })
             assert result is False
+            service.graph_provider.batch_upsert_nodes.assert_awaited()
 
 
 # ===========================================================================

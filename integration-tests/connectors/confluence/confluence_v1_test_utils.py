@@ -279,6 +279,33 @@ async def count_confluence_space_pages_v1_search(
     return len(seen)
 
 
+async def wait_for_space_page_count_at_least(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    minimum: int,
+    *,
+    timeout: float = CONFLUENCE_TEST_SETTLE_WAIT_SEC,
+    poll_interval: float = 30,
+) -> int:
+    """The space's v1 search page count once it reaches ``minimum``, or the last count read at the deadline.
+
+    A page created a moment ago can already be found by id while the space-wide
+    listing still leaves it out, so one read right after creating pages can
+    undercount them.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        count = await count_confluence_space_pages_v1_search(datasource, space_key)
+        remaining = deadline - time.monotonic()
+        if count >= minimum or remaining <= 0:
+            return count
+        logger.info(
+            "⏳ v1 page count for %s is %d, waiting for %d (%.0fs remaining)...",
+            space_key, count, minimum, remaining,
+        )
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
 async def assert_confluence_pages_match_graph_records(
     datasource: ConfluenceDataSource,
     graph_provider: "GraphProviderProtocol",

@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable
 
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 Summarizer = Callable[[list[Message]], Awaitable[str]]
@@ -148,13 +149,14 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
         joined = _SEPARATOR.join(parts)
 
         try:
-            response = await transport.complete(
-                messages=[UserMessage(
-                    content=f"{_SUMMARIZER_PROMPT}\n{joined}",
-                )],
-                system=_SUMMARIZER_SYSTEM,
-                model=model,
-            )
+            with llm_usage_source("auto_compact"):
+                response = await transport.complete(
+                    messages=[UserMessage(
+                        content=f"{_SUMMARIZER_PROMPT}\n{joined}",
+                    )],
+                    system=_SUMMARIZER_SYSTEM,
+                    model=model,
+                )
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)

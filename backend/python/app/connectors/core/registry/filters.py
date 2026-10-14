@@ -381,6 +381,10 @@ class FilterField:
             filter_type's normal operators (e.g. only "in" for a LIST filter that doesn't
             make sense with "not_in" yet). Must be a non-empty subset of the type's
             operators. Defaults to all operators for filter_type.
+        fallback_operator: The window the connector applies when this filter is
+            not set at all (for example a sync filter that falls back to the last
+            30 days). The UI shows it while the filter is cleared, so the
+            fallback never becomes invisible. Must be one of the field's operators.
 
     Value types by filter_type:
         STRING      → str
@@ -408,6 +412,7 @@ class FilterField:
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
     allowed_operators: list[str] | None = None
+    fallback_operator: str | None = None
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -445,6 +450,12 @@ class FilterField:
                     f"default_operator '{self.default_operator}' must be one of allowed_operators "
                     f"{self.allowed_operators}"
                 )
+
+        if self.fallback_operator is not None and self.fallback_operator not in self.operators:
+            raise ValueError(
+                f"fallback_operator '{self.fallback_operator}' must be one of the field's "
+                f"operators {self.operators}"
+            )
 
     def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
         """Get default value based on type"""
@@ -499,6 +510,9 @@ class FilterField:
 
         if self.no_implicit_operator_default:
             schema["noImplicitOperatorDefault"] = True
+
+        if self.fallback_operator is not None:
+            schema["fallbackOperator"] = self.fallback_operator
 
         return schema
 

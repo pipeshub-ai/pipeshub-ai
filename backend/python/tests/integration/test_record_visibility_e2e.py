@@ -67,6 +67,11 @@ from app.connectors.sources.github_teams.models import blob_external_id
 from app.connectors.sources.github_teams.repos import ReposSync
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord, RecordType
+from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.models import Mention, NamedEntity
+from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
+from app.modules.named_entities.keys import named_entity_key
+from app.modules.named_entities.resolution import ResolvedEntity
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -422,6 +427,13 @@ async def _by_virtual_record_id(w: _World, visibility: RecordVisibility) -> set[
     ))
 
 
+async def _vrids_in_use(w: _World, visibility: RecordVisibility) -> set[str]:
+    names = ("live", "trashed", "live_failed", "trashed_failed")
+    by_vrid = {w.vrids[n]: w.ids[n] for n in names}
+    got = await w.graph.get_virtual_record_ids_in_use([*by_vrid, "no-such-vrid"], visibility=visibility)
+    return {by_vrid[vrid] for vrid in got}
+
+
 # method -> (probe, live names, trashed names) for the same seed
 async def _by_revision(w: _World, visibility: RecordVisibility) -> set[str]:
     found = set()
@@ -445,6 +457,9 @@ PARAM_PROBES = {
     ),
     "get_records_by_record_ids": (_by_record_ids, {"live"}, {"trashed"}),
     "get_records_by_virtual_record_id": (_by_virtual_record_id, {"live_shared"}, {"trashed_shared"}),
+    "get_virtual_record_ids_in_use": (
+        _vrids_in_use, {"live", "live_failed"}, {"trashed", "trashed_failed"},
+    ),
     "get_record_by_external_revision_id": (_by_revision, {"live"}, {"trashed"}),
 }
 
@@ -474,7 +489,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
-    "get_virtual_record_ids_shared_outside_connector": "test_content_shared_outside_a_deleted_connector",
+    "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -621,6 +636,29 @@ async def test_permitted_entity_records(world: _World) -> None:
     assert list(got[("record", world.ids["trashed"])]) == []
 
 
+async def test_named_entity_records(world: _World) -> None:
+    g = world.graph
+    entity = NamedEntity(
+        kind=EntityKind.ORGANIZATION, display_name="Globex", norm_key="globex",
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Globex", extractor="agent")],
+    )
+    key = named_entity_key(world.org_id, entity.kind.value, entity.norm_key)
+    writer = NamedEntityGraphWriter(g, GraphDataStore(logger, g), logger)
+    try:
+        for name in ("live", "trashed"):
+            await writer.write(
+                world.org_id, world.ids[name], [ResolvedEntity(entity=entity, graph_key=key)],
+            )
+        got = await g.get_records_for_named_entities(world.org_id, entity_ids=[key])
+        assert {hit["recordId"] for hit in got["hits"]} == {world.ids["live"]}
+        # The trash stays reachable from the record itself: it is graph structure, not a listing.
+        assert [row["name"] for row in await g.get_named_entities_for_record(world.ids["trashed"])] == ["Globex"]
+    finally:
+        for name in ("live", "trashed"):
+            await writer.clear_for_record(world.ids[name])
+        await g.delete_orphan_named_entities(world.org_id)
+
+
 @pytest.mark.parametrize("grant", ["app", "role"])
 async def test_permitted_entity_records_of_a_group(world: _World, grant: str) -> None:
     """The group-entity walk, on app access and on a permission role, lists only the live member."""
@@ -648,16 +686,14 @@ async def test_vector_delete_authority(world: _World) -> None:
     assert set(got) == {world.ids["live_shared"]}
 
 
-async def test_content_shared_outside_a_deleted_connector(world: _World) -> None:
-    """Shared with a live record elsewhere: rebuilt. Shared only with the trash elsewhere: not."""
+async def test_holders_of_shared_content_include_the_trash(world: _World) -> None:
+    """A deleted connector's shared copy goes to a holder; a trashed one still needs it."""
     g = world.graph
-    shares = {"kb_live": "live", "kb_child_live": "trashed", "kb_trashed": "live_failed"}
-    for kb_record, outside in shares.items():
-        await g.update_node(
-            world.ids[kb_record], CollectionNames.RECORDS.value, {"virtualRecordId": world.vrids[outside]}
-        )
-    got = await g.get_virtual_record_ids_shared_outside_connector(world.kb_id)
-    assert set(got) == {world.vrids["live"], world.vrids["live_failed"]}, got
+    got = await g.get_virtual_record_holders([world.shared_vrid, "no-such-vrid"], world.org_id)
+    assert set(got) == {world.shared_vrid}, got
+    holders = {h["id"]: h["isDeleted"] for h in got[world.shared_vrid]}
+    assert holders == {world.ids["live_shared"]: False, world.ids["trashed_shared"]: True}, holders
+    assert await g.get_virtual_record_holders([world.shared_vrid], "another-org") == {}
 
 
 async def test_knowledge_hub_browse(world: _World) -> None:

@@ -13,7 +13,7 @@ from uuid import uuid4
 import pytest
 
 from app.agent_loop_lib.context.base import ContextBudget
-from app.agent_loop_lib.core.messages import AssistantMessage
+from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
 from app.agent_loop_lib.core.types import AgentTurn, Goal, ToolResult
 from app.agent_loop_lib.hooks.events import HookEvent
@@ -124,65 +124,128 @@ class TestOptInInstallers:
         assert len(kernel.on(HookEvent.PRE_MODEL)._stack) == 1
 
 
-def _deadline_ctx(
-    *, registered: tuple[str, ...] | None, granted: tuple[str, ...] = (), turn_index: int = 18,
-) -> ModelCallContext:
-    """`registered=None` builds a context with no run scope at all."""
-    scope = None
-    if registered is not None:
-        registry = SimpleNamespace(has=lambda name: name in registered)
-        run = RunScope(
-            identity=SimpleNamespace(), spec=SimpleNamespace(tool_names=list(granted)),
-            runtime=SimpleNamespace(tool_registry=registry), goal=Goal(description="g"),
-        )
-        scope = TurnScope(run=run, turn_index=turn_index)
-    return ModelCallContext(
-        messages=[], budget=ContextBudget(max_tokens=1000), scope=scope,
-        turn_index=turn_index, max_turns=20,
+class _Registry:
+    def __init__(self, *names: str) -> None:
+        self._names = set(names)
+
+    def has(self, name: str) -> bool:
+        return name in self._names
+
+
+def _scope_with(*, registered: tuple[str, ...], granted: list[str]) -> TurnScope:
+    run = RunScope(
+        identity=SimpleNamespace(),
+        spec=SimpleNamespace(tool_names=granted),
+        runtime=SimpleNamespace(tool_registry=_Registry(*registered)),
+        goal=Goal(description="g"),
+    )
+    return TurnScope(run=run, turn_index=13)
+
+
+_HISTORY_FOOTER = "\n\n[loop: step 13/15, stale_rounds=0]"
+
+
+def _history() -> list:
+    return [
+        UserMessage(content="question"),
+        ToolMessage(tool_call_id="c1", content="first result", step_footer=_HISTORY_FOOTER),
+        ToolMessage(tool_call_id="c2", content="second result", step_footer=_HISTORY_FOOTER),
+    ]
+
+
+async def _deadline_messages(
+    *, turn_index: int, max_turns: int, scope: TurnScope | None, messages: list | None = None,
+) -> list:
+    ctx = ModelCallContext(
+        messages=list(messages if messages is not None else _history()),
+        budget=ContextBudget(max_tokens=1000), scope=scope,
+        turn_index=turn_index, max_turns=max_turns,
     )
 
-
-async def _warning(ctx: ModelCallContext) -> str | None:
     async def _next() -> None:
         return None
 
     await warn_before_deadline()(ctx, _next)
-    return str(ctx.messages[-1].content) if ctx.messages else None
+    return ctx.messages
 
 
-class TestWarnBeforeDeadline:
-    """Told to call `task_complete` when it has no such tool, the model has
-    answered with a canned refusal; the warning names it only when the run
-    can call it."""
+def _note(messages: list) -> str:
+    return messages[-1].step_footer.removeprefix(_HISTORY_FOOTER)
 
-    @pytest.mark.asyncio
-    async def test_names_task_complete_when_it_is_registered_and_granted(self) -> None:
-        warning = await _warning(_deadline_ctx(registered=("task_complete",)))
-        assert warning is not None
-        assert "call task_complete immediately" in warning
 
-    @pytest.mark.asyncio
-    async def test_explicit_grant_must_include_task_complete(self) -> None:
-        granted = await _warning(_deadline_ctx(registered=("task_complete",), granted=("task_complete", "web_search")))
-        not_granted = await _warning(_deadline_ctx(registered=("task_complete",), granted=("web_search",)))
-        assert "task_complete" in granted
-        assert "task_complete" not in not_granted
+class TestDeadlineWarning:
+    """The wrap-up note two turns before the cap. It rides on the latest tool
+    result's loop footer: as an injected user message, "stop and answer now"
+    read as a prompt attack and Azure OpenAI's content filter rejected the
+    call, which the agent turned into a canned refusal."""
 
     @pytest.mark.asyncio
-    async def test_asks_for_a_plain_answer_when_task_complete_is_not_registered(self) -> None:
-        warning = await _warning(_deadline_ctx(registered=("sql__execute_sql_query",)))
-        assert warning is not None
-        assert "task_complete" not in warning
-        assert "Reply with your final answer" in warning
-        assert warning.startswith("[System: You have 2 turns remaining. Stop gathering information now.")
+    async def test_fires_once_two_turns_before_the_cap(self) -> None:
+        fired = [
+            turn for turn in range(15)
+            if _note(await _deadline_messages(turn_index=turn, max_turns=15, scope=None))
+        ]
+
+        assert fired == [13]
 
     @pytest.mark.asyncio
-    async def test_without_a_run_scope_it_names_no_tool(self) -> None:
-        warning = await _warning(_deadline_ctx(registered=None))
-        assert warning is not None
-        assert "task_complete" not in warning
+    async def test_it_adds_no_message_and_extends_only_the_latest_footer(self) -> None:
+        history = _history()
+
+        messages = await _deadline_messages(
+            turn_index=13, max_turns=15, scope=None, messages=history,
+        )
+
+        assert len(messages) == len(history)
+        assert not any(isinstance(m, UserMessage) for m in messages[1:])
+        assert messages[-2].step_footer == _HISTORY_FOOTER
+        assert messages[-1].step_footer.startswith(_HISTORY_FOOTER)
+        assert messages[-1].content == "second result"
 
     @pytest.mark.asyncio
-    async def test_fires_only_two_turns_before_the_limit(self) -> None:
-        for turn_index in (0, 17, 19, 20):
-            assert await _warning(_deadline_ctx(registered=(), turn_index=turn_index)) is None
+    async def test_the_stored_history_is_not_changed(self) -> None:
+        history = _history()
+
+        await _deadline_messages(turn_index=13, max_turns=15, scope=None, messages=history)
+
+        assert history[-1].step_footer == _HISTORY_FOOTER
+
+    @pytest.mark.asyncio
+    async def test_without_a_tool_result_to_carry_it_nothing_is_added(self) -> None:
+        messages = await _deadline_messages(
+            turn_index=13, max_turns=15, scope=None, messages=[UserMessage(content="q")],
+        )
+
+        assert [m.content for m in messages] == ["q"]
+
+    @pytest.mark.asyncio
+    async def test_an_agent_without_task_complete_is_asked_for_plain_text(self) -> None:
+        scope = _scope_with(registered=("knowledgegraph__search",), granted=[])
+
+        note = _note(await _deadline_messages(turn_index=13, max_turns=15, scope=scope))
+
+        assert "task_complete" not in note
+        assert "plain text, without calling tools" in note
+
+    @pytest.mark.asyncio
+    async def test_an_agent_with_task_complete_is_told_to_call_it(self) -> None:
+        scope = _scope_with(registered=("task_complete", "web_search"), granted=[])
+
+        note = _note(await _deadline_messages(turn_index=13, max_turns=15, scope=scope))
+
+        assert "call task_complete" in note
+
+    @pytest.mark.asyncio
+    async def test_a_registered_but_ungranted_tool_is_not_named(self) -> None:
+        scope = _scope_with(registered=("task_complete", "search"), granted=["search"])
+
+        note = _note(await _deadline_messages(turn_index=13, max_turns=15, scope=scope))
+
+        assert "task_complete" not in note
+
+    @pytest.mark.asyncio
+    async def test_the_note_is_loop_state_not_a_system_message(self) -> None:
+        note = _note(await _deadline_messages(turn_index=13, max_turns=15, scope=None))
+
+        assert note.startswith("\n[loop: ")
+        assert "System:" not in note

@@ -19,6 +19,7 @@ import type {
 import { FolderIcon } from '@/app/components/ui';
 import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
+import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
   runItemMenuOpenFromMenu,
@@ -298,7 +299,7 @@ function TableRow({
         case 'FAILED': baseLabel = 'Failed'; break;
         case 'FILE_TYPE_NOT_SUPPORTED': baseLabel = 'File Type Not Supported'; break;
         case 'NOT_STARTED': baseLabel = 'Not Started'; break;
-        case 'QUEUED': baseLabel = 'Queued'; showReason = false; break;
+        case 'QUEUED': baseLabel = 'Queued'; showReason = isRateLimitPause(item.indexingStatus, item.reason); break;
         case 'AUTO_INDEX_OFF': baseLabel = 'Manual Indexing'; break;
         case 'EMPTY': baseLabel = 'Empty'; break;
         default: baseLabel = 'Queued'; showReason = false;

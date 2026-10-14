@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from fastapi.responses import JSONResponse
 
@@ -631,3 +631,84 @@ class TestStreamingProbe:
         body = _body(await _run_llm_check(_llm_config(), model=model))
 
         assert body["capabilities"]["streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_follow_up_probes_run_together_after_the_text_probe() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    started: set[str] = set()
+    all_started = asyncio.Event()
+
+    def probe(name: str, result: object) -> Callable[..., Awaitable[object]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            started.add(name)
+            if len(started) == 3:
+                all_started.set()
+            # Run one at a time and this never returns.
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            return result
+
+        return run
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=probe("vision", None)),
+        patch(f"{MODULE}._check_tool_calling", new=probe("tools", True)),
+        patch(f"{MODULE}._check_streaming", new=probe("streaming", False)),
+    ):
+        result = await _check_one_llm(
+            {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+            "m",
+            MagicMock(),
+        )
+
+    assert result == {
+        "model": "m",
+        "sample": "ok",
+        "tool_calling": True,
+        "streaming": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_raising_probe_cancels_the_others_and_keeps_its_exception() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    cancelled: list[str] = []
+
+    def slow(name: str) -> Callable[..., Awaitable[None]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+
+        return run
+
+    async def vision_fails(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(0)
+        raise asyncio.TimeoutError
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=vision_fails),
+        patch(f"{MODULE}._check_tool_calling", new=slow("tools")),
+        patch(f"{MODULE}._check_streaming", new=slow("streaming")),
+    ):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                _check_one_llm(
+                    {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+                    "m",
+                    MagicMock(),
+                ),
+                timeout=5,
+            )
+
+    assert sorted(cancelled) == ["streaming", "tools"]

@@ -35,6 +35,7 @@ from app.exceptions.indexing_exceptions import (
 )
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
+from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
@@ -71,6 +72,7 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
+from app.utils.indexing_timing import stage
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -107,6 +109,14 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 # call into several *sequential* HTTP requests inside that one timeout.
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
+
+# One positive answer to "does the record still exist" covers the batches of
+# that record starting within this many seconds. Each check is a graph read on
+# the indexing loop (about 1 ms of driver CPU on Neo4j), and a large record
+# runs one per batch: 160 for 8,000 blocks remotely, 400 on local CPU. A record
+# deleted inside the window costs at most that much extra embedding; its
+# points are still removed by _cleanup_orphaned_embeddings_if_needed.
+_RECORD_PRESENCE_MAX_AGE_S = 2.0
 
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
@@ -400,6 +410,20 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _bounded_documents(text: str, metadata: dict) -> list[Document]:
+    """Documents for one piece of table or SQL text, split to the model's token
+    ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
+    and an over-long one is rejected by the embedding API only after the full
+    retry budget."""
+    ceiling = _embed_token_ceiling()
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [Document(page_content=text, metadata=metadata)]
+    return [
+        Document(page_content=piece, metadata={**metadata})
+        for piece in _split_to_token_ceiling(text, ceiling)
+    ]
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
@@ -419,7 +443,9 @@ def _build_text_documents(
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        block_text = block.data or ""
+        # Links stay in the stored block for citations; only the embedded
+        # text loses their targets.
+        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -523,6 +549,39 @@ def _storage_reconcile_enabled() -> bool:
         "true",
         "yes",
     )
+
+
+class _RecordPresence:
+    """Whether one record still exists, shared by the batches that index it.
+
+    A positive answer is reused for ``max_age_s`` from when its read began, and
+    batches that start while a read is in flight wait for it instead of issuing
+    their own. A negative answer is never reused, so each later batch asks again
+    exactly as it did before this was shared.
+    """
+
+    def __init__(
+        self, graph_provider: IGraphDBProvider, record_id: str, *, max_age_s: float
+    ) -> None:
+        self._graph_provider = graph_provider
+        self._record_id = record_id
+        self._max_age_s = max_age_s
+        self._lock = asyncio.Lock()
+        self._present_since: float | None = None
+
+    async def check(self) -> bool:
+        async with self._lock:
+            started = time.monotonic()
+            if (
+                self._present_since is not None
+                and started - self._present_since < self._max_age_s
+            ):
+                return True
+            record_doc = await self._graph_provider.get_document(
+                self._record_id, CollectionNames.RECORDS.value
+            )
+            self._present_since = started if record_doc is not None else None
+            return record_doc is not None
 
 
 class VectorStore(Transformer):
@@ -702,20 +761,29 @@ class VectorStore(Transformer):
 
         Prefers the description `ImageDescriber` wrote before the record was
         stored, since parser-captured captions are empty for most PDFs; falls
-        back to caption/footnote/annotation metadata (e.g. markdown/HTML alt
-        text), then to an empty string.
+        back to caption/footnote/annotation metadata, then to an empty string.
+        The author's alt text (``media_metadata.alt_text``) is added to either.
         """
         image_metadata = getattr(block, "image_metadata", None)
         if image_metadata is None:
             return ""
+        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
+        alt_text = alt_text.strip() if isinstance(alt_text, str) else ""
         described = getattr(image_metadata, "description", None)
         if isinstance(described, str) and described.strip():
-            return described.strip()
+            described = described.strip()
+            # The author's alt names what a generated description can only
+            # depict ("Revenue FY26" vs "a bar chart").
+            if alt_text and alt_text.lower() not in described.lower():
+                return f"{described} {alt_text}"
+            return described
         parts: List[str] = []
         for field in ("captions", "footnotes", "annotations"):
             values = getattr(image_metadata, field, None)
             if values:
                 parts.extend(v for v in values if v)
+        if alt_text and alt_text not in parts:
+            parts.append(alt_text)
         return " ".join(parts).strip()
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
@@ -749,19 +817,21 @@ class VectorStore(Transformer):
         # self.dense_embeddings is still None and the first use surfaces as an
         # AttributeError far from its cause, after the delete below has already
         # dropped the old summary block.
-        if self.dense_embeddings is None:
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to get embedding model instance",
-                    details={"error": str(e)},
-                ) from e
+        with stage("embed.setup"):
+            if self.dense_embeddings is None:
+                try:
+                    await self.get_embedding_model_instance()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to get embedding model instance",
+                        details={"error": str(e)},
+                    ) from e
 
-        collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
         tokens = await self._bind_membership(virtual_record_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)
@@ -1385,18 +1455,24 @@ class VectorStore(Transformer):
         ) from last_error
 
     async def _embed_and_upsert_documents(
-        self, documents: List[Document], record_id: str, collection_name: str
+        self,
+        documents: List[Document],
+        record_id: str,
+        collection_name: str,
+        presence: Optional["_RecordPresence"] = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
         Guard: aborts if the record was deleted mid-flight (race condition fix
-        restored from commit 839a29499).
+        restored from commit 839a29499). ``presence`` shares that check across
+        one record's batches.
         """
+        if presence is None:
+            presence = _RecordPresence(self.graph_provider, record_id, max_age_s=0.0)
         # Record-existence guard before upsert
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
-        if record_doc is None:
+        with stage("graph.read"):
+            present = await presence.check()
+        if not present:
             self.logger.warning(
                 f"Record {record_id} not found before upsert — skipping batch"
             )
@@ -1404,10 +1480,15 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
-        dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
+        with stage(
+            "embed.dense",
+            detail=f"batch of {len(texts)} texts / {sum(len(t) for t in texts)} chars",
+        ):
+            dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
         # Sparse embeddings (provider-dependent)
-        sparse_embeddings = await self._compute_sparse_embeddings(texts)
+        with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
+            sparse_embeddings = await self._compute_sparse_embeddings(texts)
 
         points: List[VectorPoint] = [
             VectorPoint(
@@ -1418,9 +1499,10 @@ class VectorStore(Transformer):
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
-        await self.vector_db_service.upsert_points(
-            collection_name=collection_name, points=points
-        )
+        with stage("vector.upsert", detail=f"{len(points)} points"):
+            await self.vector_db_service.upsert_points(
+                collection_name=collection_name, points=points
+            )
 
     async def _process_document_chunks(
         self,
@@ -1438,9 +1520,15 @@ class VectorStore(Transformer):
             else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
         )
 
+        presence = _RecordPresence(
+            self.graph_provider, record_id, max_age_s=_RECORD_PRESENCE_MAX_AGE_S
+        )
+
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
-                await self._embed_and_upsert_documents(batch, record_id, collection_name)
+                await self._embed_and_upsert_documents(
+                    batch, record_id, collection_name, presence
+                )
                 return len(batch)
             except Exception as e:
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
@@ -1500,7 +1588,8 @@ class VectorStore(Transformer):
                 image_chunks.append(chunk)
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_embeddings(virtual_record_id, collection_name)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -1508,8 +1597,10 @@ class VectorStore(Transformer):
 
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
-            points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
-            await self._store_image_points(points, collection_name)
+            with stage("embed.image", detail=f"{len(image_chunks)} images"):
+                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+            with stage("vector.upsert", detail=f"{len(points)} image points"):
+                await self._store_image_points(points, collection_name)
 
         if langchain_docs:
             try:
@@ -1537,8 +1628,9 @@ class VectorStore(Transformer):
         record: Optional["Record"] = None,
     ) -> bool | None:
         try:
-            is_multimodal_embedding = await self.get_embedding_model_instance()
-            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            with stage("embed.setup"):
+                is_multimodal_embedding = await self.get_embedding_model_instance()
+                collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
                 "Failed to get embedding model instance",
@@ -1636,12 +1728,13 @@ class VectorStore(Transformer):
             # ── Text blocks ──
             if text_blocks:
                 try:
-                    text_documents = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            _process_text_blocks, text_blocks, virtual_record_id, org_id
-                        ),
-                        timeout=_TEXT_PROCESSING_TIMEOUT_S,
-                    )
+                    with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
+                        text_documents = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                            ),
+                            timeout=_TEXT_PROCESSING_TIMEOUT_S,
+                        )
                     documents_to_embed.extend(text_documents)
                     self.logger.debug("✅ Added text documents for embedding")
                 except asyncio.TimeoutError:
@@ -1723,6 +1816,7 @@ class VectorStore(Transformer):
                     sql_base_metadata = {
                         "virtualRecordId": virtual_record_id,
                         "blockId": block_group.id,
+                        "blockGroupIndex": block_group.index,
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
@@ -1737,12 +1831,9 @@ class VectorStore(Transformer):
                             if table_summary:
                                 parts.append(f"/* Table Description:\n{table_summary}\n*/")
                             parts.append(ddl)
-                            documents_to_embed.append(
-                                Document(
-                                    page_content="\n\n".join(parts),
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                "\n\n".join(parts), sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
@@ -1777,12 +1868,9 @@ class VectorStore(Transformer):
 
                         view_context = "\n".join(view_context_parts)
                         if len(view_context.strip()) > len(f"-- View: {fqn}"):
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=view_context,
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                view_context, sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL VIEW for embedding: {fqn}"
                             )
@@ -1794,21 +1882,20 @@ class VectorStore(Transformer):
                 elif block_group_type == "table":
                     table_data = block_group.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block_group.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block_group.id,
+                                    "blockGroupIndex": block_group.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    "isBlockGroup": True,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
 
             # ── SQL row blocks ──
             sql_rows_embedded = 0
@@ -1816,19 +1903,18 @@ class VectorStore(Transformer):
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
-                    documents_to_embed.append(
-                        Document(
-                            page_content=row_text,
-                            metadata={
-                                "virtualRecordId": virtual_record_id,
-                                "blockId": block.id,
-                                "orgId": org_id,
-                                "isBlock": True,
-                                "isBlockGroup": False,
-                                "blockType": BlockType.TABLE_ROW.value,
-                            },
-                        )
-                    )
+                    documents_to_embed.extend(_bounded_documents(
+                        row_text,
+                        {
+                            "virtualRecordId": virtual_record_id,
+                            "blockId": block.id,
+                            "blockIndex": block.index,
+                            "orgId": org_id,
+                            "isBlock": True,
+                            "isBlockGroup": False,
+                            "blockType": BlockType.TABLE_ROW.value,
+                        },
+                    ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
                 self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
@@ -1843,39 +1929,41 @@ class VectorStore(Transformer):
                 if block_type == "table":
                     table_data = block.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    # A block, not a group: readers index
+                                    # block_groups with a group point's index.
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
-                        row_text = table_data.get("row_natural_language_text", "")
+                        row_text = anchor_text_only(
+                            table_data.get("row_natural_language_text", "")
+                        )
                         if row_text:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=row_text,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE_ROW.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                row_text,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": True,
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE_ROW.value,
+                                },
+                            ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
@@ -1910,17 +1998,19 @@ class VectorStore(Transformer):
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
-                await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                with stage("vector.delete"):
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 
-            await self._cleanup_orphaned_embeddings_if_needed(
-                record_id, virtual_record_id, org_id, record
-            )
-            await self._resync_membership_after_write(virtual_record_id, record_id)
+            with stage("vector.cleanup"):
+                await self._cleanup_orphaned_embeddings_if_needed(
+                    record_id, virtual_record_id, org_id, record
+                )
+                await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
         except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):

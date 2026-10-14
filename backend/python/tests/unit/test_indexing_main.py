@@ -1490,7 +1490,10 @@ class TestIndexingHealthCheck:
             result = await health_check(_make_health_request(governor=mock_governor))
 
         assert result.status_code == 200
-        assert json.loads(result.body) == {
+        body = json.loads(result.body)
+        # Slot stats are counters only, so nothing an exception says can reach them.
+        assert all(isinstance(v, (int, float)) for v in body.pop("indexing_llm").values())
+        assert body == {
             "status": "healthy",
             "timestamp": 1234567890,
             "resource_governor": {"error": "unavailable"},
@@ -2062,19 +2065,29 @@ def _orphan_graph(mappings, records_by_vrid, trashed_by_vrid=None):
         return state["rows"][skip : skip + limit]
 
     graph.get_documents_paginated = AsyncMock(side_effect=_paged)
-    async def _records(vrid, *_args, raise_on_error=False, visibility=RecordVisibility.LIVE, **_kwargs):
-        # Asserted, not just accepted: this stub cannot fail, so without the
-        # assertion every test here would still pass if the sweep went back to
-        # a read that swallows -- the bug they exist to hold closed.
-        assert raise_on_error is True
-        # As the providers answer: LIVE and DELETED are separate sets.
-        if visibility is RecordVisibility.DELETED:
-            return list((trashed_by_vrid or {}).get(vrid, []))
-        assert visibility is RecordVisibility.LIVE
-        return list(records_by_vrid.get(vrid, []))
 
-    graph.get_records_by_virtual_record_id = AsyncMock(side_effect=_records)
+    async def _in_use(vrids, *, visibility=RecordVisibility.LIVE, transaction=None):
+        # As the providers answer: LIVE and DELETED are separate sets, and a
+        # failure raises rather than answering empty.
+        held = (trashed_by_vrid or {}) if visibility is RecordVisibility.DELETED else records_by_vrid
+        assert visibility in (RecordVisibility.LIVE, RecordVisibility.DELETED)
+        return {vrid for vrid in vrids if held.get(vrid)}
+
+    graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=_in_use)
+    # One read per page: a per-VRID read here is the N+1 the sweep left behind.
+    graph.get_records_by_virtual_record_id = AsyncMock(
+        side_effect=AssertionError("the sweep reads a page of VRIDs at once")
+    )
     return graph
+
+
+def _scanned_vrids(graph) -> list[str]:
+    return [
+        vrid
+        for c in graph.get_virtual_record_ids_in_use.await_args_list
+        if c.kwargs.get("visibility", RecordVisibility.LIVE) is RecordVisibility.LIVE
+        for vrid in c.args[0]
+    ]
 
 
 class TestSweepOrphanedVirtualRecordMappings:
@@ -2228,18 +2241,61 @@ class TestSweepOrphanedVirtualRecordMappings:
         )
 
         scanned = m.ORPHAN_SCAN_MAX_PAGES_PER_TICK * 5
-        assert graph.get_records_by_virtual_record_id.await_count == scanned
+        assert _scanned_vrids(graph) == [f"vr{i}" for i in range(scanned)]
+        assert graph.get_virtual_record_ids_in_use.await_count == m.ORPHAN_SCAN_MAX_PAGES_PER_TICK
         assert m._orphan_sweep_cursor == scanned
 
-        graph.get_records_by_virtual_record_id.reset_mock()
+        graph.get_virtual_record_ids_in_use.reset_mock()
         await m._sweep_orphaned_virtual_record_mappings(
             graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=5
         )
 
-        resumed = [
-            c.args[0] for c in graph.get_records_by_virtual_record_id.await_args_list
-        ]
-        assert resumed[0] == f"vr{scanned}"
+        assert _scanned_vrids(graph)[0] == f"vr{scanned}"
+
+    @pytest.mark.asyncio
+    async def test_a_page_is_checked_in_one_read_per_visibility(self) -> None:
+        """One graph read per page for live holders and one for trashed ones,
+        whatever the page size: on Neo4j each read is a millisecond of the
+        indexing loop, and a per-mapping read cost a full page of them."""
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        rows = [{"_key": f"vr{i}"} for i in range(50)]
+        graph = _orphan_graph(
+            rows,
+            records_by_vrid={f"vr{i}": ["r"] for i in range(0, 50, 2)},
+            trashed_by_vrid={"vr1": ["in-trash"]},
+        )
+        pipeline = AsyncMock()
+        pipeline.rewrite_or_delete_vector_membership = AsyncMock(return_value="deleted")
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+        )
+
+        assert graph.get_virtual_record_ids_in_use.await_count == 2
+        live_call, trash_call = graph.get_virtual_record_ids_in_use.await_args_list
+        assert live_call.args[0] == [f"vr{i}" for i in range(50)]
+        assert trash_call.args[0] == [f"vr{i}" for i in range(1, 50, 2)]
+        assert trash_call.kwargs["visibility"] is RecordVisibility.DELETED
+        assert swept == 24
+        cleaned = [c.args[0] for c in pipeline.rewrite_or_delete_vector_membership.await_args_list]
+        assert cleaned == [f"vr{i}" for i in range(3, 50, 2)]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_cleans_up_nothing(self) -> None:
+        """An unanswered read is not "nothing references these"."""
+        from app.indexing_main import _sweep_orphaned_virtual_record_mappings
+
+        graph = _orphan_graph([{"_key": "vr-a"}, {"_key": "vr-b"}], records_by_vrid={})
+        graph.get_virtual_record_ids_in_use = AsyncMock(side_effect=RuntimeError("neo4j down"))
+        pipeline = AsyncMock()
+
+        swept = await _sweep_orphaned_virtual_record_mappings(
+            graph_provider=graph, pipeline=pipeline, logger=MagicMock(), page_size=100,
+        )
+
+        assert swept == 0
+        pipeline.rewrite_or_delete_vector_membership.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_cursor_wraps_at_the_end_of_the_collection(self):
@@ -3006,6 +3062,102 @@ class TestRepublishBackOff:
         producer = AsyncMock()
 
         with _stranded_env(2 * 24 * 3600.0):
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+
+class TestRateLimitedRecordsAreSentWhenTheirWaitEnds:
+    """A record the handler put back in line because its source rate-limited
+    it. Its event was acknowledged, so the sweep sends it once its
+    ``retryNotBefore`` has passed: not before, not on the stranded rules."""
+
+    @staticmethod
+    def _waiting(now: int, **overrides: object) -> dict:
+        fields = {
+            "queuedAtTimestamp": now - 30 * 60_000,
+            "retryNotBefore": now - 1000,
+            "rateLimitedSince": now - 30 * 60_000,
+            **overrides,
+        }
+        return TestRepublishStrandedRecords._old_record(**fields)
+
+    @pytest.mark.asyncio
+    async def test_sent_once_due_though_younger_than_the_minimum_age(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert producer.send_event.await_args.kwargs["payload"]["recordId"] == "r1"
+        claim = graph.update_node.await_args_list[0].args[2]
+        assert set(claim) == {"lastRepublishedAt"}, "a rate-limit wait earns no stranded back-off"
+        assert claim["lastRepublishedAt"] >= now
+
+    @pytest.mark.asyncio
+    async def test_not_sent_before_its_time(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, retryNotBefore=now + HOUR_MS, queuedAtTimestamp=1)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+        logger = MagicMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, logger=logger) == 0
+
+        producer.send_event.assert_not_awaited()
+        assert any("waiting out their source's rate limit" in c.args[0] for c in logger.info.call_args_list)
+
+    @pytest.mark.asyncio
+    async def test_neither_the_queue_nor_the_duplicate_rule_holds_it_back(self) -> None:
+        """Its own event is gone, and an earlier index left it an md5 and a vrid."""
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, md5Checksum="abc", virtualRecordId="vr-1", version=1)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+        backlog = _lanes({"lane": now - 5 * HOUR_MS}, lambda payload: {"lane"})
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer, read_backlog=backlog) == 1
+
+        assert producer.send_event.await_args.kwargs["event_type"] == EventTypes.REINDEX_RECORD.value
+        backlog.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_connectors_record_is_left_to_its_own_sweep(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids=set())
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_send_puts_the_claim_back_for_the_next_pass(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [self._waiting(now)]}, active_ids={"live"})
+        graph.update_node = AsyncMock(return_value=True)
+        producer = AsyncMock()
+        producer.send_event = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 0
+
+        writes = [c.args[2] for c in graph.update_node.await_args_list]
+        assert writes[1] == {"lastRepublishedAt": None}
+
+    @pytest.mark.asyncio
+    async def test_once_sent_it_is_an_ordinary_waiting_record(self) -> None:
+        now = get_epoch_timestamp_in_ms()
+        row = self._waiting(now, lastRepublishedAt=now - 500)
+        graph = _sweep_graph({ProgressStatus.QUEUED.value: [row]}, active_ids={"live"})
+        producer = AsyncMock()
+
+        with _stranded_env():
             assert await _run_stranded(graph, producer) == 0
 
         producer.send_event.assert_not_awaited()

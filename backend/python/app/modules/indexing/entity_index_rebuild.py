@@ -47,6 +47,7 @@ from app.modules.indexing.vector_membership_backfill import (
 )
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.utils import MessagingUtils
+from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -76,6 +77,9 @@ MAX_TICK_ERRORS = 10
 STARTUP_GRACE_SECONDS = 60.0
 # Between ticks that did work, and while idle or not leader.
 BUSY_INTERVAL_SECONDS = 2.0
+# Longest extra wait after a tick while indexing is busy (see LoopShare); the
+# leader lease outlasts it many times over.
+MAX_TICK_PAUSE_SECONDS = 60.0
 IDLE_INTERVAL_SECONDS = 60.0
 # While waiting between ticks, how often to check for an embedding model
 # switch. The check is a cache read; a switch ends the wait, so the leader's
@@ -652,7 +656,7 @@ def _key_of(doc: dict[str, Any]) -> str | None:
     return key if isinstance(key, str) and key else None
 
 
-async def _resolve_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
+async def resolve_entity_store(app_container: Any) -> EntityVectorStore | None:  # noqa: ANN401
     getter = getattr(app_container, "entity_vector_store", None)
     if getter is None:
         return None
@@ -690,6 +694,10 @@ async def run_entity_index_rebuild_loop(
     lock: VectorMembershipBackfillLeaderLock | None = None
     rebuilder: EntityIndexRebuilder | None = None
     backoff = 1
+    # Runs on the indexing worker loop on Neo4j: a page embeds and writes up
+    # to 200 entities, and pages came every two seconds whatever else the loop
+    # had to do.
+    pacer = LoopShare(max_pause_seconds=MAX_TICK_PAUSE_SECONDS)
     try:
         while True:
             interval = IDLE_INTERVAL_SECONDS
@@ -701,7 +709,7 @@ async def run_entity_index_rebuild_loop(
                     )
                     rebuilder = None
                 if rebuilder is None:
-                    store = await _resolve_store(app_container)
+                    store = await resolve_entity_store(app_container)
                     if store is not None:
                         rebuilder = EntityIndexRebuilder(
                             logger=logger, graph_provider=graph_provider, store=store, lock=lock,
@@ -710,10 +718,12 @@ async def run_entity_index_rebuild_loop(
                 if rebuilder is None:
                     logger.warning("entity_index_rebuild: entity store unavailable; skipping tick")
                 else:
+                    pacer.begin()
                     outcome = await rebuilder.tick()
                     backoff = 1
                     if outcome not in ("idle", "not_leader"):
                         interval = BUSY_INTERVAL_SECONDS
+                        await pacer.pause()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -737,5 +747,6 @@ __all__ = [
     "EntityIndexState",
     "entity_index_marker",
     "fingerprint_of",
+    "resolve_entity_store",
     "run_entity_index_rebuild_loop",
 ]

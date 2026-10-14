@@ -15,6 +15,7 @@ from app.config.constants.arangodb import (
     EventTypes,
     ExtensionTypes,
     MimeTypes,
+    OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
@@ -42,6 +43,13 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
+from app.modules.indexing.rate_limit_deferral import (
+    cleared_deferral,
+    deferral_updates,
+    is_deferred,
+    plan_deferral,
+    rate_limit_retry_after,
+)
 from app.modules.transformers.transformer import TransformContext
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -54,6 +62,7 @@ from app.services.messaging.config import (
     PipelineEventData,
     StreamMessage,
     Topic,
+    messaging_env,
 )
 from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
@@ -70,6 +79,7 @@ from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.indexing_timing import stage
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
@@ -83,6 +93,8 @@ from app.utils.user_errors import (
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
     duplicate_failed,
+    rate_limited_gave_up,
+    rate_limited_will_retry,
     to_user_reason,
     unsupported_file_type,
 )
@@ -611,6 +623,86 @@ class RecordEventHandler(BaseEventService):
             except Exception as e:
                 self.logger.warning(f"Failed to update queued duplicates status: {str(e)}")
 
+    async def _defer_rate_limited_record(
+        self,
+        exc: BaseException,
+        *,
+        record_id: str,
+        record: dict,
+        source: str | None,
+    ) -> bool:
+        """Put the record back in line when its source rate-limited the fetch.
+
+        True when the record was handled: left QUEUED until the source's
+        Retry-After for the stranded sweep to re-send, or, once it has waited
+        longer than allowed, FAILED. False leaves ``exc`` to the ordinary retry
+        path. See ``app/modules/indexing/rate_limit_deferral.py``.
+        """
+        retry_after = rate_limit_retry_after(exc)
+        if retry_after is None:
+            return False
+        max_total = messaging_env.rate_limit_defer_max_seconds
+        # The stranded sweep is what sends a deferred record again; with it off
+        # (or a record it does not look at) a deferral would never end.
+        if (
+            max_total <= 0
+            or messaging_env.stranded_record_republish_after_seconds <= 0
+            or record.get("origin") != OriginTypes.CONNECTOR.value
+            or not record.get("connectorId")
+        ):
+            return False
+
+        now = get_epoch_timestamp_in_ms()
+        plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total)
+        graph = self.event_processor.graph_provider
+        try:
+            if plan.give_up:
+                reason = rate_limited_gave_up(source, plan.not_before_ms, now, max_total / 3600)
+                if await self.__update_document_status(
+                    record_id=record_id,
+                    indexing_status=ProgressStatus.FAILED.value,
+                    extraction_status=ProgressStatus.FAILED.value,
+                    reason=reason,
+                ) is None:
+                    return False
+                self.logger.warning(
+                    "Record %s failed: its source has rate-limited it since %s and "
+                    "would not serve it before %s",
+                    record_id, plan.since_ms, plan.not_before_ms,
+                )
+                await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
+                return True
+
+            reason = rate_limited_will_retry(source, plan.not_before_ms, now)
+            if not await graph.update_node(
+                record_id,
+                CollectionNames.RECORDS.value,
+                deferral_updates(plan, reason=reason, record=record, now_ms=now),
+            ):
+                return False
+        except Exception as write_exc:
+            self.logger.warning(
+                "Could not put rate-limited record %s back in line, so it takes the "
+                "ordinary retry path: %s", record_id, write_exc,
+            )
+            return False
+        self.logger.info(
+            "Record %s is rate-limited by its source for %.0fs; it waits QUEUED "
+            "and is sent again after %s",
+            record_id, retry_after, plan.not_before_ms,
+        )
+        return True
+
+    async def _end_rate_limit_wait(self, record_id: str) -> None:
+        """The source served the record, so its run of rate-limit waits is over."""
+        try:
+            await self.event_processor.graph_provider.update_node(
+                record_id, CollectionNames.RECORDS.value, cleared_deferral()
+            )
+        except Exception as exc:
+            # Left set, the fields cost at most one spare re-send by the sweep.
+            self.logger.warning("Could not clear the rate-limit wait of record %s: %s", record_id, exc)
+
     @staticmethod
     def _blob_has_blocks(blob: dict) -> bool:
         containers = blob.get("block_containers") if isinstance(blob, dict) else None
@@ -872,6 +964,9 @@ class RecordEventHandler(BaseEventService):
 
         try:
             await sink.index(ctx)
+            # The stored extraction rebuilds the record's named entities and their
+            # vector points too, so a re-embed never drops them or calls a model.
+            await sink.reproject_named_entities(ctx)
         except Exception:
             self.logger.exception(
                 "Vector-only reindex failed for record %s", record_id
@@ -911,6 +1006,7 @@ class RecordEventHandler(BaseEventService):
         cancelled = False
         record = None
         resuming_enrichment = False
+        source_name: str | None = None
         try:
             if not event_type:
                 # A message with no event type is a producer bug: acking it
@@ -1158,7 +1254,7 @@ class RecordEventHandler(BaseEventService):
                 # event being published and consumed. There is nothing to index
                 # and nothing to fail, so drain the message like the delete path
                 # does instead of retrying it three times.
-                self.logger.error(f"❌ Record {record_id} not found in database")
+                self.logger.warning(f"Record {record_id} not found in database; dropping its event")
                 yield PipelineEvent(
                     event=IndexingEvent.PARSING_COMPLETE,
                     data=PipelineEventData(record_id=record_id),
@@ -1246,6 +1342,7 @@ class RecordEventHandler(BaseEventService):
                         raise_on_error=True,
                     )
                     state = connector_state(connector_instance)
+                    source_name = (connector_instance or {}).get("name") or None
                     if resuming_enrichment and state is not ConnectorState.ACTIVE:
                         # Stays searchable: only the enrichment is given up. Its
                         # end lets the finally block promote the QUEUED copies.
@@ -1513,9 +1610,10 @@ class RecordEventHandler(BaseEventService):
             if payload and payload.get("signedUrl"):
                 self.logger.info(f"🔍 Signed URL received for record {record_id}")
                 try:
-                    response = await self._download_from_signed_url(
-                        signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
-                    )
+                    with stage("download"):
+                        response = await self._download_from_signed_url(
+                            signed_url=payload["signedUrl"], record_id=record_id, doc=doc,
+                        )
                     if not response:
                         raise Exception("Failed to download file from signed URL")
                 except Exception as e:
@@ -1559,9 +1657,26 @@ class RecordEventHandler(BaseEventService):
                     endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
                     connector_url = endpoints.get("connectors").get("endpoint", DefaultEndpoints.CONNECTOR_ENDPOINT.value)
 
-                    response = await make_api_call(
-                        route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
-                    )
+                    try:
+                        with stage("download"):
+                            response = await make_api_call(
+                                route=f"{connector_url}/api/v1/internal/stream/record/{record_id}", token=token,
+                            )
+                    except Exception as fetch_exc:
+                        if resuming_enrichment or not await self._defer_rate_limited_record(
+                            fetch_exc, record_id=record_id, record=record, source=source_name
+                        ):
+                            raise
+                        response = None
+                    if response is None:
+                        # Handled: the record waits for the stranded sweep, or
+                        # was failed for good. Neither leaves copies to release.
+                        record = None
+                        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
+                        return
+                    if is_deferred(record):
+                        await self._end_rate_limit_wait(record_id)
 
                     event_data_for_processor = {
                         "eventType": event_type,
@@ -1822,6 +1937,9 @@ class RecordEventHandler(BaseEventService):
 
             if reason:
                 updates["reason"] = reason
+            # Each of these statuses ends a record's wait on a rate limit.
+            if is_deferred(record):
+                updates.update(cleared_deferral())
 
             success = await self.event_processor.graph_provider.update_node(
                 record_id,

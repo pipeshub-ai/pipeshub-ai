@@ -3038,6 +3038,39 @@ class TestStreamRecordInternal:
             )
         assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
+    async def test_the_connector_is_told_the_stream_is_for_indexing(self) -> None:
+        """A connector may treat indexing's bulk fetches differently from a
+        person opening a file (GitHub keeps its quota reserve for the former)."""
+        from app.connectors.api.router import stream_record_internal
+        from app.connectors.core.base.connector.stream_purpose import (
+            is_streaming_for_indexing,
+        )
+
+        seen: list[bool] = []
+
+        async def stream_record(record: object, user_id: str | None = None) -> Response:
+            seen.append(is_streaming_for_indexing())
+            return Response(content=b"x")
+
+        connector_obj = MagicMock()
+        connector_obj.get_app_name = MagicMock(return_value=Connectors.GOOGLE_DRIVE)
+        connector_obj.stream_record = AsyncMock(side_effect=stream_record)
+        gp = AsyncMock()
+        gp.get_record_by_id = AsyncMock(return_value=_mock_record(org_id="org-1"))
+        gp.get_document = AsyncMock(side_effect=[{"_key": "org-1"}, {"_key": "conn-1", "isActive": True}])
+        request = _mock_request(container=MagicMock())
+        request.app.state.connector_registry = MagicMock()
+
+        with patch(
+            "app.connectors.api.router._get_streaming_connector",
+            new_callable=AsyncMock,
+            return_value=connector_obj,
+        ):
+            await stream_record_internal(request, "rec-1", gp, AsyncMock(), claims=self._CLAIMS)
+
+        assert seen == [True]
+        assert is_streaming_for_indexing() is False
+
 
 # ============================================================================
 # download_file

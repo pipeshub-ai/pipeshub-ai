@@ -34,11 +34,13 @@ import logging
 import os
 import uuid
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app import indexing_main
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -54,7 +56,9 @@ from app.models.entities import RecordGroupType, RecordType, TicketRecord
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 from app.services.messaging.config import RedisStreamsConfig
+from app.services.messaging.kafka.handlers.record import RecordEventHandler
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
+from app.utils.api_call import ApiCallError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -107,18 +111,20 @@ class _Env:
         entries = await self.redis.xrange(self.stream)
         return sum(1 for _entry_id, fields in entries if fields.get("key") == record_id)
 
-    async def sweep(self) -> int:
+    async def sweep(self, *, at_ms: int | None = None) -> int:
         async def run_coordination(coro: object) -> object:
             return await coro
 
-        return await _republish_stranded_records(
-            graph_provider=self.graph,
-            logger=logger,
-            producer=self.producer,
-            run_coordination=run_coordination,
-            concurrency_manager=None,
-            page_size=500,
-        )
+        clock = (lambda: at_ms) if at_ms is not None else get_epoch_timestamp_in_ms
+        with patch.object(indexing_main, "get_epoch_timestamp_in_ms", clock):
+            return await _republish_stranded_records(
+                graph_provider=self.graph,
+                logger=logger,
+                producer=self.producer,
+                run_coordination=run_coordination,
+                concurrency_manager=None,
+                page_size=500,
+            )
 
     async def stored(self, record_id: str) -> dict:
         doc = await self.graph.get_document(record_id, CollectionNames.RECORDS.value)
@@ -334,3 +340,70 @@ async def test_a_record_on_default_timestamps_is_not_aged_to_process_start(env: 
     stored = await env.stored(issue.id)
     assert stored["createdAtTimestamp"] >= before
     assert stored["updatedAtTimestamp"] >= before
+
+
+def _record_handler(graph: IGraphDBProvider) -> RecordEventHandler:
+    return RecordEventHandler(
+        logger=logger,
+        config_service=MagicMock(),
+        event_processor=SimpleNamespace(graph_provider=graph),
+    )
+
+
+def _rate_limited(retry_after_seconds: int) -> ApiCallError:
+    return ApiCallError(
+        "API call failed with status 429: Too many requests to Jira.",
+        status_code=429,
+        retry_after_seconds=retry_after_seconds,
+    )
+
+
+async def test_a_rate_limited_record_waits_and_is_sent_once_its_time_has_passed(env: _Env) -> None:
+    """The handler's write is accepted by the store (Arango's schema is strict),
+    and the sweep reads it back to send the record at the right time only."""
+    issue = _jira_issue(env.connector_id)
+    await env.processor.on_new_records([(issue, [])])
+    synced = await env.events_for(issue.id)
+
+    assert await _record_handler(env.graph)._defer_rate_limited_record(
+        _rate_limited(1800), record_id=issue.id, record=await env.stored(issue.id), source="Jira"
+    )
+
+    stored = await env.stored(issue.id)
+    assert stored["indexingStatus"] == ProgressStatus.QUEUED.value
+    assert stored["reason"].startswith("Jira is limiting how often PipesHub can read from it")
+    not_before = stored["retryNotBefore"]
+    assert not_before >= get_epoch_timestamp_in_ms() + 1790 * 1000
+    assert stored["rateLimitedSince"] <= get_epoch_timestamp_in_ms()
+
+    await env.sweep()
+    await env.sweep(at_ms=not_before - 1000)
+    assert await env.events_for(issue.id) == synced, "not before its time"
+
+    await env.sweep(at_ms=not_before + 60_000)
+    assert await env.events_for(issue.id) == synced + 1
+    assert (await env.stored(issue.id))["lastRepublishedAt"] == not_before + 60_000
+
+    await env.sweep(at_ms=not_before + 120_000)
+    assert await env.events_for(issue.id) == synced + 1, "and only once"
+
+
+async def test_a_record_refused_for_a_day_ends_failed_with_its_wait_cleared(env: _Env) -> None:
+    issue = _jira_issue(env.connector_id)
+    await env.processor.on_new_records([(issue, [])])
+    now = get_epoch_timestamp_in_ms()
+    await env.graph.update_node(
+        issue.id,
+        CollectionNames.RECORDS.value,
+        {"rateLimitedSince": now - 23 * HOUR_MS - 45 * 60 * 1000, "retryNotBefore": now - 60_000},
+    )
+
+    assert await _record_handler(env.graph)._defer_rate_limited_record(
+        _rate_limited(1800), record_id=issue.id, record=await env.stored(issue.id), source="Jira"
+    )
+
+    stored = await env.stored(issue.id)
+    assert stored["indexingStatus"] == ProgressStatus.FAILED.value
+    assert "kept limiting" in stored["reason"]
+    assert stored.get("retryNotBefore") is None
+    assert stored.get("rateLimitedSince") is None

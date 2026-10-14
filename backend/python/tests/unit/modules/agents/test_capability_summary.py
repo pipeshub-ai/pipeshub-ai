@@ -730,3 +730,66 @@ class TestBuildCapabilitySummary:
             result = build_capability_summary({})
         assert "Slack" in result and "Jira" in result
 
+
+class TestUnavailableMcpServers:
+    """The model is told why each attached MCP server can't be used, and what fixes it."""
+
+    @staticmethod
+    def _summary(*failures: dict) -> str:
+        return build_capability_summary({"mcp_tool_load_failures": list(failures)})
+
+    def test_each_reason_says_what_fixes_it(self) -> None:
+        text = self._summary(
+            {"instanceId": "i1", "name": "GitHub", "reason": "auth_expired"},
+            {"instanceId": "i2", "name": "Search", "reason": "unauthorized"},
+            {"instanceId": "i3", "name": "Local tools", "reason": "blocked"},
+            {"instanceId": "i4", "name": "Jira", "reason": "timeout"},
+            {"instanceId": "i5", "name": "Docs", "reason": "unreachable"},
+        )
+
+        assert "### Unavailable MCP Servers" in text
+        assert "- GitHub: the user's sign-in has expired; they need to reconnect it" in text
+        assert "- Search: the server rejected the stored credentials" in text
+        assert "- Local tools: this deployment's security policy blocks it" in text
+        assert "- Jira: it didn't respond in time" in text
+        assert "- Docs: it couldn't be reached" in text
+        assert "never say the capability doesn't exist" in text
+
+    def test_a_server_that_needs_more_permission(self) -> None:
+        here = self._summary({"instanceId": "i1", "name": "Drive", "reason": "needs_permission", "signInHere": True})
+        elsewhere = self._summary({"instanceId": "i1", "name": "Drive", "reason": "needs_permission"})
+
+        assert "- Drive: it needs more permission than the user's sign-in grants; they can sign in again with the button shown under this answer" in here
+        assert "- Drive: it needs more permission than the user's sign-in grants; reconnecting it asks for that" in elsewhere
+
+    def test_an_unknown_reason_still_names_the_server(self) -> None:
+        text = self._summary({"instanceId": "i1", "reason": "something_new"})
+
+        assert "- i1: it failed to load this request" in text
+
+    def test_nothing_failed_says_nothing(self) -> None:
+        assert "Unavailable MCP Servers" not in build_capability_summary({})
+
+
+class TestMcpServerNotes:
+    def test_each_servers_notes_are_labelled_as_the_servers(self) -> None:
+        text = build_capability_summary({
+            "mcp_server_instructions": [
+                {"instanceId": "i1", "name": "GitHub", "instructions": "Use search_code first.\nNever force-push."},
+            ],
+        })
+
+        assert "### Notes From MCP Servers" in text
+        assert "not from the user or PipesHub" in text
+        assert "- GitHub: Use search_code first.\n  Never force-push." in text
+
+    def test_long_notes_are_capped(self) -> None:
+        from app.modules.agents.capability_summary import MAX_MCP_INSTRUCTIONS_CHARS
+
+        text = build_capability_summary({
+            "mcp_server_instructions": [{"instanceId": "i1", "name": "Big", "instructions": "x" * 10_000}],
+        })
+
+        line = next(line for line in text.splitlines() if line.startswith("- Big: "))
+        assert len(line) <= len("- Big: ") + MAX_MCP_INSTRUCTIONS_CHARS + 2
+        assert line.endswith(" …")

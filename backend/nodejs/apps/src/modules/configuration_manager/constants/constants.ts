@@ -31,6 +31,28 @@ export const googleWorkspaceServiceTypes = {
   GOOGLE_MAIL: 'gmail',
 };
 
+/**
+ * KV buckets under `/services/aiModels`. Order is part of the invalid-type
+ * error string the admin API returns.
+ */
+export const AI_MODEL_TYPES = [
+  'llm',
+  'embedding',
+  'ocr',
+  'slm',
+  'reasoning',
+  'multiModal',
+  'imageGeneration',
+  'tts',
+  'stt',
+] as const;
+
+export type AIModelType = (typeof AI_MODEL_TYPES)[number];
+
+export function isAIModelType(value: string): value is AIModelType {
+  return (AI_MODEL_TYPES as readonly string[]).includes(value);
+}
+
 export const aiModelsTypes = {
   OCR: 'ocr',
   EMBEDDING: 'embedding',
@@ -39,7 +61,9 @@ export const aiModelsTypes = {
   LLM: 'llm',
   MULTI_MODAL: 'multiModal',
   IMAGE_GENERATION: 'imageGeneration',
-};
+  TTS: 'tts',
+  STT: 'stt',
+} as const;
 
 /**
  * Named model roles. Each key maps to a role that can be independently
@@ -133,6 +157,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     label: 'Move Deleted Records to the Trash',
     description:
       'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. Files and folders deleted from a collection can be restored from its Recently deleted page (or the records API), and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Every two weeks a cleanup permanently removes records that have been in the trash for at least 14 days, with their files; this cannot be undone. Disable to delete records immediately, as before; records already in the trash are still removed on that schedule.',
+    defaultEnabled: false,
+  },
+  {
+    key: 'ENABLE_NAMED_ENTITY_EXTRACTION',
+    label: 'Extract Named Entities',
+    description:
+      'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
     defaultEnabled: false,
   },
   {

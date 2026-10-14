@@ -702,7 +702,8 @@ class BookStackConnector(BaseConnector):
                     self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                     continue
                 await self.data_entities_processor.delete_edges_between_collections(
-                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value
+                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+                    connector_id=self.connector_id,
                 )
 
                 if not roles:

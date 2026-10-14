@@ -99,6 +99,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -164,6 +165,13 @@ CHANNEL_TYPE_LABEL_TO_API = {
     "Group Direct Messages": "mpim",
 }
 ALL_CHANNEL_API_TYPES = set(CHANNEL_TYPE_LABEL_TO_API.values())
+# conversations.list fails the whole call with missing_scope if any requested type lacks its scope.
+CHANNEL_API_TYPE_READ_SCOPE = {
+    "public_channel": "channels:read",
+    "private_channel": "groups:read",
+    "im": "im:read",
+    "mpim": "mpim:read",
+}
 
 SLACK_TIER_LIMITS_PER_MINUTE: dict[int, int] = {
     2: 20,
@@ -175,6 +183,18 @@ RATE_LIMIT_HEADROOM = 0.9
 _SLACK_MAX_TIMESTAMP_LENGTH = 13
 MAX_CONCURRENT_USER_INFO = 10
 _USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
+
+
+def _slack_failure(method: str, resp: object) -> str:
+    """An admin-readable account of a failed Slack call: the raw code plus Slack's explanation."""
+    if not resp:
+        return f"Slack {method} failed: no response"
+    error = getattr(resp, "error", None)
+    message = getattr(resp, "message", None)
+    code = error if isinstance(error, str) and error else "unknown_error"
+    if isinstance(message, str) and message and message != code:
+        return f"Slack {method} failed ({code}): {message}"
+    return f"Slack {method} failed ({code})"
 
 
 def _numeric_epoch_to_ms(value: int | float | str | None) -> int | None:
@@ -368,10 +388,17 @@ class RateLimiter:
         .add_filter_field(FilterField(
             name="sync_window",
             display_name="Sync Messages From",
-            description="How far back to sync messages on initial sync",
+            description=(
+                "How far back to sync messages on the first sync. If this filter "
+                "is not set, only the last 30 days are synced; choose an earlier "
+                "date to include older history."
+            ),
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            default_operator=FilterOperator.LAST_30_DAYS))
+            default_operator=FilterOperator.LAST_30_DAYS,
+            # What _compute_sync_window_oldest uses when no filter is saved; the
+            # panel shows it while the filter is cleared.
+            fallback_operator=FilterOperator.LAST_30_DAYS))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters
         .add_filter_field(FilterField(
@@ -518,6 +545,22 @@ class SlackIndividualConnector(BaseConnector):
         FilterOperator.LAST_180_DAYS: 180 * 86400,
         FilterOperator.LAST_365_DAYS: 365 * 86400,
     }
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync reads messages from the sync window on, and a thread only
+        when its first message is inside the window. So a message or thread
+        older than the window that it did not see was not read, not deleted.
+
+        Asked after the sync: the window start is computed now, a little later
+        than the one the sync used, so nothing the sync could have read is
+        counted as outside it.
+        """
+        oldest = self._compute_sync_window_oldest()
+        return FullSyncCoverage(
+            complete=not getattr(self, "_full_sync_read_failed", False),
+            window_start_ms=int(float(oldest) * 1000) if oldest else None,
+            windowed_group_types=frozenset({RecordGroupType.SLACK_THREAD.value}),
+        )
 
     def _compute_sync_window_oldest(self) -> Optional[str]:
         """
@@ -703,6 +746,10 @@ class SlackIndividualConnector(BaseConnector):
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
 
+            # Set when a read fails and the sync carries on without it; see
+            # full_sync_coverage.
+            self._full_sync_read_failed = False
+
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack", self.connector_id, self.logger
             )
@@ -729,6 +776,7 @@ class SlackIndividualConnector(BaseConnector):
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
                     except Exception as exc:
+                        self._full_sync_read_failed = True
                         self.logger.error(
                             f"Channel message sync failed for "
                             f"{rg.external_group_id}: {exc}",
@@ -969,6 +1017,44 @@ class SlackIndividualConnector(BaseConnector):
         peer_id = ch.get("user", "")
         return not peer_id or peer_id not in self.deactivated_user_ids
 
+    async def _listable_channel_types_param(self, requested: set[str]) -> str:
+        """The ``types`` for conversations.list: ``requested`` minus kinds the token has no read scope for.
+
+        Raises when none of ``requested`` can be listed, naming the scopes to add.
+        """
+        granted: set[str] | None = None
+        try:
+            resp = await (await self._fresh_datasource()).check_token_scopes()
+            scopes = (resp.data or {}).get("scopes") if resp and resp.success else None
+            if isinstance(scopes, list):
+                granted = {s for s in scopes if isinstance(s, str)}
+        except Exception as exc:
+            self.logger.warning("Could not read the Slack token's scopes: %s", exc)
+
+        known = requested & CHANNEL_API_TYPE_READ_SCOPE.keys()
+        # No granular read scope at all means a token whose scopes we cannot map
+        # (or no header); ask for everything and let a real failure surface.
+        if granted is None or not granted & set(CHANNEL_API_TYPE_READ_SCOPE.values()):
+            listable = known
+        else:
+            listable = {t for t in known if CHANNEL_API_TYPE_READ_SCOPE[t] in granted}
+        missing = sorted(CHANNEL_API_TYPE_READ_SCOPE[t] for t in known - listable)
+        if not listable:
+            raise RuntimeError(
+                "The Slack token cannot list any of the selected conversation types"
+                + (f": it lacks {', '.join(missing)}. Add these user token scopes to the Slack app and reinstall it,"
+                   if missing else ";")
+                + " or change the Channel Types sync filter."
+            )
+        if missing:
+            self.logger.warning(
+                "⚠️  Skipping %s: the Slack token lacks %s. Add these user token scopes "
+                "to the Slack app and reinstall it to sync these conversations.",
+                ", ".join(label for label, api in CHANNEL_TYPE_LABEL_TO_API.items() if api in known - listable),
+                ", ".join(missing),
+            )
+        return ",".join(t for t in CHANNEL_API_TYPE_READ_SCOPE if t in listable)
+
     # =========================================================================
     # 3.  Channel sync → RecordGroups + HAS_PERMISSION edges
     # =========================================================================
@@ -1004,6 +1090,14 @@ class SlackIndividualConnector(BaseConnector):
                 CHANNEL_TYPE_LABEL_TO_API.get(value, value)
                 for value in ch_types_filter.get_value() or []
             }
+            # Checked before NOT_IN is inverted: the subtraction would drop an
+            # unknown value, and the sync would then include what was excluded.
+            unknown = sorted(raw - ALL_CHANNEL_API_TYPES)
+            if unknown:
+                raise RuntimeError(
+                    f"The Channel Types sync filter holds unrecognised values: {', '.join(unknown)}. "
+                    "Choose from: " + ", ".join(CHANNEL_TYPE_LABEL_TO_API) + "."
+                )
             if raw:
                 if ch_types_filter.get_operator() == FilterOperator.NOT_IN:
                     allowed_types = ALL_CHANNEL_API_TYPES - raw
@@ -1012,7 +1106,7 @@ class SlackIndividualConnector(BaseConnector):
                 if not allowed_types:
                     self.logger.info("channel_types filter excludes all types — nothing to sync")
                     return []
-        types_param = ",".join(allowed_types) if allowed_types else "public_channel,private_channel,im,mpim"
+        types_param = await self._listable_channel_types_param(allowed_types or ALL_CHANNEL_API_TYPES)
 
         self.channel_groups_cache.clear()
         self.channel_id_to_name_cache.clear()
@@ -1033,10 +1127,9 @@ class SlackIndividualConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
-                self.logger.error(
-                    f"❌ conversations.list failed: {getattr(resp, 'error', 'no response')}"
-                )
-                break
+                # Returning what we have would end the run as a successful sync
+                # of nothing (or of a truncated channel list).
+                raise RuntimeError(_slack_failure("conversations.list", resp))
 
             data = resp.data
             channels: list[dict[str, Any]] = data.get("channels", [])
@@ -1074,6 +1167,9 @@ class SlackIndividualConnector(BaseConnector):
 
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
 
                     if rg.name:
@@ -1086,6 +1182,9 @@ class SlackIndividualConnector(BaseConnector):
                     total += 1
 
                 except Exception as exc:
+                    # Not written, so not seen: without this the unlink after the
+                    # sync would take the channel's links away.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to process channel {cd.get('name')}: {exc}"
                     )
@@ -1372,6 +1471,14 @@ class SlackIndividualConnector(BaseConnector):
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
         total_msgs = 0
         all_deferred_threads: list[DeferredThread] = []
+        # Set when a page fails for a reason that is not a permanent skip
+        # (rate limit, server error, no response). Older pages were never
+        # fetched, so the checkpoint must not move past them.
+        history_error: Optional[str] = None
+        # Threads whose replies were not all read (a failed replies page, or
+        # an exception while processing the thread). Their parents must stay
+        # inside the next sync's window, so the channel checkpoint waits too.
+        incomplete_threads = 0
 
         while True:
             await self.rate_limiter.acquire(Tier.T3)
@@ -1394,6 +1501,7 @@ class SlackIndividualConnector(BaseConnector):
                     self.logger.error(
                         f"❌ conversations.history({channel_id}) failed: {error}"
                     )
+                    history_error = error
                 break
 
             msgs: list[dict[str, Any]] = resp.data.get("messages", [])
@@ -1473,29 +1581,55 @@ class SlackIndividualConnector(BaseConnector):
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (full)"
                         )
-                        await self._process_thread(dt.msg, dt.ctx, dt.rg_id)
+                        replies_complete = await self._process_thread(
+                            dt.msg, dt.ctx, dt.rg_id
+                        )
                     else:
                         self.logger.info(
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (incremental)"
                         )
-                        await self._process_thread_incremental(
+                        replies_complete = await self._process_thread_incremental(
                             dt.msg, dt.ctx, existing_rg_id, last_reply_ts
                         )
+
+                    if not replies_complete:
+                        incomplete_threads += 1
+                        self.logger.warning(
+                            f"[DeferredThread] Thread checkpoint NOT updated for ts={ts}, "
+                            f"channel={dt.ctx.channel_id}: replies were only partly fetched"
+                        )
+                        continue
 
                     latest_reply = dt.msg.get("latest_reply") or ts
                     await self.audit_log_sync_point.update_sync_point(
                         thread_sp_key, {"last_reply_ts": latest_reply}
                     )
                 except Exception as exc:
+                    incomplete_threads += 1
                     self.logger.error(
                         f"[DeferredThread] Thread processing FAILED for ts={ts}, "
                         f"channel={dt.ctx.channel_id}: {exc}",
                         exc_info=True,
                     )
 
+        if history_error or incomplete_threads:
+            self._full_sync_read_failed = True
+
         # Persist checkpoint ONLY after all pages succeed
-        if newest_ts:
+        if history_error:
+            self.logger.warning(
+                f"⚠️ Checkpoint NOT updated for {channel_id}: conversations.history "
+                f"failed part-way ({history_error}) after {total_msgs} messages; "
+                f"the next sync starts again from the previous checkpoint"
+            )
+        elif incomplete_threads:
+            self.logger.warning(
+                f"⚠️ Checkpoint NOT updated for {channel_id}: replies of "
+                f"{incomplete_threads} thread(s) could not all be read; the next "
+                f"sync starts again from the previous checkpoint"
+            )
+        elif newest_ts:
             await self.messages_sync_point.update_sync_point(
                 sync_key, {"last_sync_time": newest_ts}
             )
@@ -1813,12 +1947,17 @@ class SlackIndividualConnector(BaseConnector):
         thread_ts: str,
         ctx: ProcessingContext,
         oldest: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch raw thread replies (excluding the parent) via conversations.replies.
 
         Args:
             oldest: If set, only replies with ts > oldest are returned
                     (Slack ``oldest`` is exclusive lower bound).
+
+        Returns:
+            ``(replies, complete)``. ``complete`` is False when a page failed
+            before the cursor ran out; ``replies`` then holds only the pages
+            fetched so far, and the caller must not record the thread as synced.
         """
         replies: list[dict[str, Any]] = []
         cursor:  Optional[str] = None
@@ -1835,7 +1974,19 @@ class SlackIndividualConnector(BaseConnector):
                 kwargs["oldest"] = oldest
             resp = await ds.conversations_replies(**kwargs)
             if not resp or not resp.success:
-                break
+                error = getattr(resp, "error", "no response")
+                # The thread or channel is gone: nothing more can be read, so
+                # a retry would fail the same way. Treat it as finished.
+                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                    self.logger.warning(
+                        f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
+                    )
+                    return replies, True
+                self.logger.warning(
+                    f"conversations.replies({channel_id}, ts={thread_ts}) failed: "
+                    f"{error}; returning {len(replies)} replies fetched so far as incomplete"
+                )
+                return replies, False
 
             for md in resp.data.get("messages", []):
                 ts = md.get("ts")
@@ -1848,7 +1999,7 @@ class SlackIndividualConnector(BaseConnector):
             if not cursor:
                 break
 
-        return replies
+        return replies, True
 
     async def _build_thread_burst_record(
         self,
@@ -1947,9 +2098,12 @@ class SlackIndividualConnector(BaseConnector):
         parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         rg_id: Optional[str],
-    ) -> None:
+    ) -> bool:
         """
         Full thread processing for a thread-parent message.
+
+        Returns False when the replies could only be partly fetched, so the
+        caller must not write the thread's sync point.
 
         Creates:
           1. SLACK_THREAD RecordGroup
@@ -1971,7 +2125,7 @@ class SlackIndividualConnector(BaseConnector):
                 f"[ThreadProcess] Could not build thread RecordGroup for ts={ts} "
                 f"in {ctx.channel_id} — skipping thread"
             )
-            return
+            return True
 
         try:
             await self.data_entities_processor.on_new_record_groups([(thread_rg, [])])
@@ -1990,7 +2144,9 @@ class SlackIndividualConnector(BaseConnector):
             f"group_type={thread_rg.group_type}"
         )
 
-        replies = await self._fetch_thread_replies_raw(ctx.channel_id, ts, ctx)
+        replies, replies_complete = await self._fetch_thread_replies_raw(
+            ctx.channel_id, ts, ctx
+        )
         all_msgs = [parent_msg] + replies
         await self._warm_user_cache_for_messages(all_msgs, ctx)
         self.logger.info(
@@ -2089,6 +2245,7 @@ class SlackIndividualConnector(BaseConnector):
             f"channel={ctx.channel_id}: thread_rg_id={thread_rg_id}, "
             f"{len(burst_recs_batch)} burst/file records"
         )
+        return replies_complete
 
     async def _process_thread_incremental(
         self,
@@ -2096,19 +2253,20 @@ class SlackIndividualConnector(BaseConnector):
         ctx: ProcessingContext,
         thread_rg_id: str,
         last_reply_ts: str,
-    ) -> None:
+    ) -> bool:
         """
         Incremental thread processing: only fetch and process replies newer
         than ``last_reply_ts``.
 
         Creates thread-burst/single records for the new replies only.
+        Returns False when the new replies could only be partly fetched.
         """
         thread_ts = parent_msg.get("ts", "")
-        new_replies = await self._fetch_thread_replies_raw(
+        new_replies, replies_complete = await self._fetch_thread_replies_raw(
             ctx.channel_id, thread_ts, ctx, oldest=last_reply_ts,
         )
         if not new_replies:
-            return
+            return replies_complete
         await self._warm_user_cache_for_messages(new_replies, ctx)
 
         self.logger.info(
@@ -2188,6 +2346,8 @@ class SlackIndividualConnector(BaseConnector):
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
             await self.data_entities_processor.on_new_records(burst_recs_batch)
+
+        return replies_complete
 
     # =========================================================================
     # 5e.  Burst / single processing
@@ -2885,7 +3045,15 @@ class SlackIndividualConnector(BaseConnector):
                     oldest_ts = sync_window_ts
 
                 try:
-                    await self._scan_channel_thread_growth(cid, oldest_ts)
+                    scan_complete = await self._scan_channel_thread_growth(
+                        cid, oldest_ts
+                    )
+                    if not scan_complete:
+                        self.logger.warning(
+                            f"Thread-growth checkpoint NOT updated for {cid}: "
+                            f"channel history was only partly scanned"
+                        )
+                        continue
                     await self.audit_log_sync_point.update_sync_point(
                         chan_key, {"last_check_time": now_ms}
                     )
@@ -2902,10 +3070,14 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _scan_channel_thread_growth(
         self, channel_id: str, oldest_ts: Optional[str]
-    ) -> None:
+    ) -> bool:
         """
         Paginate through channel history within [oldest_ts, now] and call
         ``_handle_new_thread()`` for every thread-root message (reply_count > 0).
+
+        Returns True when the whole range was scanned (or the channel is gone
+        for good), False when a page failed part-way or a thread's replies
+        could not all be read, so the caller must not advance its checkpoint.
         """
         SKIP_SUBTYPES: frozenset = frozenset({
             "channel_join",        "channel_leave",
@@ -2921,6 +3093,7 @@ class SlackIndividualConnector(BaseConnector):
 
         cursor: Optional[str] = None
         now_ts = f"{time.time():.6f}"
+        threads_complete = True
 
         while True:
             await self.rate_limiter.acquire(Tier.T3)
@@ -2941,10 +3114,17 @@ class SlackIndividualConnector(BaseConnector):
                     f"conversations.history for thread-growth in {channel_id}: {exc}",
                     exc_info=True,
                 )
-                break
+                return False
 
             if not resp or not resp.success:
-                break
+                error = getattr(resp, "error", "no response")
+                if error in ("channel_not_found", "not_in_channel"):
+                    return True
+                self.logger.warning(
+                    f"conversations.history for thread-growth in {channel_id} "
+                    f"failed: {error}"
+                )
+                return False
 
             msgs: list[dict[str, Any]] = resp.data.get("messages", [])
             if not msgs:
@@ -2970,8 +3150,10 @@ class SlackIndividualConnector(BaseConnector):
 
                 if md.get("reply_count", 0) > 0 and md.get("thread_ts") == ts:
                     try:
-                        await self._handle_new_thread(md, channel_id, ts)
+                        if not await self._handle_new_thread(md, channel_id, ts):
+                            threads_complete = False
                     except Exception as exc:
+                        threads_complete = False
                         self.logger.error(
                             f"Thread-growth for ts={ts} in {channel_id}: {exc}",
                             exc_info=True,
@@ -2982,6 +3164,8 @@ class SlackIndividualConnector(BaseConnector):
             )
             if not cursor:
                 break
+
+        return threads_complete
 
     # =========================================================================
     # 7b. Phase 5 — Full change detection (bypassed for now)
@@ -3474,9 +3658,12 @@ class SlackIndividualConnector(BaseConnector):
 
     async def _handle_new_thread(
         self, md: dict[str, Any], channel_id: str, ts: str
-    ) -> None:
+    ) -> bool:
         """
         Handle a thread root discovered during change detection.
+
+        Returns False when the thread's replies could not all be read, so
+        the thread-growth scan must not advance its checkpoint.
 
         Decision is gated on the per-thread sync_point, not on whether the
         thread RecordGroup node already exists. A full sync deletes sync_points
@@ -3532,23 +3719,36 @@ class SlackIndividualConnector(BaseConnector):
                 f"[ThreadGrowth] Fresh sync for thread ts={ts}, channel={channel_id}, "
                 f"reply_count={md.get('reply_count')}, channel_rg_id={rg_id}"
             )
-            await self._process_thread(md, ctx, rg_id)
+            replies_complete = await self._process_thread(md, ctx, rg_id)
+            if not replies_complete:
+                self.logger.warning(
+                    f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
+                    f"channel={channel_id}: replies were only partly fetched"
+                )
+                return False
 
             latest_reply = md.get("latest_reply") or ts
             await self.audit_log_sync_point.update_sync_point(
                 thread_sp_key, {"last_reply_ts": latest_reply}
             )
-            return
+            return True
 
         # ── Incremental ───────────────────────────────────────────────────
-        await self._process_thread_incremental(
+        replies_complete = await self._process_thread_incremental(
             md, ctx, thread_rg_id, last_reply_ts,
         )
+        if not replies_complete:
+            self.logger.warning(
+                f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
+                f"channel={channel_id}: replies were only partly fetched"
+            )
+            return False
 
         latest_reply = md.get("latest_reply") or last_reply_ts
         await self.audit_log_sync_point.update_sync_point(
             thread_sp_key, {"last_reply_ts": latest_reply}
         )
+        return True
 
     def _record_changed(
         self, md: dict[str, Any], existing: Any
@@ -4332,13 +4532,14 @@ class SlackIndividualConnector(BaseConnector):
 
             tmp: dict[str, dict[str, str]] = {}
             api_cursor: Optional[str] = None
+            types_param = await self._listable_channel_types_param(ALL_CHANNEL_API_TYPES)
 
             while True:
                 await self.rate_limiter.acquire(Tier.T2)
                 ds = await self._fresh_datasource()
                 resp = await ds.conversations_list(
                     exclude_archived=True,
-                    types="public_channel,private_channel,im,mpim",
+                    types=types_param,
                     limit=PAGE_SIZE_CHANNELS,
                     cursor=api_cursor,
                 )

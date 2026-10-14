@@ -14,11 +14,16 @@ import {
 } from '../utils/userActivities.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
+import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+
+const CLIENT_NAME_HEADER = 'client-name';
+const WEB_CLIENT_NAME = 'pipeshub-ai';
+export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
@@ -157,7 +162,10 @@ export class AuthMiddleware {
     // verify the oauth token (checks signature, expiry, revocation status)
     const payload = await oauthTokenService.verifyAccessToken(token);
 
-    const tokenScopes = payload.scope.split(' ');
+    const tokenScopes = parseScopeString(payload.scope);
+    if (tokenScopes.length === 0) {
+      throw new UnauthorizedError('Token carries no scopes');
+    }
 
     let userId = payload.userId;
     const orgId = payload.orgId;
@@ -298,6 +306,14 @@ export class AuthMiddleware {
       oauthClientId: payload.client_id,
       oauthScopes: tokenScopes,
     };
+    // The web app's client name lets an agent run wait for a person to approve a tool call.
+    // An OAuth or personal access token is a program, not the web app, so it can't claim it.
+    if (
+      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
+      WEB_CLIENT_NAME
+    ) {
+      req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
+    }
 
     this.logger.debug('OAuth user authenticated', {
       userId,

@@ -92,6 +92,9 @@ from app.schema.arango.documents import (
     comment_record_schema,
     deal_record_schema,
     department_schema,
+    named_entity_schema,
+    named_entity_persist_retry_schema,
+    value_mention_schema,
     file_record_schema,
     knowledge_schema,
     link_record_schema,
@@ -138,6 +141,7 @@ from app.schema.arango.edges import (
     prospect_schema,
     record_relations_schema,
     sold_in_schema,
+    mentions_entity_schema,
     taxonomy_edge_schema,
     toolset_has_tool_schema,
     user_app_relation_schema,
@@ -145,6 +149,11 @@ from app.schema.arango.edges import (
 )
 from app.schema.arango.graph import EDGE_DEFINITIONS
 from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
+from app.services.graph_db.common.full_sync_unlink import (
+    FULL_SYNC_EDGE_COLLECTIONS,
+    split_unseen_by_window,
+    unseen_node_keys,
+)
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     aql_live_record,
@@ -202,9 +211,11 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
+from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
@@ -214,9 +225,21 @@ from app.services.graph_db.taxonomy import (
     global_department_key,
     hierarchy_edge_key,
     is_taxonomy_collection,
+    own_record_labels,
     subcategory_level,
 )
+from app.services.graph_db.user_email_identity import (
+    GraphUserEmailConflictError,
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
+)
 from app.services.graph_db.vector_membership_queries import (
+    PAGE_RECORD_FIELDS,
     build_app_needing_vector_membership_backfill_aql,
     build_page_records_for_vector_membership_backfill_aql,
     can_use_membership_cleanup,
@@ -225,7 +248,7 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Collection, Mapping
 
 # Constants for ArangoDB document ID format
 ARANGO_ID_PARTS_COUNT = 2  # ArangoDB document IDs are in format "collection/key"
@@ -254,6 +277,9 @@ NODE_COLLECTIONS = [
     (CollectionNames.CATEGORIES.value, None),
     (CollectionNames.LANGUAGES.value, None),
     (CollectionNames.TOPICS.value, None),
+    (CollectionNames.NAMED_ENTITIES.value, named_entity_schema),
+    (CollectionNames.VALUE_MENTIONS.value, value_mention_schema),
+    (CollectionNames.NAMED_ENTITY_PERSIST_RETRIES.value, named_entity_persist_retry_schema),
     (CollectionNames.SUBCATEGORIES1.value, None),
     (CollectionNames.SUBCATEGORIES2.value, None),
     (CollectionNames.SUBCATEGORIES3.value, None),
@@ -322,6 +348,7 @@ EDGE_COLLECTIONS = [
     (CollectionNames.BELONGS_TO_CATEGORY.value, taxonomy_edge_schema),
     (CollectionNames.BELONGS_TO_LANGUAGE.value, taxonomy_edge_schema),
     (CollectionNames.BELONGS_TO_TOPIC.value, taxonomy_edge_schema),
+    (CollectionNames.MENTIONS_ENTITY.value, mentions_entity_schema),
     (CollectionNames.BELONGS_TO_RECORD_GROUP.value, basic_edge_schema),
     (CollectionNames.INTER_CATEGORY_RELATIONS.value, basic_edge_schema),
     (CollectionNames.PERMISSION.value, permissions_schema),
@@ -403,13 +430,15 @@ _PURGE_WALK_FIELDS = ("orgId", "deletedAtTimestamp", "_key")
 _PURGE_LOCK_TIMEOUT_SECONDS = 30
 
 
-class ArangoHTTPProvider(IGraphDBProvider):
+class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
     ArangoDB implementation using REST API for fully async operations.
 
     This provider uses HTTP REST API calls instead of the python-arango SDK
     to avoid blocking the event loop.
     """
+
+    _ner_dialect = "arango"
 
     def __init__(
         self,
@@ -491,6 +520,14 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 ]
             }
         }
+
+        # The per-connector lists predate enrichment edges; a delete through one of
+        # them left the record's taxonomy edges behind.
+        for spec in self.connector_delete_permissions.values():
+            edges = spec["edge_collections"]
+            for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+                if enrichment_edge not in edges:
+                    edges.append(enrichment_edge)
 
     # ==================== Translation Layer ====================
     # Methods to translate between generic format and ArangoDB-specific format
@@ -773,6 +810,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         Both directions matter: comparing only ``to`` silently strands every
         ``from`` addition on already-provisioned databases.
+
+        A definition the graph lacks is added: deletes find edge collections
+        through the graph, so an unregistered one keeps its edges after their
+        record is gone.
         """
         try:
             graph_info = await self.http_client.get_graph(graph_name)
@@ -787,6 +828,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 edge_col = desired["edge_collection"]
                 existing = existing_by_collection.get(edge_col)
                 if not existing:
+                    if await self.http_client.has_collection(edge_col):
+                        await self._add_edge_definition(graph_name, desired)
                     continue
                 desired_to = set(desired.get("to_vertex_collections", []))
                 existing_to = set(existing.get("to", []))
@@ -817,6 +860,30 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         )
         except Exception as e:
             self.logger.warning("Edge definition migration failed (non-fatal): %s", e)
+
+    async def _add_edge_definition(self, graph_name: str, desired: dict) -> None:
+        edge_col = desired["edge_collection"]
+        url = (
+            f"{self.http_client.base_url}/_db/{self.http_client.database}"
+            f"/_api/gharial/{graph_name}/edge"
+        )
+        payload = {
+            "collection": edge_col,
+            "from": sorted(desired.get("from_vertex_collections", [])),
+            "to": sorted(desired.get("to_vertex_collections", [])),
+        }
+        session = await self.http_client._get_session()
+        async with session.post(url, json=payload) as resp:
+            if resp.status in (200, 201, 202):
+                self.logger.info("Added edge definition '%s' to graph '%s'", edge_col, graph_name)
+                # Deletes find edge collections through this cache;
+                # a stale list keeps the new one's edges.
+                self._edge_collections_by_graph.pop(graph_name, None)
+            else:
+                self.logger.warning(
+                    "Failed to add edge definition '%s' (%d): %s",
+                    edge_col, resp.status, await resp.text(),
+                )
 
     async def _ensure_indexes(self) -> None:
         """Create persistent indexes for frequent query patterns.
@@ -900,6 +967,19 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["indexingStatus"],
+        )
+
+        # COMPOUND: records parked while their connector was off, read per
+        # connector by the turn-on re-queue and every stranded-record sweep, in
+        # a keyset on _key. With reason in the index a manual-indexing
+        # connector's AUTO_INDEX_OFF records (no reason) are never walked to
+        # find them, and _key trailing serves the cursor and the SORT. Not
+        # sparse: 3.12 does not take a sparse index that ends in _key for this
+        # read, and fell back to (connectorId, _key), filtering every record of
+        # the connector.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "indexingStatus", "reason", "_key"],
         )
 
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
@@ -1076,6 +1156,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "email"],
             unique=True,
         )
+        from app.modules.named_entities.graph_ops import ensure_named_entity_indexes
+
+        await ensure_named_entity_indexes(self.http_client)
 
     async def _ensure_departments_seed(self) -> None:
         """Initialize departments collection with predefined department types if missing."""
@@ -1106,13 +1189,16 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
     # ==================== Transaction Management ====================
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(
+        self, read: list[str], write: list[str], explicit: bool | None = None,
+    ) -> str:
         """
         Begin a database transaction - FULLY ASYNC.
 
         Args:
             read: Collections to read from
             write: Collections to write to
+            explicit: ignored; a stream transaction is always all-or-nothing
 
         Returns:
             str: Transaction ID (e.g., "123456789")
@@ -1136,7 +1222,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"❌ Failed to commit transaction: {str(e)}")
             raise
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """A write-write conflict (errorNum 1200) with another writer, such as
         indexing updating the same record. A stream transaction rolls back
         whole, so the block can be re-run."""
@@ -1980,22 +2066,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         if not connector_id:
             return
         coll = CollectionNames.RECORDS.value
         excluded = [s for s in (exclude_statuses or []) if isinstance(s, str) and s]
+        included = [s for s in (only_statuses or []) if isinstance(s, str) and s]
+        if only_statuses is not None and not included:
+            return
         try:
             exclude_clause = (
                 "FILTER doc.indexingStatus NOT IN @exclude_statuses"
                 if excluded
                 else ""
             )
+            include_clause = (
+                "FILTER doc.indexingStatus IN @only_statuses" if included else ""
+            )
+            visibility_clause = (
+                ""
+                if visibility is RecordVisibility.ALL
+                else f"FILTER {aql_record_visibility('doc', visibility)}"
+            )
+            # AQL rejects a declared-but-unused bind var, so only bind it here.
+            reason_field = ", reason: @reason" if reason is not None else ""
             query = f"""
             FOR doc IN @@collection
                 FILTER doc.connectorId == @connector_id
                 {exclude_clause}
-                UPDATE doc WITH {{ indexingStatus: @status }} IN @@collection
+                {include_clause}
+                {visibility_clause}
+                UPDATE doc WITH {{ indexingStatus: @status{reason_field} }} IN @@collection
             """
             bind_vars: dict = {
                 "@collection": coll,
@@ -2004,6 +2109,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             }
             if excluded:
                 bind_vars["exclude_statuses"] = excluded
+            if included:
+                bind_vars["only_statuses"] = included
+            if reason is not None:
+                bind_vars["reason"] = reason
             await self.execute_query(query, bind_vars=bind_vars, transaction=transaction)
         except Exception as e:
             # Must not be swallowed: the rebuild drops the vector collection
@@ -2948,7 +3057,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge between two nodes - FULLY ASYNC.
@@ -2987,6 +3098,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return None
         except Exception as e:
             self.logger.error(f"❌ Get edge failed: {str(e)}")
+            if raise_on_error:
+                raise
             return None
 
     async def delete_edge(
@@ -3474,7 +3587,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a node - FULLY ASYNC.
@@ -3502,6 +3617,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Get edges to node failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_edges_from_node(
@@ -4560,10 +4677,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if not results:
                 return []
             return [
-                {
-                    "_key": row.get("_key"),
-                    "virtualRecordId": row.get("virtualRecordId"),
-                }
+                {field: row.get(field) for field in PAGE_RECORD_FIELDS}
                 for row in results
             ]
         except Exception as e:
@@ -5548,7 +5662,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> User | None:
         """
         Get a user by their source system ID (sourceUserId field in userAppRelation edge).
@@ -5557,6 +5673,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             source_user_id: The user ID from the source system
             connector_id: Connector ID
             transaction: Optional transaction ID
+            raise_on_error: Raise a failed query instead of returning None
 
         Returns:
             User object if found, None otherwise
@@ -5605,6 +5722,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to get user by source_id {source_user_id}: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return None
 
     async def get_user_by_user_id(
@@ -5634,6 +5753,150 @@ class ArangoHTTPProvider(IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        keep = await self.get_user_by_user_id(user_id)
+        if not keep:
+            return None
+        keep_translated = self._translate_node_from_arango(keep) if "_key" in keep else keep
+        keep_key = graph_user_key(keep_translated) or keep.get("_key")
+        if not keep_key:
+            return None
+
+        peers = await self._list_graph_users_by_email(email, org_id)
+        stub_keys: list[str] = []
+        for peer in peers:
+            kind = classify_email_peer(user_id, keep_key, peer)
+            if kind == "self":
+                continue
+            if kind == "login":
+                raise GraphUserEmailConflictError(
+                    "Email already belongs to another login user in the graph",
+                    conflicting_user_id=str(peer.get("userId") or ""),
+                )
+            peer_key = graph_user_key(peer)
+            if peer_key:
+                stub_keys.append(peer_key)
+
+        connector_ids = await connector_ids_of_users(self, stub_keys)
+        txn = await self.begin_transaction(
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+            list(VERIFIED_EMAIL_WRITE_COLLECTIONS),
+        )
+        try:
+            for stub_key in stub_keys:
+                await self._absorb_graph_user_stub(keep_key, stub_key, txn)
+            await self.batch_upsert_nodes(
+                [
+                    {
+                        "id": keep_key,
+                        "userId": user_id,
+                        "orgId": org_id,
+                        "email": email,
+                        "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                    }
+                ],
+                CollectionNames.USERS.value,
+                transaction=txn,
+            )
+            await self.commit_transaction(txn)
+        except Exception:
+            await self.rollback_transaction(txn)
+            raise
+        return {"email": email, "mergedStubKeys": stub_keys, "connectorIds": connector_ids}
+
+    async def _list_graph_users_by_email(self, email: str, org_id: str) -> list[dict]:
+        query = f"""
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER LOWER(user.email) == LOWER(@email)
+                FILTER user.orgId == @org_id
+                RETURN user
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            bind_vars={"email": email, "org_id": org_id},
+        )
+        return [self._translate_node_from_arango(user) for user in results or []]
+
+    async def _absorb_graph_user_stub(
+        self,
+        keep_key: str,
+        stub_key: str,
+        transaction: str | None,
+    ) -> None:
+        stub_id = f"{CollectionNames.USERS.value}/{stub_key}"
+        keep_id = f"{CollectionNames.USERS.value}/{keep_key}"
+        permission_collection = CollectionNames.PERMISSION.value
+        for collection in STUB_EDGE_COLLECTIONS:
+            if collection == permission_collection:
+                # The login keeps an edge it already has, so a stronger stub
+                # role has to be written onto it before the stub's edges go.
+                upgrade = f"""
+                FOR e IN {collection}
+                    FILTER e._from == @stub_id OR e._to == @stub_id
+                    LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                    LET newTo = e._to == @stub_id ? @keep_id : e._to
+                    FILTER newFrom != newTo
+                    FOR other IN {collection}
+                        FILTER other._from == newFrom AND other._to == newTo
+                        FILTER NOT_NULL(@role_rank[UPPER(e.role)], 0) > NOT_NULL(@role_rank[UPPER(other.role)], 0)
+                        UPDATE other WITH UNSET(e, "_id", "_key", "_rev", "_from", "_to") IN {collection}
+                """
+                await self.http_client.execute_aql(
+                    upgrade,
+                    bind_vars={
+                        "stub_id": stub_id,
+                        "keep_id": keep_id,
+                        "role_rank": PERMISSION_ROLE_RANK,
+                    },
+                    txn_id=transaction,
+                )
+            identity_filter = "".join(
+                f" AND other.{field} == e.{field}"
+                for field in STUB_EDGE_IDENTITY_FIELDS.get(collection, ())
+            )
+            query = f"""
+            FOR e IN {collection}
+                FILTER e._from == @stub_id OR e._to == @stub_id
+                LET newFrom = e._from == @stub_id ? @keep_id : e._from
+                LET newTo = e._to == @stub_id ? @keep_id : e._to
+                FILTER newFrom != newTo
+                LET exists = FIRST(
+                    FOR other IN {collection}
+                        FILTER other._from == newFrom AND other._to == newTo{identity_filter}
+                        LIMIT 1
+                        RETURN 1
+                )
+                FILTER exists == null
+                INSERT MERGE(UNSET(e, "_id", "_key", "_rev"), {{_from: newFrom, _to: newTo}})
+                    INTO {collection}
+                RETURN 1
+            """
+            await self.http_client.execute_aql(
+                query,
+                bind_vars={"stub_id": stub_id, "keep_id": keep_id},
+                txn_id=transaction,
+            )
+            cleanup = f"""
+            FOR e IN {collection}
+                FILTER e._from == @stub_id OR e._to == @stub_id
+                REMOVE e IN {collection}
+            """
+            await self.http_client.execute_aql(
+                cleanup,
+                bind_vars={"stub_id": stub_id},
+                txn_id=transaction,
+            )
+        await self.delete_nodes(
+            [stub_key],
+            CollectionNames.USERS.value,
+            transaction=transaction,
+        )
 
     async def get_graph_user_keys_by_mongo_user_ids(
         self,
@@ -5855,7 +6118,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Fetch all users from the database who belong to the organization
@@ -5864,6 +6129,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
+            raise_on_error (bool): Raise a failed query instead of returning ``[]``
 
         Returns:
             List[Dict]: List of user documents with their details and sourceUserId
@@ -5915,6 +6181,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch users for {connector_id}: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_user_group_by_external_id(
@@ -5965,7 +6233,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
         self,
         connector_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[AppUserGroup]:
         """
         Get all user groups for a specific connector and organization.
@@ -6005,6 +6275,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(
                 f"❌ Failed to retrieve user groups for connector {connector_id}: {str(e)}"
             )
+            if raise_on_error:
+                raise
             return []
 
     async def batch_upsert_people(
@@ -6772,12 +7044,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a page of documents from a collection using AQL LIMIT so that
         only the requested slice is transferred from ArangoDB, keeping memory
         usage proportional to `limit` regardless of collection size.
         """
+        if after_key is not None and sort_field != "_key":
+            raise ValueError("after_key needs sort_field='_key'")
         try:
             bind_vars: dict = {"@collection": collection, "skip": skip, "limit": limit}
 
@@ -6787,6 +7062,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     param = f"fv{idx}"
                     filter_clauses.append(f"doc.{field} == @{param}")
                     bind_vars[param] = value
+            if after_key is not None:
+                filter_clauses.append("doc._key > @after_key")
+                bind_vars["after_key"] = after_key
 
             filter_aql = (
                 "FILTER " + " AND ".join(filter_clauses) if filter_clauses else ""
@@ -8951,14 +9229,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 )
                 return False
 
-            # Define all edge collections used in the graph
             EDGE_COLLECTIONS = [
                 CollectionNames.RECORD_RELATIONS.value,
                 CollectionNames.BELONGS_TO.value,
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value,
+                *RECORD_ENRICHMENT_EDGE_COLLECTIONS,
                 CollectionNames.IS_OF_TYPE.value,
             ]
 
@@ -9782,6 +10056,83 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Error deleting connector sync edges for {connector_id}: {e}", exc_info=True)
             return (0, False)
 
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        try:
+            collected = await self._collect_connector_entities(connector_id, transaction)
+            unseen = unseen_node_keys(collected, seen)
+            record_fields: dict[str, dict] = {}
+            group_fields: dict[str, dict] = {}
+            if window_start_ms is not None:
+                record_fields = await self._node_fields_by_key(
+                    CollectionNames.RECORDS.value,
+                    unseen[CollectionNames.RECORDS.value],
+                    ("sourceCreatedAtTimestamp", "recordGroupId"),
+                    transaction,
+                )
+                group_fields = await self._node_fields_by_key(
+                    CollectionNames.RECORD_GROUPS.value,
+                    unseen[CollectionNames.RECORD_GROUPS.value],
+                    ("sourceCreatedAtTimestamp", "groupType"),
+                    transaction,
+                )
+            unlink, outside_window = split_unseen_by_window(
+                unseen, record_fields, group_fields, window_start_ms, windowed_group_types
+            )
+            unlinked, failed = await self._delete_all_edges_for_nodes(
+                transaction, unlink, list(FULL_SYNC_EDGE_COLLECTIONS)
+            )
+            # Outside the window the source was not read, so who may see these
+            # nodes could not be checked: keep the structure, drop the grants.
+            ungranted, failed_grants = await self._delete_all_edges_for_nodes(
+                transaction, outside_window, [CollectionNames.PERMISSION.value]
+            )
+            if failed or failed_grants:
+                self.logger.warning(
+                    f"Full sync of {connector_id}: could not remove the links of the "
+                    f"{len(unlink)} node(s) it missed from {failed or []}, or the grants "
+                    f"of the {len(outside_window)} outside its window from {failed_grants or []}"
+                )
+            else:
+                self.logger.info(
+                    f"Full sync of {connector_id} missed {len(unlink)} node(s), now unlinked; "
+                    f"{len(outside_window)} outside its window kept their links"
+                )
+            return (unlinked + ungranted, not failed and not failed_grants)
+        except Exception as e:
+            self.logger.error(
+                f"Error unlinking nodes missed by the full sync of {connector_id}: {e}", exc_info=True
+            )
+            return (0, False)
+
+    async def _node_fields_by_key(
+        self,
+        collection: str,
+        keys: list[str],
+        fields: tuple[str, ...],
+        transaction: str | None = None,
+    ) -> dict[str, dict]:
+        """``{key: {field: value}}`` for the documents of one collection with these keys."""
+        if not keys:
+            return {}
+        rows = await self.http_client.execute_aql(
+            query="""
+            FOR doc IN @@collection
+                FILTER doc._key IN @keys
+                RETURN { key: doc._key, fields: KEEP(doc, @fields) }
+            """,
+            bind_vars={"@collection": collection, "keys": keys, "fields": list(fields)},
+            txn_id=transaction,
+        )
+        return {row["key"]: row["fields"] for row in rows or []}
+
     async def delete_connector_instance(
         self,
         connector_id: str,
@@ -10520,6 +10871,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
+        edge_strategies.update(self._enrichment_edge_strategies(record_id))
 
         query_template = """
         FOR edge IN @@edge_collection
@@ -12237,7 +12589,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR kb_role IN kb_roles
                 LET kb = kb_role.kb_doc
                 LET folders = all_folders[* FILTER CURRENT.kb_id == kb._id].folder
-                SORT {sort_field} {sort_direction}
+                SORT {sort_field} {sort_direction}, kb._key
                 LIMIT @skip, @limit
                 RETURN {{
                     id: kb._key,
@@ -12585,7 +12937,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER child_file == null
                             RETURN 1
                     )
-                    SORT record.recordName ASC
+                    SORT record.recordName ASC, record._key
                     RETURN {{
                         id: record._key,
                         name: record.recordName,
@@ -12622,7 +12974,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -12862,7 +13214,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             FILTER child_file == null
                             RETURN 1
                     )
-                    SORT subfolder_record.recordName ASC
+                    SORT subfolder_record.recordName ASC, subfolder_record._key
                     RETURN {{
                         id: subfolder_record._key,
                         name: subfolder_record.recordName,
@@ -12903,7 +13255,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                             RETURN isEdge
                     )
                     LET fileRecord = fileEdge ? DOCUMENT(fileEdge._to) : null
-                    SORT {record_sort_field} {sort_direction}
+                    SORT {record_sort_field} {sort_direction}, record._key
                     RETURN {{
                         id: record._key,
                         recordName: record.recordName,
@@ -15441,7 +15793,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             LET page = (
             FOR item IN allRecords
                 LET record = item.record
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
                 LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb: {{ id: item.kb_id || null, name: item.kb_name || null }} }}
@@ -15760,6 +16112,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     RETURN {{ folder: folder_record, folder_id: folder_record._key, folder_name: folder_record.recordName }}
             )
             LET folder_ids = kbFolders[*].folder._id
+            // Keyed lookup: a FIRST(FOR ... FILTER) per record is O(records x folders).
+            LET folder_by_id = MERGE(FOR f IN kbFolders RETURN {{ [f.folder._id]: f }})
             LET folder_records = (
                 FOR relEdge IN @@record_relations
                     FILTER relEdge._from IN folder_ids
@@ -15770,18 +16124,17 @@ class ArangoHTTPProvider(IGraphDBProvider):
                     FILTER record.orgId == @org_id
                     FILTER record.mimeType != "application/vnd.folder"
                     {record_filter}
-                    LET folder_info = FIRST(FOR f IN kbFolders FILTER f.folder._id == relEdge._from RETURN f)
+                    LET folder_info = folder_by_id[relEdge._from]
                     RETURN {{ record: record, folder_id: folder_info.folder_id, folder_name: folder_info.folder_name, permission: {{ role: @user_permission, type: "USER" }}, kb_id: @kb_id }}
             )
             LET all_records_data = APPEND(folder_records, {root_records})
-            LET record_ids = all_records_data[*].record._id
-            LET all_files = (FOR fileEdge IN @@is_of_type FILTER fileEdge._from IN record_ids LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ record_id: fileEdge._from, file: {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }} }})
             LET page = (
             FOR item IN all_records_data
                 LET record = item.record
-                LET fileRecord = FIRST(FOR f IN all_files FILTER f.record_id == record._id RETURN f.file)
-                SORT record.{sort_field} {sort_direction}
+                SORT record.{sort_field} {sort_direction}, record._key
                 LIMIT @skip, @limit
+                // File details only for the page: matching every record's file against every record ran before LIMIT.
+                LET fileRecord = FIRST(FOR fileEdge IN @@is_of_type FILTER fileEdge._from == record._id LET file = DOCUMENT(fileEdge._to) FILTER file != null RETURN {{ id: file._key, name: file.name, extension: file.extension, mimeType: file.mimeType, sizeInBytes: file.sizeInBytes, isFile: file.isFile, webUrl: file.webUrl }})
                 RETURN {{ id: record._key, externalRecordId: record.externalRecordId, externalRevisionId: record.externalRevisionId, recordName: record.recordName, recordType: record.recordType, origin: record.origin, connectorName: record.connectorName || "KNOWLEDGE_BASE", indexingStatus: record.indexingStatus, createdAtTimestamp: record.createdAtTimestamp, updatedAtTimestamp: record.updatedAtTimestamp, sourceCreatedAtTimestamp: record.sourceCreatedAtTimestamp, sourceLastModifiedTimestamp: record.sourceLastModifiedTimestamp, orgId: record.orgId, version: record.version, isDeleted: record.isDeleted, isLatestVersion: record.isLatestVersion != null ? record.isLatestVersion : true, webUrl: record.webUrl, fileRecord: fileRecord, permission: {{ role: item.permission.role, type: item.permission.type }}, kb_id: item.kb_id, folder: item.folder_id != null ? {{ id: item.folder_id, name: item.folder_name }} : null }}
             )
             RETURN {{ records: page, total: LENGTH(all_records_data) }}
@@ -16020,6 +16373,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.IS_OF_TYPE.value, transaction)
         await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, CollectionNames.BELONGS_TO.value, transaction)
+        for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
+            await self.delete_edges_from(record_key, CollectionNames.RECORDS.value, enrichment_edge, transaction)
 
         # Delete all edges TO this record
         await self.delete_edges_to(record_key, CollectionNames.RECORDS.value, CollectionNames.RECORD_RELATIONS.value, transaction)
@@ -16137,6 +16492,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
             },
         }
+        edge_strategies.update(self._enrichment_edge_strategies(record_id))
 
         query_template = """
         FOR edge IN @@edge_collection
@@ -16225,6 +16581,18 @@ class ArangoHTTPProvider(IGraphDBProvider):
             txn_id=transaction
         )
 
+    @staticmethod
+    def _enrichment_edge_strategies(record_id: str) -> dict[str, dict[str, Any]]:
+        """Enrichment edges only leave a record, so ``_from`` alone finds them."""
+        return {
+            edge_collection: {
+                "filter": "edge._from == @record_from",
+                "bind_vars": {"record_from": f"records/{record_id}"},
+                "description": f"{edge_collection} edges",
+            }
+            for edge_collection in RECORD_ENRICHMENT_EDGE_COLLECTIONS
+        }
+
     async def _delete_drive_specific_edges(
         self,
         record_id: str,
@@ -16255,6 +16623,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 "bind_vars": {"record_from": f"records/{record_id}"},
                 "description": "Belongs to edges"
             },
+            **self._enrichment_edge_strategies(record_id),
             # Default strategy for bidirectional edges
             "default": {
                 "filter": "edge._from == @record_from OR edge._to == @record_to",
@@ -18522,6 +18891,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
             CollectionNames.BELONGS_TO_LANGUAGE.value,
             (CollectionNames.LANGUAGES.value,),
         ),
+        EntityType.NAMED_ENTITY.value: (
+            CollectionNames.MENTIONS_ENTITY.value,
+            (CollectionNames.NAMED_ENTITIES.value,),
+        ),
         EntityType.RECORD_GROUP.value: (
             CollectionNames.BELONGS_TO.value,
             (CollectionNames.RECORD_GROUPS.value,),
@@ -18606,6 +18979,40 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
         )
         return [row for rows in grouped for row in rows]
+
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """See :meth:`IGraphDBProvider.get_record_taxonomy_links`."""
+        keys = sorted({str(k) for k in record_keys or [] if k})
+        if not keys:
+            return []
+        edge_collections = ", ".join(sorted(set(TAXONOMY_EDGE_COLLECTIONS.values())))
+        query = f"""
+            FOR key IN @keys
+                FOR v, link IN 1..1 OUTBOUND CONCAT("{CollectionNames.RECORDS.value}/", key)
+                    {edge_collections}
+                    LET collection = PARSE_IDENTIFIER(v._id).collection
+                    FILTER collection IN @collections
+                    RETURN {{
+                        recordId: key,
+                        collection: collection,
+                        entityId: v._key,
+                        name: v.name,
+                        canonical: v.normalizedName != null,
+                        extractedName: link.extractedName,
+                        extractedNames: link.extractedNames,
+                        migrated: link.migratedFrom != null,
+                    }}
+        """
+        rows = await self.execute_query(
+            query,
+            bind_vars={"keys": keys, "collections": sorted(TAXONOMY_COLLECTIONS)},
+            transaction=transaction,
+        )
+        return [dict(row) for row in rows or [] if row.get("entityId")]
 
     @classmethod
     def _entity_candidate_record_projection(cls, var: str) -> str:
@@ -19365,15 +19772,15 @@ class ArangoHTTPProvider(IGraphDBProvider):
         here rather than threading an extra flag through every caller.
         """
         try:
-            apps = await self.get_user_apps(user_key, transaction)
+            apps = await self.get_user_apps(user_key, transaction, raise_on_error=True)
             return [
                 a.get("_key") or a.get("id")
-                for a in apps
+                for a in apps or []
                 if a and (a.get("_key") or a.get("id")) and not a.get("isHidden")
             ]
         except Exception as e:
             self.logger.error("❌ Failed to get user app ids: %s", str(e))
-            return []
+            raise
 
     async def get_user_permission_app_ids(
         self,
@@ -19432,7 +19839,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             return list(results[0]) if results and results[0] else []
         except Exception as e:
             self.logger.error("❌ Failed to get user permission app ids: %s", str(e))
-            return []
+            raise
 
     async def get_knowledge_hub_context_permissions(
         self,
@@ -20284,54 +20691,78 @@ class ArangoHTTPProvider(IGraphDBProvider):
             )
 
             LET categories = (
-                FOR cat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR cat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(cat._id).collection == '{CollectionNames.CATEGORIES.value}'
                 RETURN {{
                     id: cat._key,
-                    name: cat.name
+                    name: cat.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: cat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories1 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES1.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories2 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES2.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET subcategories3 = (
-                FOR subcat IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
+                FOR subcat, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_CATEGORY.value}
                 FILTER PARSE_IDENTIFIER(subcat._id).collection == '{CollectionNames.SUBCATEGORIES3.value}'
                 RETURN {{
                     id: subcat._key,
-                    name: subcat.name
+                    name: subcat.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: subcat.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET topics = (
-                FOR topic IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
+                FOR topic, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_TOPIC.value}
                 RETURN {{
                     id: topic._key,
-                    name: topic.name
+                    name: topic.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: topic.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
             LET languages = (
-                FOR lang IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
+                FOR lang, link IN OUTBOUND record._id {CollectionNames.BELONGS_TO_LANGUAGE.value}
                 RETURN {{
                     id: lang._key,
-                    name: lang.name
+                    name: lang.name,
+                    extractedName: link.extractedName,
+                    extractedNames: link.extractedNames,
+                    canonical: lang.normalizedName != null,
+                    migrated: link.migratedFrom != null
                 }}
             )
 
@@ -20350,7 +20781,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 bind_vars={"recordId": record_id},
                 txn_id=transaction
             )
-            metadata_result = next(iter(metadata_results), None) if metadata_results else None
+            metadata_result = own_record_labels(
+                next(iter(metadata_results), None) if metadata_results else None
+            )
 
             # Get knowledge base info if record is in a KB
             kb_info = None
@@ -22857,12 +23290,12 @@ class ArangoHTTPProvider(IGraphDBProvider):
         try:
             self.logger.debug(f"🚀 Copying relationships from {source_key} to {target_key}")
 
-            # Define collections to copy relationships from
+            # mentionsEntity carries mention counts and spans. The timestamp-only
+            # copy below would land a thin edge that the full-payload copy then
+            # skips, so that edge is copied by copy_named_entity_mentions.
             edge_collections = [
-                CollectionNames.BELONGS_TO_DEPARTMENT.value,
-                CollectionNames.BELONGS_TO_CATEGORY.value,
-                CollectionNames.BELONGS_TO_LANGUAGE.value,
-                CollectionNames.BELONGS_TO_TOPIC.value
+                edge for edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS
+                if edge != CollectionNames.MENTIONS_ENTITY.value
             ]
 
             source_doc = f"{CollectionNames.RECORDS.value}/{source_key}"
@@ -22871,29 +23304,41 @@ class ArangoHTTPProvider(IGraphDBProvider):
             for collection in edge_collections:
                 # Find all edges from source document
                 query = f"""
+                // An edge the target already has keeps its own spelling.
+                LET present = (
+                    FOR existing IN {collection}
+                        FILTER existing._from == @target_doc
+                        RETURN existing._to
+                )
                 FOR edge IN {collection}
                     FILTER edge._from == @source_doc
+                    FILTER edge._to NOT IN present
                     RETURN {{
                         from: edge._from,
                         to: edge._to,
-                        timestamp: edge.createdAtTimestamp
+                        timestamp: edge.createdAtTimestamp,
+                        extractedName: edge.extractedName,
+                        extractedNames: edge.extractedNames
                     }}
                 """
 
-                bind_vars = {"source_doc": source_doc}
+                bind_vars = {"source_doc": source_doc, "target_doc": target_doc}
                 edges = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
 
                 if edges:
-                    # batch_create_edges UPSERTs on {_from, _to}, so re-running
-                    # dedup for the same record (e.g. a redelivered event)
-                    # updates the existing edge instead of duplicating it —
-                    # the previous per-edge create_document loop had no such
-                    # guard and accumulated duplicate taxonomy edges on retry.
+                    # batch_create_edges UPSERTs on {_from, _to}, so an edge
+                    # written concurrently since the read above is not
+                    # duplicated — the previous per-edge create_document loop
+                    # had no such guard and accumulated duplicate taxonomy
+                    # edges on retry. A copy has the same content, so it
+                    # carries the same spellings.
                     new_edges = [
                         {
                             "_from": target_doc,
                             "_to": edge["to"],
                             "createdAtTimestamp": edge.get("timestamp") or get_epoch_timestamp_in_ms(),
+                            **({"extractedName": edge["extractedName"]} if edge.get("extractedName") else {}),
+                            **({"extractedNames": edge["extractedNames"]} if edge.get("extractedNames") else {}),
                         }
                         for edge in edges
                     ]
@@ -24201,33 +24646,63 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
             return []
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
+    ) -> dict[str, list[dict]]:
+        if not virtual_record_ids:
+            return {}
         query = f"""
-        LET vids = UNIQUE(
-            FOR r IN {CollectionNames.RECORDS.value}
-                FILTER r.connectorId == @connector_id AND r.virtualRecordId != null
-                RETURN r.virtualRecordId
+        FOR r IN {CollectionNames.RECORDS.value}
+            FILTER r.virtualRecordId IN @vrids AND r.orgId == @org_id
+            RETURN {{
+                vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
+                connectorName: r.connectorName, recordGroupId: r.recordGroupId,
+                recordName: r.recordName, webUrl: r.webUrl,
+                isDeleted: r.isDeleted == true
+            }}
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            {"vrids": list(dict.fromkeys(virtual_record_ids)), "org_id": org_id},
+            transaction,
         )
-        FOR vid IN vids
-            LET other = FIRST(
-                FOR o IN {CollectionNames.RECORDS.value}
-                    FILTER o.virtualRecordId == vid
-                    AND o.connectorId != @connector_id
-                    AND o.isDeleted != true
+        holders: dict[str, list[dict]] = {}
+        for row in results or []:
+            vid = row.pop("vid", None)
+            if vid and row.get("id"):
+                holders.setdefault(vid, []).append(row)
+        return holders
+
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """See :meth:`IGraphDBProvider.get_virtual_record_ids_in_use`."""
+        wanted = [v for v in dict.fromkeys(virtual_record_ids) if isinstance(v, str) and v]
+        if not wanted:
+            return set()
+        query = f"""
+        FOR vrid IN @virtual_record_ids
+            LET held = FIRST(
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.virtualRecordId == vrid
+                    AND {aql_record_visibility("record", visibility)}
                     LIMIT 1
                     RETURN 1
             )
-            FILTER other != null
-            RETURN vid
+            FILTER held != null
+            RETURN vrid
         """
         results = await self.http_client.execute_aql(
-            query, {"connector_id": connector_id}, transaction
+            query, {"virtual_record_ids": wanted}, transaction
         )
-        return [vid for vid in results or [] if vid]
+        return {vrid for vrid in results or [] if vrid}
 
     async def get_records_by_virtual_record_id(
         self,
@@ -24990,6 +25465,39 @@ class ArangoHTTPProvider(IGraphDBProvider):
             self.logger.error(f"Failed to check toolset instance usage: {str(e)}")
             raise
 
+    async def check_mcp_instance_in_use(self, instance_id: str, transaction: str | None = None) -> list[str]:
+        """Names of the non-deleted agents with this MCP server instance attached."""
+        try:
+            server_query = f"""
+            FOR server IN {CollectionNames.AGENT_MCP_SERVERS.value}
+                FILTER server.instanceId == @instance_id
+                RETURN server._id
+            """
+            server_ids = await self.http_client.execute_aql(server_query, bind_vars={
+                "instance_id": instance_id
+            }, txn_id=transaction)
+
+            if not server_ids:
+                return []
+
+            agent_query = f"""
+            FOR edge IN {CollectionNames.AGENT_HAS_MCP_SERVER.value}
+                FILTER edge._to IN @server_ids
+                LET agent = DOCUMENT(edge._from)
+                FILTER agent != null
+                    AND agent.isDeleted != true
+                RETURN DISTINCT {{agentId: agent._id, agentName: agent.name}}
+            """
+            agents = await self.http_client.execute_aql(agent_query, bind_vars={
+                "server_ids": server_ids,
+            }, txn_id=transaction)
+
+            return dedupe_agents_by_id(agents)
+
+        except Exception as e:
+            self.logger.error(f"Failed to check MCP server instance usage: {str(e)}")
+            raise
+
     async def check_connector_in_use(self, connector_id: str, transaction: str | None = None) -> list[str]:
         """
         Check if a connector is currently in use by any active agents.
@@ -25117,6 +25625,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                         displayName: mcp_server.displayName,
                         typeId: mcp_server.typeId,
                         instanceId: mcp_server.instanceId,
+                        allTools: mcp_server.allTools == true,
                         tools: mcp_server_tools
                     }}
             )
@@ -25623,6 +26132,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
                                 displayName: mcp_server.displayName,
                                 typeId: mcp_server.typeId,
                                 instanceId: mcp_server.instanceId,
+                                allTools: mcp_server.allTools == true,
                                 tools: mcp_server_tools
                             }}
                     )

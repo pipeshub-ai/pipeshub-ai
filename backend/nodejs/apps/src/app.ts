@@ -68,6 +68,7 @@ import { MailConsumer } from './modules/mail/services/mail.consumer';
 import { MailSenderService } from './modules/mail/services/mail.sender.service';
 import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
+import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -106,6 +107,10 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import {
+  createMcpClientMetadataHandler,
+  MCP_CLIENT_METADATA_PATH,
+} from './modules/mcp_servers/routes/mcp_client_metadata';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
@@ -119,6 +124,11 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+// Well under the stop grace period (30s in docker-compose.yml, 300s in Helm),
+// leaving time to close Mongo, Redis and the brokers after a drain that runs
+// the full time.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const loggerConfig = {
   service: 'Application',
@@ -646,6 +656,17 @@ export class Application {
       createConfigurationManagerRouter(this.configurationManagerContainer),
     );
 
+    // OpenAI-compatible catalog of configured models. Clients use either
+    // ``{origin}/v1`` or ``{origin}/api/v1`` as the base URL.
+    this.app.use(
+      '/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+    this.app.use(
+      '/api/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+
     // toolsets routes
     this.app.use(
       '/api/v1/toolsets',
@@ -668,6 +689,14 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+    // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
+    // ahead of the static files and the SPA fallback, which answer a .json path with 404.
+    this.app.get(
+      MCP_CLIENT_METADATA_PATH,
+      createMcpClientMetadataHandler(
+        KeyValueStoreService.getInstance(loadConfigurationManagerConfig()),
+      ),
     );
 
     // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
@@ -810,9 +839,56 @@ export class Application {
     }
   }
 
+  /**
+   * Stops accepting connections and resolves once in-flight requests have
+   * finished, force-closing whatever is still open after the drain timeout.
+   */
+  private async closeHttpServer(): Promise<void> {
+    if (!this.server.listening) return;
+    const closed = new Promise<void>((resolve) => {
+      this.server.close(() => {
+        resolve();
+      });
+    });
+    // close() drops only the sockets idle at this moment. A keep-alive socket
+    // whose response finishes later stays open for keepAliveTimeout (65s) and
+    // would hold close() until the drain timeout, so keep sweeping.
+    const sweep = setInterval(() => {
+      this.server.closeIdleConnections();
+    }, SHUTDOWN_IDLE_SWEEP_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout');
+      }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        closed.then(() => 'drained' as const),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          'Requests still open after the shutdown drain timeout; closing them',
+          { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        );
+        this.server.closeAllConnections();
+        await closed;
+      }
+    } finally {
+      clearInterval(sweep);
+      clearTimeout(timer);
+    }
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      // Stop accepting first, and only dispose Mongo/Redis/brokers once the
+      // requests already in flight have finished — otherwise they fail
+      // mid-request on closed clients. Socket.IO connections are closed by
+      // the gateway shutdowns below, so they don't hold the drain open.
+      const drained = this.closeHttpServer();
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -834,15 +910,6 @@ export class Application {
         });
       }
       try {
-        this.mailServiceContainer
-          .get<MailSenderService>(MailSenderService)
-          .close();
-      } catch (err) {
-        this.logger.warn('MailSenderService not available during shutdown', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
         registerDesktopPresence(null);
@@ -852,6 +919,18 @@ export class Application {
       } catch (err) {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
+      }
+      await drained;
+      // After the drain: an in-flight /mail/emails/sendEmail request may still be
+      // queued on this pool, and close() fails queued messages.
+      try {
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
+      } catch (err) {
+        this.logger.warn('MailSenderService not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       // Stopped before the containers go, because it holds the message
       // producer one of them owns.

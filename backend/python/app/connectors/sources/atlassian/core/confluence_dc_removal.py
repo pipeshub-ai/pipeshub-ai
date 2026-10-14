@@ -23,11 +23,10 @@ from app.connectors.core.registry.filters import SyncFilterKey
 from app.models.entities import Record, RecordGroup, RecordGroupType, RecordType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
-# The content search moves date filters by this much (``time_offset_hours``).
-TIME_OFFSET_HOURS = 24
-# A filter date only removes what it leaves out by more than this, so an item
+# A filter date only removes what it leaves out by more than this. The search reads
+# filter dates in the site's time zone, not UTC (up to 14 hours apart), so an item
 # near the edge is never removed by one check and brought back by the next.
-FILTER_REMOVAL_MARGIN = timedelta(hours=2 * TIME_OFFSET_HOURS)
+FILTER_REMOVAL_MARGIN = timedelta(hours=24)
 CONTENT_LIST_LIMIT = 100
 RECORD_SCAN_PAGE_SIZE = 500
 ID_SYNC_CHUNK = 50

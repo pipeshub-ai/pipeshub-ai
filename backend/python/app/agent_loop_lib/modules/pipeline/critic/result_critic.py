@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.core.types import AgentResult, Confidence, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.modules.pipeline.critic.base import (
     Critic,
     CritiqueIssue,
@@ -65,10 +66,11 @@ class ResultCritic(Critic):
             "Assess whether the result genuinely satisfies the goal and criteria."
         )
 
-        response = await self._model.complete_structured(
-            messages=[UserMessage(content=prompt)],
-            output_schema=_SCHEMA,
-        )
+        with llm_usage_source("result_critic"):
+            response = await self._model.complete_structured(
+                messages=[UserMessage(content=prompt)],
+                output_schema=_SCHEMA,
+            )
         raw = response.data
 
         issues = [

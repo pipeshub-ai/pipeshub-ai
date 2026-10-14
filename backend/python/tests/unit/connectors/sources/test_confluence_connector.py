@@ -297,7 +297,7 @@ class TestSyncFolders:
         call_args = mock_datasource.get_folders_v1.call_args[1]
         assert call_args["space_key"] == "TEST"
         assert call_args["expand"] == FOLDER_EXPAND_PARAMS
-        assert call_args["time_offset_hours"] == TIME_OFFSET_HOURS
+        assert "time_offset_hours" not in call_args, "the datasource gets the dates as they are meant"
 
         c.data_entities_processor.on_new_records.assert_called_once()
         saved_records = c.data_entities_processor.on_new_records.call_args[0][0]
@@ -604,7 +604,7 @@ class TestSyncFolders:
                 await c._sync_folders("TEST")
 
         call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-01-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2023-12-31T00:00:00.000Z", "the checkpoint less 24 hours"
 
     async def test_sync_folders_with_modified_filter(self):
         """Test sync with modified date filter from sync_filters."""
@@ -695,7 +695,7 @@ class TestSyncFolders:
                 await c._sync_folders("TEST")
 
         call_kwargs = mock_datasource.get_folders_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-02-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-01-31T00:00:00.000Z", "the checkpoint less 24 hours is later than the filter"
 
     async def test_sync_folders_with_filter_only(self):
         """Test sync with filter but no checkpoint."""
@@ -2431,11 +2431,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -3758,10 +3758,11 @@ class TestGetAppUsersByEmailsFullCoverage:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrlFullCoverage:
@@ -5016,7 +5017,7 @@ class TestSyncContentPages:
 
         await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
         call_kwargs = ds.get_pages_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-06-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-05-31T00:00:00.000Z", "the checkpoint less 24 hours"
 
     @pytest.mark.asyncio
     async def test_cursor_extraction_fail_stops_pagination(self):
@@ -5360,13 +5361,13 @@ class TestGetAppUsersByEmailsMissing:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _mk_connector()
         c.data_entities_processor.get_all_app_users = AsyncMock(
             side_effect=RuntimeError("db fail")
         )
-        result = await c._get_app_users_by_emails(["u@x.com"])
-        assert result == []
+        with pytest.raises(RuntimeError, match="db fail"):
+            await c._get_app_users_by_emails(["u@x.com"])
 
 
 # ===========================================================================
@@ -5902,7 +5903,7 @@ class TestSyncContentFilterPaths:
 
         await c._sync_content("S1", RecordType.CONFLUENCE_PAGE)
         call_kwargs = ds.get_pages_v1.call_args[1]
-        assert call_kwargs["modified_after"] == "2024-05-01T00:00:00.000Z"
+        assert call_kwargs["modified_after"] == "2024-04-30T00:00:00.000Z", "the checkpoint less 24 hours"
 
     @pytest.mark.asyncio
     async def test_modified_before_and_created_dates_logged(self):

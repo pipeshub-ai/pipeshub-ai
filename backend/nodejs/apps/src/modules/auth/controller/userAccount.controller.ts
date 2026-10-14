@@ -5,6 +5,7 @@ import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 
 import {
+  entityUserWriteJwtGenerator,
   iamJwtGenerator,
   iamUserLookupJwtGenerator,
   jwtGeneratorForForgotPasswordLink,
@@ -52,6 +53,7 @@ import { MailService } from '../services/mail.service';
 
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   HttpError,
   InternalServerError,
@@ -92,6 +94,11 @@ import {
   assertMethodAllowedAtStep,
   IOrgAuthConfigLike,
 } from '../utils/authMethodGuard';
+import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import {
+  executeConnectorCommand,
+  handleBackendError,
+} from '../../tokens_manager/utils/connector.utils';
 
 const {
   LOGIN,
@@ -2215,8 +2222,8 @@ export class UserAccountController {
         { email },
         { new: true },
       );
-      if (user) {
-        await this.publishEmailChanged(user);
+      if (!user) {
+        throw new NotFoundError('User not found');
       }
 
       await UserActivities.create({
@@ -2225,6 +2232,32 @@ export class UserAccountController {
         activityType: PASSWORD_CHANGED,
         ipAddress: req.ip || '',
       });
+
+      // A conflict means another login owns the address in the graph, so the
+      // event must not write it onto this one. Any other graph failure still
+      // publishes, so the event can carry the address, and then fails the
+      // request so the link can be opened again.
+      let graphFailure: Error | undefined;
+      if (userId && orgId) {
+        try {
+          await this.syncVerifiedEmailToGraph(
+            String(userId),
+            String(orgId),
+            email,
+          );
+        } catch (syncError) {
+          if (syncError instanceof ConflictError) {
+            throw syncError;
+          }
+          graphFailure =
+            syncError instanceof Error ? syncError : new Error(String(syncError));
+        }
+      }
+
+      await this.publishEmailChanged(user);
+      if (graphFailure) {
+        throw graphFailure;
+      }
 
       res.status(200).json({ message: 'Email updated successfully' });
 
@@ -2259,6 +2292,32 @@ export class UserAccountController {
     await this.eventService.stop();
   }
 
-
+  protected async syncVerifiedEmailToGraph(
+    userId: string,
+    orgId: string,
+    email: string,
+  ): Promise<void> {
+    const token = entityUserWriteJwtGenerator(
+      userId,
+      orgId,
+      this.config.scopedJwtSecret,
+    );
+    const response = await executeConnectorCommand(
+      `${this.config.connectorBackend}/api/v1/entity/user/email`,
+      HttpMethod.PATCH,
+      { Authorization: `Bearer ${token}` },
+      { email },
+    );
+    if (response?.statusCode === 404) {
+      this.logger.warn('Graph user not found while syncing verified email', {
+        userId,
+      });
+      return;
+    }
+    const statusCode = response?.statusCode;
+    if (!statusCode || statusCode < 200 || statusCode >= 300) {
+      throw handleBackendError(response, 'sync verified email to graph');
+    }
+  }
 
 }

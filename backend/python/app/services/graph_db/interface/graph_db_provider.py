@@ -9,7 +9,7 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -441,13 +441,18 @@ class IGraphDBProvider(ABC):
     # ==================== Transaction Management ====================
 
     @abstractmethod
-    def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         """
         Begin a database transaction.
 
         Args:
             read (List[str]): Collections/tables to read from
             write (List[str]): Collections/tables to write to
+            explicit (bool | None): True asks for a real, all-or-nothing
+                transaction where the backend can run statements outside one
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS off). None leaves it to
+                the backend's own setting. Backends that are always
+                transactional ignore it.
 
         Returns:
             str: Transaction ID
@@ -464,10 +469,11 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply
         be re-run (a deadlock, a lock timeout). Backends whose transactions
-        cannot guarantee nothing landed answer False."""
+        cannot guarantee nothing landed answer False. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
         return False
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -588,11 +594,16 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
+        after_key: str | None = None,
     ) -> list[dict]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
         total collection size.
+
+        ``after_key`` is a keyset cursor: only documents whose key sorts
+        strictly after it are returned. It needs ``sort_field="_key"``. Prefer
+        it over ``skip`` for a result set that changes while it is walked.
 
         Args:
             collection:   Collection / label name.
@@ -789,7 +800,9 @@ class IGraphDBProvider(ABC):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge/relationship between two nodes.
@@ -801,6 +814,8 @@ class IGraphDBProvider(ABC):
             to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: raise when the read fails, instead of answering None,
+                which a caller deciding whether the edge exists would read as "absent"
 
         Returns:
             Optional[Dict]: Edge data in generic format if found, None otherwise
@@ -991,7 +1006,7 @@ class IGraphDBProvider(ABC):
         inherit: bool | None,
         leaving_group_id: str | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         """Take the record out of *leaving_group_id*, then put it in *record_group_id*.
 
         Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group.
@@ -999,33 +1014,43 @@ class IGraphDBProvider(ABC):
         false removes that edge and None leaves it alone. Either group may be None.
         Neo4j overrides it with one statement: a record that left its group but
         kept the inherit edge stayed readable to the old group's members.
+
+        Returns the number of INHERIT_PERMISSIONS edges removed, counted by the
+        deletes themselves, so a caller learns the record lost inherited access
+        without reading the edge first.
         """
+        removed = 0
         if leaving_group_id:
             await self._delete_record_group_edge(
                 record_id, leaving_group_id, CollectionNames.BELONGS_TO.value, transaction
             )
-            await self._set_record_group_inheritance(record_id, leaving_group_id, transaction, inherit=False)
+            removed += await self._set_record_group_inheritance(
+                record_id, leaving_group_id, transaction, inherit=False
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id, transaction)
             if inherit is not None:
-                await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+                removed += await self._set_record_group_inheritance(
+                    record_id, record_group_id, transaction, inherit=inherit
+                )
+        return removed
 
     async def _set_record_group_inheritance(
         self, record_id: str, record_group_id: str, transaction: str | None, *, inherit: bool
-    ) -> None:
+    ) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
-        else:
-            await self._delete_record_group_edge(
-                record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
-            )
+            return 0
+        return await self._delete_record_group_edge(
+            record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
+        )
 
     async def _delete_record_group_edge(
         self, record_id: str, record_group_id: str, collection: str, transaction: str | None
-    ) -> None:
+    ) -> int:
         # Not delete_edge: ArangoDB's answers False when the delete fails, so the
         # transaction went on to commit the rest beside an edge that should have gone.
-        await self.batch_delete_edges(
+        return await self.batch_delete_edges(
             [{
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,
@@ -1158,7 +1183,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
@@ -1169,6 +1196,9 @@ class IGraphDBProvider(ABC):
             node_id (str): Full node ID (e.g., "records/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of logging it and
+                returning ``[]``, for callers that must tell "no edges" from
+                "could not look".
 
         Returns:
             List[Dict]: List of edge documents
@@ -1785,8 +1815,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Page records for a connector by stable key for membership backfill.
 
-        Returns ``{_key, virtualRecordId}`` only, ordered by key, with keys
-        strictly greater than ``after_key`` when it is set.
+        Returns ``PAGE_RECORD_FIELDS`` only, ordered by key, with keys
+        strictly greater than ``after_key`` when it is set. Soft-deleted
+        records are included.
         """
         pass
 
@@ -1913,10 +1944,19 @@ class IGraphDBProvider(ABC):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         """Set indexingStatus for every record on a connector in one query.
 
         ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
+        ``only_statuses``, when given, limits the write to records holding one
+        of them. ``reason``, when given, is written alongside the status.
+        ``visibility`` defaults to ``ALL`` (trashed records included, which is
+        what the vector-store rebuild has always done); ``LIVE`` leaves the
+        trash alone.
         """
         pass
 
@@ -2361,7 +2401,9 @@ class IGraphDBProvider(ABC):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by their source system ID.
@@ -2370,6 +2412,8 @@ class IGraphDBProvider(ABC):
             source_user_id (str): User ID in source system
             connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed query instead of returning
+                None, so a caller can tell "not found" from "could not read".
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -2393,6 +2437,24 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        """
+        Set the login graph user's email after Mongo accepted a verified change.
+
+        Connector stub users that already hold this email are merged into the
+        login user. Another real login userId with this email is a conflict.
+
+        Returns:
+            Dict with email and mergedStubKeys, or None if the login user is missing.
         """
         pass
 
@@ -2501,7 +2563,9 @@ class IGraphDBProvider(ABC):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users for a specific connector in an organization.
@@ -2509,6 +2573,8 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
+            raise_on_error (bool): Raise a failed query instead of returning
+                ``[]``, so a caller can tell "no users" from "could not read".
 
         Returns:
             List[Dict]: List of app users
@@ -2974,7 +3040,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list['AppUserGroup']:
         """
         Get all user groups for a connector in an organization.
@@ -3622,23 +3690,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
-        """VRIDs of this connector's records that a live record elsewhere also holds.
+    ) -> dict[str, list[dict]]:
+        """Every record of ``org_id`` holding each of these VRIDs, trashed ones included.
 
         Deduplicated content is stored once, under whichever connector indexed
-        it first, and every other record with that VRID reads the same storage
-        documents. Before a connector's storage is deleted, these are the VRIDs
-        whose documents must survive.
+        it first; before that connector's storage is deleted its copy is handed
+        over to one of these holders. A trashed holder counts: a restore needs
+        the content, and the trash purge releases it later. VRIDs nobody holds
+        are absent from the result. Each holder carries ``id``, ``connectorId``,
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
+        ``isDeleted`` (a bool).
 
-        Same liveness rule as ``get_records_by_virtual_record_id``: soft-deleted
-        records do not count, and the lookup is not scoped by connector type.
-
-        Raises on failure rather than returning an empty list — an empty answer
-        tells the caller it may delete shared storage.
+        Raises on failure rather than returning an empty mapping, which would
+        read as "nothing is shared" and let the caller delete shared storage.
         """
         raise NotImplementedError
 
@@ -3682,6 +3751,26 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[str]: Record keys, empty when nothing references it
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``virtual_record_ids`` that at least one record holds.
+
+        ``get_records_by_virtual_record_id`` answered for many VRIDs in one
+        round trip, with the same predicate per VRID: not scoped by connector or
+        org, and ``visibility`` choosing live or trashed records. A sweep over
+        many VRIDs asks this instead of one query each.
+
+        Raises on failure rather than answering an empty set, which would read
+        as "nothing references these" and let the caller delete their vectors.
         """
         raise NotImplementedError
 
@@ -4143,7 +4232,11 @@ class IGraphDBProvider(ABC):
         """
         Delete only sync-created edges for a connector (belongsTo, recordRelations,
         permission, inheritPermissions, userAppRelation). Does not delete nodes or
-        isOfType/indexing data. Used for full sync reset.
+        isOfType/indexing data.
+
+        A full sync no longer calls this before it starts: a sync cut off partway
+        left every node it had not reached yet unlinked. It removes what it did
+        not see after it finishes instead (``unlink_nodes_missed_by_full_sync``).
 
         Args:
             connector_id: The connector ID (app _key).
@@ -4151,6 +4244,41 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
+    @abstractmethod
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        """
+        After a full sync ran to the end, remove the sync edges of the connector's
+        records, record groups, groups and roles that it did not see.
+
+        Call this only for a full sync that finished: one cut off partway saw only
+        part of the source, and must unlink nothing.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            seen: Per collection (records, recordGroups, groups, roles), the keys
+                of the nodes the sync wrote. A node not listed is unseen.
+            window_start_ms: When set, the sync read only items created at or
+                after this time. An unseen record created before it, an unseen
+                group of a type in ``windowed_group_types`` created before it, and
+                the unseen records in such a group keep their links: they were
+                not read, not deleted. They lose only their permission edges,
+                which the sync could not check.
+            windowed_group_types: Record group types the window applies to.
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (deleted_edges_count, success_flag).
         """
         pass
 
@@ -5349,6 +5477,24 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_mcp_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that have the MCP server instance attached.
+
+        Args:
+            instance_id (str): MCP server instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the instance.
+        """
+        pass
+
+    @abstractmethod
     async def check_connector_in_use(
         self,
         connector_id: str,
@@ -6419,6 +6565,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every ``belongsTo*`` edge from the given records to a category,
+        subcategory, topic or language node, with the spelling the record's
+        own extraction gave that node.
+
+        Rows are ``{recordId, collection, entityId, name, canonical,
+        extractedName, migrated}``: ``name`` is the node's stored name,
+        ``canonical`` whether the node is a per-org canonical node (it has a
+        ``normalizedName``), ``extractedName`` the edge's own spelling or
+        None, and ``migrated`` whether the edge was moved off a legacy node.
+        ``app.services.graph_db.taxonomy.TaxonomyLink`` reads them.
+        Departments are not included.
+
+        Raises:
+            Exception: on query failure; a partial answer would read as the
+            records having fewer labels.
+        """
+        pass
+
+    @abstractmethod
     async def get_entity_candidate_records(
         self,
         refs: list[dict[str, Any]],
@@ -6738,3 +6908,150 @@ class IGraphDBProvider(ABC):
             Exception: on write failure.
         """
         pass
+
+    @abstractmethod
+    async def create_named_entities_if_absent(self, nodes: list[dict]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_key_prefix(
+        self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
+    ) -> list[dict]:
+        """Nodes whose key is a ``(kind, key)`` pair's key followed by more words,
+        at most ``limit`` per pair, each row tagged with that ``key``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str]
+    ) -> list[dict]:
+        """Mention edges between ``record_ids`` (records the caller already resolved)
+        and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_named_entity_aliases(
+        self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def query_named_entities(self, org_id: str, query) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_records_for_named_entities(
+        self,
+        org_id: str,
+        entity_ids: list[str] | None = None,
+        query=None,
+        limit: int = 5000,
+        within: list[str] | None = None,
+    ) -> dict:
+        """Records matching every constraint. With ``within``, only those record ids
+        are considered, so a caller's answer never depends on records it cannot read."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_for_record(self, record_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def copy_named_entity_mentions(self, source_key: str, target_key: str) -> int:
+        raise NotImplementedError
+
+    def is_named_entity_write_retryable(self, error: BaseException) -> bool:
+        return False
+
+    @abstractmethod
+    async def find_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        skip_kinds: list[str] | None = None,
+    ) -> list[str]:
+        """Keys :meth:`delete_orphan_named_entities` would delete now, without deleting
+        them, leaving out ``skip_kinds``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Delete entities no record mentions. With ``marked_before_ms``, only those
+        marked orphaned at or before it, so a node written a moment ago and not yet
+        linked is not removed. With ``entity_ids``, only those of them still orphaned."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_orphan_named_entities(self, org_id: str, now_ms: int, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_orphan_named_entity_marks(self, org_id: str, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_mentions(self, entity_ids: list[str]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_persist_retry(
+        self, org_id: str, record_id: str, error: str, attempts_so_far: int = 0,
+    ) -> int:
+        """Record that ``record_id``'s named-entity write failed: due again after a
+        backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
+        when its marker is already gone (its claim committed before the failure).
+        Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
+        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``.
+        ``reextract`` selects the re-extraction jobs instead of the write retries."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
+        """Queue ``record_id`` to have its named entities extracted again from its
+        stored blocks, due now. A normal write of the record drops it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_named_entity_persist_retry(
+        self, record_id: str, due_at: int | None, transaction: str | None = None,
+    ) -> bool:
+        """Drop the retry, only while its due time is still ``due_at``; with no
+        ``due_at``, whatever is pending. Returns whether one was dropped."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def resolve_named_entity_redirects(self, org_id: str, ids: list[str]) -> dict[str, str]:
+        """Each named-entity id mapped to the node it was finally merged into."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def replace_named_entity_values(
+        self, record_id: str, docs: list[dict], transaction: str | None = None,
+    ) -> None:
+        """Make ``docs`` the typed values (dates, amounts, quantities…) the record mentions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_values(self, org_id: str, batch_size: int = 200) -> int:
+        """Remove value rows whose record no longer exists; returns how many."""
+        raise NotImplementedError
