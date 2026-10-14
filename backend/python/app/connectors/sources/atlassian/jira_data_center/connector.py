@@ -527,7 +527,9 @@ class JiraDataCenterConnector(BaseConnector):
 
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
-        could not be read, so they stay as stored and must survive the unlink after it."""
+        could not be read, so they stay as stored and must survive the unlink after it. So does
+        the project's record group, even with no grants of its own, for the records' links into it."""
+        await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
         page_size = 1000
         after_key: Optional[str] = None
         while True:

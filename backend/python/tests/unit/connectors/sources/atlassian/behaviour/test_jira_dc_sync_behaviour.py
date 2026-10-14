@@ -1870,6 +1870,25 @@ class TestFullSyncCoverage:
         graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
         assert sorted(db.kept_records) == stored, "the project's stored records are noted as seen"
 
+    async def test_a_refused_issue_search_keeps_the_project_its_records_belong_to(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": []})  # no grants of its own
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert db.record_group_permissions["10000"] == []
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        search.add("ENG", 0, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert db.kept_records, "the project's records are kept"
+        assert "10000" not in db.unlinked_record_groups, "so is the project, so the records keep their link into it"
+
     @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
     async def test_an_issue_search_that_fails_is_classed_by_its_status(
         self, jira, db, store, search, status, complete

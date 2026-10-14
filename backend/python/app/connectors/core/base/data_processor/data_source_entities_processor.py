@@ -3091,6 +3091,17 @@ class DataSourceEntitiesProcessor:
         for record_id in record_ids:
             self._note_full_sync_seen(connector_id, CollectionNames.RECORDS.value, record_id)
 
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        """Note a record group a connector keeps as stored without writing it as seen by the
+        full sync in progress, if any, so the unlink after that sync keeps the links its
+        records have into it. A lookup that fails raises."""
+        if self._full_sync_run(connector_id) is None:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            group = await tx_store.get_record_group_by_external_id(connector_id, external_group_id)
+        if group is not None:
+            self._note_full_sync_seen(connector_id, CollectionNames.RECORD_GROUPS.value, group.id)
+
     async def has_stored_permissions(
         self, entity: str, connector_id: str, external_id: str, *, keep: bool = False
     ) -> bool:
