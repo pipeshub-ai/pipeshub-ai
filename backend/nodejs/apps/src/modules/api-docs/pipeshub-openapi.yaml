@@ -14460,7 +14460,7 @@ components:
               example: "123456789-abc.apps.googleusercontent.com"
             clientSecret:
               type: string
-              description: OAuth client secret (stored encrypted, never returned in responses)
+              description: OAuth client secret; never in the create response, and returned by GET only to admins (masked when HIDE_SECRET_CONFIG is on)
               example: "GOCSPX-xxxxxxxxxxxxx"
             tenantId:
               type: string
@@ -16953,6 +16953,151 @@ components:
           type: boolean
         hasNext:
           type: boolean
+    OAuthRegistryEntry:
+      type: object
+      description: A connector type that signs in with an OAuth app, with what an admin needs to register that app
+      required:
+        - name
+        - type
+        - appGroup
+        - authType
+        - appDescription
+        - appCategories
+        - iconPath
+        - oauthScopes
+        - redirectUri
+        - authorizeUrl
+        - tokenUrl
+        - authFields
+        - documentationLinks
+      properties:
+        name:
+          type: string
+          example: Jira
+        type:
+          type: string
+          description: The `connectorType` to use in the OAuth app and connector routes
+          example: Jira
+        appGroup:
+          type: string
+          example: Atlassian
+        authType:
+          type: string
+          description: Always OAUTH
+          example: OAUTH
+        appDescription:
+          type: string
+        appCategories:
+          type: array
+          items:
+            type: string
+        iconPath:
+          type: string
+          example: /icons/connectors/jira.svg
+        oauthScopes:
+          type: object
+          description: Provider scopes requested for each way the connector is used
+          required:
+            - personalSync
+            - teamSync
+            - agent
+          properties:
+            personalSync:
+              type: array
+              items:
+                type: string
+            teamSync:
+              type: array
+              items:
+                type: string
+            agent:
+              type: array
+              items:
+                type: string
+        redirectUri:
+          type: string
+          description: Path the provider redirects back to; PipesHub's public origin is prefixed to it
+          example: connectors/oauth/callback/Jira
+        authorizeUrl:
+          type: string
+        tokenUrl:
+          type: string
+        additionalParams:
+          type: object
+          description: Extra query parameters sent on the authorize URL; present for some types only
+          additionalProperties:
+            type: string
+        tokenAccessType:
+          type: string
+          description: Dropbox and Salesforce only
+          example: offline
+        authFields:
+          type: array
+          description: The fields an admin fills in when registering the OAuth app
+          items:
+            type: object
+            required:
+              - name
+              - displayName
+              - placeholder
+              - description
+              - fieldType
+              - required
+              - usage
+              - defaultValue
+              - validation
+              - isSecret
+            properties:
+              name:
+                type: string
+                example: clientId
+              displayName:
+                type: string
+              placeholder:
+                type: string
+              description:
+                type: string
+              fieldType:
+                type: string
+                enum: [TEXT, PASSWORD, URL, SELECT]
+              required:
+                type: boolean
+              usage:
+                type: string
+                enum: [CONFIGURE, BOTH]
+              defaultValue:
+                type: string
+              validation:
+                type: object
+                properties:
+                  minLength:
+                    type: integer
+                  maxLength:
+                    type: integer
+              isSecret:
+                type: boolean
+              options:
+                type: array
+                description: Present on SELECT fields
+                items:
+                  type: string
+        documentationLinks:
+          type: array
+          items:
+            type: object
+            required:
+              - title
+              - url
+              - type
+            properties:
+              title:
+                type: string
+              url:
+                type: string
+              type:
+                type: string
+                description: For example setup, docs or pipeshub (the casing varies)
+
     OAuthCallbackResult:
       type: object
       required:
@@ -42043,6 +42188,8 @@ paths:
       operationId: getOAuthRegistry
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:read
       parameters:
         - name: page
           in: query
@@ -42059,6 +42206,7 @@ paths:
             default: 20
         - name: search
           in: query
+          description: Matches the connector type's name, group or description
           schema:
             type: string
       responses:
@@ -42074,11 +42222,31 @@ paths:
                   connectors:
                     type: array
                     items:
-                      $ref: '#/components/schemas/ConnectorType'
+                      $ref: '#/components/schemas/OAuthRegistryEntry'
                   pagination:
                     $ref: '#/components/schemas/ConnectorPagination'
+                required:
+                  - success
+                  - connectors
+                  - pagination
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `connector:read`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/registry/{connectorType}:
     get:
@@ -42089,6 +42257,8 @@ paths:
       operationId: getOAuthConnectorType
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:read
       parameters:
         - name: connectorType
           in: path
@@ -42106,11 +42276,28 @@ paths:
                   success:
                     type: boolean
                   connector:
-                    $ref: '#/components/schemas/ConnectorType'
+                    $ref: '#/components/schemas/OAuthRegistryEntry'
+                required:
+                  - success
+                  - connector
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks `connector:read`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Connector type not found
+          description: The connector type has no OAuth app registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth:
     get:
@@ -42285,6 +42472,8 @@ paths:
       operationId: createOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:write
       parameters:
         - name: connectorType
           in: path
@@ -42299,12 +42488,16 @@ paths:
             schema:
               $ref: '#/components/schemas/CreateOAuthConfigRequest'
       responses:
-        '201':
+        '200':
           description: OAuth configuration created
           content:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - oauthConfig
+                  - message
                 properties:
                   success:
                     type: boolean
@@ -42312,14 +42505,38 @@ paths:
                     $ref: '#/components/schemas/OAuthConfig'
                   message:
                     type: string
+                    example: OAuth configuration created successfully
         '400':
-          description: Invalid configuration or duplicate name
+          description: |
+            Invalid request: `oauthInstanceName` or `config` is missing or empty.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
-        '404':
-          description: Connector type not found
+          description: The token lacks `connector:write`, or the caller is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Another of the org's OAuth apps for this connector type already has this `oauthInstanceName`
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal error, for example when the JSON body is not an object
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/{connectorType}/{configId}:
     get:
@@ -42505,12 +42722,16 @@ paths:
       summary: Delete OAuth configuration
       description: |
         Delete an OAuth configuration.<br><br>
+        <b>Admin Only:</b><br>
+        Only admins can delete OAuth configurations.<br><br>
         <b>Warning:</b><br>
-        Cannot delete if the configuration is used by active connectors.
-        Disable or delete dependent connectors first.
+        The server does not check whether connectors still use the configuration:
+        it is deleted either way, and those connectors lose their OAuth app.
       operationId: deleteOAuthConfig
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:delete
       parameters:
         - name: connectorType
           in: path
@@ -42529,19 +42750,33 @@ paths:
             application/json:
               schema:
                 type: object
+                required:
+                  - success
+                  - message
                 properties:
                   success:
                     type: boolean
                   message:
                     type: string
-        '400':
-          description: Cannot delete - used by active connectors
+                    example: OAuth configuration 38c772e6-9ce3-4bd6-907d-b7f5302c1fcf deleted successfully
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Admin access required
+          description: The token lacks `connector:delete`, or the caller is not an admin
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Configuration not found
+          description: Configuration not found, or the caller has no access
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   # ==================== CONFIGURATION MANAGER ENDPOINTS ====================
 
