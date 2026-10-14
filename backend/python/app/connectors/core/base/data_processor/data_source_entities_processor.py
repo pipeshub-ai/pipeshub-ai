@@ -742,6 +742,33 @@ class DataSourceEntitiesProcessor:
     ADDRESS_LINK_HOLDER_CONNECTORS = [Connectors.SLACK_WORKSPACE.value, Connectors.SLACK.value]
     # Records holding a link to one record, read per page by the backfill.
     LINK_HOLDER_PAGE = 100
+    # Whether an org has a connector that keeps link records, read once per this
+    # many milliseconds per org; an org without one is asked again sooner.
+    LINK_HOLDER_APPS_TTL_MS = 10 * 60 * 1000
+    NO_LINK_HOLDER_APPS_TTL_MS = 60 * 1000
+
+    async def _org_keeps_link_records(self, org_id: str, tx_store: TransactionStore) -> bool:
+        """Whether the org has a connector that keeps pasted addresses as link
+        records (Slack). Without one, no record can be linking here, and the
+        backfill's read is skipped. A failed read answers yes, and is not cached."""
+        cache: dict[str, tuple[int, bool]] = self.__dict__.setdefault("_link_holder_apps_cache", {})
+        now = get_epoch_timestamp_in_ms()
+        cached = cache.get(org_id)
+        if cached:
+            ttl = self.LINK_HOLDER_APPS_TTL_MS if cached[1] else self.NO_LINK_HOLDER_APPS_TTL_MS
+            if now - cached[0] < ttl:
+                return cached[1]
+        try:
+            apps = await tx_store.get_org_apps(org_id)
+        except Exception as e:
+            self.logger.warning(f"Could not read the apps of org {org_id}: {e}")
+            return True
+        holders = {name.casefold() for name in self.ADDRESS_LINK_HOLDER_CONNECTORS}
+        keeps = any(
+            str((app or {}).get("type") or "").casefold() in holders for app in apps or []
+        )
+        cache[org_id] = (now, keeps)
+        return keeps
 
     @staticmethod
     def _address_link_edge(from_id: str, to_id: str, relation_type: str) -> dict:
@@ -811,6 +838,8 @@ class DataSourceEntitiesProcessor:
             return
         addresses = addresses_linking_to(record.weburl)
         if not addresses:
+            return
+        if not await self._org_keeps_link_records(record.org_id or self.org_id, tx_store):
             return
         after: str | None = None
         checked_target = False
@@ -1980,7 +2009,12 @@ class DataSourceEntitiesProcessor:
         # to clean up stale link edges even when related_external_records is empty (handles removed links)
         # A MessageRecord's links are pasted addresses (see record_links), and an
         # edit can remove one, so it is always cleaned up as well.
-        if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord)):
+        # None, unlike [], means the connector did not read the record's links on
+        # this save (a Slack reindex): its link edges are kept as they are.
+        if (
+            isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord))
+            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+        ):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
         # Records that pasted this record's address before it was indexed. On

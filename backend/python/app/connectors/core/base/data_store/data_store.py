@@ -502,6 +502,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        """Every app of the org, active or not; see IGraphDBProvider.get_org_apps."""
+        pass
+
+    @abstractmethod
     async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
         """Records of the org stored under any of ``weburls``; see IGraphDBProvider."""
         pass

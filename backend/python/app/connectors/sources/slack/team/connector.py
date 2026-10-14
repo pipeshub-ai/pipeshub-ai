@@ -2900,7 +2900,9 @@ class SlackConnector(BaseConnector):
                 mentioned_group_ids=self._extract_channel_mentions(text),  # Keep original IDs for edges
                 is_edited=is_edited,
                 involved_user_source_ids=[user_id] if user_id else [],
-                related_external_records=self._related_for_messages([msg]),
+                # Rebuilt for a reindex, which leaves the link records alone: None keeps
+                # the message's link edges as they are, in step with those records.
+                related_external_records=None,
                 # Hierarchy
                 inherit_permissions=True,
                 preview_renderable=False,

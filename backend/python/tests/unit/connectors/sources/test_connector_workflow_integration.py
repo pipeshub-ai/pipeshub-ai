@@ -276,6 +276,9 @@ class MockTransactionStore:
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
 
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        return []
+
     async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
         wanted = set(weburls)
         return [

@@ -5931,6 +5931,17 @@ class TestSlackTeamConnectorCoverageBoost:
         assert lr.url == pasted
 
     @pytest.mark.asyncio
+    async def test_a_reindexed_message_leaves_its_link_edges_alone(self) -> None:
+        from app.connectors.sources.slack.team.connector import ProcessingContext
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "g"}, c.rate_limiter)
+        rec = await c._to_message_record(
+            {"ts": "1.0", "user": "U1", "text": "see https://github.com/acme/api/pull/7"}, ctx,
+        )
+        assert rec.related_external_records is None
+
+    @pytest.mark.asyncio
     async def test_process_link_exception_returns_none(self):
         from app.connectors.sources.slack.team.connector import ProcessingContext, SlackConnector
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes

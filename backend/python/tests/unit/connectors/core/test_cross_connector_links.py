@@ -63,6 +63,7 @@ def _tx_store(at_address: list[dict] | None = None, holders: list[str] | None = 
     tx.batch_upsert_records = AsyncMock()
     tx.get_records_by_weburls = AsyncMock(return_value=at_address or [])
     tx.get_records_linking_to_weburls = AsyncMock(return_value=holders or [])
+    tx.get_org_apps = AsyncMock(return_value=[{"type": "Slack Workspace"}])
     return tx
 
 
@@ -353,3 +354,52 @@ class TestATicketAndItsAttachmentBothSaved:
             assert [(e["_from"], e["_to"]) for e in _edges(tx)] == [
                 (f"{CollectionNames.RECORDS.value}/msg-1", f"{CollectionNames.RECORDS.value}/ticket-1"),
             ]
+
+
+class TestBackfillOnlyWhereLinksAreKept:
+    @pytest.mark.asyncio
+    async def test_an_org_without_slack_never_reads_for_holders(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        tx.get_org_apps = AsyncMock(return_value=[{"type": "Jira"}, {"type": "Github"}])
+
+        await proc._join_records_linking_here(_pull_request(), tx)
+        await proc._join_records_linking_here(_pull_request("pr-2"), tx)
+
+        tx.get_records_linking_to_weburls.assert_not_awaited()
+        assert tx.get_org_apps.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_org_with_slack_reads_for_holders(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        tx.get_org_apps = AsyncMock(return_value=[{"type": "Slack"}])
+
+        await proc._join_records_linking_here(_pull_request(), tx)
+
+        tx.get_records_linking_to_weburls.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_app_read_still_reads_for_holders(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        tx.get_org_apps = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        await proc._join_records_linking_here(_pull_request(), tx)
+
+        tx.get_records_linking_to_weburls.assert_awaited()
+
+
+class TestAReindexKeepsTheMessagesEdges:
+    @pytest.mark.asyncio
+    async def test_a_message_saved_without_reading_its_links_keeps_its_edges(self) -> None:
+        """A Slack reindex rebuilds a message from Slack but leaves its link
+        records alone, so it must leave the edges alone too, in step with them."""
+        proc = _processor()
+        tx = _tx_store()
+        message = _message()
+        message.related_external_records = None
+
+        await proc._process_record(message, [], tx)
+
+        tx.delete_edges_by_relationship_types.assert_not_awaited()

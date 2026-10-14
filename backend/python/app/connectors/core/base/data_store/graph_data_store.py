@@ -721,6 +721,9 @@ class GraphTransactionStore(TransactionStore):
         """Get record by weburl (exact match)."""
         return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
 
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        return await self.graph_provider.get_org_apps(org_id, active_only=False)
+
     async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
         return await self.graph_provider.get_records_by_weburls(weburls, org_id, transaction=self.txn)
 
