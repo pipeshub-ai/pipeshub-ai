@@ -2347,25 +2347,25 @@ def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tu
     return index, *check
 
 
-def _note_matched_block(unit: dict[str, Any], block_index: int | None) -> None:
-    """Add a block the search matched to an expanded unit's ``hit_block_indices``.
+def _note_matched_block(unit: dict[str, Any], block_index: int | None, score: float) -> None:
+    """Record a block the search matched, with its hit's score, on an expanded unit.
 
-    The search API keeps the passages of an expanded section that matched, and
-    those nearest them, so every match is kept, not only the best one.
+    ``hit_block_scores`` maps each matched block to its best hit's score. The
+    search API keeps the passages of an expanded section that matched, best hit
+    first, and those nearest them, so every match is kept, not only the first.
     """
     if block_index is None:
         return
-    matched = unit.setdefault("hit_block_indices", [])
-    if block_index not in matched:
-        matched.append(block_index)
+    matched = unit.setdefault("hit_block_scores", {})
+    matched[block_index] = max(score, matched.get(block_index, score))
 
 
 def _raise_group_score(unit: dict[str, Any], score: float, hit_block_index: int | None = None) -> None:
     """Give a list unit, and the children /search unpacks from it, its best hit's score.
 
-    The block that scored is added to the unit's ``hit_block_indices`` whatever its score.
+    The block that scored is recorded in the unit's ``hit_block_scores`` whatever its score.
     """
-    _note_matched_block(unit, hit_block_index)
+    _note_matched_block(unit, hit_block_index, score)
     if score <= float(unit.get("score") or 0.0):
         return
     unit["score"] = score
@@ -2568,7 +2568,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
         if chunk_id in seen_chunks:
             if chunk_id in emitted_table_rows:
-                _note_matched_block(emitted_table_rows[chunk_id], index)
+                _note_matched_block(
+                    emitted_table_rows[chunk_id], index, float(result.get("score", 0.0))
+                )
             continue
         seen_chunks.add(chunk_id)
 
@@ -2654,7 +2656,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
                 # The block the search matched; its fragments are rendered through it.
-                result["hit_block_indices"] = [parent_block_idx]
+                result["hit_block_scores"] = {parent_block_idx: float(result.get("score", 0.0))}
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
                 emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
@@ -2865,7 +2867,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
             # The item the search matched, which the list is expanded around.
-            result["hit_block_indices"] = [index]
+            result["hit_block_scores"] = {index: float(result.get("score", 0.0))}
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             emitted_groups[group_chunk_id] = result
             flattened_results.append(result)

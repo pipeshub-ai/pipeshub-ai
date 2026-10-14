@@ -946,6 +946,8 @@ class RetrievalService:
                 if record_id in record_id_to_record_map
             ]
 
+            # The score of the hit on each matched passage of an expanded section.
+            match_scores: dict[int, float] = {}
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
@@ -955,15 +957,21 @@ class RetrievalService:
                     if (
                         block_type == GroupType.TABLE.value or block_type in valid_group_labels
                     ) and child_results is not None:
-                        matched = [
-                            i for i in (result.get("hit_block_indices") or []) if isinstance(i, int)
-                        ]
+                        matched = {
+                            i: score
+                            for i, score in (result.get("hit_block_scores") or {}).items()
+                            if isinstance(i, int)
+                        }
                         for child in child_results:
                             child_index = child.get("block_index")
                             if matched and isinstance(child_index, int):
                                 # 0 is a passage the search matched; the per-record
                                 # cap below keeps those first, then their neighbours.
                                 child["distanceFromMatch"] = min(abs(child_index - i) for i in matched)
+                                if child_index in matched:
+                                    # Every child carries the section's best score; a
+                                    # matched one is ranked by its own hit's score.
+                                    match_scores[id(child)] = matched[child_index]
                             final_search_results.append(child)
                     else:
                         final_search_results.append(result)
@@ -1001,7 +1009,7 @@ class RetrievalService:
                     record_of=lambda r: (r.get("metadata") or {}).get("recordId"),
                     priority=lambda r: (
                         (r.get("distanceFromMatch") or 0) > 0,
-                        -(r.get("score") or 0.0),
+                        -match_scores.get(id(r), r.get("score") or 0.0),
                         r.get("distanceFromMatch") or 0,
                     ),
                 )

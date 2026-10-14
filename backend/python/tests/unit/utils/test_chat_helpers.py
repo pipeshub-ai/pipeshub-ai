@@ -2754,7 +2754,7 @@ class TestGetFlattenedResults:
         assert unit["score"] == 0.9
         assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
         # The search API keeps every item that matched, whatever its score.
-        assert unit["hit_block_indices"] == [0, 1]
+        assert unit["hit_block_scores"] == {0: 0.4, 1: 0.9}
 
     @pytest.mark.asyncio
     async def test_a_weaker_later_hit_on_a_list_is_still_recorded_as_a_match(self) -> None:
@@ -2774,7 +2774,7 @@ class TestGetFlattenedResults:
         (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
 
         assert unit["score"] == 0.9
-        assert unit["hit_block_indices"] == [1, 6]
+        assert unit["hit_block_scores"] == {1: 0.9, 6: 0.3}
 
     @pytest.mark.asyncio
     async def test_a_row_hit_inside_a_table_already_expanded_is_recorded_on_it(self) -> None:
@@ -2795,8 +2795,33 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
 
         (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
-        assert table["hit_block_indices"] == [7]
+        assert table["hit_block_scores"] == {7: 0.7}
         assert len(table["content"][1]) == 10
+
+    @pytest.mark.asyncio
+    async def test_each_row_hit_on_an_expanded_table_keeps_its_own_score(self) -> None:
+        """The rows all carry the table point's score; the search API ranks the
+        matched rows by their own hits, so each hit's score is kept."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        hits = {0: 0.2, 1: 0.25, 2: 0.3, 3: 0.35, 9: 0.95}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            *[
+                {"content": f"Row {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+                for i, score in hits.items()
+            ],
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == hits
 
     @pytest.mark.asyncio
     async def test_a_list_unit_records_the_item_that_matched(self) -> None:
@@ -2811,7 +2836,7 @@ class TestGetFlattenedResults:
 
         (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
 
-        assert unit["hit_block_indices"] == [2]
+        assert unit["hit_block_scores"] == {2: 0.7}
         assert [child["block_index"] for child in unit["content"][1]] == [0, 1, 2]
 
     @pytest.mark.asyncio

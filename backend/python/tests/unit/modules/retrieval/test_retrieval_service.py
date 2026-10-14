@@ -1950,7 +1950,7 @@ class TestSearchWithFilters:
 
     async def _knowledge_search_over_a_thread(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
-        *, passages: int, hit: int | list[int] | None,
+        *, passages: int, hit: int | list[int] | dict[int, float] | None,
     ) -> dict:
         """A match inside a long thread: the thread is expanded into every passage."""
         from app.models.blocks import GroupType
@@ -1984,7 +1984,9 @@ class TestSearchWithFilters:
             ]),
         }
         if hit is not None:
-            unit["hit_block_indices"] = hit if isinstance(hit, list) else [hit]
+            if isinstance(hit, int):
+                hit = [hit]
+            unit["hit_block_scores"] = hit if isinstance(hit, dict) else dict.fromkeys(hit, 0.9)
 
         async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
             vid_to_record[vid] = {"record_type": "MESSAGE"}
@@ -2024,6 +2026,21 @@ class TestSearchWithFilters:
 
         kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
         assert kept == [(4, 1), (5, 0), (6, 1), (30, 0)]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_more_matches_than_the_cap_keep_the_best_hits_not_the_first(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Every child carries the section's best score, so matched passages
+        tie on it. Their own hits' scores decide: the strong match on message
+        30 stays, and the weakest early match goes."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40,
+            hit={0: 0.2, 1: 0.25, 2: 0.3, 3: 0.35, 30: 0.95},
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [1, 2, 3, 30]
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio
