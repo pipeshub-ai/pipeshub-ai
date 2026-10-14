@@ -49,6 +49,7 @@ import {
   IMessage,
   IMessageCitation,
   IMessageDocument,
+  IMessagePart,
 } from '../types/conversation.interfaces';
 import { IConversation } from '../types/conversation.interfaces';
 import { ChatSession } from '../schema/chat.session.schema';
@@ -797,6 +798,8 @@ export const streamChat =
         void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -848,6 +851,13 @@ export const streamChat =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
 
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
@@ -1496,6 +1506,8 @@ export const addMessageStream =
         void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -1541,6 +1553,13 @@ export const addMessageStream =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
               // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
@@ -3150,6 +3169,26 @@ interface RegenerationConfig {
   buildAIEndpoint: (appConfig: AppConfig, agentKey?: string) => string;
 }
 
+/** The app's answer to a tool approval card (Python `TOOL_APPROVAL_RESUME_PREFIX`): it carried on the turn that stopped on the card. */
+export function isToolApprovalAnswer(
+  query: string | undefined | null,
+): boolean {
+  return (
+    typeof query === 'string' && query.trimStart().startsWith('Tool approval:')
+  );
+}
+
+/** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
+export function ranApprovedCall(
+  parts: IMessagePart[] | undefined | null,
+): boolean {
+  return (parts ?? []).some(
+    (part) =>
+      (part.type === 'tool_call' && part.approved === true) ||
+      ranApprovedCall(part.parts),
+  );
+}
+
 /**
  * Generic internal function to handle regeneration for both regular and agent conversations
  */
@@ -3226,6 +3265,11 @@ async function regenerateAnswersInternal(
         'Can only regenerate the last message in the conversation',
       );
     }
+    if (ranApprovedCall(lastBot.parts)) {
+      throw new BadRequestError(
+        'This reply ran an action you approved. Regenerating it could run that action again, so ask again instead.',
+      );
+    }
 
     const lastBotIdx = recentMessages.findIndex(
       (msg) => msg._id?.toString() === lastBot._id?.toString(),
@@ -3235,6 +3279,11 @@ async function regenerateAnswersInternal(
       .find((msg) => msg.messageType === 'user_query');
     if (!userQuery) {
       throw new BadRequestError('No user query found to regenerate response');
+    }
+    if (isToolApprovalAnswer(userQuery.content)) {
+      throw new BadRequestError(
+        'This reply came from your answer to an approval request, so it cannot be regenerated. Ask again instead.',
+      );
     }
 
     logger.debug('Regenerate answers validation passed', {
@@ -3400,7 +3449,10 @@ async function regenerateAnswersInternal(
         existingConversation,
         contentAccumulator.getText(),
         null,
-        { replaceMessageId: messageId || undefined },
+        {
+          replaceMessageId: messageId || undefined,
+          parts: contentAccumulator.getParts(),
+        },
       )
         .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
@@ -5761,6 +5813,8 @@ export const deleteAgent =
         void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -5806,6 +5860,13 @@ export const deleteAgent =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
 
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
@@ -6473,6 +6534,8 @@ export const addMessageStreamToAgentConversation =
         void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -6518,6 +6581,13 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
               // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED

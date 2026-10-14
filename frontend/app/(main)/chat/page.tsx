@@ -755,6 +755,7 @@ function ChatContent() {
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
+          rawMessages: messages,
           isInitialized: true,
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',

@@ -569,7 +569,11 @@ class Agent:
         _resume_todos: list[Todo] | None = None,
         _resume_extensions: dict[str, Any] | None = None,
         _skip_start: bool = False,
+        _skip_user_message: bool = False,
     ) -> AgentResult:
+        """`_skip_user_message`: the goal's question is already in the history (a request that
+        continues a turn stopped on a tool call), so the run starts as usual but adds no new user
+        message for it. `_skip_start` also skips the start events and PRE_AGENT."""
         if self._model is None:
             self._resolve_model()
         if self._context is None:
@@ -619,7 +623,8 @@ class Agent:
                     await self._post_agent(result)
                     return result
 
-                await self._context.add(UserMessage(content=goal.description))
+                if not _skip_user_message:
+                    await self._context.add(UserMessage(content=goal.description))
 
             result = await self._spec.loop.run(self, goal)
             try:
@@ -660,6 +665,9 @@ class Agent:
         # makes, so middleware can reach `ctx.scope.turn.run...` uniformly
         # regardless of which event fired.
         turn_scope = TurnScope(run=self._scope, turn_index=turn_index)
+        # Created before anything is spawned this turn, so children inherit the same holder.
+        from app.agent_loop_lib.agent.tool_loop import PENDING_APPROVAL
+        approval_holder = self._scope.get(PENDING_APPROVAL)
 
         try:
             await hooks.dispatch_pre_turn(self._hooks, turn_index, scope=turn_scope)
@@ -1063,6 +1071,11 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+            # A sub-agent left a call waiting for a person: this run waits for the answer too.
+            pending = approval_holder.pending
+            if not task_done and pending is not None and pending.end_turn:
+                task_done = True
+                final_output = pending.message
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision

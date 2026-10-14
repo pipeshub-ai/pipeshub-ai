@@ -44,6 +44,7 @@ CREDENTIAL_WORDS = frozenset({
 })
 
 REDACTED = "[REDACTED]"
+_URL_IN_TEXT = re.compile(r"https?://[^\s'\")]+")
 
 
 # How many layers of URL-inside-a-parameter (or percent-encoding) are opened.
@@ -429,3 +430,8 @@ def _redact_wholly(url: str) -> str:
     elif url.startswith("/"):
         kept = f"{_KEPT_TEXT_END.split(url, maxsplit=1)[0]}?{REDACTED}"
     return REDACTED if _has_residual_secret(kept) else kept
+
+
+def redact_urls_in_text(text: str) -> str:
+    """`text` with every http(s) URL in it reduced as `redact_url` does."""
+    return _URL_IN_TEXT.sub(lambda m: redact_url(m.group(0)), text)

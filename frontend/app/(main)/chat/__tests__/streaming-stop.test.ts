@@ -84,6 +84,7 @@ function makeSlot(overrides: Partial<ChatSlot> = {}): ChatSlot {
     savedScrollWasStreaming: false,
     activeExpandedMessageId: null,
     regenerateMessageId: null,
+    streamingAssistantId: null,
     pendingCollections: [],
     artifacts: [],
     pendingAskUserQuestion: null,
@@ -587,6 +588,47 @@ describe('cancelStreamForSlot — grace-timeout fallback', () => {
     // The grace timer must not re-abort an already-null controller or
     // otherwise touch a slot that already settled normally.
     expect(abortSpy).not.toHaveBeenCalled();
+  });
+
+  it('commits a stopped resume onto the card and leaves the later chat alone', () => {
+    const card: ThreadMessageLike = {
+      role: 'assistant',
+      id: 'b1',
+      content: [{ type: 'text', text: '' }],
+    };
+    const later: ThreadMessageLike = {
+      role: 'assistant',
+      id: 'b2',
+      content: [{ type: 'text', text: 'Hi!' }],
+    };
+    seedSlot({
+      streamingAssistantId: 'b1',
+      streamingContent: 'Working on EU',
+      pendingAskUserQuestion: {
+        assistantMessageId: 'b1',
+        status: 'submitted',
+        payload: { name: 'ask_user_question', questions: [] },
+        answers: {},
+      },
+      messages: [
+        { role: 'user', id: 'u1', content: [{ type: 'text', text: 'plan the launch' }] },
+        card,
+        { role: 'user', id: 'u2', content: [{ type: 'text', text: 'hello' }] },
+        later,
+      ],
+    });
+
+    cancelStreamForSlot(SLOT_ID);
+    vi.advanceTimersByTime(5000);
+
+    const slot = useChatStore.getState().slots[SLOT_ID];
+    expect(slot?.messages).toHaveLength(4);
+    expect(slot?.messages[1].id).toBe('b1');
+    expect(slot?.messages[1].content).toEqual([{ type: 'text', text: 'Working on EU' }]);
+    expect((slot?.messages[1].metadata?.custom as { status?: string } | undefined)?.status).toBe('stopped');
+    expect(slot?.messages[3].id).toBe('b2');
+    expect(slot?.messages[3].content).toEqual([{ type: 'text', text: 'Hi!' }]);
+    expect((slot?.messages[3].metadata?.custom as { status?: string } | undefined)?.status).toBeUndefined();
   });
 
   it('does nothing if a brand-new stream (different runId) started on this slot before the timer fires', () => {

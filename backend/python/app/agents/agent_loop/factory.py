@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent import Agent
@@ -104,6 +105,7 @@ from app.agent_loop_lib.transport.opik_tracing import (
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
 from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
@@ -118,6 +120,7 @@ from app.agents.agent_loop.entity_search_tool import (
 )
 from app.agents.agent_loop.hooks import (
     CitationCollector,
+    RepeatedReadGuard,
     ToolErrorTracker,
     artifact_context_reminder,
     ask_user_question_sse,
@@ -170,6 +173,7 @@ from app.agents.agent_loop.output_cap_transport import (
     max_turn_output_chars,
     with_output_cap,
 )
+from app.agents.agent_loop.parked_turn import ASK_USER_QUESTION_RESUME_PREFIX
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -190,6 +194,16 @@ from app.agents.agent_loop.skills_wiring import (
     skills_enabled,
 )
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
+from app.agents.agent_loop.tool_approvals import (
+    WAITING_PREFIX,
+    approval_gate,
+    begin_resume,
+    hold_history,
+    resume_parked_call,
+)
+from app.agents.agent_loop.tool_approvals import (
+    is_resume_query as is_tool_approval_resume_query,
+)
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
 from app.agents.agent_loop.usage_transport import with_usage_reporting
@@ -597,9 +611,11 @@ class PipesHubAgentFactory:
         )
 
         resume_answers = query if is_ask_user_question_resume_query(query) else None
+        # An answer to a tool approval card carries on the turn that stopped on it.
+        approval_resume = bool(context.previous_conversations) and begin_resume(context, query)
         goal_query = (
-            last_real_user_query(context.previous_conversations, query)
-            if resume_answers
+            last_real_user_query(context.previous_conversations, query, answers=resume_answers)
+            if resume_answers or approval_resume
             else query
         )
         if resume_answers:
@@ -944,10 +960,13 @@ class PipesHubAgentFactory:
             _mark("f:runtime+compose")
             await self._seed_conversation_history(agent, context.previous_conversations, context)
             _mark("f:seed_history")
+            hold_history(context, agent)
 
         if resume_answers:
             # User already answered the card — do not re-emit clarification.
             clarifying_questions = []
+            # The turn that asked, as the model had it (its history copy has only result summaries).
+            await parked_turn.restore_question(context, agent.context)
             await inject_ask_user_question_resume(agent, resume_answers)
 
         return agent, runtime, goal, clarifying_questions
@@ -1090,6 +1109,10 @@ class PipesHubAgentFactory:
         error_tracker = ToolErrorTracker()
         hooks.on(HookEvent.PRE_TOOL_USE).use(error_tracker.pre_tool_use)
         hooks.on(HookEvent.POST_TOOL_USE).use(error_tracker.post_tool_use)
+        # Successful repeats aren't failures: without this an identical MCP read can fill every turn.
+        repeated_reads = RepeatedReadGuard(context)
+        hooks.on(HookEvent.PRE_TOOL_USE).use(repeated_reads.pre_tool_use)
+        hooks.on(HookEvent.POST_TOOL_USE).use(repeated_reads.post_tool_use)
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))
@@ -1105,6 +1128,8 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
+        # Answers an approval card: settles the stopped call before the loop starts.
+        hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))
@@ -1122,6 +1147,10 @@ class PipesHubAgentFactory:
                 hooks, context, sandbox_manager,
                 allow_network=allow_network, artifact_store=artifact_store,
             )
+
+        # Per-tool approvals. Last, so no later middleware can still deny a call it leaves
+        # waiting for a person (the card would show for a call that was refused anyway).
+        hooks.on(HookEvent.PRE_TOOL_USE).use(approval_gate(context))
 
         return hooks
 
@@ -1166,7 +1195,14 @@ class PipesHubAgentFactory:
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
+        history: list[Message] = []
+        tool_results_at: dict[str, int] = {}
+        after_answer = False
         for turn in previous_conversations:
+            if turn.get("role") == "user_query" and is_tool_approval_resume_query(str(turn.get("content") or "")):
+                _drop_closing_text(history)
+                after_answer = True
+                continue
             messages = _convert_conversation_turn(turn)
 
             if (
@@ -1206,9 +1242,13 @@ class PipesHubAgentFactory:
                         )
                         msg.content = f"{msg.content}\n\n{placeholder}"
 
-            for message in messages:
-                await ctx.add(message)
+            _append_turn(history, messages, tool_results_at, fold=after_answer and turn.get("role") == "bot_response")
+            after_answer = after_answer and turn.get("role") != "bot_response"
 
+        # After the fold: folding an approval answer relies on its repeated id.
+        _dedupe_tool_call_ids(history, set())
+        for message in history:
+            await ctx.add(message)
         agent.seed_context(ctx)
 
 
@@ -1256,7 +1296,6 @@ _V1_NOTE_HEADER = "[SYSTEM NOTE — how to use the findings above in your answer
 _V2_NOTE_HEADER = "Guidance for using the findings above in the final answer:"
 _NEUTRAL_NOTE_HEADER = "About these findings:"
 
-ASK_USER_QUESTION_RESUME_PREFIX = "User selections:"
 _EMPTY_ANSWER_FALLBACK = "I wasn't able to generate a response. Please try rephrasing."
 
 
@@ -1272,15 +1311,157 @@ def _is_empty_fallback_assistant(msg: Message) -> bool:
     )
 
 
-def last_real_user_query(previous_conversations: list[dict[str, Any]] | None, fallback: str) -> str:
-    """Original user goal when this request is an ask_user_question resume."""
+def _question_key(text: str) -> str:
+    """Two askings of one question differ in case, spacing or the closing mark (as the card compares them)."""
+    return re.sub(r"[\s?!.:]+$", "", re.sub(r"\s+", " ", text.lower())).strip()
+
+
+_ANSWER_LINE = re.compile(r'^\s*\d+\.\s*"(.*)"\s*→', re.MULTILINE)
+
+
+def _answered_questions(answers: str | None) -> set[str]:
+    """The questions a `User selections:` reply answers: one `N. "question" → answer` line each."""
+    return {_question_key(q) for q in _ANSWER_LINE.findall(answers or "")}
+
+
+def _asked_questions(*values: Any) -> set[str]:  # noqa: ANN401
+    """Question texts in an ask_user_question call's arguments or result, parsed or as JSON."""
+    found: set[str] = set()
+    stack = list(values)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                continue
+        if isinstance(value, dict):
+            question = value.get("question")
+            if isinstance(question, str):
+                found.add(_question_key(question))
+            stack.extend(v for v in value.values() if isinstance(v, (dict, list)))
+        elif isinstance(value, list):
+            stack.extend(value)
+    return found
+
+
+def _turn_asked_questions(turn: dict[str, Any]) -> set[str] | None:
+    """What a saved bot turn asked with ask_user_question; None when it asked nothing."""
+    rows = [
+        row for row in turn.get("tool_results") or []
+        if isinstance(row, dict) and "ask_user_question" in str(row.get("tool_name") or "")
+    ]
+    if not rows:
+        return None
+    return _asked_questions(*(v for row in rows for v in (row.get("args"), row.get("result"))))
+
+
+def last_real_user_query(
+    previous_conversations: list[dict[str, Any]] | None,
+    fallback: str,
+    *,
+    answers: str | None = None,
+) -> str:
+    """Original user goal when this request answers a card (ask_user_question or a tool approval).
+
+    `answers` (an ask_user_question reply) picks the user text that opened the card it answers, not
+    the latest chat: resuming from a later chat made the model redo that reply and the UI painted it
+    onto the card. A card is matched by its question text, so an older card left open while a newer
+    one was answered keeps its own goal; without a match the latest card is the one.
+    """
+    if answers is not None:
+        answered = _answered_questions(answers)
+        latest_card: str | None = None
+        matching_card: str | None = None
+        last_user: str | None = None
+        for turn in previous_conversations or []:
+            role = turn.get("role")
+            content = str(turn.get("content") or "").strip()
+            if role == "user_query":
+                if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
+                    last_user = content
+            elif role == "bot_response" and last_user:
+                asked = _turn_asked_questions(turn)
+                if asked is None:
+                    continue
+                latest_card = last_user
+                if answered & asked:
+                    matching_card = last_user
+        goal = matching_card or latest_card
+        if goal:
+            return goal
     for turn in reversed(previous_conversations or []):
         if turn.get("role") != "user_query":
             continue
         content = str(turn.get("content") or "").strip()
-        if content and not is_ask_user_question_resume_query(content):
+        if content and not is_ask_user_question_resume_query(content) and not is_tool_approval_resume_query(content):
             return content
     return fallback
+
+
+def _find_ask_user_question_call(
+    messages: list[Message],
+    start: int,
+    end: int,
+    answered: set[str] | None = None,
+) -> tuple[int | None, str | None]:
+    """The last ask_user_question call in `messages[start:end]`; given `answered`, the last one
+    that asked any of those questions."""
+    results = {m.tool_call_id: m.text for m in messages if isinstance(m, ToolMessage)}
+    keep_through: int | None = None
+    tool_call_id: str | None = None
+    for i in range(start, end):
+        msg = messages[i]
+        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
+            continue
+        for call in reversed(msg.tool_calls):
+            if "ask_user_question" not in (call.name or ""):
+                continue
+            if answered and not answered & _asked_questions(call.arguments, results.get(call.id)):
+                continue
+            keep_through = i
+            tool_call_id = call.id
+            break
+    return keep_through, tool_call_id
+
+
+def _drop_closing_text(history: list[Message]) -> None:
+    """A turn that stopped on an approval card closes with "Waiting for your approval…"; the
+    answer carried that turn on from the call, so those words go (and, with them, two assistant
+    messages in a row, which no transport merges)."""
+    while history and isinstance(history[-1], AssistantMessage) and not history[-1].tool_calls:
+        history.pop()
+
+
+_SHARED_CALL_IDS = ("ask_user_question", "ask_user_question_resume")
+
+
+def _append_turn(history: list[Message], messages: list[Message], tool_results_at: dict[str, int], *, fold: bool = False) -> None:
+    """`fold`: this is the reply that answered an approval card. It has the stopped call again,
+    settled, under the same id: its result replaces the waiting one in place and the repeat goes.
+    One call, one result, and no id twice (providers refuse a repeated tool-call id). Nothing else
+    is folded: some providers number their call ids per response, so a repeated id elsewhere can be
+    a different call."""
+    def _foldable(call_id: str | None) -> bool:
+        if not fold or not call_id or call_id not in tool_results_at or call_id in _SHARED_CALL_IDS:
+            return False
+        earlier = history[tool_results_at[call_id]]
+        return isinstance(earlier, ToolMessage) and isinstance(earlier.content, str) and earlier.content.startswith(WAITING_PREFIX)
+
+    repeated = {m.tool_call_id for m in messages if isinstance(m, ToolMessage) and _foldable(m.tool_call_id)}
+    for message in messages:
+        kept = message
+        if isinstance(message, ToolMessage) and message.tool_call_id in repeated:
+            history[tool_results_at[message.tool_call_id]] = message
+            continue
+        if isinstance(message, AssistantMessage) and repeated and any(call.id in repeated for call in message.tool_calls or []):
+            calls = [call for call in message.tool_calls if call.id not in repeated]
+            if not calls and not message.text:
+                continue
+            kept = message.model_copy(update={"tool_calls": calls})
+        if isinstance(kept, ToolMessage) and kept.tool_call_id:
+            tool_results_at[kept.tool_call_id] = len(history)
+        history.append(kept)
 
 
 async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
@@ -1294,30 +1475,36 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
     History replay already has the first request's tool result (the
     questions payload) plus the empty-answer fallback AssistantMessage.
     Appending a second ToolMessage after that text is invalid, so the
-    tail after the parked tool-call AssistantMessage is dropped first.
+    questions payload is replaced by the answers and the fallback tail is
+    dropped. A turn replays as one AssistantMessage carrying every call it
+    made, so the results of the other calls stay right after it.
+
+    A card left unanswered before later chat is still that older call.
+    Continuing from the later turn made the model repeat that chat; the
+    follow-up belongs under the card, so later turns stay out of this run.
     """
     ctx = agent.context
     if ctx is None:
         return
     messages = await ctx.messages()
-    # Only the newest user turn can still be parked on a card. Binding to an
-    # older turn's call — a card the user left unanswered before chatting on —
-    # would truncate every turn since; the synthetic branch below keeps them.
     turn_start = 0
     for i, msg in enumerate(messages):
         if isinstance(msg, UserMessage):
             turn_start = i
-    keep_through: int | None = None
-    tool_call_id: str | None = None
-    for i in range(turn_start, len(messages)):
-        msg = messages[i]
-        if not isinstance(msg, AssistantMessage) or not msg.tool_calls:
-            continue
-        for call in reversed(msg.tool_calls):
-            if "ask_user_question" in (call.name or ""):
-                keep_through = i
-                tool_call_id = call.id
-                break
+    # The card is the one whose questions these answers name, wherever it is: an older card answered
+    # after a newer one must not take the newer call's place.
+    answered = _answered_questions(answers)
+    keep_through, tool_call_id = (
+        _find_ask_user_question_call(messages, 0, len(messages), answered) if answered else (None, None)
+    )
+    if tool_call_id is None:
+        keep_through, tool_call_id = _find_ask_user_question_call(
+            messages, turn_start, len(messages),
+        )
+    if tool_call_id is None:
+        keep_through, tool_call_id = _find_ask_user_question_call(
+            messages, 0, turn_start,
+        )
     if tool_call_id is None:
         trimmed = list(messages)
         while trimmed and _is_empty_fallback_assistant(trimmed[-1]):
@@ -1335,11 +1522,26 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
             )],
         ))
     else:
+        # Calls made alongside the question ran; their results stay with them.
+        alongside = {call.id for call in messages[keep_through].tool_calls} - {tool_call_id}
+        tool_block_end = keep_through + 1
+        while tool_block_end < len(messages) and isinstance(messages[tool_block_end], ToolMessage):
+            tool_block_end += 1
         await ctx.clear()
         for msg in messages[: keep_through + 1]:
             await ctx.add(msg)
+        for msg in messages[keep_through + 1 : tool_block_end]:
+            if msg.tool_call_id in alongside:
+                await ctx.add(msg)
+    # "next" is said plainly: without it a model may reply "Got it, I'll create it" and stop there.
     await ctx.add(ToolMessage(
-        content=json.dumps({"status": "answered", "answers": answers}, ensure_ascii=False),
+        content=json.dumps({
+            "status": "answered", "answers": answers,
+            "next": (
+                "Carry on with the request using these answers: do the next step now instead of saying what you'll do. "
+                "Ask any further question with internaltools__ask_user_question, not in your reply."
+            ),
+        }, ensure_ascii=False),
         tool_call_id=tool_call_id,
     ))
 
@@ -1347,6 +1549,32 @@ async def inject_ask_user_question_resume(agent: Agent, answers: str) -> None:
 def _scrub_legacy_system_note(text: str) -> str:
     text = text.replace(_V1_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
     return text.replace(_V2_NOTE_HEADER, _NEUTRAL_NOTE_HEADER)
+
+
+def _dedupe_tool_call_ids(messages: list[Message], seen: set[str]) -> None:
+    """Rename a replayed call whose id an earlier turn already used.
+
+    Node falls back to one fixed id for every saved `ask_user_question`, and a
+    provider rejects two calls sharing an id. `seen` carries the ids across turns.
+    """
+    assigned: dict[str, list[str]] = {}
+    used: dict[str, int] = {}
+    for msg in messages:
+        if isinstance(msg, AssistantMessage):
+            for call in msg.tool_calls or []:
+                original = call.id
+                if original in seen:
+                    n = 2
+                    while f"{original}_{n}" in seen:
+                        n += 1
+                    call.id = f"{original}_{n}"
+                seen.add(call.id)
+                assigned.setdefault(original, []).append(call.id)
+        elif isinstance(msg, ToolMessage) and msg.tool_call_id in assigned:
+            ids = assigned[msg.tool_call_id]
+            nth = used.get(msg.tool_call_id, 0)
+            used[msg.tool_call_id] = nth + 1
+            msg.tool_call_id = ids[min(nth, len(ids) - 1)]
 
 
 def _convert_conversation_turn(turn: dict[str, Any]) -> list[Message]:

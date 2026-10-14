@@ -6,6 +6,7 @@ import ipaddress
 import logging
 import os
 import sys
+import tempfile
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
@@ -16,6 +17,17 @@ from app.utils.process_hardening import disable_vendor_telemetry
 
 # Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
 disable_vendor_telemetry()
+
+# Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
+# later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file
+# keeps the SDK from reading a developer's `~/.opik.config`.
+for _opik_var in ("OPIK_API_KEY", "OPIK_WORKSPACE", "OPIK_URL_OVERRIDE", "OPIK_PROJECT_NAME"):
+    os.environ[_opik_var] = ""
+os.environ["OPIK_TRACK_DISABLE"] = "true"
+_EMPTY_OPIK_CONFIG = os.path.join(tempfile.gettempdir(), "pipeshub-tests-empty-opik.config")
+with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
+    _opik_config.write("[opik]\n")
+os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
 
 
 def pytest_unconfigure(config):

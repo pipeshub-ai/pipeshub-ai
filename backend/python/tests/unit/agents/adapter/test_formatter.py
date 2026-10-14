@@ -91,6 +91,14 @@ class TestLegacyFormatter:
 
         assert frames == [{"event": "error", "data": {"message": "Rate limited", "type": "rate_limit"}}]
 
+    def test_tool_progress_is_a_status(self) -> None:
+        frames = self.formatter.tool_progress(self.context, tool="mcp_jira_search", progress=2.0, total=5.0, message=None)
+
+        assert frames == [{
+            "event": "status",
+            "data": {"status": "running_tool", "tool": "mcp_jira_search", "progress": 2.0, "total": 5.0, "message": None},
+        }]
+
 
 class TestAGUIFormatter:
     def setup_method(self) -> None:
@@ -173,6 +181,25 @@ class TestAGUIFormatter:
         assert frames[0]["data"]["value"] == {
             "tool": "jira_search", "toolset": "jira", "reason": "not_authenticated", "message": "Connect Jira",
         }
+
+    def test_tool_progress_is_a_running_tool_snapshot(self) -> None:
+        frames = self.formatter.tool_progress(self.context, tool="mcp_jira_search", progress=2.0, total=5.0, message="Page 2")
+
+        assert frames == [{
+            "event": "STATE_SNAPSHOT",
+            "data": {
+                "type": "STATE_SNAPSHOT", "runId": "run-1",
+                "snapshot": {
+                    "status": "running_tool", "current_tool": "mcp_jira_search",
+                    "progress": 2.0, "total": 5.0, "progress_message": "Page 2",
+                },
+            },
+        }]
+
+    def test_tool_progress_leaves_out_what_the_server_didnt_say(self) -> None:
+        (frame,) = self.formatter.tool_progress(self.context, tool="t", progress=7.0, total=None, message=None)
+
+        assert frame["data"]["snapshot"] == {"status": "running_tool", "current_tool": "t", "progress": 7.0}
 
     def test_error_emits_run_error(self) -> None:
         frames = self.formatter.error(self.context, message="Rate limited", code="rate_limit")

@@ -238,6 +238,32 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
 
+    it('keeps the answer to a tool approval card', () => {
+      const toolApproval = { approvalId: 'ap-1', decision: 'allow', remember: true }
+      const result = enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'Tool approval: allow', chatMode: 'agent', toolApproval },
+      })
+      expect(result.success).to.be.true
+      expect((result as any).data.body.toolApproval).to.deep.equal(toolApproval)
+
+      const agent = agentStreamCreateSchema.safeParse({
+        params: { agentKey: 'a1' },
+        body: { query: 'Tool approval: deny', chatMode: AGENT_CHAT_MODES[0], toolApproval: { approvalId: 'ap-2', decision: 'deny' } },
+      })
+      expect(agent.success).to.be.true
+      expect((agent as any).data.body.toolApproval).to.deep.equal({ approvalId: 'ap-2', decision: 'deny' })
+    })
+
+    it('refuses a decision a card doesn\'t offer', () => {
+      for (const decision of ['run_anything', 'allow_once', 'allow_chat', 'always']) {
+        const result = agentStreamCreateSchema.safeParse({
+          params: { agentKey: 'a1' },
+          body: { query: 'x', chatMode: AGENT_CHAT_MODES[0], toolApproval: { approvalId: 'ap-1', decision } },
+        })
+        expect(result.success, decision).to.be.false
+      }
+    })
+
     it('should leave the non-stream create schema backward compatible', () => {
       const result = enterpriseSearchCreateSchema.safeParse({
         body: { query: 'hello' },
@@ -2064,6 +2090,47 @@ describe('enterprise_search/validators/es_validators', () => {
       if (result.success) {
         expect(result.data.body.mcpServers?.[0]).to.not.have.property('extraMcpField')
       }
+    })
+
+    it('keeps allTools on an mcpServers entry, so "All tools" survives the save', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{ instanceId: 'inst-1', name: 'GitHub', typeId: 'github', allTools: true, tools: [] }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]?.allTools).to.equal(true)
+      }
+    })
+
+    it('keeps allTools on an agent update too', () => {
+      const result = updateAgentSchema.safeParse({
+        params: { agentKey: 'agent-1' },
+        body: { mcpServers: [{ instanceId: 'inst-1', name: 'GitHub', allTools: false, tools: [{ name: 'search' }] }] },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.mcpServers?.[0]?.allTools).to.equal(false)
+      }
+    })
+
+    it('accepts more tools than Python keeps for an all-tools server, leaving the limit to Python', () => {
+      const result = createAgentSchema.safeParse({
+        body: {
+          name: 'Agent',
+          models: [validModel],
+          mcpServers: [{
+            instanceId: 'inst-1',
+            name: 'Big MCP',
+            allTools: true,
+            tools: Array.from({ length: 600 }, (_, i) => ({ name: `tool_${i}` })),
+          }],
+        },
+      })
+      expect(result.success).to.be.true
     })
 
     it('should reject mcpServers entries missing instanceId', () => {

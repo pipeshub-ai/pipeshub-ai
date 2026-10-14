@@ -512,6 +512,16 @@ class _FakeStreamingResponse:
             yield c
 
 
+def test_gpt6_responses_request_keeps_temperature_one() -> None:
+    """gpt-6 on the Responses API keeps temperature=1 alongside reasoning.
+    Azure accepts that for gpt-6-luna and gpt-6.1-sol, so only gpt-5.x has
+    temperature dropped here, as langchain-openai does."""
+    for model in ("gpt-6-luna", "gpt-6.1-sol"):
+        defaults = RequestDefaults(temperature=1, reasoning={"effort": "high"},
+                                   use_responses_api=True, model=model)
+        assert defaults.request_kwargs() == {"temperature": 1, "reasoning": {"effort": "high"}}
+
+
 def _responses_transport(chunks: list[bytes]) -> AzureOpenAITransport:
     t = _transport()
     t._defaults = RequestDefaults(reasoning={"effort": "high"}, use_responses_api=True,

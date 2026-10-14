@@ -1761,6 +1761,292 @@ class TestUnfinishedUserRead:
         assert [m.email for m in db.app_roles["ENG_projectLead"]] == lead
 
 
+class TestFullSyncCoverage:
+    """What a full sync (#4119) keeps after a read that failed, and whether it still unlinks.
+
+    A failure that may pass marks the run incomplete, so nothing is unlinked. A lasting
+    refusal (403) or the picker limit keeps the stored access and notes it as seen, so the
+    unlink still runs for what is really gone. stub_site's ENG scheme grants devs and the
+    Developers role (ENG_10002), and Carol is in both.
+    """
+
+    @staticmethod
+    async def _synced(jira, db, store, search) -> JiraDataCenterConnector:
+        stub_site(jira, search)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in {m.email for m in db.groups_saved["devs"]}
+        assert "carol@example.com" in {m.email for m in db.app_roles["ENG_10002"]}
+        store.sync_points.clear()  # a full sync's prep
+        return connector
+
+    async def test_a_refused_role_list_keeps_the_roles_and_still_unlinks(self, jira, db, store, search) -> None:
+        connector = await self._synced(jira, db, store, search)
+        before = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True, "a refusal does not make every full sync incomplete"
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == before, "the kept role keeps its members"
+        assert "ENG_10002" in [p.external_id for p in db.record_group_permissions["10000"]]
+
+    async def test_one_unreadable_role_is_kept_and_the_run_is_incomplete(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"]
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/role/10004", json_response({"errorMessages": ["boom"]}, status=500))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"], "the unread role keeps its members"
+
+    async def test_refused_group_members_keep_the_group_and_still_unlink(self, jira, db, store, search) -> None:
+        connector = await self._synced(jira, db, store, search)
+        before = sorted(m.email for m in db.groups_saved["devs"])
+
+        jira.on("GET", f"{API}/group/member", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == before, "the kept group keeps its members"
+
+    async def test_a_refused_group_list_keeps_the_groups_projects_name_and_still_unlinks(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs, "a group the project grants is kept"
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "so is a role it grants"
+
+    @pytest.mark.parametrize(
+        "failing", [None, "group listing", "role list", "role list refused", "role list not a mapping", "role with no URL"]
+    )
+    async def test_a_refused_group_list_keeps_stored_groups_and_roles_no_grant_names(
+        self, jira, db, store, search, failing
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}, {"name": "qa"}], "total": 3})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        granted = [p.external_id for p in db.record_group_permissions["10000"]]
+        assert "qa" not in granted and "ENG_10004" not in granted, "no grant names qa or Testers"
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        store.sync_points.clear()
+        db.fail_group_listing = failing == "group listing"
+        if failing == "role list":
+            jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["busy"]}, status=503))
+        elif failing == "role list refused":
+            jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        elif failing == "role list not a mapping":
+            jira.on("GET", f"{API}/project/ENG/role", json_response([]))
+        elif failing == "role with no URL":
+            jira.on("GET", f"{API}/project/ENG/role", {"Developers": f"{BASE}{API}/project/ENG/role/10002", "Testers": None})
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        if failing in ("group listing", "role list", "role list not a mapping", "role with no URL"):
+            # What could not be listed cannot be kept by name, so nothing is unlinked.
+            assert connector.full_sync_coverage().complete is False
+            graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        else:
+            # A refused role list is lasting; a role no grant names gives no one access.
+            assert connector.full_sync_coverage().complete is True
+            graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert [m.email for m in db.groups_saved["qa"]] == ["alice@example.com"], "the stored group keeps its members"
+        if failing != "role list refused":
+            assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"], "so does the stored role"
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers
+        assert "ENG_10002" in [p.external_id for p in db.record_group_permissions["10000"]]
+
+    async def test_a_refused_group_list_keeps_a_stored_group_this_sync_grants_for_the_first_time(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}, {"name": "qa"}], "total": 3})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "qa" not in [p.external_id for p in db.record_group_permissions["10000"]]
+
+        # The scheme now grants qa, and the group list is refused.
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "qa"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+        ]})
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert "qa" in [p.external_id for p in db.record_group_permissions["10000"]], "the new grant stays"
+        assert [m.email for m in db.groups_saved["qa"]] == ["alice@example.com"], "and so do the group's members"
+
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"groups": None, "total": 0}, id="null list"),
+            pytest.param({"total": 0}, id="no list"),
+            pytest.param({"groups": [{"name": "jira-software-users"}, {"html": "no name"}], "total": 2}, id="row without a name"),
+            pytest.param({"groups": [{"name": "jira-software-users"}, "devs"], "total": 2}, id="row not an object"),
+        ],
+    )
+    async def test_a_malformed_group_list_is_an_incomplete_read(self, jira, db, store, search, payload) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+
+        jira.on("GET", f"{API}/groups/picker", payload)
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False, "a missing group is not a group Jira removed"
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs
+
+    async def test_groups_past_the_picker_limit_are_kept_and_the_unlink_still_runs(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+
+        # devs is past the limit: the picker returns one group of two, on every sync.
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 2})
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True, "the limit does not make every full sync incomplete"
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs, "the group past the limit keeps its members"
+        assert "devs" in [p.external_id for p in db.record_group_permissions["10000"]]
+
+    async def test_a_cut_off_group_list_keeps_a_group_this_sync_grants_and_not_one_no_grant_names(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        names = ["devs", "jira-software-users", "qa", "old"]
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": n} for n in names], "total": 4})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"]}.get(name, ["alice-key"])
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        granted = [p.external_id for p in db.record_group_permissions["10000"]]
+        assert "qa" not in granted and "old" not in granted
+
+        # Only one group of four is returned, on every sync, and the scheme now grants qa.
+        # old is past the limit too, and no grant names it.
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "jira-software-users"}], "total": 4})
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "qa"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+        ]})
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        granted = [p.external_id for p in db.record_group_permissions["10000"]]
+        assert "qa" in granted and "devs" in granted, "the groups the scheme grants keep their grants"
+        assert [m.email for m in db.groups_saved["qa"]] == ["alice@example.com"], "and their members"
+        assert db.groups_saved["old"] == [], "a group past the limit that no grant names is cleaned up"
+
+    async def test_a_refused_issue_search_keeps_the_projects_records_and_still_unlinks(
+        self, jira, db, store, search
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+        stored = sorted(r.id for r in db.records.values() if r.external_record_group_id == "10000")
+        assert stored
+
+        search.add("ENG", 0, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert sorted(db.kept_records) == stored, "the project's stored records are noted as seen"
+
+    async def test_a_refused_issue_search_keeps_the_project_its_records_belong_to(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": []})  # no grants of its own
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert db.record_group_permissions["10000"] == []
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        search.add("ENG", 0, json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert db.kept_records, "the project's records are kept"
+        assert "10000" not in db.unlinked_record_groups, "so is the project, so the records keep their link into it"
+
+    @pytest.mark.parametrize(("status", "complete"), [(500, False), (400, True), (404, True)])
+    async def test_an_issue_search_that_fails_is_classed_by_its_status(
+        self, jira, db, store, search, status, complete
+    ) -> None:
+        connector = await self._synced(jira, db, store, search)
+
+        search.add("ENG", 0, json_response({"errorMessages": ["no"]}, status=status))
+        await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is complete
+        assert db.kept_records == [], "only a refusal keeps the records"
+
+
 class TestUnreadApplicationRoles:
     """ENG's scheme grants the jira-software application role, which Jira maps to jira-software-users."""
 

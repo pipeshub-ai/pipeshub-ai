@@ -12,6 +12,7 @@ from app.agent_loop_lib.tools.base import (
     ToolOutput,
     ToolParameter,
 )
+from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.global_fallback import GlobalCatalogFallback
 from app.agent_loop_lib.tools.index import KeywordToolIndex, ToolIndex
 from app.agent_loop_lib.tools.registry import ToolDeferral, ToolRegistry
@@ -166,6 +167,18 @@ class FetchToolsTool(Tool):
         denied = [n for n in names if grant is not None and n not in grant]
         await obs.write_state(agent, ctx.goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="fetch_tools")
         await obs.append_timeline(agent, "tool_call", "Calling tool: fetch_tools", "running_tool", {"tool": "fetch_tools", "args": call.arguments})
+        visible = agent.visible_tools or set()
+        if len(visible | set(allowed)) > MAX_TOOLS_PER_REQUEST:
+            # Past the limit the provider refuses the whole request; search_tools loads a few.
+            return CoreToolResult(
+                tool_call_id=call.id, name=call.name, is_error=True,
+                content=(
+                    f"Not loaded: {toolset_name} has {len(allowed)} tools, and with the {len(visible)} already "
+                    f"loaded that is over the {MAX_TOOLS_PER_REQUEST} tools one request can carry. Load only "
+                    "the tools you need: search_tools with the action and the app (for example "
+                    "'create issue linear') makes just the matching tools callable."
+                ),
+            )
         # `execute()` materializes every tool in the toolset (see below) —
         # run it BEFORE growing `agent.visible_tools`, since the turn loop
         # resolves a visible tool's schema synchronously next turn and has
@@ -320,19 +333,28 @@ class SearchToolsTool(Tool):
             if grant is not None:
                 denied = [m["name"] for m in matches if m["name"] not in grant]
                 matches = [m for m in matches if m["name"] in grant]
+            not_loaded: list[str] = []
             if make_visible and matches:
-                names = [m["name"] for m in matches]
+                visible = agent.visible_tools or set()
+                fresh = [m["name"] for m in matches if m["name"] not in visible]
+                room = max(0, MAX_TOOLS_PER_REQUEST - len(visible))
+                fresh, not_loaded = fresh[:room], fresh[room:]
                 # Same ordering requirement as fetch_tools.handle: any
                 # provider-backed match must be materialized before it's
                 # added to visible_tools, since the next turn resolves
                 # schemas synchronously.
-                await self._registry.materialize_many(names)
+                await self._registry.materialize_many(fresh)
                 # Same `|=`-not-stale-snapshot rationale as `FetchToolsTool.
                 # handle()` above.
                 agent.visible_tools = agent.visible_tools or set()
-                made_visible = [n for n in names if n not in agent.visible_tools]
-                agent.visible_tools |= set(names)
+                made_visible = [n for n in fresh if n not in agent.visible_tools]
+                agent.visible_tools |= set(fresh)
             content = {**result.data, "matches": matches, "made_visible": made_visible}
+            if not_loaded:
+                content["not_loaded"] = {
+                    "tools": not_loaded,
+                    "reason": f"over the {MAX_TOOLS_PER_REQUEST} tools one request can carry",
+                }
             if denied:
                 content.update(_withheld(self._registry, grant or set(), denied))
             unavailable = result.data.get("unavailable")

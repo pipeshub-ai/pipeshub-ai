@@ -156,6 +156,7 @@ class FakeRecordsDb:
         self.fail_delete_for: set[str] = set()
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
+        self.unlinked_record_groups: list[str] = []
         self.fail_group_listing = False
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
@@ -254,6 +255,13 @@ class FakeRecordsDb:
         if seen is not None:
             for group in groups:
                 seen.add(CollectionNames.GROUPS.value, group.source_user_group_id)
+
+    async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            seen.add(CollectionNames.RECORD_GROUPS.value, external_group_id)
 
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         if record_id in self.fail_delete_for:
@@ -366,6 +374,8 @@ async def run_full_sync(connector: Any, db: "FakeRecordsDb") -> AsyncMock:  # no
         for external_id in list(db.record_group_permissions):
             if external_id not in by_collection[CollectionNames.RECORD_GROUPS.value]:
                 db.record_group_permissions[external_id] = []
+                # Its records lose their BELONGS_TO and inherited-permission links into it too.
+                db.unlinked_record_groups.append(external_id)
                 removed += 1
         # The edges of an unseen node go in both directions, so a seen record group also
         # loses its grants from an unseen group or role.

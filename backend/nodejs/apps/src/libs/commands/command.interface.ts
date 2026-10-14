@@ -115,6 +115,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
     fn: () => Promise<T>,
     retries: number = 3,
     backoff: number = 300,
+    shouldRetry: (error: unknown) => boolean = () => true,
   ): Promise<T> {
     let attempt = 0;
     while (attempt < retries) {
@@ -127,7 +128,7 @@ export abstract class BaseCommand<T> implements ICommand<T> {
           throw error;
         }
         attempt++;
-        if (attempt >= retries) {
+        if (attempt >= retries || !shouldRetry(error)) {
           throw error;
         }
         // Calculate exponential backoff delay.
