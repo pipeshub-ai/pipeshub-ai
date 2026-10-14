@@ -18,6 +18,14 @@ def permission_is_direct(permission: dict) -> bool | None:
     return False
 
 
+def is_drive_organizer(permission: dict) -> bool:
+    """True when the grant comes from the Manager role on the Shared Drive."""
+    details = permission.get("permissionDetails") or []
+    return isinstance(details, list) and any(
+        isinstance(detail, dict) and detail.get("role") == "organizer" for detail in details
+    )
+
+
 class DrivePermissionBatch(list):
     """The grants to store. ``saw_permission_details`` is false for My Drive and for a drive root."""
 
@@ -33,13 +41,17 @@ def grants_to_store(
     saw_permission_details: bool,
     inherited_permissions_disabled: bool,
     is_drive: bool,
+    organizer_permissions: list = (),
 ) -> list:
     """Shared Drive items store only grants written on the item.
 
     Limited access still marks some entries inherited. Those people can open
-    metadata, not the file, so they are not stored as readers.
+    metadata, not the file, so they are not stored as readers. Managers are the
+    exception: they keep access, and the item no longer inherits it from the drive.
     """
     if saw_permission_details and not is_drive:
+        if inherited_permissions_disabled:
+            return direct_permissions + [p for p in organizer_permissions if p not in direct_permissions]
         return direct_permissions
     return permissions
 

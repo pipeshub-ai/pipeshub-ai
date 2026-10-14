@@ -1767,6 +1767,34 @@ class TestSyncPersonalDrive:
         await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
         connector.drive_delta_sync_point.update_sync_point.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_full_sync_leaves_shared_drive_items_to_their_drive(self, connector):
+        """A shared drive item in the personal listing must not be filed under My Drive."""
+        user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
+                       email="u@t.com", full_name="U")
+        user_dds = AsyncMock()
+        user_dds.changes_get_start_page_token = AsyncMock(return_value={"startPageToken": "tok123"})
+        user_dds.files_list = AsyncMock(return_value={"files": [
+            {"id": "my-file", "name": "mine.txt"},
+            {"id": "sd-folder", "name": "common", "driveId": "sd-1", "parents": ["sd-1"]},
+        ]})
+
+        connector.drive_delta_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+
+        connector._process_drive_files_batch = AsyncMock(return_value=([], 0, 0))
+        connector._process_remaining_batch_records = AsyncMock(return_value=([], 0))
+        connector._delete_trashed_records = AsyncMock()
+        connector.sync_shared_with_me = AsyncMock()
+
+        await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
+
+        connector._process_drive_files_batch.assert_awaited_once()
+        kwargs = connector._process_drive_files_batch.await_args.kwargs
+        assert kwargs["drive_id"] == "root-1"
+        assert [f["id"] for f in kwargs["files"]] == ["my-file"]
+
 
 class TestSyncSharedDrives:
     @pytest.mark.asyncio
@@ -3926,3 +3954,30 @@ class TestEmptyPermissionFallback:
 
         assert perms == []
         assert is_fallback is False
+
+
+class TestShortcutTargetsInOtherDrives:
+    @pytest.mark.asyncio
+    async def test_target_in_another_synced_drive_is_left_to_that_drive(self, connector):
+        """A My Drive shortcut to a shared drive folder must not file the folder under My Drive."""
+        own = {"id": "mine", "name": "mine.txt"}
+        target = {"id": "common", "name": "common", "driveId": "sd-1", "parents": ["sd-1"],
+                  "mimeType": "application/vnd.google-apps.folder"}
+        child = {"id": "readme", "name": "README.md", "driveId": "sd-1", "parents": ["common"]}
+        unsynced = {"id": "other", "name": "other.txt", "driveId": "sd-unsynced"}
+        connector._synced_drive_ids = {"sd-1"}
+        connector._materialize_shortcuts = AsyncMock(return_value=[own, target, child, unsynced])
+        connector._process_drive_item = AsyncMock(return_value=None)
+
+        async for _ in connector._process_drive_items_generator([own], "uid", "u@t.com", "my-drive"):
+            pass
+        processed = [c.args[0]["id"] for c in connector._process_drive_item.await_args_list]
+        assert processed == ["mine", "other"]
+
+        connector._process_drive_item.reset_mock()
+        async for _ in connector._process_drive_items_generator(
+            [target], "uid", "u@t.com", "sd-1", is_shared_drive=True
+        ):
+            pass
+        processed = [c.args[0]["id"] for c in connector._process_drive_item.await_args_list]
+        assert processed == ["mine", "common", "readme", "other"]

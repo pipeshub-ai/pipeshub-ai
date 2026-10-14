@@ -109,6 +109,7 @@ from app.connectors.sources.google.common.impersonation import (
 from app.connectors.sources.google.drive.team.drive_access import (
     DrivePermissionBatch,
     grants_to_store,
+    is_drive_organizer,
     item_inherits_parent,
     permission_is_direct,
 )
@@ -1015,6 +1016,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         """
         permissions: List[Permission] = []
         direct_permissions: list[Permission] = []
+        organizer_permissions: list[Permission] = []
         saw_permission_details = False
         individually_shared_emails: set[str] = set()
         page_token: Optional[str] = None
@@ -1081,6 +1083,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                             saw_permission_details = True
                         if directness is not False:
                             direct_permissions.append(permission)
+                        if is_drive_organizer(perm_data):
+                            organizer_permissions.append(permission)
 
                         self._track_external_collaborator(entity_type, email)
 
@@ -1197,6 +1201,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             saw_permission_details=saw_permission_details,
             inherited_permissions_disabled=inherited_permissions_disabled,
             is_drive=is_drive,
+            organizer_permissions=organizer_permissions,
         )
         return (
             DrivePermissionBatch(stored, saw_permission_details=bool(saw_permission_details and not is_drive)),
@@ -2520,6 +2525,12 @@ class GoogleDriveTeamConnector(BaseConnector):
                 shared-with-me paths.
         """
         files = await self._materialize_shortcuts(files, drive_data_source, user_email)
+        # A shortcut can resolve into another synced shared drive. That drive's own sync
+        # files the target; taking it here would move it into this drive's record group.
+        files = [
+            f for f in files
+            if not ((item_drive := f.get("driveId")) and item_drive != drive_id and item_drive in self._synced_drive_ids)
+        ]
         for file_metadata in files:
             try:
                 record_update = await self._process_drive_item(
@@ -3073,7 +3084,9 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self.logger.info(f"📥 Fetching files page (token: {current_page_token[:20] if current_page_token else 'initial'}...)")
                 files_response = await user_drive_data_source.files_list(**list_params)
 
-                files = files_response.get("files", [])
+                # A shared drive item is synced by sync_shared_drives or sync_shared_with_me;
+                # filing it here would move it into this user's My Drive group.
+                files = [f for f in files_response.get("files", []) if not f.get("driveId")]
                 if files_response.get("incompleteSearch") is True:
                     self.logger.warning(
                         "Google Drive reported incompleteSearch while listing files for %s",
