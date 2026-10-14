@@ -1665,6 +1665,12 @@ class TestGetUserGroups:
         result = await connected_provider.get_user_groups("c1", "org1")
         assert result == []
 
+    @pytest.mark.asyncio
+    async def test_exception_raises_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_user_groups("c1", "org1", raise_on_error=True)
+
 
 # ---------------------------------------------------------------------------
 # get_app_role_by_external_id

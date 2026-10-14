@@ -157,6 +157,7 @@ class FakeRecordsDb:
         self.fail_stored_permission_reads = False
         self.kept_records: list[str] = []
         self.unlinked_record_groups: list[str] = []
+        self.fail_group_listing = False
 
     async def get_user_by_user_id(self, user_id: str) -> Optional[SimpleNamespace]:
         if not self.creator_email:
@@ -241,6 +242,19 @@ class FakeRecordsDb:
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
+
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        if self.fail_group_listing:
+            raise RuntimeError("database unavailable")
+        return list({g.source_user_group_id: g for g, _ in self.user_groups}.values())
+
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        from app.config.constants.arangodb import CollectionNames
+
+        seen = getattr(self, "full_sync_seen", None)
+        if seen is not None:
+            for group in groups:
+                seen.add(CollectionNames.GROUPS.value, group.source_user_group_id)
 
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         from app.config.constants.arangodb import CollectionNames

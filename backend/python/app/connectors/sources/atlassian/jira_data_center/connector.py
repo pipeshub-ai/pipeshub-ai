@@ -522,8 +522,54 @@ class JiraDataCenterConnector(BaseConnector):
             elif entity == "project_issues":
                 if external_id in project_ids:
                     await self._keep_stored_records(project_ids[external_id])
+            elif entity == "user_groups":
+                await self._keep_stored_user_groups()
+            elif entity == "project_role_ids":
+                await self._keep_stored_project_roles(list(project_ids))
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
+        """Note each project's stored roles as seen by a full sync in progress, without saving them.
+
+        The group list was refused, so roles are not synced (a role saved without its groups'
+        members would lose them), but the role lists can still be read. A role a project grant
+        does not name is kept this way too. A role list that cannot be read reports an
+        incomplete read instead, so nothing is unlinked.
+        """
+        for project_key in project_keys:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_project_roles_v2(projectIdOrKey=project_key)
+                if response.status != HttpStatusCode.OK.value:
+                    raise JiraReadError(response.status, f"HTTP {response.status}")
+                roles = response.json() or {}
+                if not isinstance(roles, dict):
+                    raise ValueError("the role list is not a mapping")
+            except Exception as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._kept_unread_access = True
+                continue
+            for role_name, role_url in roles.items():
+                if role_name == "atlassian-addons-project-access" or not isinstance(role_url, str):
+                    continue
+                role_id = role_url.rstrip("/").split("/")[-1]
+                await self._has_stored_access("role", f"{project_key}_{role_id}")
+
+    async def _keep_stored_user_groups(self) -> None:
+        """Note every stored user group of this connector as seen by a full sync in progress.
+
+        The group list could not be read in full, so which groups still exist is unknown,
+        including ones no project grant names. If they cannot be listed, the run reports an
+        incomplete read instead, so nothing is unlinked.
+        """
+        try:
+            groups = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("⚠️ Could not list the stored groups to keep them: %s", e)
+            self._kept_unread_access = True
+            return
+        self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
 
     async def _keep_stored_records(self, project_id: str) -> None:
         """Note this project's stored records as seen by a full sync in progress: its issues
@@ -811,6 +857,7 @@ class JiraDataCenterConnector(BaseConnector):
                 # Groups past the picker limit are never read, on any sync: lasting, like a
                 # refusal, so every project's stored grants and the groups they name are kept.
                 self._kept_after_refusal.append(("projects", ""))
+                self._kept_after_refusal.append(("user_groups", ""))
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -2381,6 +2428,8 @@ class JiraDataCenterConnector(BaseConnector):
                 # The groups are unknown, so on a refusal every project's stored grants, and the
                 # groups and roles they name, are kept.
                 self._note_unread(response.status, ("projects", ""))
+                self._note_unread(response.status, ("user_groups", ""))
+                self._note_unread(response.status, ("project_role_ids", ""))
                 return None
 
             payload = response.json() or {}

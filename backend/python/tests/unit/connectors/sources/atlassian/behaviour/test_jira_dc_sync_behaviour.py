@@ -1841,6 +1841,52 @@ class TestFullSyncCoverage:
         assert sorted(m.email for m in db.groups_saved["devs"]) == devs, "a group the project grants is kept"
         assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "so is a role it grants"
 
+    @pytest.mark.parametrize("failing", [None, "group listing", "role list"])
+    async def test_a_refused_group_list_keeps_stored_groups_and_roles_no_grant_names(
+        self, jira, db, store, search, failing
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}, {"name": "qa"}], "total": 3})
+
+        def members(request: httpx.Request) -> httpx.Response:
+            name = AtlassianApiStub.query(request)["groupname"]
+            keys = {"devs": ["alice-key", "carol-key"], "jira-software-users": ["bob-key"], "qa": ["alice-key"]}[name]
+            return json_response({"values": [{"key": k} for k in keys], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        granted = [p.external_id for p in db.record_group_permissions["10000"]]
+        assert "qa" not in granted and "ENG_10004" not in granted, "no grant names qa or Testers"
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+
+        store.sync_points.clear()
+        db.fail_group_listing = failing == "group listing"
+        if failing == "role list":
+            jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["busy"]}, status=503))
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        if failing:
+            # What could not be listed cannot be kept by name, so nothing is unlinked.
+            assert connector.full_sync_coverage().complete is False
+            graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        else:
+            assert connector.full_sync_coverage().complete is True
+            graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert [m.email for m in db.groups_saved["qa"]] == ["alice@example.com"], "the stored group keeps its members"
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"], "so does the stored role"
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers
+        assert "ENG_10002" in [p.external_id for p in db.record_group_permissions["10000"]]
+
     async def test_groups_past_the_picker_limit_are_kept_and_the_unlink_still_runs(
         self, jira, db, store, search
     ) -> None:

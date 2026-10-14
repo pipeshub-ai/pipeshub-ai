@@ -3091,6 +3091,12 @@ class DataSourceEntitiesProcessor:
         for record_id in record_ids:
             self._note_full_sync_seen(connector_id, CollectionNames.RECORDS.value, record_id)
 
+    def note_kept_user_groups(self, connector_id: str, groups: list[AppUserGroup]) -> None:
+        """Note user groups a connector keeps as stored without writing them as seen by the
+        full sync in progress, if any, so the unlink after that sync keeps their members."""
+        for group in groups:
+            self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, group.id)
+
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         """Note a record group a connector keeps as stored without writing it as seen by the
         full sync in progress, if any, so the unlink after that sync keeps the links its
@@ -3878,9 +3884,9 @@ class DataSourceEntitiesProcessor:
                 self.org_id, connector_id, raise_on_error=raise_on_error
             )
 
-    async def get_all_user_groups(self, connector_id: str) -> list[AppUserGroup]:
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[AppUserGroup]:
         async with self.data_store_provider.transaction() as tx_store:
-            return await tx_store.get_user_groups(connector_id, self.org_id)
+            return await tx_store.get_user_groups(connector_id, self.org_id, raise_on_error=raise_on_error)
 
     async def batch_upsert_user_groups(self, user_groups: list[AppUserGroup]) -> None:
         """Write user groups without their members, one node per external id.
