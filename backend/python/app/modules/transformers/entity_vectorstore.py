@@ -187,6 +187,8 @@ _STAMP_FIELD = "indexStamp"
 # stale read would otherwise drop a collection another had just recreated and
 # written to. Long enough for one drop and create; a holder that dies frees it.
 _RECREATE_LOCK_SECONDS = 120
+# Entity points read to find the model a collection was written with.
+_MODEL_PROBE_POINTS = 32
 
 
 def _recreate_lock_key(collection: str) -> str:
@@ -710,7 +712,7 @@ class EntityVectorStore:
         filtered scroll sees, so on OpenSearch a point written since the last
         refresh does not count; such a point has the old dimension, which the
         new model cannot use, and the rebuild refills the new collection."""
-        holds_entities = await self._first_entity_point(name) is not None
+        holds_entities = await self._holds_entities(name)
         if not (leader or (self.recreate_on_dimension_mismatch and not holds_entities)):
             if self.recreate_on_dimension_mismatch:
                 self.logger.error(
@@ -735,7 +737,7 @@ class EntityVectorStore:
                 )
             try:
                 await self._drop_and_create_under_lock(
-                    name, mismatch, holds_entities=holds_entities, config_hash=config_hash,
+                    name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
                 )
             finally:
                 try:
@@ -747,7 +749,7 @@ class EntityVectorStore:
                 await redis.aclose()
 
     async def _drop_and_create_under_lock(
-        self, name: str, mismatch: str, *, holds_entities: bool, config_hash: str | None,
+        self, name: str, mismatch: str, *, leader: bool, holds_entities: bool, config_hash: str | None,
     ) -> None:
         # The mismatch is judged against this process's model, read from its
         # config cache. A stale cache (a missed change notification) would
@@ -760,6 +762,12 @@ class EntityVectorStore:
         current = await self.vector_db_service.get_collection_info(name)
         if current.exists and not await self._collection_mismatch(name, current):
             return
+        if not leader and current.exists and await self._holds_entities(name):
+            raise VectorStoreError(
+                "Entity collection received entities while it was being recreated; "
+                "the indexing service recreates it",
+                details={"collection": name},
+            )
         # The collection is a projection of the graph; the rebuild's marker
         # includes the model and the collection's stamp, so every pass re-runs
         # and refills it.
@@ -833,14 +841,20 @@ class EntityVectorStore:
         whenever the model changes, and writes embedded with a model the
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
-        model's points."""
-        point = await self._first_entity_point(collection or self.collection_name)
-        stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD) if point else None
-        return stored or None
+        model's points. A page of them is read, not one, so a few points
+        that predate the field do not hide the model the rest record."""
+        for point in await self._entity_points(collection or self.collection_name, _MODEL_PROBE_POINTS):
+            stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
+            if stored:
+                return stored
+        return None
 
-    async def _first_entity_point(self, collection: str) -> VectorPoint | None:
-        """One entity point of the collection, None when it holds none (the
-        stamp point is not an entity). Raises when the read fails."""
+    async def _holds_entities(self, collection: str) -> bool:
+        """Whether the collection holds an entity point (the stamp point is
+        not one). Raises when the read fails."""
+        return bool(await self._entity_points(collection, 1))
+
+    async def _entity_points(self, collection: str, limit: int) -> list[VectorPoint]:
         from app.models.entities import EntityType
 
         page = await self.vector_db_service.scroll(
@@ -848,10 +862,10 @@ class EntityVectorStore:
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.entityType": [t.value for t in EntityType]},
             ),
-            limit=1,
+            limit=limit,
             with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
         )
-        return page.points[0] if page.points else None
+        return page.points
 
     async def embedding_config_version(self) -> str | None:
         """``embedding_config_hash`` of the configured models, None when the

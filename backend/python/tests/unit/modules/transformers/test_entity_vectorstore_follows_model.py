@@ -26,6 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
     EntityVectorStore,
 )
+from app.services.vector_db.models import VectorPoint
 from tests.support.embedding_config import (
     another_process,
     config_service,
@@ -167,6 +168,17 @@ class TestWrites:
             await store.embedding_fingerprint()
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_point_from_before_the_model_was_recorded_does_not_hide_the_others(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
+        first = next(iter(db.points.values()))
+        del first.payload["metadata"][EMBEDDING_MODEL_FIELD]
+
+        await switch_embedding_model(config, SMALL_CONFIG)
+        with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-ada-002"):
+            await _store(db, config, owner=False).embedding_fingerprint()
+        assert db.deletions == 0
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""
@@ -439,6 +451,25 @@ class TestOneRecreateAtATime:
         assert (await second.upsert_entities_batch([_topic("t2")], merge_membership=False)).written == 1
         assert set(_models_of(db)) == {"t1", "t2"}
         assert db.deletions == 1
+
+    async def test_an_entity_written_before_the_lock_keeps_the_collection(self, monkeypatch) -> None:
+        """An old-model write in flight lands after the emptiness check: the
+        collection then holds entities and is left to the leader."""
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        acquire = module.RebuildJobLock.try_acquire
+
+        async def a_write_lands_first(lock: module.RebuildJobLock) -> bool:
+            db.points["late"] = VectorPoint(
+                id="late", dense_vector=[BGE.value] * BGE.dimension,
+                payload={"metadata": {"entityId": "late", "entityType": "topic", "orgId": ORG}},
+            )
+            return await acquire(lock)
+
+        monkeypatch.setattr(module.RebuildJobLock, "try_acquire", a_write_lands_first)
+        with pytest.raises(VectorStoreError, match="received entities while it was being recreated"):
+            await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+        assert "late" in db.points
 
     async def test_while_another_replica_holds_the_lock_nothing_is_dropped(self) -> None:
         db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
