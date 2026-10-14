@@ -38,7 +38,6 @@ from app.services.graph_db.arango.arango_http_provider import (
     MAX_REINDEX_DEPTH,
 )
 from app.services.graph_db.common.record_visibility import RecordVisibility
-from app.services.graph_db.taxonomy import RECORD_ENRICHMENT_EDGE_COLLECTIONS
 
 
 # ---------------------------------------------------------------------------
