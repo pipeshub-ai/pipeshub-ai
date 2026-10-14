@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import TYPE_CHECKING, Any, Optional
 
 from dependency_injector.wiring import inject
@@ -49,6 +50,29 @@ class SearchQuery(BaseModel):
     modifiedBefore: Optional[str] = None
 
 
+# The parser names the assistant tool's parameters; this route receives the
+# camelCase fields of the request body.
+_REQUEST_FIELD_NAMES = {
+    "created_after": "createdAfter",
+    "created_before": "createdBefore",
+    "modified_after": "modifiedAfter",
+    "modified_before": "modifiedBefore",
+}
+_LABEL = "|".join(_REQUEST_FIELD_NAMES)
+# Only the parser's labels: the one that opens the message, and the second
+# bound of "x must be on or before y". A rejected value quoted later in the
+# message is left as the caller sent it.
+_LEADING_LABEL = re.compile(rf"^({_LABEL})\b")
+_RANGE_LABEL = re.compile(rf"^(\w+ must be on or before )({_LABEL})( — )")
+
+
+def _with_request_field_names(message: str) -> str:
+    message = _LEADING_LABEL.sub(lambda m: _REQUEST_FIELD_NAMES[m.group(1)], message)
+    return _RANGE_LABEL.sub(
+        lambda m: m.group(1) + _REQUEST_FIELD_NAMES[m.group(2)] + m.group(3), message
+    )
+
+
 def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
     """The request's date bounds as the retrieval service's ``time_range``.
 
@@ -63,10 +87,8 @@ def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
         modified_before=body.modifiedBefore,
     )
     if error is not None:
-        # Reported as navigate reports it: the parser's own wording.
-        raise HTTPException(
-            status_code=400, detail=json.loads(error).get("message", "Invalid date filter.")
-        )
+        message = json.loads(error).get("message", "Invalid date filter.")
+        raise HTTPException(status_code=400, detail=_with_request_field_names(message))
     return time_range
 
 
