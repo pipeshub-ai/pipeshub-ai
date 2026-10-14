@@ -74,6 +74,7 @@ from app.utils.attachment_utils import (
 from app.utils.llm import LLM_MISSING_FOR_CHAT
 from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import action_failed
 
 if TYPE_CHECKING:
@@ -387,7 +388,7 @@ async def _resolve_service_account_caller_identity(
 async def _get_user_document(user_id: str, graph_provider: IGraphDBProvider, logger: Logger) -> dict[str, Any]:
     """Get user document with validation"""
     try:
-        user = await graph_provider.get_user_by_user_id(user_id)
+        user = await get_user_or_503(graph_provider, user_id)
         if not user or not isinstance(user, dict):
             raise HTTPException(status_code=404, detail="User not found")
 

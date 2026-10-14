@@ -14,6 +14,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
@@ -171,9 +172,7 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    # raise_on_error: the provider answers None to a failed read too, and a 404
-    # would tell a person who is there that they are not.
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"), raise_on_error=True)
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     # Generate a unique key for the team
@@ -316,7 +315,7 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
@@ -350,7 +349,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -516,7 +515,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -590,14 +589,14 @@ async def get_user_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
         graph_created_by = created_by
         if created_by:
-            creator_user = await graph_provider.get_user_by_user_id(created_by)
+            creator_user = await get_user_or_503(graph_provider, created_by)
             org_id = user_info.get("orgId")
             creator_org = creator_user.get("orgId") if creator_user else None
             if (
@@ -744,7 +743,7 @@ async def get_team_users(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 

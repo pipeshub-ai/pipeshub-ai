@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.utils.user_messages import DATABASE_UNREACHABLE
+
 
 async def _drain(response) -> str:
     """Consume an SSE StreamingResponse body.
@@ -613,7 +615,7 @@ class TestGetUserDocument:
 
         result = await _get_user_document("user-1", graph_provider, log)
         assert result["email"] == "test@example.com"
-        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1")
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_user_not_found_none(self) -> None:
@@ -709,8 +711,8 @@ class TestGetUserDocument:
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -720,14 +722,12 @@ class TestGetUserDocument:
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "email": " "})
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------

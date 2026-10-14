@@ -66,6 +66,7 @@ from app.utils.oauth_config import (
     get_oauth_config,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import not_found
 
 # Re-export for client builders / token refresh .
@@ -3147,7 +3148,7 @@ async def _resolve_agent_with_permission(
 
     graph_provider = _get_graph_provider(request)
     try:
-        user = await graph_provider.get_user_by_user_id(user_id)
+        user = await get_user_or_503(graph_provider, user_id)
         if not user:
             raise HTTPException(status_code=HttpStatusCode.UNAUTHORIZED.value, detail="User not found.")
         user_doc_key = user.get("_key") or user.get("id")

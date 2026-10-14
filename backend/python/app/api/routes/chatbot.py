@@ -74,6 +74,7 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
@@ -618,7 +619,7 @@ async def upload_chat_attachments(
     # have no User node and skip permission edges, so the lookup is skipped.
     user_key: str | None = None
     if not is_service_account:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await get_user_or_503(graph_provider, user_id)
         if not user_doc:
             raise HTTPException(status_code=404, detail="User not found for attachment upload")
         user_key = user_doc.get("_key") or user_doc.get("id")

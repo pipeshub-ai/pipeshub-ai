@@ -15,6 +15,10 @@ RETRY_HINT = "Please try again; if it keeps failing, contact your admin."
 
 SOMETHING_WENT_WRONG = f"Something went wrong. {RETRY_HINT}"
 
+# Node repeats this 503 word for word (READER_WRITTEN_MESSAGES in
+# backend/nodejs/apps/src/libs/errors/reader-friendly.ts); change both together.
+DATABASE_UNREACHABLE = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+
 
 PEOPLE_GONE = (
     "Some people you picked are no longer in this workspace. "

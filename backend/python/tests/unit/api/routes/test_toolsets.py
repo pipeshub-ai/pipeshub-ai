@@ -7426,13 +7426,30 @@ class TestAgentScopedToolsets:
 
         request = _make_request()
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        graph_provider.check_agent_permission = AsyncMock(side_effect=RuntimeError("db down"))
 
         with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
              patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
             with pytest.raises(HTTPException) as exc:
                 await _resolve_agent_with_permission("a1", request)
         assert exc.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_read_is_503_not_a_sign_out(self) -> None:
+        """A 401 here would make the web app sign the person out."""
+        from app.api.routes.toolsets import _resolve_agent_with_permission
+
+        request = _make_request()
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
+
+        with patch("app.api.routes.toolsets._get_user_context", return_value={"user_id": "u1", "org_id": "o1"}), \
+             patch("app.api.routes.toolsets._get_graph_provider", return_value=graph_provider):
+            with pytest.raises(HTTPException) as exc:
+                await _resolve_agent_with_permission("a1", request)
+        assert exc.value.status_code == 503
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("u1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_resolve_agent_success_merges_perm(self) -> None:

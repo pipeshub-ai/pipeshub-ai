@@ -61,7 +61,19 @@ class TestLookupUserForRecords:
         result = await lookup_user_for_records(graph_provider, "u1", "org-1")
         assert result["_key"] == "u1"
         # A failed lookup must raise, not read as "user not found".
-        graph_provider.get_user_by_user_id.assert_awaited_once_with(user_id="u1", raise_on_error=True)
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("u1", raise_on_error=True)
+
+    async def test_a_failed_read_is_503(self) -> None:
+        from fastapi import HTTPException
+
+        from app.connectors.api.connector_resolvers import lookup_user_for_records
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with pytest.raises(HTTPException) as exc:
+            await lookup_user_for_records(graph_provider, "u1", "org-1")
+        assert exc.value.status_code == 503
 
     async def test_returns_none_when_not_found(self) -> None:
         from app.connectors.api.connector_resolvers import lookup_user_for_records

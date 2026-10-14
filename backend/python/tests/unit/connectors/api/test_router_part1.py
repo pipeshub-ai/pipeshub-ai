@@ -1170,7 +1170,7 @@ class TestGetRecords:
         assert result["success"] is False
         assert result["code"] == 404
 
-    async def test_exception_returns_500(self):
+    async def test_a_failed_user_read_returns_503(self):
         from app.connectors.api.router import get_records
 
         gp = AsyncMock()
@@ -1198,7 +1198,7 @@ class TestGetRecords:
                 sort_order="desc",
                 source="all",
             )
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert exc_info.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
 
     async def test_sort_order_normalization(self):
         from app.connectors.api.router import get_records

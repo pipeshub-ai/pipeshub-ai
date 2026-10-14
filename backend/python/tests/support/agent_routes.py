@@ -125,8 +125,16 @@ class InMemoryGraph:
         return [(a, k) for m, a, k in self.calls if m == method]
 
     # -- IGraphDBProvider surface used by the agent routes -------------------
-    async def get_user_by_user_id(self, user_id: str, **_: Any) -> dict[str, Any] | None:
-        self._enter("get_user_by_user_id", user_id)
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, **_: Any,
+    ) -> dict[str, Any] | None:
+        try:
+            self._enter("get_user_by_user_id", user_id)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         for doc in self.nodes.get(USERS_COLL, {}).values():
             if doc.get("userId") == user_id:
                 return copy.deepcopy(doc)

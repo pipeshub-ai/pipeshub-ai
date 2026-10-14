@@ -20,6 +20,7 @@ from app.config.redaction import (
     hide_secrets_by_default,
 )
 from app.api.middlewares.auth import is_request_admin
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import not_found
 
 logger = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ def build_graph_data_store(logger_: logging.Logger, graph_provider: Any, org_id:
 async def lookup_user_for_records(graph_provider: Any, user_id: str, org_id: Optional[str]) -> Any:
     """OSS: lookup by external userId only. A failed lookup raises, not "user not found"."""
     del org_id
-    return await graph_provider.get_user_by_user_id(user_id=user_id, raise_on_error=True)
+    return await get_user_or_503(graph_provider, user_id)
 
 
 def records_user_id_arg(user: dict[str, Any], external_user_id: str) -> str:
@@ -75,7 +76,7 @@ async def authorize_connector_stats(
         )
 
     if app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+        user = await get_user_or_503(graph_provider, user_id)
         if not user:
             raise HTTPException(
                 status_code=404,

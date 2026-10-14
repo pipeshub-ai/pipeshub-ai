@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.agent_routes import (
     AGENTS,
     ORGS_COLL,
@@ -134,8 +135,9 @@ class TestReadAgent:
     def test_user_lookup_outage_is_not_reported_as_not_found(self, client, graph) -> None:
         graph.fail("get_user_by_user_id")
         response = client.get("/api/v1/agent/private", headers=as_user("alice"))
-        assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to retrieve user information"
+        assert response.status_code == 503
+        assert response.json()["detail"] == DATABASE_UNREACHABLE
+        assert response.headers["retry-after"] == "5"
         _no_leak(response)
 
     def test_models_are_enriched_from_the_model_catalogue(self, graph) -> None:

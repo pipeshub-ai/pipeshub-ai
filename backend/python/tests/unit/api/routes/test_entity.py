@@ -24,6 +24,7 @@ from app.api.routes.entity import (
     update_team,
     update_user_email,
 )
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +292,10 @@ class TestCreateTeam:
         gp = _graph_provider(req)
         gp.get_user_by_user_id.side_effect = RuntimeError("LockAcquisitionTimeout")
 
-        with pytest.raises(RuntimeError, match="LockAcquisitionTimeout"):
+        with pytest.raises(HTTPException) as exc:
             await create_team(req)
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
         gp.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
         gp.batch_upsert_nodes.assert_not_called()
 

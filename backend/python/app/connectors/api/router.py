@@ -170,6 +170,7 @@ from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
 from app.utils.pdf_stream_conversion import libreoffice_to_pdf
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 
 logger = create_logger("connector_service")
 
@@ -1843,6 +1844,8 @@ async def get_records(
                 "available": available_filters,
             }
         }
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ Failed to list all records: {str(e)}", exc_info=True)
         raise HTTPException(
@@ -1971,14 +1974,7 @@ async def _knowledge_graph_context(
     user_id = request.state.user.get("userId")
     org_id = request.state.user.get("orgId")
 
-    try:
-        user = await graph_provider.get_user_by_user_id(user_id=user_id)
-    except Exception as e:
-        request.app.container.logger().error(f"Error resolving user {user_id}: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to resolve user",
-        ) from e
+    user = await get_user_or_503(graph_provider, user_id)
 
     user_key = (user.get("_key") or user.get("id")) if user else None
     if not user_key:
@@ -2898,7 +2894,7 @@ async def reindex_connector(
             
             if app_doc and app_doc.get("type") == Connectors.KNOWLEDGE_BASE.value:
                 # This is a KB collection, check KB permissions
-                user = await graph_provider.get_user_by_user_id(user_id=user_id)
+                user = await get_user_or_503(graph_provider, user_id)
                 if not user:
                     raise HTTPException(
                         status_code=404,
