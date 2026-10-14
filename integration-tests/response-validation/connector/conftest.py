@@ -192,7 +192,7 @@ def _create_connector(connectors: ConnectorsClient, body: dict[str, Any]) -> Cre
     )
     connector_id = (resp.json().get("connector") or {}).get("connectorId")
     assert connector_id, f"create response carried no connector id: {resp.text}"
-    logger.info("Created %s connector %s", body["connectorType"], connector_id)
+    logger.info("Created a test %s connector", body["connectorType"])
     return CreatedConnector(
         connector_id=connector_id,
         connector_type=body["connectorType"],
@@ -202,13 +202,14 @@ def _create_connector(connectors: ConnectorsClient, body: dict[str, Any]) -> Cre
 
 
 def _delete_connector(connectors: ConnectorsClient, connector_id: str) -> None:
+    # Logs carry no IDs, bodies or exception text: CodeQL traces them back to the
+    # fixture credentials the same client sent.
     try:
         resp = connectors.delete_instance(connector_id)
         if resp.status_code >= 300:
-            # Status only: response bodies here can echo the connector's credentials.
-            logger.warning("Deleting connector %s answered %s", connector_id, resp.status_code)
+            logger.warning("Deleting a test connector answered %s", resp.status_code)
     except Exception as e:  # noqa: BLE001
-        logger.warning("Failed to delete connector %s: %s", connector_id, e)
+        logger.warning("Deleting a test connector failed: %s", type(e).__name__)
 
 
 @pytest.fixture(scope="module")
@@ -339,12 +340,18 @@ def jira_oauth_connector(
 def _delete_oauth_app(
     oauth_configs_api: ConnectorOAuthConfigsClient, connector_type: str, oauth_config_id: str
 ) -> None:
+    # Logs carry no IDs, bodies or exception text: CodeQL traces them back to the
+    # fixture credentials the same client sent.
     try:
         resp = oauth_configs_api.delete_config(connector_type, oauth_config_id)
         if resp.status_code >= 300:
-            logger.warning("Deleting OAuth app %s answered %s", oauth_config_id, resp.status_code)
+            logger.warning(
+                "Deleting a test %s OAuth app answered %s", connector_type, resp.status_code
+            )
     except Exception as e:  # noqa: BLE001
-        logger.warning("Failed to delete OAuth app %s: %s", oauth_config_id, e)
+        logger.warning(
+            "Deleting a test %s OAuth app failed: %s", connector_type, type(e).__name__
+        )
 
 
 @pytest.fixture(scope="module")
