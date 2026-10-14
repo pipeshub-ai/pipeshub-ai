@@ -35,6 +35,13 @@ class TestToLlmImageFormat:
         kwargs = rasterize.call_args.kwargs
         assert (kwargs["output_width"], kwargs["output_height"]) == (1500, 750)
 
+    def test_line_wrapped_svg_is_still_rasterized(self) -> None:
+        uri = _svg_uri(b'<svg xmlns="http://www.w3.org/2000/svg" width="30" height="15"></svg>')
+        header, payload = uri.split(",", 1)
+        wrapped = header + "," + "\n".join(payload[i:i + 8] for i in range(0, len(payload), 8))
+        with patch(_RASTERIZE, return_value="UE5H"):
+            assert to_llm_image_format(wrapped, max_long_edge_px=1568) == "data:image/png;base64,UE5H"
+
     def test_svg_that_cannot_be_rasterized_is_unsendable(self) -> None:
         uri = _svg_uri(b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>')
         with patch(_RASTERIZE, side_effect=RuntimeError("bad svg")):

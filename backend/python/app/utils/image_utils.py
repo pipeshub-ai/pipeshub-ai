@@ -272,6 +272,11 @@ def to_llm_image_format(image_uri: str, *, max_long_edge_px: int) -> str | None:
     header, sep, payload = image_uri.partition(",")
     if not (header.startswith("data:") and sep and ";base64" in header.lower()):
         return image_uri
+    # Wrapped base64 (RFC 2045 line breaks) would fail the fixed-width header
+    # decode below and slip through unconverted.
+    if any(c.isspace() for c in payload):
+        payload = "".join(payload.split())
+        image_uri = f"{header},{payload}"
     try:
         media_type = get_mime_type_from_base64(payload[:20])
         is_svg = media_type is None and _looks_like_svg(payload)
