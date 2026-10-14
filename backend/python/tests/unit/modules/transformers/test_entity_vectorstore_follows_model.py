@@ -110,7 +110,7 @@ async def _leader_tick(store: EntityVectorStore) -> str:
 def _models_of(db: FakeEntityVectorDB) -> dict[str, tuple[str, float]]:
     return {
         point.payload["metadata"]["entityId"]: (point.payload["metadata"][EMBEDDING_MODEL_FIELD], point.dense_vector[0])
-        for point in db.points.values()
+        for point in db.entity_points.values()
     }
 
 
@@ -293,6 +293,64 @@ class TestReplicas:
 
         assert (outcome.written, outcome.failed) == (0, 1)
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
+
+
+class TestFreshInstall:
+    """The rebuild leader creates the collection with the default model before
+    an admin configures one; the configured model has another dimension."""
+
+    async def _created_before_any_model(self) -> tuple[FakeEntityVectorDB, ConfigurationService, EntityVectorStore]:
+        db, config = FakeEntityVectorDB(), config_service()
+        leader = _store(db, config)
+        assert await _leader_tick(leader) == BGE_FP
+        await leader.collection_stamp()
+        assert db.dimension == BGE.dimension and not db.entity_points
+        return db, config, leader
+
+    async def test_the_first_write_recreates_it_for_the_configured_model(self) -> None:
+        db, config, _ = await self._created_before_any_model()
+        replica = _store(db, another_process(config))
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        outcome = await replica.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert outcome.written == 1
+        assert db.dimension == SMALL.dimension
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_the_leader_restamps_the_recreated_collection(self) -> None:
+        db, config, leader = await self._created_before_any_model()
+        old_stamp = db.stamp
+        await switch_embedding_model(config, SMALL_CONFIG)
+        await _store(db, another_process(config)).upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert await _leader_tick(leader) == SMALL_FP
+        assert await leader.collection_stamp() != old_stamp
+        assert db.deletions == 1
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_query_service_leaves_it_to_indexing(self) -> None:
+        db, config, _ = await self._created_before_any_model()
+        reader = _store(db, another_process(config), owner=False)
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await reader.search_entities("pricing", ORG, set(), {"c1"})
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+
+    async def test_a_collection_holding_entities_waits_for_the_leader(self, caplog) -> None:
+        db, config, leader = await self._created_before_any_model()
+        await leader.upsert_entities_batch([_topic()], merge_membership=False)
+        replica = _store(db, another_process(config))
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        with caplog.at_level(logging.ERROR, logger="entity-model-test"), \
+                pytest.raises(VectorStoreError, match="dimension 4"):
+            await replica.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+        assert _models_of(db) == {"t1": (BGE_FP, BGE.value)}
+        assert any("rebuild leader" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
 
 
 class TestRecreateOnSwitch:

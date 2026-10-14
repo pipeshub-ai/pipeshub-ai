@@ -637,21 +637,60 @@ class EntityVectorStore:
             # field its index does not have.
             await self._ensure_payload_indexes(name)
         mismatch = await self._collection_mismatch(name, info)
-        if mismatch:
-            if not recreate:
-                raise VectorStoreError(
-                    f"Entity collection does not match the embedding model: {mismatch}. "
-                    "The indexing service recreates it.",
-                    details={"collection": name},
-                )
-            # The collection is a projection of the graph; the rebuild's
-            # marker includes the model, so every pass re-runs and refills it.
-            self.logger.warning("Recreating entity collection '%s': %s", name, mismatch)
-            await self.vector_db_service.delete_collection(name)
-            info = None
-        if info is None or not info.exists:
-            if info is not None and not create:
+        if mismatch and await self._drop_mismatched(name, mismatch, leader=recreate):
+            await self._create_collection(name)
+        elif not info.exists:
+            if not create:
                 return False
+            await self._create_collection(name)
+        return True
+
+    async def _drop_mismatched(self, name: str, mismatch: str, *, leader: bool) -> bool:
+        """Drop a collection that cannot serve the configured model. Returns
+        whether it is gone; False when another replica already recreated it
+        for this model.
+
+        One that holds entities is dropped only on the rebuild leader's
+        request (``leader``), which then refills it from the graph. One that
+        holds none, such as a fresh install's, created with the default model
+        before an admin configured one, any indexing replica drops: nothing
+        is lost, and writes need not wait for the leader. "Holds" is what a
+        filtered scroll sees, so on OpenSearch a point written since the last
+        refresh does not count; such a point has the old dimension, which the
+        new model cannot use, and the rebuild refills the new collection."""
+        holds_entities = await self._first_entity_point(name) is not None
+        if not (leader or (self.recreate_on_dimension_mismatch and not holds_entities)):
+            if self.recreate_on_dimension_mismatch:
+                self.logger.error(
+                    "Entity collection '%s' does not match the embedding model (%s) and holds "
+                    "entities, so only the entity index rebuild leader recreates and refills it; "
+                    "entity writes fail until it has. Expected for a few seconds after a model "
+                    "change; if it persists, look for entity_index_rebuild in the indexing log.",
+                    name, mismatch,
+                )
+            raise VectorStoreError(
+                f"Entity collection does not match the embedding model: {mismatch}. "
+                "The indexing service recreates it.",
+                details={"collection": name},
+            )
+        # Read again just before the drop: another replica may have recreated
+        # it for this model meanwhile, and may already be writing to it.
+        current = await self.vector_db_service.get_collection_info(name)
+        if current.exists and not await self._collection_mismatch(name, current):
+            return False
+        # The collection is a projection of the graph; the rebuild's marker
+        # includes the model and the collection's stamp, so every pass re-runs
+        # and refills it.
+        self.logger.warning(
+            "Recreating entity collection '%s': %s%s", name, mismatch,
+            "" if holds_entities else " (it holds no entities)",
+        )
+        if current.exists:
+            await self.vector_db_service.delete_collection(name)
+        return True
+
+    async def _create_collection(self, name: str) -> None:
+        try:
             await self.vector_db_service.create_collection(
                 collection_name=name,
                 config=CollectionConfig(
@@ -659,9 +698,14 @@ class EntityVectorStore:
                     enable_sparse=self._capabilities.supports_sparse_vectors,
                 ),
             )
+        except Exception:
+            # Another replica created it first: fine at this dimension.
+            info = await self.vector_db_service.get_collection_info(name)
+            if not (info.exists and info.dense_dimension == self._embedding_size):
+                raise
+        else:
             self.logger.info("Created entity vector collection '%s'", name)
-            await self._ensure_payload_indexes(name)
-        return True
+        await self._ensure_payload_indexes(name)
 
     async def _ensure_payload_indexes(self, name: str) -> None:
         """create_index is idempotent on every provider. connectorIds and
@@ -708,21 +752,24 @@ class EntityVectorStore:
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
         model's points."""
+        point = await self._first_entity_point(collection or self.collection_name)
+        stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD) if point else None
+        return stored or None
+
+    async def _first_entity_point(self, collection: str) -> VectorPoint | None:
+        """One entity point of the collection, None when it holds none (the
+        stamp point is not an entity). Raises when the read fails."""
         from app.models.entities import EntityType
 
         page = await self.vector_db_service.scroll(
-            collection_name=collection or self.collection_name,
+            collection_name=collection,
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.entityType": [t.value for t in EntityType]},
             ),
             limit=1,
             with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
         )
-        for point in page.points:
-            stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
-            if stored:
-                return stored
-        return None
+        return page.points[0] if page.points else None
 
     async def embedding_config_version(self) -> str | None:
         """``embedding_config_hash`` of the configured models, None when the
