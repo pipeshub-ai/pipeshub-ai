@@ -16796,7 +16796,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return [row["site"] for row in rows or [] if row.get("site")]
         except Exception as e:
             self.logger.error(f"❌ get_issue_sites failed: {str(e)}")
-            return []
+            raise
 
     async def get_records_linking_to_weburls(
         self,

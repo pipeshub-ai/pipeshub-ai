@@ -5876,6 +5876,10 @@ class JiraDataCenterConnector(BaseConnector):
                 parent_node_id=None,  # Tickets have no parent node
             )
 
+            # _process_record deletes and rewrites every link edge from this list,
+            # so a reindexed issue without it would lose its links and mentions.
+            issue_record.related_external_records = self._related_records(issue)
+
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []
 

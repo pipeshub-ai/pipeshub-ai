@@ -788,8 +788,11 @@ class DataSourceEntitiesProcessor:
         Connectors.JIRA_DATA_CENTER_PERSONAL.value,
     ]
     # Sites change only when a Jira connector is added; reading them once per
-    # this many milliseconds per org keeps key lookups to one indexed read.
+    # this many milliseconds per org keeps key lookups to one indexed read. An
+    # org with no Jira site yet is asked again sooner: its first Jira sync may
+    # be running.
     ISSUE_SITES_TTL_MS = 10 * 60 * 1000
+    NO_ISSUE_SITES_TTL_MS = 60 * 1000
 
     @staticmethod
     def _mention_key(related: object) -> str | None:
@@ -807,8 +810,12 @@ class DataSourceEntitiesProcessor:
         cache: dict[str, tuple[int, list[str]]] = self.__dict__.setdefault("_issue_sites_cache", {})
         now = get_epoch_timestamp_in_ms()
         cached = cache.get(org_id)
-        if cached and now - cached[0] < self.ISSUE_SITES_TTL_MS:
-            return cached[1]
+        if cached:
+            ttl = self.ISSUE_SITES_TTL_MS if cached[1] else self.NO_ISSUE_SITES_TTL_MS
+            if now - cached[0] < ttl:
+                return cached[1]
+        # A failed read raises and is not cached: the caller keeps the record's
+        # link edges, and the next save asks again.
         sites = list(await tx_store.get_issue_sites(org_id, self.ISSUE_KEY_CONNECTORS) or [])
         cache[org_id] = (now, sites)
         return sites

@@ -8,7 +8,7 @@ Built only from the processor and the models, so it runs against the code
 before this change as well.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -491,3 +491,37 @@ class TestIssueKeysJoinTheIssue:
 
         kwargs = tx.delete_edges_by_relationship_types.await_args.kwargs
         assert kwargs["from_id"] == "pr-1"
+
+
+class TestIssueSitesCache:
+    @pytest.mark.asyncio
+    async def test_a_failed_read_is_not_cached_and_keeps_the_edges(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        tx.get_issue_sites = AsyncMock(side_effect=[RuntimeError("graph down"), ["https://acme.atlassian.net"]])
+        pr = _pull_request()
+        pr.related_external_records = _by_key("PA-1718")
+
+        await proc._handle_related_external_records(pr, pr.related_external_records, tx)
+        tx.delete_edges_by_relationship_types.assert_not_awaited()
+
+        await proc._handle_related_external_records(pr, pr.related_external_records, tx)
+        assert tx.get_issue_sites.await_count == 2
+        tx.get_records_by_weburls.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_site_yet_is_asked_again_after_a_minute(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        tx.get_issue_sites = AsyncMock(side_effect=[[], ["https://acme.atlassian.net"]])
+        clock = iter([0, 30_000, 61_000, 62_000])
+        pr = _pull_request()
+        pr.related_external_records = _by_key("PA-1718")
+        with patch(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.get_epoch_timestamp_in_ms",
+            side_effect=lambda: next(clock),
+        ):
+            assert await proc._issue_sites("org-1", tx) == []
+            assert await proc._issue_sites("org-1", tx) == []
+            assert await proc._issue_sites("org-1", tx) == ["https://acme.atlassian.net"]
+        assert tx.get_issue_sites.await_count == 2

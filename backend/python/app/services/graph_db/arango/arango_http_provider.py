@@ -5436,7 +5436,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) or []
         except Exception as e:
             self.logger.error("❌ get_issue_sites failed: %s", str(e))
-            return []
+            raise
 
     async def get_records_linking_to_weburls(
         self,

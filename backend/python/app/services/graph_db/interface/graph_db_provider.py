@@ -2154,7 +2154,10 @@ class IGraphDBProvider(ABC):
             transaction: Optional transaction ID.
 
         Returns:
-            Distinct site prefixes. ``[]`` on a query failure, which is logged.
+            Distinct site prefixes.
+
+        Raises:
+            Exception: on a query failure, so it is never cached as "no site".
         """
         pass
 
