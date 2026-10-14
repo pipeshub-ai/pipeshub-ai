@@ -179,6 +179,10 @@ test.describe('First run', () => {
       expect(org.ok(), `reading the organization failed: ${org.status()}`).toBe(true);
       expect(((await org.json()) as { registeredName?: string }).registeredName).toBe(WORKSPACE_NAME);
 
+      const storage = await api.get('/api/v1/configurationManager/storageConfig');
+      expect(storage.ok(), `reading the storage config failed: ${storage.status()}`).toBe(true);
+      expect(((await storage.json()) as { storageType?: string }).storageType).toBe('local');
+
       for (const [type, key] of [['llm', llmKey], ['embedding', embeddingKey]] as const) {
         const listed = await api.get(`${MODELS_API}/${type}`);
         expect(listed.ok(), `listing ${type} models failed: ${listed.status()}`).toBe(true);
