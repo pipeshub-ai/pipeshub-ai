@@ -4943,10 +4943,14 @@ class DataSourceEntitiesProcessor:
         collection: str,
         filters: dict,
         return_fields: list[str] | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
+        """``raise_on_error`` raises a failed read instead of answering []."""
         async with self.data_store_provider.transaction() as tx_store:
             return await tx_store.get_nodes_by_filters(
                 collection=collection, filters=filters, return_fields=return_fields,
+                raise_on_error=raise_on_error,
             )
 
     async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool | None:

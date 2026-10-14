@@ -975,11 +975,12 @@ class BookStackConnector(BaseConnector):
             return
         # A refusal repeats every sync, so the timestamp moves on (holding it would
         # replay the audit log every sync and lose the role deletes made meanwhile),
-        # and the flag has the next sync read every role again.
-        sync_point: dict[str, object] = {"timestamp": current_timestamp}
-        if self._refused_roles_kept:
-            sync_point[ROLE_REBUILD_OWED] = True
-        await self.app_role_sync_point.update_sync_point(bookstack_user_role_sync_key, sync_point)
+        # and the flag has the next sync read every role again. Always written: the
+        # stores merge a sync point, so a flag left out would stay set.
+        await self.app_role_sync_point.update_sync_point(
+            bookstack_user_role_sync_key,
+            {"timestamp": current_timestamp, ROLE_REBUILD_OWED: self._refused_roles_kept},
+        )
 
 
     async def _sync_user_roles_full(self) -> bool:
@@ -994,6 +995,8 @@ class BookStackConnector(BaseConnector):
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
         self._roles_rebuilt = True
+        # This read decides what is owed: a role refused earlier in this sync and read now is not.
+        self._refused_roles_kept = False
         if not self._users_stored:
             # The processor attaches a member only through their stored user, so a role
             # written now would leave out everyone the user sync didn't store.
@@ -1082,7 +1085,37 @@ class BookStackConnector(BaseConnector):
             self.logger.info("✅ Successfully processed app roles and permissions.")
         else:
             self.logger.info("No app roles were processed.")
+        if self._roles_read is ReadOutcome.COMPLETE:
+            return await self._remove_roles_bookstack_no_longer_has(all_roles_with_details)
         return roles_complete
+
+    async def _remove_roles_bookstack_no_longer_has(self, roles: list[dict]) -> bool:
+        """Remove the stored roles a complete role read did not return.
+
+        Writing roles replaces the members of the roles written only, so a role deleted
+        in BookStack while its delete event was missed (the role list refused, or a full
+        sync's sync points cleared) would keep its members. False when the stored roles
+        can't be listed, so the next sync reads every role again.
+        """
+        present = {str(role.get("id")) for role in roles}
+        try:
+            stored = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.ROLES.value,
+                {"connectorId": self.connector_id},
+                return_fields=["externalRoleId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.error(f"Could not list the stored BookStack roles: {e}")
+            self._kept_unnoted_access = True
+            return False
+        gone = sorted({str(node.get("externalRoleId")) for node in stored if node.get("externalRoleId")} - present)
+        for role_id in gone:
+            self.logger.info(f"Role ID {role_id} is no longer in BookStack; removing it")
+            await self.data_entities_processor.on_app_role_deleted(
+                external_role_id=role_id, connector_id=self.connector_id
+            )
+        return True
 
 
     async def _keep_refused_roles(self) -> bool:

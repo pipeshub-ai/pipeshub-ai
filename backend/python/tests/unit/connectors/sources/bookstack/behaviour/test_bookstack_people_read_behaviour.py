@@ -150,6 +150,7 @@ class Directory:
         self.fail_user_lookup = False
         self.fail_edge_delete = False
         self.fail_stored_read = False
+        self.fail_role_list_read = False
         # Roles kept as they are stored and noted as seen by a full sync in progress.
         self.kept_as_seen: set[str] = set()
 
@@ -194,6 +195,18 @@ class Directory:
             self.kept_as_seen.add(external_id)
         return stored
 
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+        *, raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The stored roles; like the graph stores, a failed read answers [] unless raise_on_error."""
+        assert collection == "roles" and filters == {"connectorId": CONNECTOR_ID}
+        if self.fail_role_list_read:
+            if raise_on_error:
+                raise RuntimeError("graph unavailable")
+            return []
+        return [{"externalRoleId": role_id} for role_id in self.role_members]
+
     async def on_app_role_deleted(self, external_role_id: str, connector_id: str) -> None:
         self.role_members.pop(external_role_id, None)
 
@@ -205,14 +218,17 @@ class Directory:
 
 
 class FakeSyncPoint:
-    def __init__(self) -> None:
-        self.points: dict[str, dict[str, str]] = {}
+    """Sync points as both graph stores keep them: an update merges into what is stored,
+    so a key the update leaves out keeps its old value."""
 
-    async def read_sync_point(self, key: str) -> dict[str, str]:
+    def __init__(self) -> None:
+        self.points: dict[str, dict[str, object]] = {}
+
+    async def read_sync_point(self, key: str) -> dict[str, object]:
         return dict(self.points.get(key, {}))
 
-    async def update_sync_point(self, key: str, data: dict[str, str]) -> None:
-        self.points[key] = dict(data)
+    async def update_sync_point(self, key: str, data: dict[str, object]) -> None:
+        self.points.setdefault(key, {}).update(data)
 
 
 class World:
@@ -704,3 +720,43 @@ async def test_a_user_update_for_a_user_never_stored_still_counts_as_applied(syn
     await world.sync_users()
 
     assert [p["timestamp"] for p in world.user_checkpoint().values()] != ["2026-01-01T00:00:00Z"]
+
+
+async def test_the_rebuild_owed_after_a_refusal_stops_once_every_role_is_read(world: World) -> None:
+    """The stores merge sync points, so the flag must be written back as False."""
+    world.api.fail[(f"/api/roles/{VIEWER}", None)] = 403
+    await world.sync_roles()
+    assert rebuild_owed(world)
+
+    del world.api.fail[(f"/api/roles/{VIEWER}", None)]
+    await world.sync_roles()
+    assert not rebuild_owed(world)
+
+    full_read = AsyncMock(wraps=world.connector._sync_user_roles_full)
+    world.connector._sync_user_roles_full = full_read
+    await world.sync_roles()
+    full_read.assert_not_awaited()
+
+
+async def test_a_complete_role_read_removes_a_role_bookstack_no_longer_has(world: World) -> None:
+    """Writing roles replaces only the roles written, so a deleted role must be removed."""
+    world.api.fail[("/api/roles", None)] = 403
+    await world.sync_roles()
+    del world.api.fail[("/api/roles", None)]
+    del world.api.roles[VIEWER]  # deleted while the role list was refused
+
+    await world.sync_roles()
+
+    assert world.members(VIEWER) is None
+    assert world.members(EDITOR) == emails(1, 2, 3, 4, 5)
+
+
+async def test_a_complete_role_read_whose_stored_roles_cannot_be_listed_is_read_again(world: World) -> None:
+    del world.api.roles[VIEWER]
+    world.directory.fail_role_list_read = True
+
+    await world.sync_roles()
+
+    assert world.role_checkpoint() == {}
+    assert world.members(VIEWER) == emails(4, 5)
+    assert not world.connector.full_sync_coverage().complete
