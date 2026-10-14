@@ -1960,8 +1960,15 @@ class DataSourceEntitiesProcessor:
         if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
-        # Records that pasted this record's address before it was indexed.
-        await self._join_records_linking_here(record, tx_store)
+        # Records that pasted this record's address before it was indexed. Only
+        # when the address is new to the graph: a record re-saved at the same
+        # address was joined when it got it, and a full sync re-saves every record.
+        if (
+            existing_record is None
+            or existing_record.is_placeholder
+            or existing_record.weburl != record.weburl
+        ):
+            await self._join_records_linking_here(record, tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):

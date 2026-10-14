@@ -275,3 +275,28 @@ class TestBackfillReadsEveryHolder:
             f"{CollectionNames.RECORDS.value}/msg-{n}" for n in range(1, 6)
         ]
         assert tx.get_records_linking_to_weburls.await_count == 3
+
+
+class TestBackfillOnlyForANewAddress:
+    @pytest.mark.asyncio
+    async def test_a_resave_at_the_same_address_does_not_read_again(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        stored = _pull_request()
+        tx.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await proc._process_record(_pull_request(), [], tx)
+
+        tx.get_records_linking_to_weburls.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_changed_address_is_looked_up(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        stored = _pull_request()
+        stored.weburl = "https://github.com/acme/old-name/pull/3081"
+        tx.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await proc._process_record(_pull_request(), [], tx)
+
+        tx.get_records_linking_to_weburls.assert_awaited()
