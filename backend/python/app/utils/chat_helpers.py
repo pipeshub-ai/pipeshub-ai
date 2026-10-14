@@ -2390,6 +2390,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # A small table hit as a whole is expanded into all its rows; a row point
     # that arrives after it is recorded on that table instead of being dropped.
     emitted_table_rows: dict[str, dict[str, Any]] = {}
+    # A split row's container queued for a large table, by chunk id: where its
+    # entry sits in rows_to_be_included, so a later fragment can raise its score.
+    pending_split_rows: dict[str, tuple[str, int]] = {}
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2632,8 +2635,17 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     )
                 elif container_chunk_id not in seen_chunks:
                     seen_chunks.add(container_chunk_id)
-                    rows_to_be_included[f"{virtual_record_id}_{container_parent_index}"].append(
+                    rows_key = f"{virtual_record_id}_{container_parent_index}"
+                    pending_split_rows[container_chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
+                    rows_to_be_included[rows_key].append(
                         (parent_block_idx, float(result.get("score", 0.0)), None)
+                    )
+                elif container_chunk_id in pending_split_rows:
+                    # Another fragment of a row already queued: the row keeps its best hit.
+                    rows_key, position = pending_split_rows[container_chunk_id]
+                    row_index, row_score, content = rows_to_be_included[rows_key][position]
+                    rows_to_be_included[rows_key][position] = (
+                        row_index, max(row_score, float(result.get("score", 0.0))), content
                     )
             else:
                 target_index = container_parent_index

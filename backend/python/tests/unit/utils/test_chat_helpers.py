@@ -2827,6 +2827,33 @@ class TestGetFlattenedResults:
         assert any(child["block_index"] == 7 and child["content"] == "Row 7 text" for child in table["content"][1])
 
     @pytest.mark.asyncio
+    async def test_a_split_row_of_a_large_table_keeps_its_best_fragment_score(self) -> None:
+        """Two fragments of one image-split row of a large table both match; the
+        row is queued once, and must carry the stronger hit's score."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        rows[1]["data"] = {"row_number": 2}
+        fragments = [
+            {"id": f"frag-{i}", "index": i, "type": BlockType.TEXT.value, "data": f"part {i}",
+             "citation_metadata": None, "parent_index": None, "parent_block_index": 1}
+            for i in (3, 4)
+        ]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, *fragments]
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": f"part {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in ((3, 0.3), (4, 0.9))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert {child["score"] for child in table_unit["content"][1]} == {0.9}
+
+    @pytest.mark.asyncio
     async def test_each_row_hit_on_an_expanded_table_keeps_its_own_score(self) -> None:
         """The rows all carry the table point's score; the search API ranks the
         matched rows by their own hits, so each hit's score is kept."""
