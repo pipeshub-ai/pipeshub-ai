@@ -303,6 +303,16 @@ class TestReasoningEffortKwargs:
             )
             assert result == {"reasoning_effort": "high"}, spoof
 
+    def test_router_proxying_gpt6_uses_responses_api(self) -> None:
+        """A router forwarding to OpenAI's gpt-6 hits the same Chat
+        Completions refusal of reasoning plus tools as gpt-5.x."""
+        config = {"isReasoning": True}
+        result = _reasoning_effort_kwargs(
+            "high", config, provider="openRouter",
+            base_url="https://openrouter.ai/api/v1", model_name="openai/gpt-6.1-sol",
+        )
+        assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}
+
     def test_base_url_host_match_is_case_insensitive(self):
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs(
@@ -1469,6 +1479,21 @@ class TestIsOpenaiGpt5Model:
     def test_unrelated_model_returns_false(self):
         assert _is_openai_gpt5_model("gpt-4o") is False
 
+    @pytest.mark.parametrize("name", [
+        "gpt-6", "gpt-6-luna", "gpt-6.1-sol", "GPT-6.1-Sol", "openai/gpt-6.1-sol", "gpt-7",
+    ])
+    def test_matches_later_generations(self, name) -> None:
+        """gpt-6, gpt-6.1 and later carry the same restriction as gpt-5.x:
+        they refuse any temperature but 1 while reasoning is on."""
+        assert _is_openai_gpt5_model(name) is True
+
+    def test_excludes_later_generation_chat_variant(self) -> None:
+        assert _is_openai_gpt5_model("gpt-6-chat-latest") is False
+
+    @pytest.mark.parametrize("name", ["gpt-50", "gpt-4.1", "my-gpt-6-compatible", "gpt6-luna"])
+    def test_does_not_match_lookalikes(self, name) -> None:
+        assert _is_openai_gpt5_model(name) is False
+
 
 class TestIsQwen38OrLater:
     def test_matches_dotted_qwen_style_id(self):
@@ -1706,6 +1731,26 @@ class TestDefaultTemperatureProviderGating:
         get_generator_model(LLMProvider.OPENROUTER.value, config)
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["temperature"] == 0.6
+
+    @pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol"])
+    @patch("langchain_openai.AzureChatOpenAI")
+    def test_azure_openai_gpt6_name_forces_temperature_without_flag(self, mock_cls, model) -> None:
+        """Azure answers 400 ("'temperature' does not support 0.2 with this
+        model") for gpt-6 models, so an entry added without the reasoning
+        flag must still send temperature=1, as gpt-5.x entries already do."""
+        mock_cls.return_value = MagicMock()
+        config = self._base_config(model)
+        config["configuration"]["deploymentName"] = model
+        get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
+        assert mock_cls.call_args.kwargs["temperature"] == 1
+
+    @patch("langchain_openai.AzureChatOpenAI")
+    def test_azure_openai_older_model_keeps_configured_temperature(self, mock_cls) -> None:
+        mock_cls.return_value = MagicMock()
+        config = self._base_config("gpt-4.1")
+        config["configuration"]["deploymentName"] = "gpt-4.1"
+        get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
+        assert mock_cls.call_args.kwargs["temperature"] == 0.6
 
     @patch("langchain_openai.ChatOpenAI")
     def test_openai_compatible_gpt5_name_still_forces_temperature_regardless_of_flag(self, mock_cls):

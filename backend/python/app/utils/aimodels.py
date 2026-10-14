@@ -1195,7 +1195,13 @@ def _is_qwen_38_or_later(model_name: str | None) -> bool:
 # they support `reasoning_effort` + bound tools on Chat Completions today
 # (with a documented, non-fatal loss of cross-turn reasoning persistence),
 # unlike gpt-5.x which hard-rejects the combination with a 400.
-_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+#
+# The later generations (gpt-6, gpt-6.1, ...) behave the same way: Azure
+# OpenAI answers "'temperature' does not support 0.2 with this model" for
+# gpt-6-luna and gpt-6.1-sol, and refuses reasoning with tools on Chat
+# Completions. So the major version is any single digit from 5 up, the same
+# range `_BEDROCK_OPENAI_GPT_RE` uses. A single digit keeps `gpt-50` out.
+_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
 
 # gpt-5-chat / gpt-5.x-chat-latest are non-reasoning chat variants: they
 # don't accept a `reasoning`/`reasoning_effort` value at all and must never
@@ -1203,10 +1209,12 @@ _OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.
 # reason — langchain-openai itself special-cases them the same way
 # (`"chat" not in model_lower`, `validate_temperature`/
 # `_construct_responses_api_payload` in langchain_openai's chat_models/base.py).
-_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
+_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
 
 
 def _is_openai_gpt5_model(model_name: str | None) -> bool:
+    """True for OpenAI's gpt-5 family and the generations after it (gpt-6,
+    gpt-6.1, ...), excluding their non-reasoning ``-chat`` variants."""
     if not model_name:
         return False
     if _OPENAI_GPT5_CHAT_PATTERN.search(model_name):
@@ -1220,7 +1228,7 @@ def _default_temperature(
 ) -> float:
     """Default ``temperature`` for a provider's constructor kwargs.
 
-    OpenAI gpt-5.x (and o-series) reasoning models only accept
+    OpenAI gpt-5.x and later (and o-series) reasoning models only accept
     ``temperature=1`` (any other value 400s on both Chat Completions and the
     Responses API) — this is the one check shared verbatim by every provider
     branch below that constructs a LangChain client, so it lives here once
