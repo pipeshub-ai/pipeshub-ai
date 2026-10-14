@@ -521,6 +521,7 @@ class JiraDataCenterConnector(BaseConnector):
             elif entity == "project_roles":
                 if external_id in project_ids:
                     await self._has_stored_access("record_group", project_ids[external_id])
+                    await self._keep_scheme_roles(projects, {external_id})
             elif entity == "project_issues":
                 if external_id in project_ids:
                     await self._keep_stored_records(project_ids[external_id])
@@ -535,8 +536,26 @@ class JiraDataCenterConnector(BaseConnector):
                 })
             elif entity == "project_role_ids":
                 await self._keep_stored_project_roles(list(project_ids))
+                await self._keep_scheme_roles(projects, set(project_ids))
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_scheme_roles(
+        self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]], project_keys: set[str]
+    ) -> None:
+        """Note the stored roles these projects' schemes grant on this sync as seen.
+
+        Roles are not saved when their list was refused or the group list was, but the
+        scheme is still saved, and it may grant a stored role its stored grants did not name.
+        Unnoted, that role would lose its members and the new grant to the unlink. A scheme
+        that could not be read, or the configuring-user grant after a refused one, names none.
+        """
+        for group, permissions in projects:
+            if group.short_name not in project_keys:
+                continue
+            for permission in permissions or []:
+                if permission.entity_type == EntityType.ROLE and permission.external_id:
+                    await self._has_stored_access("role", str(permission.external_id))
 
     async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
         """Note each project's stored roles as seen by a full sync in progress, without saving them.
@@ -2688,6 +2707,12 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 roles_dict = response.json()
+                if not isinstance(roles_dict, dict):
+                    # Not "no roles": the stored ones would look gone to a full sync's unlink.
+                    self.logger.warning(f"⚠️ The role list of project {project_key} is not a mapping")
+                    self._note_unread(None)
+                    failed_project_keys.append(project_key)
+                    continue
 
                 if not roles_dict:
                     self.logger.debug(f"No roles found for project {project_key}")

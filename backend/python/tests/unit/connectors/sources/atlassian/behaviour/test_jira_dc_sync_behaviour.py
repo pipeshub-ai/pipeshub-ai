@@ -1949,6 +1949,53 @@ class TestFullSyncCoverage:
         graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
         assert sorted(m.email for m in db.groups_saved["devs"]) == devs
 
+    @pytest.mark.parametrize("refused", ["role list", "group list and role list"])
+    async def test_a_role_the_scheme_newly_grants_keeps_its_grant_and_members_when_roles_are_not_synced(
+        self, jira, db, store, search, refused
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/project/ENG/role", {
+            "Developers": f"{BASE}{API}/project/ENG/role/10002",
+            "Testers": f"{BASE}{API}/project/ENG/role/10004",
+        })
+        jira.on("GET", f"{API}/project/ENG/role/10004", {"name": "Testers", "actors": [
+            {"type": "atlassian-user-role-actor", "name": "alice"},
+        ]})
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "ENG_10004" not in [p.external_id for p in db.record_group_permissions["10000"]]
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"]
+
+        # The scheme now grants Testers, and the role list is refused, so roles are not synced.
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10004"}},
+        ]})
+        jira.on("GET", f"{API}/project/ENG/role", json_response({"errorMessages": ["denied"]}, status=403))
+        if refused == "group list and role list":
+            jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["denied"]}, status=403))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert "ENG_10004" in [p.external_id for p in db.record_group_permissions["10000"]], "the new grant stays"
+        assert [m.email for m in db.app_roles["ENG_10004"]] == ["alice@example.com"], "and so do the role's members"
+
+    async def test_a_role_list_that_is_not_a_mapping_is_an_incomplete_read(self, jira, db, store, search) -> None:
+        connector = await self._synced(jira, db, store, search)
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+        assert developers
+
+        jira.on("GET", f"{API}/project/ENG/role", json_response([]))
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False, "an empty list is not a project with no roles"
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers
+
     async def test_groups_past_the_picker_limit_are_kept_and_the_unlink_still_runs(
         self, jira, db, store, search
     ) -> None:
