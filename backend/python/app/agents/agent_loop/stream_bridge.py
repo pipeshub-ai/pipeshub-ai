@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.events.base import EventType
+from app.agents.agent_loop import parked_turn, tool_approvals
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
@@ -51,6 +52,7 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.utils.stage_timer import RunTimer
+from app.utils.time_conversion import set_llm_time_zone
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -417,6 +419,10 @@ async def run_agent_loop_stream(
     )
 
     async def _produce() -> None:
+        # Record headers rendered by tools show dates in the user's zone,
+        # weekday included. Set inside this task so it reaches every tool
+        # call of the run and nothing outside it.
+        set_llm_time_zone(context.timezone)
         agent: Any = None
         run_timing = _AgentRunTiming(run_timer)
         run_finished = False
@@ -449,10 +455,15 @@ async def run_agent_loop_stream(
                 async for event in agent.stream(
                     goal,
                     _skip_start=bool(context.tool_state.get("ask_user_question_resume")),
+                    _skip_user_message=bool(context.tool_state.get(tool_approvals.RESUMING)),
                 ):
                     run_timing.on_event(event)
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+                # A run that stopped for the person keeps its turn for the answer to carry on from.
+                await tool_approvals.keep_stopped_turn(context, agent)
+                if result.needs_input:
+                    await parked_turn.keep_question(context, agent)
 
                 # This path has no prefetch, so there is no prefetch frame to
                 # emit; tool `retrieval_context` frames come from the factory

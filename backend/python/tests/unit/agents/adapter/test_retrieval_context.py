@@ -4,8 +4,10 @@ the delta ledger, and `emit_retrieval_context` gating."""
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, get_args
 from unittest.mock import patch
+
+import pytest
 
 from app.agents.agent_loop.protocol.formatter import AGUIFormatter, LegacyFormatter
 from app.agents.agent_loop.protocol.retrieval_context import (
@@ -22,6 +24,7 @@ from app.agents.agent_loop.retrieval_ledger import (
     emit_retrieval_context,
 )
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.utils.render_budget import TruncatedBy
 from tests.unit.agents.adapter.conftest import make_context
 
 
@@ -259,6 +262,46 @@ class TestLedger:
         [fetched] = delta.records[0].fetched
         assert fetched.shownBlocks == [40, 41, 90]
         assert fetched.tableTruncation.model_dump() == {"blockGroupIndex": 3, "rowsShown": 12, "rowsTotal": 500}
+
+    def test_why_a_fetch_stopped_and_what_the_model_asked_for_are_reported(self) -> None:
+        outcome = {
+            "virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 50, "complete": False,
+            "truncatedBy": "blocks", "requestedMaxBlocks": 50, "startBlockSent": True,
+        }
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        fetched = fetched.model_dump(exclude_none=True)
+        assert fetched["truncatedBy"] == "blocks"
+        assert fetched["requestedMaxBlocks"] == 50
+        assert fetched["startBlockSent"] is True
+
+    def test_an_entry_without_the_newer_fields_keeps_its_old_wire_shape(self) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": True}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        assert set(fetched.model_dump(exclude_none=True)) == {"startBlock", "blocksRendered", "complete"}
+
+    @pytest.mark.parametrize("reason", get_args(TruncatedBy))
+    def test_every_reason_the_renderer_reports_reaches_the_frame(self, reason: str) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 1, "complete": False,
+                   "truncatedBy": reason}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        assert delta.records[0].fetched[0].truncatedBy == reason
+
+    def test_an_unknown_stop_reason_is_dropped_not_fatal(self) -> None:
+        outcome = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,
+                   "truncatedBy": "weather", "requestedMaxBlocks": "50", "startBlockSent": "yes"}
+
+        delta = RetrievalContextLedger().take_delta(_state(fetch_render_outcomes={"rec-7": [outcome]}))
+
+        [fetched] = delta.records[0].fetched
+        assert (fetched.truncatedBy, fetched.requestedMaxBlocks, fetched.startBlockSent) == (None, None, None)
 
     def test_two_selections_with_the_same_unit_count_are_both_reported(self) -> None:
         first = {"virtualRecordId": "vr-7", "startBlock": 0, "blocksRendered": 3, "complete": False,

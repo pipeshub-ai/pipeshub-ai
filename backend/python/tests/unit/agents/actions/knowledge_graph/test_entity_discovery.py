@@ -257,3 +257,155 @@ async def test_aliases_are_not_shown(patched) -> None:
     ok, text = await execute_search_entities(_state(), "legal")
     assert ok is True
     assert all("aliases" not in r for r in json.loads(text)["results"])
+
+
+class TestWhereEntitySearchIsOffered:
+    """``entity_search_offered``: the variant ``search_entities`` that comes with
+    ``search_by_entities``. Without it, every call behaves as before."""
+
+    @pytest.fixture(autouse=True)
+    def _extraction_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+
+    @staticmethod
+    async def _offered(**kwargs) -> tuple[bool, dict]:
+        ok, text = await execute_search_entities(_state(), entity_search_offered=True, **kwargs)
+        return ok, json.loads(text)
+
+    @pytest.mark.asyncio
+    async def test_each_query_is_searched_and_its_results_grouped_under_it(self, patched) -> None:
+        _, search = patched
+
+        async def by_query(store, graph, context, query, **kwargs) -> list[EntityHit]:
+            return [_hit(f"e-{query}", "named_entity")] if query != "Nobody" else []
+
+        search.side_effect = by_query
+        ok, payload = await self._offered(query=None, queries=["Contoso", "Nobody", "Contoso", "  ", 7])
+        assert ok and payload["status"] == "success"
+        assert [q["query"] for q in payload["queries"]] == ["Contoso", "Nobody"]
+        assert payload["queries"][0]["results"][0]["entityId"] == "e-Contoso"
+        assert payload["queries"][1]["message"] == "No accessible entities matched"
+        assert search.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_query_and_queries_together_search_each_once(self, patched) -> None:
+        _, search = patched
+        ok, payload = await self._offered(query="Contoso", queries=["Contoso", "Initech"])
+        assert ok and [q["query"] for q in payload["queries"]] == ["Contoso", "Initech"]
+        assert search.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_single_query_keeps_its_shape(self, patched) -> None:
+        _, search = patched
+        search.return_value = [_hit("e1", "named_entity")]
+        ok, payload = await self._offered(query="Contoso")
+        assert ok and "queries" not in payload and payload["results"]
+
+    @pytest.mark.asyncio
+    async def test_at_most_five_queries(self, patched) -> None:
+        _, search = patched
+        ok, payload = await self._offered(query=None, queries=[f"Org {i}" for i in range(7)])
+        assert ok and len(payload["queries"]) == entity_discovery.MAX_QUERIES
+        assert "Only the first 5" in payload["note"]
+        assert search.await_count == entity_discovery.MAX_QUERIES
+
+    @pytest.mark.asyncio
+    async def test_every_query_failing_is_a_failed_call(self, patched) -> None:
+        _, search = patched
+        search.side_effect = EntityAccessError("down")
+        ok, payload = await self._offered(query=None, queries=["A", "B"])
+        assert not ok and payload["status"] == "error" and len(payload["queries"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_one_query_failing_keeps_the_others(self, patched) -> None:
+        _, search = patched
+
+        async def flaky(store, graph, context, query, **kwargs) -> list[EntityHit]:
+            if query == "B":
+                raise EntityAccessError("down")
+            return [_hit("e-a", "named_entity")]
+
+        search.side_effect = flaky
+        ok, payload = await self._offered(query=None, queries=["A", "B"])
+        assert ok and "results" in payload["queries"][0] and "error" in payload["queries"][1]
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_failure_in_one_query_keeps_the_others(self, patched) -> None:
+        _, search = patched
+
+        async def broken(store, graph, context, query, **kwargs) -> list[EntityHit]:
+            if query == "B":
+                raise RuntimeError("driver blew up")
+            return [_hit("e-a", "named_entity")]
+
+        search.side_effect = broken
+        ok, payload = await self._offered(query=None, queries=["A", "B"])
+        assert ok and payload["queries"][0]["results"][0]["entityId"] == "e-a"
+        assert payload["queries"][1]["error"] == "Entity search failed — try again."
+
+    @pytest.mark.asyncio
+    async def test_a_hit_carries_its_kind(self, patched) -> None:
+        _, search = patched
+        hit = _hit("e1", "named_entity")
+        search.return_value = [EntityHit(**{**hit.__dict__, "kind": "organization"})]
+        _, payload = await self._offered(query="Acme")
+        assert payload["results"][0]["kind"] == "organization"
+
+    @pytest.mark.asyncio
+    async def test_kinds_it_cannot_serve_are_explained_and_not_sent(self, patched) -> None:
+        _, search = patched
+        _, payload = await self._offered(query="Acme", named_entity_kinds=["organization", "person", "date", "company"])
+        assert search.call_args.kwargs["kinds"] == ["organization"]
+        notes = " ".join(payload["kindNotes"])
+        assert "search_by_entities" in notes and "find_records_by_value" in notes and "'company'" in notes
+
+    @pytest.mark.asyncio
+    async def test_only_unservable_kinds_never_widen_to_every_kind(self, patched) -> None:
+        _, search = patched
+        ok, payload = await self._offered(query="Sam", named_entity_kinds=["person"])
+        assert ok and payload["results"] == [] and payload["kindNotes"]
+        search.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unservable_kinds_beside_other_types_keep_searching_those_types(self, patched) -> None:
+        _, search = patched
+        search.return_value = [_hit("t1", "topic")]
+        ok, payload = await self._offered(query="Sam", entity_types=["topic"], named_entity_kinds=["person"])
+        assert ok and payload["results"][0]["entityId"] == "t1" and payload["kindNotes"]
+        assert search.call_args.kwargs["entity_types"] == ["topic"] and not search.call_args.kwargs["kinds"]
+
+    @pytest.mark.asyncio
+    async def test_an_unservable_kind_named_as_an_entity_type_is_explained_too(self, patched) -> None:
+        _, search = patched
+        ok, payload = await self._offered(query="Sam", entity_types=["person"])
+        assert ok and payload["results"] == [] and "search_by_entities" in " ".join(payload["kindNotes"])
+        search.assert_not_called()
+
+
+class TestWithoutEntitySearch:
+    """Not offered: no kind check, no kind on hits, no note naming a tool the
+    request does not have, exactly as before."""
+
+    @pytest.fixture(autouse=True)
+    def _extraction_on(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(entity_discovery, "_named_entities_enabled", AsyncMock(return_value=True))
+
+    @pytest.mark.asyncio
+    async def test_kinds_go_to_the_search_as_given(self, patched) -> None:
+        _, search = patched
+        ok, text = await execute_search_entities(_state(), "Sam", named_entity_kinds=["person", "organization"])
+        assert ok and search.call_args.kwargs["kinds"] == ["person", "organization"]
+        assert "kindNotes" not in json.loads(text) and "search_by_entities" not in text
+
+    @pytest.mark.asyncio
+    async def test_hits_carry_no_kind(self, patched) -> None:
+        _, search = patched
+        hit = _hit("e1", "named_entity")
+        search.return_value = [EntityHit(**{**hit.__dict__, "kind": "organization"})]
+        _, text = await execute_search_entities(_state(), "Acme")
+        assert "kind" not in json.loads(text)["results"][0]
+
+    @pytest.mark.asyncio
+    async def test_queries_are_not_taken(self, patched) -> None:
+        ok, _ = await execute_search_entities(_state(), None, queries=["Acme"])
+        assert ok is False

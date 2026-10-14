@@ -581,8 +581,57 @@ describe('ErrorMiddleware', () => {
 
       handler(error, req, res, next)
 
-      // Logger should have been called - verify it was called
       expect(loggerErrorStub.called).to.be.true
+      const logged = JSON.stringify(loggerErrorStub.firstCall.args)
+      expect(logged).to.not.contain('secret-token')
+      expect(logged).to.not.contain('session=abc')
+      expect(logged).to.contain('application/json')
     })
+
+    // A Google connector callback that failed auth: the request's query and its
+    // Referer both carried the live authorization code into the error log.
+    for (const [name, makeError] of [
+      ['an application error', () => new UnauthorizedError('No session')],
+      ['an unknown error', () => new Error('boom')],
+    ] as const) {
+      it(`keeps OAuth codes and secret headers out of the log for ${name}`, () => {
+        const fakeCode = '4/0FAKE-auth-code-not-real'
+        const fakeState = 'ZmFrZS1zdGF0ZQ'
+        const req = createMockRequest({
+          path: '/api/v1/connectors/oauth/callback',
+          originalUrl: `/api/v1/connectors/oauth/callback?code=${encodeURIComponent(fakeCode)}&state=${fakeState}`,
+          query: { code: fakeCode, state: fakeState, baseUrl: 'http://localhost:3001' },
+          headers: {
+            referer:
+              `http://localhost:3001/connectors/oauth/callback/Drive?state=${fakeState}` +
+              `&iss=https://accounts.google.com&code=${fakeCode}&scope=drive`,
+            authorization: 'Bearer fake-bearer-value',
+            cookie: 'sid=fake-cookie-value',
+            'x-session-token': 'fake-session-token-value',
+            'x-access-token': 'fake-access-token-value',
+            'user-agent': 'mocha',
+          },
+        })
+
+        handler(makeError(), req, createMockResponse(), createMockNext())
+
+        const calls = [...loggerErrorStub.getCalls(), ...loggerWarnStub.getCalls()]
+        expect(calls).to.have.length(1)
+        const logged = JSON.stringify(calls[0]!.args)
+        for (const secret of [
+          'FAKE-auth-code',
+          fakeState,
+          'fake-bearer-value',
+          'fake-cookie-value',
+          'fake-session-token-value',
+          'fake-access-token-value',
+        ]) {
+          expect(logged).to.not.contain(secret)
+        }
+        expect(logged).to.contain('/api/v1/connectors/oauth/callback')
+        expect(logged).to.contain('/connectors/oauth/callback/Drive')
+        expect(logged).to.contain('mocha')
+      })
+    }
   })
 })

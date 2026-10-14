@@ -74,6 +74,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.loop_lag_monitor import LoopLagMonitor
 from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -2086,8 +2087,14 @@ async def health_check(request: Request) -> JSONResponse:
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        loop_lag: dict[str, Any] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
+            # Late wake-ups on the worker loop: every record on it was stalled
+            # that long, which reads as slow I/O everywhere else.
+            lag_monitor = getattr(consumer, "loop_lag_monitor", None)
+            if isinstance(lag_monitor, LoopLagMonitor):
+                loop_lag[str(entry[0])] = lag_monitor.stats()
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
@@ -2098,6 +2105,8 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        if loop_lag:
+            content["worker_loop_lag"] = loop_lag
         content["indexing_llm"] = indexing_llm_stats()
         # Which connector is on which Redis Streams lane, from the last lane
         # upkeep this replica ran (the one holding the recovery lock).

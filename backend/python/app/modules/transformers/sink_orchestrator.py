@@ -22,6 +22,7 @@ from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
+from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.exceptions.indexing_exceptions import IndexingError
 
@@ -163,18 +164,21 @@ class SinkOrchestrator(Transformer):
                     full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
                 )
 
-            await self._describe_images(ctx)
+            with stage("images.describe"):
+                await self._describe_images(ctx)
 
             try:
-                await self.blob_storage.apply(ctx)
+                with stage("blob.write"):
+                    await self.blob_storage.apply(ctx)
             finally:
                 if full_block_containers is not None:
                     record.block_containers = full_block_containers
 
         record_id = record.id
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
+        with stage("graph.read"):
+            record_doc = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
@@ -219,10 +223,13 @@ class SinkOrchestrator(Transformer):
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
-            await self._update_indexing_status(ctx)
+            with stage("graph.status"):
+                await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
-            await self._save_reconciliation_metadata(ctx)
-            await self._sync_record_identity_entities(ctx)
+            with stage("blob.metadata"):
+                await self._save_reconciliation_metadata(ctx)
+            with stage("entities.identity"):
+                await self._sync_record_identity_entities(ctx)
 
     async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
         """Write the record's own entity points, its title and its record group
@@ -531,14 +538,16 @@ class SinkOrchestrator(Transformer):
         synced to the entity vector store (non-blocking: failures are logged
         but do not affect the record's extractionStatus).
         """
-        touched_entities = await self.graphdb.apply(ctx)
+        with stage("graph.enrich"):
+            touched_entities = await self.graphdb.apply(ctx)
         self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
 
         if self.entity_vector_store and touched_entities:
             try:
-                await self.entity_vector_store.upsert_entities_batch(touched_entities)
+                with stage("entities.upsert", detail=f"{len(touched_entities)} entities"):
+                    await self.entity_vector_store.upsert_entities_batch(touched_entities)
             except Exception as exc:
                 # Entity sync is best-effort; do not fail the record pipeline
                 self.logger.warning(

@@ -3937,3 +3937,84 @@ class TestFailedPageDoesNotAdvanceCheckpoint:
         _key, payload = c.messages_sync_point.update_sync_point.call_args[0]
         assert payload == {"last_sync_time": "5.0"}
         c.audit_log_sync_point.update_sync_point.assert_awaited_once()
+
+
+class TestFullSyncCoverage:
+    """What a full sync tells the runner it read, so that only what it did not
+    read for a reason other than the window loses its links afterwards."""
+
+    def test_the_window_and_the_thread_groups_it_applies_to(self) -> None:
+        import time
+
+        from app.models.entities import RecordGroupType
+
+        c = _make_connector()
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(return_value=None)
+        coverage = c.full_sync_coverage()
+
+        assert coverage.complete is True
+        assert abs(coverage.window_start_ms - (time.time() - 30 * 86400) * 1000) < 60_000
+        assert coverage.windowed_group_types == frozenset({RecordGroupType.SLACK_THREAD.value})
+
+    @pytest.mark.asyncio
+    async def test_a_channel_whose_history_failed_part_way_makes_it_incomplete(self) -> None:
+        c = _pipeline_connector()
+        ds = MagicMock()
+        ds.conversations_history = _pages(
+            _slack_ok([{"ts": "10.0", "user": "U1", "text": "newest"}], next_cursor="c2"),
+            _slack_failure("ratelimited"),
+        )
+
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_channel_group_map", new=AsyncMock(return_value={"C1": "rg"})),
+        ):
+            await c.sync_channel_messages("C1")
+
+        assert c.full_sync_coverage().complete is False
+
+
+    @pytest.mark.asyncio
+    async def test_a_channel_that_could_not_be_processed_makes_it_incomplete(self) -> None:
+        c = _make_connector()
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(return_value=None)
+        c.rate_limiter = MagicMock()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "C1", "name": "general", "is_member": True}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_to_channel_record_group", side_effect=RuntimeError("bad channel")),
+        ):
+            await c._sync_channels()
+
+        assert c.full_sync_coverage().complete is False
+
+
+    @pytest.mark.asyncio
+    async def test_a_channel_that_could_not_be_built_makes_it_incomplete(self) -> None:
+        """_to_channel_record_group logs and answers None; the channel goes unwritten."""
+        c = _make_connector()
+        c.sync_filters = MagicMock()
+        c.sync_filters.get = MagicMock(return_value=None)
+        c.rate_limiter = MagicMock()
+        c.rate_limiter.acquire = AsyncMock()
+        ds = MagicMock()
+        ds.conversations_list = AsyncMock(return_value=MagicMock(
+            success=True,
+            data={"channels": [{"id": "C1", "name": "general", "is_member": True}],
+                  "response_metadata": {"next_cursor": ""}},
+        ))
+        with (
+            patch.object(type(c), "_fresh_datasource", new=AsyncMock(return_value=ds)),
+            patch.object(type(c), "_to_channel_record_group", return_value=None),
+        ):
+            await c._sync_channels()
+
+        assert c.full_sync_coverage().complete is False

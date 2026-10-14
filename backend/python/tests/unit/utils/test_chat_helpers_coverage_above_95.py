@@ -516,7 +516,6 @@ async def test_get_flattened_results_prefetch_recon_resolves_block_id():
         "org-1",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=False,
         graph_provider=None,
     )
@@ -604,7 +603,6 @@ async def test_get_flattened_results_image_from_retrieval_service():
         "org",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=True,
     )
     imgs = [x for x in out if x.get("block_type") == BlockType.IMAGE.value]

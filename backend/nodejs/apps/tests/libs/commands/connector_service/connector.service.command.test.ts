@@ -80,6 +80,57 @@ describe('ConnectorServiceCommand', () => {
       expect(fetchStub.calledOnce).to.be.true
     })
 
+    it('sends a timeout signal when one is set', async () => {
+      fetchStub.resolves(makeFetchResponse(200, {}))
+
+      await new ConnectorServiceCommand({
+        uri: 'http://connector.local/api/data',
+        method: HttpMethod.GET,
+        timeoutMs: 1000,
+      }).execute()
+
+      expect(fetchStub.firstCall.args[1].signal).to.be.instanceOf(AbortSignal)
+    })
+
+    it('never resends a request that timed out', async () => {
+      fetchStub.rejects(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))
+
+      const cmd = new ConnectorServiceCommand({
+        uri: 'http://connector.local/api/data',
+        method: HttpMethod.GET,
+        timeoutMs: 1000,
+      })
+
+      let caught: unknown
+      try {
+        await cmd.execute()
+      } catch (error) {
+        caught = error
+      }
+      expect((caught as Error).name).to.equal('TimeoutError')
+      expect(fetchStub.calledOnce).to.be.true
+    })
+
+    it('sends a request marked for one attempt only once', async () => {
+      fetchStub.rejects(new TypeError('fetch failed'))
+
+      const cmd = new ConnectorServiceCommand({
+        uri: 'http://connector.local/api/data',
+        method: HttpMethod.POST,
+        body: { a: 1 },
+        retries: 1,
+      })
+
+      let caught: unknown
+      try {
+        await cmd.execute()
+      } catch (error) {
+        caught = error
+      }
+      expect(caught).to.be.instanceOf(TypeError)
+      expect(fetchStub.calledOnce).to.be.true
+    })
+
     it('should include query parameters in the URL', async () => {
       fetchStub.resolves(makeFetchResponse(200, {}))
 

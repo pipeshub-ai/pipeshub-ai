@@ -83,7 +83,7 @@ class TestNothingVanishes:
 class TestCaps:
     def test_admits_no_more_than_the_model_accepts(self) -> None:
         admission = ImageAdmission(resolve_image_policy(provider="ollama", is_multimodal=True))
-        result = admission.admit([_candidate(i) for i in range(5)])
+        result = admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(5)])
         assert len(result.admitted) == 1
         assert all(d.reason is DegradeReason.OVER_REQUEST_CAP for d in result.degraded)
 
@@ -110,6 +110,113 @@ class TestCaps:
         budget.try_consume(1)
         result = _admission(budget=budget).admit([_candidate(0, width=10, height=10)])
         assert [d.reason for d in result.degraded] == [DegradeReason.OVER_CONVERSATION_CAP]
+
+
+def _model_admission(provider: str | None = "openai", *, multimodal: bool = True) -> ImageAdmission:
+    return ImageAdmission(resolve_image_policy(provider=provider, is_multimodal=multimodal))
+
+
+class TestRetrievedImagesLeaveRoomForRequestedOnes:
+    """Search hits, prefetch and history take at most `cap - ceil(cap / 2)`
+    of the per-request cap, so a record the model then fetches for its
+    figures still gets them."""
+
+    @pytest.mark.parametrize(
+        ("provider", "cap", "retrieved"),
+        [("openai", 8, 4), ("anthropic", 12, 6), ("azureai", 6, 3), (None, 2, 1), ("ollama", 1, 0)],
+    )
+    @pytest.mark.parametrize("origin", [ImageOrigin.SEARCH_HIT, ImageOrigin.HISTORY])
+    def test_retrieval_takes_its_share_and_a_fetch_the_rest(
+        self, provider: str | None, cap: int, retrieved: int, origin: ImageOrigin,
+    ) -> None:
+        admission = _model_admission(provider)
+
+        searched = admission.admit([_candidate(i, origin=origin) for i in range(20)])
+        fetched = admission.admit([_candidate(100 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(20)])
+
+        assert len(searched.admitted) == retrieved
+        assert {d.reason for d in searched.degraded} == {DegradeReason.OVER_REQUEST_CAP}
+        assert len(fetched.admitted) == cap - retrieved
+        assert admission.remaining == 0
+
+    def test_a_search_after_the_fetch_cannot_exceed_its_share(self) -> None:
+        admission = _model_admission("openai")
+        admission.admit([_candidate(100, origin=ImageOrigin.FETCHED_RECORD)])
+
+        searched = admission.admit([_candidate(i) for i in range(20)])
+
+        assert len(searched.admitted) == 4
+
+    def test_the_share_counts_across_separate_searches(self) -> None:
+        admission = _model_admission("openai")
+
+        first = admission.admit([_candidate(i) for i in range(3)])
+        second = admission.admit([_candidate(10 + i) for i in range(3)])
+
+        assert (len(first.admitted), len(second.admitted)) == (3, 1)
+
+    @pytest.mark.parametrize("origin", [ImageOrigin.ATTACHMENT, ImageOrigin.FETCHED_RECORD])
+    def test_attachments_and_fetched_records_may_use_the_whole_cap(self, origin: ImageOrigin) -> None:
+        result = _model_admission("openai").admit([_candidate(i, origin=origin) for i in range(20)])
+
+        assert len(result.admitted) == 8
+
+    def test_a_text_only_model_admits_nothing_from_any_origin(self) -> None:
+        admission = _model_admission("openai", multimodal=False)
+        for origin in ImageOrigin:
+            result = admission.admit([_candidate(0, origin=origin)])
+            assert [d.reason for d in result.degraded] == [DegradeReason.TEXT_ONLY_MODEL]
+
+    def test_a_cap_of_zero_admits_nothing(self) -> None:
+        with patch.dict("os.environ", {"PIPESHUB_MAX_IMAGES_OPENAI": "0"}):
+            admission = _model_admission("openai")
+
+        assert admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)]).admitted == []
+        assert admission.admit([_candidate(1)]).admitted == []
+
+    def test_an_operator_override_keeps_the_reserve(self) -> None:
+        with patch.dict("os.environ", {"PIPESHUB_MAX_IMAGES_OPENAI": "3"}):
+            policy = resolve_image_policy(provider="openai", is_multimodal=True)
+
+        assert (policy.max_images_per_request, policy.max_retrieved_images) == (3, 1)
+
+    def test_a_caller_without_a_model_policy_keeps_the_whole_budget(self) -> None:
+        """`permissive_policy`'s cap is the conversation ceiling, not a model
+        limit, so callers that predate admission behave as before."""
+        assert permissive_policy(10).max_retrieved_images == 10
+        assert len(_admission(max_images=10).admit([_candidate(i) for i in range(20)]).admitted) == 10
+
+    def test_a_trial_spends_from_the_same_share(self) -> None:
+        admission = _model_admission("openai")
+        admission.admit([_candidate(i) for i in range(4)])
+
+        trial = admission.trial()
+
+        assert trial.admit([_candidate(10)]).admitted == []
+        assert len(trial.admit([_candidate(11, origin=ImageOrigin.FETCHED_RECORD)]).admitted) == 1
+        assert admission.remaining == 4
+
+
+class TestAFetchOfASearchImage:
+    def test_is_a_duplicate_and_costs_no_slot(self) -> None:
+        """A fetch points at the copy search already attached; it does not
+        spend a second slot on it."""
+        admission = _model_admission("openai")
+        admission.admit([_candidate(0)])
+
+        fetched = admission.admit([_candidate(0, origin=ImageOrigin.FETCHED_RECORD)])
+
+        assert [d.reason for d in fetched.degraded] == [DegradeReason.DUPLICATE]
+        assert admission.remaining == 7
+
+    def test_does_not_count_against_search_s_share(self) -> None:
+        admission = _model_admission("openai")
+        admission.admit([_candidate(i) for i in range(4)])
+        admission.admit([_candidate(i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
+
+        new = admission.admit([_candidate(10 + i, origin=ImageOrigin.FETCHED_RECORD) for i in range(4)])
+
+        assert len(new.admitted) == 4
 
 
 class TestPrefilter:

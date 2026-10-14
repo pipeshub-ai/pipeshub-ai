@@ -1510,7 +1510,7 @@ class EntityVectorStore:
         only on ties; fused scores are ranks within each request, so the
         result stays roughly alternating.
 
-        Each hit is ``{entityId, entityType, name, canonicalName, score,
+        Each hit is ``{entityId, entityType, name, canonicalName, kind, score,
         connectorIds, recordGroupIds}``; aliases are a matching aid and are
         not returned (KG-17).
 
@@ -1588,6 +1588,7 @@ class EntityVectorStore:
             "entityType": meta.get("entityType"),
             "name": meta.get("name", hit.payload.get("page_content", "")),
             "canonicalName": meta.get("canonicalName"),
+            "kind": meta.get("kind"),
             "score": round(hit.score, 4),
             "connectorIds": hit.payload.get(CONNECTOR_IDS_FIELD) or [],
             "recordGroupIds": hit.payload.get(RECORD_GROUP_IDS_FIELD) or [],

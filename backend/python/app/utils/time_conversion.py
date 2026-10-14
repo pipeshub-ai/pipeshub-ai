@@ -1,7 +1,21 @@
-from datetime import datetime, timezone
+from contextvars import ContextVar, Token
+from datetime import datetime, timezone, tzinfo
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MAX_TIMESTAMP_LENGTH = 13
+
+# The user's IANA time zone for the agent run in flight, so record headers
+# rendered deep inside tools (search, knowledge graph, fetch) can show each
+# date in the zone the answer is written in, weekday included, without the
+# zone being threaded through every call site. Set once at the top of each
+# run's producer task (``stream_bridge`` and ``chat_modes.bridge``); tasks
+# started from it inherit the value. Unset means UTC.
+_llm_time_zone: ContextVar[str | None] = ContextVar("llm_time_zone", default=None)
+
+# English names, independent of the process locale (``%a``/``%b`` are not).
+_WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_NOON = 12
 
 _LLM_TIME_CONTEXT_HEADING = "## Time context"
 
@@ -91,6 +105,46 @@ def build_llm_time_context(
     if tz_line:
         lines.append(tz_line)
     return "\n".join(lines)
+
+
+def set_llm_time_zone(time_zone: str | None) -> Token[str | None]:
+    """Use ``time_zone`` for dates rendered to the model in this context."""
+    return _llm_time_zone.set(_strip_or_none(time_zone))
+
+
+def reset_llm_time_zone(token: Token[str | None]) -> None:
+    _llm_time_zone.reset(token)
+
+
+def _llm_zone() -> tzinfo:
+    name = _llm_time_zone.get()
+    if not name:
+        return timezone.utc
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, OSError, ValueError):
+        return timezone.utc
+
+
+def format_epoch_ms_for_llm(epoch_ms: float) -> str:
+    """A source timestamp as the model should read it, weekday worked out here.
+
+    ``2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)``: the UTC
+    value as before, then the same moment in the user's time zone (UTC when
+    none is set) in the form answers are asked to use. The weekday is taken
+    in that zone, so a Monday-morning UTC timestamp reads as Sunday evening
+    in California. Models get weekdays wrong when left to work them out
+    from a bare date.
+    """
+    utc = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    local = utc.astimezone(_llm_zone())
+    hour = local.hour % _NOON or _NOON
+    meridiem = "AM" if local.hour < _NOON else "PM"
+    readable = (
+        f"{_WEEKDAYS[local.weekday()]}, {_MONTHS[local.month - 1]} {local.day}, {local.year}, "
+        f"{hour}:{local.minute:02d} {meridiem} {local.tzname() or 'UTC'}"
+    )
+    return f"{utc:%Y-%m-%d %H:%M:%S} UTC ({readable})"
 
 
 def get_epoch_timestamp_in_ms() -> int:

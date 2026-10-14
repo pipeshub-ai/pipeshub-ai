@@ -217,7 +217,8 @@ export function WorkspaceRightPanel({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onOpenChange(false);
+      // A menu or dialog open on top handles its own Escape (Radix marks it handled).
+      if (e.key === 'Escape' && !e.defaultPrevented) onOpenChange(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

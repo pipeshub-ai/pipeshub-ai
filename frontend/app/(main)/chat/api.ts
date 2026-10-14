@@ -311,6 +311,7 @@ export const ChatApi = {
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
+        ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
       };
     } else {
       endpoint = request.conversationId

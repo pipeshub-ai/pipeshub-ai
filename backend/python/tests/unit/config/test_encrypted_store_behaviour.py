@@ -42,6 +42,7 @@ class FakeRedisServer:
         self.data: dict = {}
         self.subscribers: dict = {}
         self.down = False
+        self.scans: list = []
 
     def check(self) -> None:
         if self.down:
@@ -81,6 +82,7 @@ class FakeRedisClient:
 
     async def scan_iter(self, match: str) -> AsyncIterator[bytes]:
         self.server.check()
+        self.server.scans.append(match)
         for key in list(self.server.data):
             if fnmatch.fnmatchcase(key, match):
                 yield key.encode("utf-8")
@@ -179,6 +181,7 @@ class FakeEtcdClient:
         self.cancelled: list = []
         self.closed = False
         self.down = False
+        self.full_reads = 0
         self._next_watch_id = 0
 
     def check(self) -> None:
@@ -215,7 +218,13 @@ class FakeEtcdClient:
 
     def get_all(self) -> list:
         self.check()
+        self.full_reads += 1
         return [(value, _Meta(key)) for key, value in self.data.items()]
+
+    def get_prefix(self, prefix: str, keys_only: bool = False) -> list:
+        """(value, metadata) pairs like etcd3's; `keys_only` leaves the values empty."""
+        self.check()
+        return [(b"" if keys_only else value, _Meta(key)) for key, value in self.data.items() if key.startswith(prefix)]
 
     def add_watch_callback(self, key: str, callback) -> int:
         self._next_watch_id += 1
@@ -553,6 +562,22 @@ class TestListKeysInDirectory:
 
         with pytest.raises(ConnectionError):
             await h.store.list_keys_in_directory("/services/toolsets/")
+
+    async def test_listing_a_directory_does_not_read_every_key(self, h) -> None:
+        """SCALE-1: the backend's prefix scan, not the whole store filtered here."""
+        await h.store.create_key("/services/toolsets/i1/u1", {"token": "x"})
+        await h.store.create_key("/services/mcp/x", 2)
+
+        assert await h.store.list_keys_in_directory("/services/toolsets/") == ["/services/toolsets/i1/u1"]
+        if h.kind == "etcd":
+            assert h.backend.full_reads == 0
+        else:
+            assert all(scan.endswith("/services/toolsets/*") for scan in h.backend.scans)
+
+    async def test_etcd_lists_key_names_not_values(self, etcd_harness) -> None:
+        await etcd_harness.store.create_key("/services/toolsets/i1/u1", {"token": "x"})
+
+        assert await etcd_harness.store.list_keys_in_directory("/services/toolsets/") == ["/services/toolsets/i1/u1"]
 
 
 class TestWatchKey:

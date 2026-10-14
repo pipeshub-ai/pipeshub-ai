@@ -1,6 +1,9 @@
 """Unit tests for `app.agents.chat_modes.prefetch.prefetch_retrieval`."""
 
 import logging
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
+from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -27,6 +30,28 @@ def _make_kwargs(**overrides):
     }
     kwargs.update(overrides)
     return kwargs
+
+
+_BUILDER = "app.modules.retrieval.context.builder"
+_RENDERER = "app.modules.retrieval.context.renderer"
+
+
+@contextmanager
+def _pipeline(flattened: list[dict], *, build: Any = None, graph: AsyncMock | None = None) -> Iterator[None]:  # noqa: ANN401
+    """Stand in for flatten (loading a record for every unit), enrichment and,
+    when given, the formatter."""
+    async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict]:
+        for unit in flattened:
+            vr_map.setdefault(unit["virtual_record_id"], {"id": unit["virtual_record_id"]})
+        return [dict(unit) for unit in flattened]
+
+    with ExitStack() as stack:
+        stack.enter_context(patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten))
+        stack.enter_context(patch(f"{_BUILDER}.enrich_virtual_record_id_to_result_with_fk_children", new=AsyncMock()))
+        stack.enter_context(patch(f"{_BUILDER}.enrich_records_with_graph_context", new=graph or AsyncMock()))
+        if build is not None:
+            stack.enter_context(patch(f"{_RENDERER}.build_message_content_array", side_effect=build))
+        yield
 
 
 class TestFollowUpSkip:
@@ -95,12 +120,7 @@ class TestRetrievalFailureModes:
             "virtual_to_record_map": {},
         }
 
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results", new=AsyncMock(return_value=[]),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ):
+        with _pipeline([]):
             result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
 
         assert result.is_empty is True
@@ -125,19 +145,7 @@ class TestSuccessfulPrefetch:
             return [[{"type": "text", "text": "Relevant excerpt from r1"}]], mapper
 
         graph_enrich = AsyncMock()
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=graph_enrich,
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
+        with _pipeline(flattened, build=_fake_build_message_content_array, graph=graph_enrich):
             result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
 
         assert result.is_empty is False
@@ -158,17 +166,8 @@ class TestSuccessfulPrefetch:
             {"virtual_record_id": "vr-b", "block_index": 0},
             {"virtual_record_id": "vr-a", "block_index": 0},
         ]
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context", new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=lambda fr, vr, **kw: ([[{"type": "text", "text": "x"}]], kw["ref_mapper"]),
+        with _pipeline(
+            flattened, build=lambda fr, vr, **kw: ([[{"type": "text", "text": "x"}]], kw["ref_mapper"]),
         ):
             result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
 
@@ -199,19 +198,7 @@ class TestPrefetchImageCollection:
             })
             return [[{"type": "text", "text": "[ref1] (image)"}]], kwargs["ref_mapper"]
 
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
+        with _pipeline(flattened, build=_fake_build_message_content_array):
             result = await prefetch_retrieval(
                 **_make_kwargs(retrieval_service=retrieval_service, is_multimodal_llm=True)
             )
@@ -241,19 +228,7 @@ class TestPrefetchImageCollection:
             captured["image_budget"] = kwargs["image_budget"]
             return [[{"type": "text", "text": "x"}]], kwargs["ref_mapper"]
 
-        with patch(
-            "app.agents.chat_modes.prefetch.get_flattened_results",
-            new=AsyncMock(return_value=flattened),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_virtual_record_id_to_result_with_fk_children",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.enrich_records_with_graph_context",
-            new=AsyncMock(),
-        ), patch(
-            "app.agents.chat_modes.prefetch.build_message_content_array",
-            side_effect=_fake_build_message_content_array,
-        ):
+        with _pipeline(flattened, build=_fake_build_message_content_array):
             await prefetch_retrieval(
                 **_make_kwargs(retrieval_service=retrieval_service, image_budget=shared_budget)
             )
