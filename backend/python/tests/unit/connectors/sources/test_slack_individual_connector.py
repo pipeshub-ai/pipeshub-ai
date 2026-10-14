@@ -1121,6 +1121,25 @@ class TestProcessFileAndLink:
         ]
 
     @pytest.mark.asyncio
+    async def test_edited_links_follow_the_channels_indexing_setting(self) -> None:
+        """A link added by an edit in a channel whose indexing is off (a DM with
+        DM indexing off) is stored unindexed, as a normal sync would store it."""
+        from app.models.entities import ProgressStatus
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        rec = MagicMock(spec=MessageRecord)
+        rec.id = "p"
+        rec.external_record_id = "1.0"
+        c.data_entities_processor.get_record_by_weburl = AsyncMock(return_value=None)
+        c.data_entities_processor.on_new_records = AsyncMock()
+        with patch.object(type(c), "_is_channel_indexing_enabled", return_value=False):
+            await c._sync_edited_links(rec, [{"ts": "1.0", "text": "see https://github.com/acme/api/pull/7"}], ctx, [])
+
+        saved = [r for call in c.data_entities_processor.on_new_records.await_args_list for r, _ in call.args[0]]
+        assert [r.indexing_status for r in saved] == [ProgressStatus.AUTO_INDEX_OFF.value]
+
+    @pytest.mark.asyncio
     async def test_link_record_no_longer_names_a_jira_key_in_slack(self) -> None:
         c = _make_connector()
         ctx = _ctx(c)

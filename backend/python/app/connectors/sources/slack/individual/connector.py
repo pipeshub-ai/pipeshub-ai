@@ -3672,11 +3672,14 @@ class SlackIndividualConnector(BaseConnector):
             for url in self._extract_urls(msg.get("text", "")):
                 lr = await self._process_link(url, rec, ctx, msg)
                 if lr:
-                    if not self.indexing_filters.is_enabled(IndexingFilterKey.LINKS):
-                        lr.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     links.append(lr)
         if links:
             pairs: list[tuple[Record, list[Permission]]] = [(lr, []) for lr in links]
+            # The same filters a normal sync applies, the channel's own included
+            # (a direct message with DM indexing off stays unindexed).
+            self._apply_record_indexing_filters(
+                pairs, ctx.channel_id, message_key=IndexingFilterKey.MESSAGES
+            )
             await self._enrich_link_records_linked_id(pairs)
             await self.data_entities_processor.on_new_records(pairs)
         kept = {lr.external_record_id for lr in links}
