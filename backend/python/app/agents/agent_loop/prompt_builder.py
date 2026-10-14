@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY, multi_step_answer_rules
 from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
@@ -305,6 +306,8 @@ _NO_KNOWLEDGE_SOURCES = (
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
+    *,
+    read_in_full: bool = False,
 ) -> str:
     """The single source-precedence section: where to look, in what order,
     when more than one place needs checking at once, and when it's fine to
@@ -424,10 +427,13 @@ def _build_finding_information(
             "same query WITHOUT date filters before concluding nothing "
             "exists."
         )
+        multi_step = multi_step_answer_rules()
+        if multi_step:
+            parts.append(multi_step)
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
-        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
+        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME, read_in_full=read_in_full))
 
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
 
@@ -695,7 +701,9 @@ class PipesHubPromptBuilder:
                 tpl.set("turn_citation_rules", citation_rules)
 
         # ── Finding information: the one source-precedence section ──────────
-        tpl.set("finding_information", _build_finding_information(surfaces, catalog) or None)
+        tpl.set("finding_information", _build_finding_information(
+            surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
+        ) or None)
         tpl.set("exact_numbers", _build_exact_numbers(
             surfaces.calculator_tools, _toolset_to_load(surfaces.calculator_tools, spec, runtime),
         ))

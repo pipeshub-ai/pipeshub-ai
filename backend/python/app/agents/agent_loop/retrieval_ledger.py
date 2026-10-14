@@ -14,24 +14,25 @@ covered without touching this module.
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_args
 
 from app.agents.agent_loop.protocol.retrieval_context import (
     FetchedRangePayload,
+    FetchTruncatedBy,
     RetrievalContextPayload,
     RetrievalSource,
     RetrievalStatus,
     RetrievedRecordPayload,
     TableTruncationPayload,
 )
+from app.modules.retrieval.context.units import unit_block_indices
 from app.modules.retrieval.provenance import (
     RETRIEVED_BY_KEY,
     RecordProvenance,
     RetrievalLayer,
 )
-from app.utils.chat_helpers import group_child_results
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -98,21 +99,12 @@ def _str_or_none(value: object) -> str | None:
     return str(value) if value not in (None, "") else None
 
 
-def _block_index(value: object) -> int | None:
+def _int_or_none(value: object) -> int | None:
+    """An int that is not a bool, else None: entries come from tool state."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _unit_block_indices(unit: Mapping[str, Any]) -> Iterator[int]:
-    """Every block index a search result renders: its own and, for a table or
-    group, its children's."""
-    own = _block_index(unit.get("block_index"))
-    if own is not None:
-        yield own
-    for child in group_child_results(dict(unit)) or ():
-        if isinstance(child, Mapping):
-            index = _block_index(child.get("block_index"))
-            if index is not None:
-                yield index
+_block_index = _int_or_none
 
 
 class RetrievalContextLedger:
@@ -192,7 +184,7 @@ class RetrievalContextLedger:
                 continue
             # A table or group unit renders its child rows too; recording only
             # the unit's own index hid every row after the first.
-            indices: list[int | None] = list(dict.fromkeys(_unit_block_indices(block))) or [None]
+            indices: list[int | None] = list(dict.fromkeys(unit_block_indices(block))) or [None]
             keys: list[BlockKey] = [
                 (virtual_record_id, index) for index in indices
                 if (virtual_record_id, index) not in self._seen_blocks
@@ -235,6 +227,15 @@ class RetrievalContextLedger:
                     tableTruncation=(
                         TableTruncationPayload.model_validate(table)
                         if isinstance(table, Mapping) else None
+                    ),
+                    truncatedBy=(
+                        entry.get("truncatedBy")
+                        if entry.get("truncatedBy") in get_args(FetchTruncatedBy) else None
+                    ),
+                    requestedMaxBlocks=_int_or_none(entry.get("requestedMaxBlocks")),
+                    startBlockSent=(
+                        entry.get("startBlockSent")
+                        if isinstance(entry.get("startBlockSent"), bool) else None
                     ),
                 )
                 key: FetchKey = (

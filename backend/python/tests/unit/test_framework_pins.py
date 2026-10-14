@@ -64,5 +64,5 @@ def test_fastapi_stays_below_the_route_tree_release():
 
 
 def test_mcp_client_imports_on_the_pinned_release():
-    # Pulls in fastmcp, the MCP SDK and sse_starlette, which all build on Starlette.
+    # Pulls in the MCP SDK and sse_starlette, which both build on Starlette.
     importlib.import_module("app.agents.mcp.client")

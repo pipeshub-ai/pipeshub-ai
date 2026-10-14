@@ -613,9 +613,9 @@ class TestHandleStartSync:
             service.graph_provider.delete_sync_points_by_connector_id.assert_awaited_once_with(
                 connector_id="c1"
             )
-            service.graph_provider.delete_connector_sync_edges.assert_awaited_once_with(
-                connector_id="c1"
-            )
+            # Links are not deleted up front any more: a sync cut off partway
+            # left everything it had not reached readable by nobody.
+            service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
             
             # Verify pendingFullSync was cleared after successful schedule
             service.graph_provider.update_node.assert_awaited_once_with(

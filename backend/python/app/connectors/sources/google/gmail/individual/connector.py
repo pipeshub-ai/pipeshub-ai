@@ -34,6 +34,8 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
+    not_downloadable,
+    not_found_at_source,
     to_stream_error,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -75,6 +77,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.gmail_message_parts import find_message_part
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -1411,7 +1414,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         convertTo: Optional[str] = None
     ) -> StreamingResponse:
         """
-        Stream attachment content from Gmail with Drive fallback.
+        Stream attachment content from Gmail, or from Drive for a Drive-hosted attachment.
 
         Args:
             gmail_service: Raw Gmail API service client
@@ -1453,52 +1456,49 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Check if file_id is a combined ID (messageId~partId format)
         actual_attachment_id = file_id
         if "~" in file_id:
+            file_message_id, part_id = file_id.split("~", 1)
+
+            # Use the message_id from parent record, but validate it matches
+            if file_message_id != message_id:
+                self.logger.warning(
+                    f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
+                )
+
+            # Fetch the message to get the actual attachment ID
             try:
-                file_message_id, part_id = file_id.split("~", 1)
+                request = (
+                    gmail_service.users()
+                    .messages()
+                    .get(userId="me", id=message_id, format="full")
+                )
+                message = await self.gmail_data_source.execute(request.execute)
+            except HttpError as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise map_source_status(
+                    access_error.resp.status, connector=self.display_name
+                ) from access_error
+            except Exception as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise to_stream_error(
+                    access_error, connector=self.display_name
+                ) from access_error
 
-                # Use the message_id from parent record, but validate it matches
-                if file_message_id != message_id:
-                    self.logger.warning(
-                        f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
-                    )
+            if not message or "payload" not in message:
+                self.logger.error(f"Message or payload not found for message ID {message_id}")
+                raise not_found_at_source(self.display_name)
 
-                # Fetch the message to get the actual attachment ID
-                try:
-                    request = (
-                        gmail_service.users()
-                        .messages()
-                        .get(userId="me", id=message_id, format="full")
-                    )
-                    message = await self.gmail_data_source.execute(request.execute)
-                except HttpError as access_error:
-                    self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
-                    raise map_source_status(
-                        access_error.resp.status, connector=self.display_name
-                    ) from access_error
-
-                if not message or "payload" not in message:
-                    raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                # Search for the part with matching partId
-                parts = message["payload"].get("parts", [])
-                for part in parts:
-                    if part.get("partId") == part_id:
-                        actual_attachment_id = part.get("body", {}).get("attachmentId")
-                        if not actual_attachment_id:
-                            raise Exception("Attachment ID not found in part body")
-                        self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                        break
-                else:
-                    raise Exception("Part ID not found in message")
-
-            except HTTPException:
-                # Gmail already gave a verdict on this message. Falling through to
-                # Drive would re-look-up a `messageId~partId` Drive cannot resolve
-                # and report a deleted message as a server error.
-                raise
-            except Exception as e:
-                self.logger.error(f"Error extracting attachment ID: {str(e)}")
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
+            # A `messageId~partId` id names a Gmail part only; Drive cannot resolve it.
+            part = find_message_part(message["payload"].get("parts"), part_id)
+            if part is None:
+                self.logger.error(f"Part {part_id} not found in message {message_id}")
+                raise not_found_at_source(self.display_name)
+            actual_attachment_id = part.get("body", {}).get("attachmentId")
+            if not actual_attachment_id:
+                raise not_downloadable(
+                    "This attachment has no downloadable content in Gmail.",
+                    connector=self.display_name,
+                )
+            self.logger.info(f"Found attachment ID: {actual_attachment_id}")
 
         # Try to get the attachment from Gmail
         try:

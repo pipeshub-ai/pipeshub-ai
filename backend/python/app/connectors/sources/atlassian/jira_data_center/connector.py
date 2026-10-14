@@ -64,8 +64,14 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.core.oauth import OAUTH_JIRA_CONFIG_PATH
+from app.connectors.sources.atlassian.core.read_outcome import (
+    JiraReadError,
+    StoredAccessReadError,
+    is_inconclusive_status,
+)
 from app.connectors.utils.value_mapper import ValueMapper, map_relationship_type
 from app.models.blocks import (
     Block,
@@ -200,17 +206,36 @@ def _application_role_groups_from_dc_role(role: dict[str, Any]) -> list[dict[str
     return normalized
 
 
-def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None]:
-    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``."""
+def _is_unanswered_user_lookup(status: int, *, bulk_forbidden: bool) -> bool:
+    """Whether a failed user lookup left the user unknown rather than absent.
+
+    A 401/403 is the account's lasting answer when the bulk user list was refused too;
+    when the bulk list was allowed, it means the token stopped working part-way. Other
+    statuses follow ``is_inconclusive_status``: 400 and 404 mean "no such user", and
+    anything else (408, 429, 5xx, ...) leaves the user unknown.
+    """
+    if status in (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.FORBIDDEN.value):
+        return not bulk_forbidden
+    return is_inconclusive_status(status)
+
+
+def _parse_jira_dc_user_list_page(payload: Any) -> tuple[list[dict[str, Any]], str | None] | None:
+    """Parse ``GET /rest/api/2/user/list`` JSON into ``(users, next_cursor)``.
+
+    Returns None when the payload is not a page of users (a scalar, or an object with no
+    list of ``values`` or ``users``): that says nothing about whether more pages follow.
+    """
     if isinstance(payload, list):
         return [u for u in payload if isinstance(u, dict)], None
     if not isinstance(payload, dict):
-        return [], None
+        return None
 
     raw_users = payload.get("values")
     if raw_users is None:
         raw_users = payload.get("users")
-    users = [u for u in raw_users if isinstance(u, dict)] if isinstance(raw_users, list) else []
+    if not isinstance(raw_users, list):
+        return None
+    users = [u for u in raw_users if isinstance(u, dict)]
 
     next_cursor = payload.get("nextCursor")
     if not next_cursor and isinstance(payload.get("nextPage"), str):
@@ -407,10 +432,39 @@ class JiraDataCenterConnector(BaseConnector):
         self._issue_attachments_cache: dict[str, list[dict[str, Any]]] = {}
 
         self._app_roles_forbidden: bool = False  # GET /applicationrole returned 403
+        # True when /applicationrole could not be read for a reason that may pass (401, 429,
+        # 5xx, a network error, an unparseable body). Projects granted through an application
+        # role then keep their stored access this sync instead of losing those groups.
+        self._app_roles_unread: bool = False
+        # Keys of the projects whose scheme grants an application role the unread role list
+        # could not map: their access list may be partial this sync.
+        self._projects_naming_unread_roles: set[str] = set()
         self._user_bulk_forbidden: bool = False  # bulk user list/search returned 401/403
         # True when bulk fell back to /user/search (may be incomplete on Jira 10+) —
         # reverse lookup must sweep all PipesHub candidates, not only bulk gaps.
         self._user_bulk_incomplete: bool = False
+        # True when this sync's user read stopped before the end for a reason that may not
+        # repeat (a later page refused or unreadable, a failed email lookup). Users missing
+        # from it may only be unread, so the writes that replace members or grants from it
+        # are held back. A read refused from its first page is the account's lasting answer
+        # and does not set this: the sync then fails closed.
+        self._user_read_unfinished: bool = False
+        # True when this sync kept stored groups, roles, a lead, a project or its issues after
+        # a read that may pass on a later run (408, 429, 5xx, a transport error);
+        # full_sync_coverage() then reports the read as incomplete.
+        self._kept_unread_access: bool = False
+        # Stored nodes this sync kept after a lasting refusal (403), as (entity, external id):
+        # a user group or role; ("project_roles", key) or ("project_issues", key) for a project
+        # whose role list or issue search was refused; ("projects", "") for every project when
+        # the groups are unknown, with ("user_groups", "") and ("project_role_ids", "") for every
+        # stored group and project role when the group list is refused, or ("scheme_groups", "")
+        # for the stored groups this sync's schemes grant when it is cut off. They are noted as seen before run_sync returns, so a full
+        # sync's unlink leaves them alone without the refusal making every full sync incomplete.
+        self._kept_after_refusal: list[tuple[str, str]] = []
+        # True when the bulk user list was refused on its first page: the account cannot
+        # list users at all. That is lasting, so the sync fails closed, and a failed email
+        # lookup afterwards does not turn it into an unfinished read.
+        self._user_bulk_refused: bool = False
         # DC username (``name``) -> source_user_id (``key``); built during _fetch_users
         self._dc_name_to_source_id: dict[str, str] = {}
         # Hierarchy link field ids: None = before init, "" = not found, else customfield id
@@ -427,6 +481,161 @@ class JiraDataCenterConnector(BaseConnector):
 
     def _notification_title(self, event: str) -> str:
         return f"{self.connector_instance_name or 'Jira Data Center'} connector {event}"
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that kept stored groups, roles, a lead, a project or its issues after a
+        read that may pass next time (``_note_unread``) did not see them, and they cannot be
+        told apart from what Jira removed, so nothing is unlinked after it. A lasting refusal
+        (403) does not make every full sync incomplete: what it keeps is noted as seen
+        instead, and a confirmed absence (400, 404) stays eligible for the unlink. A short
+        user read on its own does not count either: what it holds back is noted as seen."""
+        return FullSyncCoverage(complete=not self._kept_unread_access)
+
+    def _note_unread(self, status: Optional[int], kept: Optional[tuple[str, str]] = None) -> None:
+        """Record a read that failed and left stored access in place.
+
+        ``status`` is the HTTP status, or None for a transport error or an exception. A 403
+        is a lasting refusal: ``kept`` names what stays as stored, noted as seen later by
+        ``_note_kept_after_refusal``. A 400 or 404 says the thing is not there, so nothing is
+        kept. Anything else may pass on a later run, so the sync reports an incomplete read.
+        """
+        if status == HttpStatusCode.FORBIDDEN.value:
+            if kept is not None:
+                self._kept_after_refusal.append(kept)
+        elif status is None or is_inconclusive_status(status):
+            self._kept_unread_access = True
+
+    async def _note_kept_after_refusal(self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]]) -> None:
+        """Note as seen the stored nodes kept after a lasting refusal, before run_sync returns.
+
+        A project is noted through its record group, which also notes the groups and roles
+        its stored grants come from. A project whose issue search was refused keeps its
+        stored records. Each entry is handled once.
+        """
+        pending, self._kept_after_refusal = self._kept_after_refusal, []
+        project_ids = {group.short_name: str(group.external_group_id) for group, _ in projects}
+        for entity, external_id in pending:
+            if entity == "projects":
+                for project_id in project_ids.values():
+                    await self._has_stored_access("record_group", project_id)
+            elif entity == "project_roles":
+                if external_id in project_ids:
+                    await self._has_stored_access("record_group", project_ids[external_id])
+                    await self._keep_scheme_roles(projects, {external_id})
+            elif entity == "project_issues":
+                if external_id in project_ids:
+                    await self._keep_stored_records(project_ids[external_id])
+            elif entity == "user_groups":
+                await self._keep_stored_user_groups()
+            elif entity == "scheme_groups":
+                await self._keep_stored_user_groups({
+                    str(permission.external_id)
+                    for _, permissions in projects
+                    for permission in permissions or []
+                    if permission.entity_type == EntityType.GROUP and permission.external_id
+                })
+            elif entity == "project_role_ids":
+                await self._keep_stored_project_roles(list(project_ids))
+                await self._keep_scheme_roles(projects, set(project_ids))
+            else:
+                await self._has_stored_access(entity, external_id)
+
+    async def _keep_scheme_roles(
+        self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]], project_keys: set[str]
+    ) -> None:
+        """Note the stored roles these projects' schemes grant on this sync as seen.
+
+        Roles are not saved when their list was refused or the group list was, but the
+        scheme is still saved, and it may grant a stored role its stored grants did not name.
+        Unnoted, that role would lose its members and the new grant to the unlink. A scheme
+        that could not be read, or the configuring-user grant after a refused one, names none.
+        """
+        for group, permissions in projects:
+            if group.short_name not in project_keys:
+                continue
+            for permission in permissions or []:
+                if permission.entity_type == EntityType.ROLE and permission.external_id:
+                    await self._has_stored_access("role", str(permission.external_id))
+
+    async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
+        """Note each project's stored roles as seen by a full sync in progress, without saving them.
+
+        The group list was refused, so roles are not synced (a role saved without its groups'
+        members would lose them), but the role lists can still be read. A role a project grant
+        does not name is kept this way too. A role list that fails in a way that may pass on a
+        later run reports an incomplete read instead, so nothing is unlinked. A refused one
+        (403) is lasting: the roles the project's stored grants name are kept through the
+        project, and the others give no one access.
+        """
+        for project_key in project_keys:
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_project_roles_v2(projectIdOrKey=project_key)
+                if response.status != HttpStatusCode.OK.value:
+                    raise JiraReadError(response.status, f"HTTP {response.status}")
+                roles = response.json()
+                if not isinstance(roles, dict):
+                    raise ValueError("the role list is not a mapping")
+            except JiraReadError as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._note_unread(e.status)
+                continue
+            except Exception as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._kept_unread_access = True
+                continue
+            for role_name, role_url in roles.items():
+                if role_name == "atlassian-addons-project-access":
+                    continue
+                if not isinstance(role_url, str):
+                    # A role that cannot be named cannot be kept, so nothing is unlinked.
+                    self.logger.warning("⚠️ Role %s of project %s has no URL to keep it by", role_name, project_key)
+                    self._kept_unread_access = True
+                    continue
+                role_id = role_url.rstrip("/").split("/")[-1]
+                await self._has_stored_access("role", f"{project_key}_{role_id}")
+
+    async def _keep_stored_user_groups(self, only: Optional[set[str]] = None) -> None:
+        """Note stored user groups of this connector as seen by a full sync in progress:
+        every one, or only those whose external ids are in ``only``.
+
+        The group list could not be read in full, so which groups still exist is unknown,
+        including ones no project grant names. If they cannot be listed, the run reports an
+        incomplete read instead, so nothing is unlinked.
+        """
+        if only is not None and not only:
+            return
+        try:
+            groups = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning("⚠️ Could not list the stored groups to keep them: %s", e)
+            self._kept_unread_access = True
+            return
+        if only is not None:
+            groups = [group for group in groups if group.source_user_group_id in only]
+        self.data_entities_processor.note_kept_user_groups(self.connector_id, groups)
+
+    async def _keep_stored_records(self, project_id: str) -> None:
+        """Note this project's stored records as seen by a full sync in progress: its issues
+        could not be read, so they stay as stored and must survive the unlink after it. So does
+        the project's record group, even with no grants of its own, for the records' links into it."""
+        await self.data_entities_processor.note_kept_record_group(self.connector_id, project_id)
+        page_size = 1000
+        after_key: Optional[str] = None
+        while True:
+            page = await self.data_entities_processor.get_records_in_record_group(
+                self.connector_id, project_id, page_size, after_key,
+            )
+            self.data_entities_processor.note_kept_records(self.connector_id, [record.id for record in page])
+            if len(page) < page_size:
+                return
+            after_key = page[-1].id
+
+    def _project_access_may_be_partial(self, project_key: str) -> bool:
+        """Whether this project's access list may be partial: the user list was not read in
+        full, so a user it names, or a role or lead under a renamed key, may be missing; or it
+        grants an application role that this sync's unread role list could not map to groups."""
+        return self._user_read_unfinished or project_key in self._projects_naming_unread_roles
 
     async def init(self) -> bool:
         try:
@@ -669,13 +878,33 @@ class JiraDataCenterConnector(BaseConnector):
                 return
 
             # Fetch and sync users
+            self._kept_unread_access = False
+            self._kept_after_refusal = []
             jira_users = await self._fetch_users()
+            if self._user_read_unfinished:
+                # Access already stored is kept; what has none stored yet is saved from what
+                # was read, since holding it back would leave it with no access at all.
+                self.logger.warning(
+                    "⚠️ The Jira user list could not be read in full: stored group members, roles, leads and "
+                    "project access are kept, and anything with nothing stored is saved from what was read. "
+                    "The next sync reads it again"
+                )
             if jira_users:
                 await self.data_entities_processor.on_new_app_users(jira_users)
                 self.logger.info(f"👥 Synced {len(jira_users)} Jira users")
 
-            # Fetch and sync user groups (returns mapping for role resolution)
+            # Fetch and sync user groups (returns mapping for role resolution). Saving a
+            # group replaces its members, so on an unfinished user read a group whose
+            # members are stored keeps them.
             group_memberships = await self._sync_user_groups(jira_users)
+            if group_memberships is not None and group_memberships.cut_off:
+                # Groups past the picker limit are never read, on any sync: lasting, like a
+                # refusal, so every project's stored grants and the groups they name are kept,
+                # and so are the stored groups this sync's schemes grant, including for the
+                # first time. A stored group past the limit that no grant names is not kept:
+                # it gives no one access, and it may be one Jira removed.
+                self._kept_after_refusal.append(("projects", ""))
+                self._kept_after_refusal.append(("scheme_groups", ""))
 
             app_roles_mapping = await self._fetch_application_roles_to_groups_mapping()
 
@@ -719,6 +948,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             # Sync project lead roles
             await self._sync_project_lead_roles(raw_projects, jira_users)
+            await self._note_kept_after_refusal(projects)
 
             # Saving a project replaces its access list, so projects whose scheme could not
             # be read are left as stored; their issues are still synced below.
@@ -729,6 +959,10 @@ class JiraDataCenterConnector(BaseConnector):
                         "Keeping the stored access of project %s: its permission scheme could not be read",
                         group.short_name,
                     )
+                    # Noted as seen by a full sync in progress when it has stored grants, so
+                    # the unlink after that sync does not take away the access kept here.
+                    await self._has_stored_access("record_group", str(group.external_group_id))
+            readable_projects = await self._keep_stored_project_access(readable_projects)
             await self.data_entities_processor.on_new_record_groups(readable_projects)
 
             # Sync issues for all projects
@@ -745,6 +979,11 @@ class JiraDataCenterConnector(BaseConnector):
             )
 
             failed_keys = sync_stats.get("failed_project_keys") or []
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in failed_keys:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
             if failed_keys:
                 preview = ", ".join(failed_keys[:10])
                 if len(failed_keys) > 10:
@@ -797,6 +1036,87 @@ class JiraDataCenterConnector(BaseConnector):
             return sync_point_data.get("last_sync_time") if sync_point_data else None
         except Exception:
             return None
+
+    async def _has_stored_access(self, entity: str, external_id: str) -> bool:
+        """Whether this connector's ``entity`` (``record_group``, ``user_group`` or ``role``)
+        ``external_id`` already has permission edges stored.
+
+        Asked only when a write may be partial this sync: stored edges are access worth
+        keeping, and with none there is nothing to keep, so what was read is saved. A node
+        found stored is held back, so it is noted as seen by a full sync in progress and the
+        unlink after that sync leaves its edges alone. A read that fails raises
+        ``StoredAccessReadError``, which stops the sync before the write: a failed read is
+        never taken for "nothing stored".
+        """
+        try:
+            return await self.data_entities_processor.has_stored_permissions(
+                entity, self.connector_id, external_id, keep=True
+            )
+        except Exception as e:
+            raise StoredAccessReadError(
+                f"Could not read the stored access of {entity} {external_id}: {e}"
+            ) from e
+
+    async def _keep_stored_project_access(
+        self, projects: list[tuple[RecordGroup, list[Permission]]]
+    ) -> list[tuple[RecordGroup, list[Permission]]]:
+        """Leave out the projects whose access list may be partial this sync and that already
+        have stored access, so their stored list is kept. The rest are saved as read."""
+        kept: list[tuple[RecordGroup, list[Permission]]] = []
+        for group, permissions in projects:
+            if self._project_access_may_be_partial(group.short_name) and await self._has_stored_access(
+                "record_group", str(group.external_group_id)
+            ):
+                self.logger.warning(
+                    "Keeping the stored access of project %s: its access list may be incomplete this sync",
+                    group.short_name,
+                )
+                continue
+            kept.append((group, permissions))
+        return kept
+
+    async def _without_stored_members(
+        self, entity: str, items: list[tuple[Any, list[AppUser]]]
+    ) -> list[tuple[Any, list[AppUser]]]:
+        """On an unfinished user read, leave out the groups or roles (``entity`` is
+        ``user_group`` or ``role``) whose members are stored, so they keep them. One with
+        no members stored is saved with the members that were read."""
+        kept: list[tuple[Any, list[AppUser]]] = []
+        for item, members in items:
+            external_id = item.source_user_group_id if entity == "user_group" else item.source_role_id
+            if await self._has_stored_access(entity, external_id):
+                self.logger.warning(
+                    "Keeping the stored members of %s: the Jira user list could not be read in full", item.name
+                )
+                continue
+            kept.append((item, members))
+        return kept
+
+    async def _without_unresolved_stored_leads(
+        self,
+        lead_roles: list[tuple[AppRole, list[AppUser]]],
+        unresolved_leads: dict[str, tuple[str, Optional[str]]],
+    ) -> list[tuple[AppRole, list[AppUser]]]:
+        """Leave out the lead roles whose lead the short user list did not have, when that
+        lead role or its project has stored access. A renamed project's saved lead role is
+        under the old key, so its project's stored access keeps an empty lead role under the
+        new key from being saved."""
+        kept: list[tuple[AppRole, list[AppUser]]] = []
+        for role, members in lead_roles:
+            unresolved = unresolved_leads.get(role.source_role_id)
+            if unresolved is not None:
+                project_key, project_id = unresolved
+                if await self._has_stored_access("role", role.source_role_id) or (
+                    project_id and await self._has_stored_access("record_group", str(project_id))
+                ):
+                    self.logger.warning(
+                        "Keeping the stored lead of project %s: the lead was not in the Jira user list, "
+                        "which could not be read in full",
+                        project_key,
+                    )
+                    continue
+            kept.append((role, members))
+        return kept
 
     async def _update_issues_sync_checkpoint(self, stats: dict[str, Any], project_count: int) -> None:
         """
@@ -1166,6 +1486,7 @@ class JiraDataCenterConnector(BaseConnector):
             raise ValueError("DataSource not initialized")
 
         self._dc_name_to_source_id = {}
+        self._user_read_unfinished = False
 
         cached_app_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
         pipeshub_users = await self.data_entities_processor.get_all_active_users()
@@ -1257,6 +1578,12 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.info("👥 All Jira DC users resolved, no reverse lookup needed")
 
         self.logger.info(f"👥 Total: {len(resolved)} Jira DC AppUsers resolved")
+        if self._user_read_unfinished:
+            self.logger.warning(
+                "⚠️ The Jira user list could not be read in full; when an earlier sync left access to keep, "
+                "every group's members and project role, and the lead and access of projects that name "
+                "a missing user, are kept as stored this sync"
+            )
         return list(resolved.values())
 
     async def _fetch_users_via_list(self) -> list[dict[str, Any]] | None:
@@ -1294,6 +1621,11 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self._user_bulk_forbidden = True
+                    if users or cursor is not None:
+                        # Earlier pages were allowed, so this is not "no users".
+                        self._user_read_unfinished = True
+                    else:
+                        self._user_bulk_refused = True
                     self.logger.warning(
                         "⚠️ DC /user/list returned %s — configuring user lacks "
                         "'Browse users and groups'. Returning %s users collected "
@@ -1317,9 +1649,15 @@ class JiraDataCenterConnector(BaseConnector):
             payload = self._safe_json_parse(response, "users list")
             if payload is None:
                 self.logger.error("Failed to parse /user/list response, stopping list fetch")
+                self._user_read_unfinished = True
                 break
 
-            batch_users, next_cursor = _parse_jira_dc_user_list_page(payload)
+            page = _parse_jira_dc_user_list_page(payload)
+            if page is None:
+                self.logger.error("/user/list response is not a page of users, stopping list fetch")
+                self._user_read_unfinished = True
+                break
+            batch_users, next_cursor = page
             if not batch_users and not next_cursor:
                 break
 
@@ -1357,6 +1695,11 @@ class JiraDataCenterConnector(BaseConnector):
                     HttpStatusCode.FORBIDDEN.value,
                 ):
                     self._user_bulk_forbidden = True
+                    if users or start_at > 0:
+                        # Earlier pages were allowed, so this is not "no users".
+                        self._user_read_unfinished = True
+                    else:
+                        self._user_bulk_refused = True
                     self.logger.warning(
                         "⚠️ DC /user/search returned %s — configuring user lacks "
                         "'Browse users and groups'. Returning %s users collected "
@@ -1380,14 +1723,18 @@ class JiraDataCenterConnector(BaseConnector):
             users_batch = self._safe_json_parse(response, "users fetch")
             if users_batch is None:
                 self.logger.error("Failed to parse users response, stopping user fetch")
+                self._user_read_unfinished = True
                 break
 
             if isinstance(users_batch, list):
                 batch_users = users_batch
+            elif isinstance(users_batch, dict) and isinstance(users_batch.get("values"), list):
+                batch_users = users_batch["values"]
             else:
-                batch_users = (
-                    users_batch.get("values", []) if isinstance(users_batch, dict) else []
-                )
+                # Not a page of users: it says nothing about whether more follow.
+                self.logger.error("/user/search response is not a page of users, stopping user fetch")
+                self._user_read_unfinished = True
+                break
 
             if not batch_users:
                 break
@@ -1445,6 +1792,7 @@ class JiraDataCenterConnector(BaseConnector):
           via per-email reverse lookup to fill any gap.
         """
         self._user_bulk_forbidden = False
+        self._user_bulk_refused = False
         self._user_bulk_incomplete = False
 
         list_users = await self._fetch_users_via_list()
@@ -1475,6 +1823,8 @@ class JiraDataCenterConnector(BaseConnector):
         new_found = 0
         semaphore = asyncio.Semaphore(10)
         datasource = await self._get_fresh_datasource()
+        # Emails whose lookup failed without an answer, as opposed to "no such user".
+        failed_lookups: list[str] = []
 
         async def try_resolve_email(email: str) -> Optional[tuple[str, str, str]]:
             """Returns (user_key, email, displayName) if found, else None."""
@@ -1486,9 +1836,14 @@ class JiraDataCenterConnector(BaseConnector):
                     )
 
                     if response.status != HttpStatusCode.OK.value:
+                        if _is_unanswered_user_lookup(response.status, bulk_forbidden=self._user_bulk_forbidden):
+                            failed_lookups.append(email)
                         return None
 
                     results = self._safe_json_parse(response, f"user_search({email})")
+                    if results is None:
+                        failed_lookups.append(email)
+                        return None
                     if not results or not isinstance(results, list):
                         return None
 
@@ -1519,6 +1874,7 @@ class JiraDataCenterConnector(BaseConnector):
                     return (user_key, email, display_name)
                 except Exception as e:
                     self.logger.debug(f"⚠️ Reverse lookup failed for {email}: {e}")
+                    failed_lookups.append(email)
                     return None
 
         batch_size = 20
@@ -1554,6 +1910,21 @@ class JiraDataCenterConnector(BaseConnector):
             if not skip_early_exit and new_found >= unresolved_count:
                 break
 
+        # A failed lookup matters unless the bulk list was complete and every user on it
+        # is now resolved; then the failed email cannot belong to anyone missing.
+        # After an outright refusal of the bulk list the sync fails closed, and a failed
+        # lookup must not turn that into an unfinished read that keeps stored access.
+        if (
+            failed_lookups
+            and not self._user_bulk_refused
+            and (skip_early_exit or not unresolved_user_keys <= resolved.keys())
+        ):
+            self._user_read_unfinished = True
+            self.logger.warning(
+                "⚠️ %s Jira DC user lookup(s) by email failed; those users may be missing this sync",
+                len(failed_lookups),
+            )
+
         return new_found
 
     async def _fetch_application_roles_to_groups_mapping(self) -> dict[str, list[dict[str, str]]]:
@@ -1565,6 +1936,8 @@ class JiraDataCenterConnector(BaseConnector):
         """
         mapping: dict[str, list[dict[str, str]]] = {}
         self._app_roles_forbidden = False
+        self._app_roles_unread = False
+        self._projects_naming_unread_roles = set()
 
         try:
             datasource = await self._get_fresh_datasource()
@@ -1589,6 +1962,9 @@ class JiraDataCenterConnector(BaseConnector):
                         ),
                     )
                 else:
+                    # 400/404 answer the same way on every sync, so they map to nothing as before;
+                    # anything else (401, 408, 429, 5xx, ...) leaves the mapping unknown.
+                    self._app_roles_unread = is_inconclusive_status(response.status)
                     self.logger.warning(
                         "⚠️ Failed to fetch application roles (HTTP %s)", response.status
                     )
@@ -1596,13 +1972,19 @@ class JiraDataCenterConnector(BaseConnector):
 
             roles_data = response.json()
             if not isinstance(roles_data, list):
-                roles_data = []
+                # A 200 of the wrong shape says nothing about which groups the roles hold.
+                self.logger.warning(
+                    "⚠️ Application roles response is a %s, not a list", type(roles_data).__name__
+                )
+                self._app_roles_unread = True
+                return {}
 
             for role in roles_data:
-                if not isinstance(role, dict):
-                    continue
-                role_key = role.get("key")
+                role_key = role.get("key") if isinstance(role, dict) else None
                 if not role_key:
+                    # Unreadable, or no key: it may be a role a project grants, so the roles
+                    # missing from this mapping are unknown, not "no groups".
+                    self._app_roles_unread = True
                     continue
 
                 normalized = _application_role_groups_from_dc_role(role)
@@ -1612,10 +1994,15 @@ class JiraDataCenterConnector(BaseConnector):
                         "ApplicationRole '%s' → %s groups", role_key, len(normalized),
                     )
 
+            if self._app_roles_unread:
+                self.logger.warning("⚠️ Application roles response has an entry that is not a readable role")
             self.logger.info(f"🔐 Fetched {len(mapping)} application roles with group mappings")
 
         except Exception as e:
             self.logger.error(f"❌ Error fetching application roles: {e}", exc_info=True)
+            # A network error or an unparseable body: the mapping is unknown, not empty.
+            self._app_roles_unread = True
+            return {}
 
         return mapping
 
@@ -1846,6 +2233,15 @@ class JiraDataCenterConnector(BaseConnector):
                                 "applicationRole '%s' unresolvable (403) — granting configuring user '%s' direct access on %s",
                                 role_key, self.creator_email, project_key
                             )
+                    elif self._app_roles_unread:
+                        # The role's groups are unknown, not none: run_sync keeps this project's
+                        # stored access, or saves what was read when nothing is stored.
+                        self._projects_naming_unread_roles.add(project_key)
+                        self.logger.warning(
+                            "Cannot resolve applicationRole '%s' for project %s: the application roles "
+                            "could not be read",
+                            role_key, project_key,
+                        )
                     else:
                         self.logger.warning(
                             "Cannot resolve applicationRole '%s' for project %s — skipping",
@@ -2025,10 +2421,14 @@ class JiraDataCenterConnector(BaseConnector):
                 except Exception as group_error:
                     self.logger.error(f"❌ Failed to process group {group.get('name')}: {group_error}")
                     # Unknown members, not no members: roles that include this group keep what is stored.
+                    self._note_unread(None)
                     for key in (group.get("groupId"), group.get("name")):
                         if key:
                             groups_members_map[key] = None
                     continue
+
+            if self._user_read_unfinished:
+                user_groups_batch = await self._without_stored_members("user_group", user_groups_batch)
 
             # Save all groups in one batch
             if user_groups_batch:
@@ -2038,8 +2438,11 @@ class JiraDataCenterConnector(BaseConnector):
 
             return GroupMemberships(groups_members_map, cut_off)
 
+        except StoredAccessReadError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error syncing user groups: {e}")
+            self._note_unread(None)
             await self._notify_group_sync_failed()
             return None
 
@@ -2069,14 +2472,24 @@ class JiraDataCenterConnector(BaseConnector):
                 )
                 if response.status == HttpStatusCode.FORBIDDEN.value:
                     await self._notify_group_sync_failed()
+                # The groups are unknown, so on a refusal every project's stored grants, and the
+                # groups and roles they name, are kept.
+                self._note_unread(response.status, ("projects", ""))
+                self._note_unread(response.status, ("user_groups", ""))
+                self._note_unread(response.status, ("project_role_ids", ""))
                 return None
 
-            payload = response.json() or {}
+            # A missing or malformed list, or any malformed row, is not "no groups": the
+            # groups it leaves out would look gone to a full sync's unlink.
+            payload = response.json()
             if not isinstance(payload, dict):
+                self._note_unread(None)
                 return None
 
-            raw_groups = payload.get("groups") or []
+            raw_groups = payload.get("groups")
             if not isinstance(raw_groups, list):
+                self.logger.warning("DC /groups/picker answered without a group list")
+                self._note_unread(None)
                 return None
 
             total = payload.get("total")
@@ -2091,9 +2504,13 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             groups = [
-                norm for row in raw_groups
-                if (norm := _normalize_jira_dc_group_row(row))
+                _normalize_jira_dc_group_row(row) if isinstance(row, dict) else None
+                for row in raw_groups
             ]
+            if any(group is None for group in groups):
+                self.logger.warning("DC /groups/picker answered with a group row that has no name")
+                self._note_unread(None)
+                return None
 
             self.logger.info(
                 "👥 Fetched %s groups from /groups/picker (server total=%s)",
@@ -2104,6 +2521,7 @@ class JiraDataCenterConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error("❌ Error fetching groups via /groups/picker: %s", e)
+            self._note_unread(None)
             return None
 
     async def _fetch_group_members(self, group_id: str, group_name: str) -> Optional[list[str]]:
@@ -2147,6 +2565,7 @@ class JiraDataCenterConnector(BaseConnector):
                         group_name,
                         response.text()[:500],
                     )
+                    self._note_unread(response.status, ("user_group", group_id))
                     return None
 
                 payload = response.json()
@@ -2179,6 +2598,7 @@ class JiraDataCenterConnector(BaseConnector):
 
             except Exception as e:
                 self.logger.error("❌ Error fetching members for group %s: %s", group_name, e)
+                self._note_unread(None)
                 return None
 
         return member_keys
@@ -2282,10 +2702,17 @@ class JiraDataCenterConnector(BaseConnector):
 
                 if response.status != HttpStatusCode.OK.value:
                     self.logger.warning(f"⚠️ Failed to fetch roles for project {project_key}: {response.status}")
+                    self._note_unread(response.status, ("project_roles", project_key))
                     failed_project_keys.append(project_key)
                     continue
 
                 roles_dict = response.json()
+                if not isinstance(roles_dict, dict):
+                    # Not "no roles": the stored ones would look gone to a full sync's unlink.
+                    self.logger.warning(f"⚠️ The role list of project {project_key} is not a mapping")
+                    self._note_unread(None)
+                    failed_project_keys.append(project_key)
+                    continue
 
                 if not roles_dict:
                     self.logger.debug(f"No roles found for project {project_key}")
@@ -2312,6 +2739,7 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if role_response.status != HttpStatusCode.OK.value:
                             self.logger.warning(f"  {project_key}: Failed to fetch role {role_name}: {role_response.status}")
+                            self._note_unread(role_response.status, ("role", f"{project_key}_{role_id}"))
                             role_detail_failed = True
                             continue
 
@@ -2393,7 +2821,9 @@ class JiraDataCenterConnector(BaseConnector):
 
                         if group_past_cap:
                             # Past the picker limit on every sync, so not a failure to report;
-                            # _fetch_groups already warns about the limit once per run.
+                            # _fetch_groups already warns about the limit once per run. Lasting,
+                            # so the kept role is noted as seen.
+                            self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
                             self.logger.info(
                                 f"  {project_key}: Keeping the stored members of role {role_name}: "
                                 f"group '{group_past_cap}' is past the first groups Jira lists"
@@ -2401,7 +2831,10 @@ class JiraDataCenterConnector(BaseConnector):
                             continue
 
                         if unreadable_group:
-                            # Saving the role now would drop that group's members from it.
+                            # Saving the role now would drop that group's members from it. The group
+                            # read already decided whether this sync is incomplete; the kept role is
+                            # noted as seen either way.
+                            self._kept_after_refusal.append(("role", f"{project_key}_{role_id}"))
                             self.logger.warning(
                                 f"  {project_key}: Keeping the stored members of role {role_name}: "
                                 f"members of group '{unreadable_group}' could not be read"
@@ -2417,6 +2850,7 @@ class JiraDataCenterConnector(BaseConnector):
                         self.logger.error(
                             f"  {project_key}: Error processing role {role_name}: {role_error}"
                         )
+                        self._note_unread(None)
                         role_detail_failed = True
                         continue
 
@@ -2424,6 +2858,7 @@ class JiraDataCenterConnector(BaseConnector):
                     failed_project_keys.append(project_key)
 
             except Exception as project_error:
+                self._note_unread(None)
                 failed_project_keys.append(project_key)
                 self.logger.error(f"❌ Error syncing roles for project {project_key}: {project_error}")
                 continue
@@ -2447,6 +2882,9 @@ class JiraDataCenterConnector(BaseConnector):
                     "preserved and will retry next sync."
                 ),
             )
+
+        if self._user_read_unfinished:
+            roles_to_sync = await self._without_stored_members("role", roles_to_sync)
 
         # Step 4: Sync all roles in batch
         if roles_to_sync:
@@ -2474,6 +2912,8 @@ class JiraDataCenterConnector(BaseConnector):
         }
 
         lead_roles_to_sync: list[tuple[AppRole, list[AppUser]]] = []
+        # Lead role id -> (project key, project id) for leads the short user list did not have.
+        unresolved_leads: dict[str, tuple[str, Optional[str]]] = {}
         total_leads = 0
 
         # Iterate through raw project data already fetched with lead
@@ -2514,6 +2954,8 @@ class JiraDataCenterConnector(BaseConnector):
                     if lead_identifier:
                         lead_user = user_by_account_id.get(lead_identifier)
 
+                        if not lead_user and self._user_read_unfinished:
+                            unresolved_leads[app_role.source_role_id] = (project_key, project.get("id"))
                         if not lead_user:
                             self.logger.warning(f"Project lead {lead_display_name} not found in synced users for {project_key}")
                     else:
@@ -2528,8 +2970,12 @@ class JiraDataCenterConnector(BaseConnector):
 
 
             except Exception as lead_error:
+                self._note_unread(None)
                 self.logger.error(f"Error processing lead for project {project.get('key')}: {lead_error}")
                 continue
+
+        if unresolved_leads:
+            lead_roles_to_sync = await self._without_unresolved_stored_leads(lead_roles_to_sync, unresolved_leads)
 
         # Sync all project lead roles in batch
         if lead_roles_to_sync:
@@ -2671,6 +3117,8 @@ class JiraDataCenterConnector(BaseConnector):
         new_count = 0
         updated_count = 0
         failed_project_keys: list[str] = []
+        # Project key -> the status its issue read failed with (None: transport or other error).
+        failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
 
         for project, _ in projects:
@@ -2685,6 +3133,7 @@ class JiraDataCenterConnector(BaseConnector):
                     full_sync_project_ids.add(project.external_group_id)
             except Exception as e:
                 failed_project_keys.append(project.short_name)
+                failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
@@ -2693,6 +3142,7 @@ class JiraDataCenterConnector(BaseConnector):
             "new_count": new_count,
             "updated_count": updated_count,
             "failed_project_keys": failed_project_keys,
+            "failed_project_statuses": failed_project_statuses,
             "full_sync_project_ids": full_sync_project_ids,
         }
 
@@ -2951,7 +3401,7 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
                 if response.status != HttpStatusCode.OK.value:
-                    raise Exception(f"Failed to fetch issues: {response.text()}")
+                    raise JiraReadError(response.status, f"Failed to fetch issues: {response.text()}")
 
                 issues_batch_response = self._safe_json_parse(response, f"issues fetch for {project_key}")
                 if issues_batch_response is None:

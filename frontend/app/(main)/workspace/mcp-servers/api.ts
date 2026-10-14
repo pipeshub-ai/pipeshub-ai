@@ -15,6 +15,7 @@ import type {
   McpServerInstancePayload,
   McpServerTemplate,
   McpSuccessResponse,
+  McpToolRules,
   McpToolsResponse,
 } from './types';
 
@@ -33,8 +34,9 @@ export const McpServersApi = {
     return data;
   },
 
-  // ── Instances (admin-managed, org-scoped) ──
+  // ── Instances ──
 
+  /** Admin only: the organization's servers. */
   async listInstances(): Promise<McpInstancesResponse> {
     const { data } = await apiClient.get(`${BASE_URL}/instances`);
     return data;
@@ -50,7 +52,10 @@ export const McpServersApi = {
     return data;
   },
 
-  async updateInstance(instanceId: string, payload: McpServerInstancePayload): Promise<McpServerInstance> {
+  async updateInstance(
+    instanceId: string,
+    payload: McpServerInstancePayload,
+  ): Promise<McpServerInstance & { credentialsReset?: boolean }> {
     const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}`, payload);
     return data;
   },
@@ -126,7 +131,7 @@ export const McpServersApi = {
     return data;
   },
 
-  /** Admin-only live probe — does this server URL support OAuth DCR, and what are its real endpoints? */
+  /** Live probe — does this server URL support OAuth DCR, and what are its real endpoints? */
   async discoverOAuthMetadata(url: string): Promise<McpOAuthDiscoveryResult> {
     const { data } = await apiClient.post(`${BASE_URL}/oauth/discover`, { url });
     return data;
@@ -139,8 +144,24 @@ export const McpServersApi = {
     return data;
   },
 
-  async getInstanceTools(instanceId: string): Promise<McpToolsResponse> {
-    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tools`);
+  /** Live unless `cached`, which answers from the tool cache when it has the list. */
+  async getInstanceTools(instanceId: string, { cached = false }: { cached?: boolean } = {}): Promise<McpToolsResponse> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/tools`, {
+      params: cached ? { cached: true } : undefined,
+    });
+    return data;
+  },
+
+  // ── Tool approval rules ──
+
+  /** The caller's own rules, applied in all their chats. */
+  async getMyToolRules(instanceId: string): Promise<McpToolRules> {
+    const { data } = await apiClient.get(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/my-tool-rules`);
+    return data;
+  },
+
+  async updateMyToolRules(instanceId: string, rules: McpToolRules): Promise<McpToolRules> {
+    const { data } = await apiClient.put(`${BASE_URL}/instances/${encodeURIComponent(instanceId)}/my-tool-rules`, rules);
     return data;
   },
 

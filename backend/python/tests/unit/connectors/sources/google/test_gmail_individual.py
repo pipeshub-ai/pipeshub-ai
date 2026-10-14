@@ -2952,10 +2952,13 @@ class TestStreamAttachmentRecord:
 
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
-        ):
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
-            )
+        ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
@@ -3082,10 +3085,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
 
 class TestStreamRecord:

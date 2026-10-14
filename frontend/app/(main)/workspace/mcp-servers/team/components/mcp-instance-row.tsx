@@ -8,6 +8,7 @@ import { apiClient } from '@/lib/api';
 import { isMcpInstanceReadOnly, McpInheritedBadge } from '@/config';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { MCP_AUTH_MODE_LABELS, MCP_TRANSPORT_LABELS } from '../../types';
+import { McpStatusBadge, mcpConnectionState, usesSharedCredential } from '../../connection-state';
 
 // ========================================
 // Props
@@ -44,8 +45,10 @@ export function McpInstanceRow({
   const [toolsExpanded, setToolsExpanded] = useState(false);
 
   const managedByAdmin = instance.useAdminAuth;
-  const needsAuth = instance.authMode !== 'none' && !managedByAdmin;
+  const needsAuth = instance.authMode !== 'none' && !usesSharedCredential(instance);
   const isReady = !needsAuth || instance.isAuthenticated;
+  const state = mcpConnectionState(instance, { isAdmin: true });
+  const reconnectNeeded = state === 'needs_reconnect';
 
   const hasDiscoveredTools = Boolean(toolsResult && !toolsResult.loading && !toolsResult.error && toolsResult.tools.length > 0);
 
@@ -152,15 +155,7 @@ export function McpInstanceRow({
 
         {/* CONFIGURATION */}
         <InfoRow label={t('workspace.mcpServers.details.configuration')}>
-          {isReady ? (
-            <Badge color="green" size="1">
-              {t('workspace.mcpServers.status.ready')}
-            </Badge>
-          ) : (
-            <Badge color="amber" size="1">
-              {t('workspace.mcpServers.status.needsAuth')}
-            </Badge>
-          )}
+          <McpStatusBadge state={state} />
         </InfoRow>
 
         {/* TRANSPORT */}
@@ -285,14 +280,18 @@ export function McpInstanceRow({
         >
           <Flex direction="column" gap="1">
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-              {instance.isAuthenticated
-                ? t('workspace.mcpServers.details.authBannerAuthenticatedTitle')
-                : t('workspace.mcpServers.details.authBannerTitle')}
+              {reconnectNeeded
+                ? t('workspace.mcpServers.status.reconnectNeeded')
+                : instance.isAuthenticated
+                  ? t('workspace.mcpServers.details.authBannerAuthenticatedTitle')
+                  : t('workspace.mcpServers.details.authBannerTitle')}
             </Text>
             <Text size="1" style={{ color: 'var(--gray-11)' }}>
-              {instance.isAuthenticated
-                ? t('workspace.mcpServers.details.authBannerAuthenticatedDescription')
-                : t('workspace.mcpServers.details.authBannerDescription')}
+              {reconnectNeeded
+                ? t('workspace.mcpServers.details.reconnectBannerDescription')
+                : instance.isAuthenticated
+                  ? t('workspace.mcpServers.details.authBannerAuthenticatedDescription')
+                  : t('workspace.mcpServers.details.authBannerDescription')}
             </Text>
           </Flex>
 
@@ -301,7 +300,7 @@ export function McpInstanceRow({
               <>
                 <ActionButton
                   icon="autorenew"
-                  label={t('workspace.mcpServers.cta.reauthenticate')}
+                  label={t(reconnectNeeded ? 'workspace.mcpServers.cta.reconnect' : 'workspace.mcpServers.cta.reauthenticate')}
                   onClick={onReauthenticate}
                   disabled={isBusy}
                 />

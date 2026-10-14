@@ -149,6 +149,7 @@ from app.utils.api_call import make_api_call
 from app.utils.chat_helpers import record_to_text
 from app.utils.egress_ips import get_egress_ips
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
+from app.utils.not_indexed import not_indexed_note
 from app.utils.user_messages import (
     EPUB_PREVIEW_UNAVAILABLE,
     action_failed,
@@ -1939,6 +1940,12 @@ async def get_record_content(
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to fetch record content") from e
 
     if not result.get("ok") or not result.get("records"):
+        # The caller passed the access check above, so a record that exists
+        # but has no indexed content is described rather than reported as
+        # missing: "No record found" reads as "does not exist".
+        unindexed = (result.get("not_indexed_records") or {}).get(record_id)
+        if unindexed:
+            return {"content": f"{unindexed['context']}\n\n{not_indexed_note(unindexed['status'])}"}
         return {"content": "No record found"}
 
     try:
@@ -8576,7 +8583,8 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     """Try the auth settings on the setup form before they are saved.
 
     With ``connectorId`` (editing an instance) the settings are laid over the saved ones,
-    as saving them does, so the check sees what the save will store. A failed check is a
+    as saving them does, so the check sees what the save will store: a secret sent back
+    as the mask keeps the saved value. A failed check is a
     200 with ``success: false``; its ``message`` is meant for the user.
     """
     container = request.app.container
@@ -8611,7 +8619,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="auth must be an object"
         )
-    auth = _without_server_set_auth_fields(auth)
+    auth = _without_masked_secrets(
+        _without_server_set_auth_fields(auth),
+        await _secret_auth_field_names(connector_registry, connector_type),
+    )
 
     connector_id = body.get("connectorId")
     if connector_id:

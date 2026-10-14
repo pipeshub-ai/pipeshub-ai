@@ -48,7 +48,11 @@ from app.connectors.core.sync.sync_coordinator import (
     process_identity,
     set_coordinator,
 )
-from app.connectors.core.sync.sync_runner import drain_queued_syncs, join_cleanup_tasks
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    join_cleanup_tasks,
+    resumes_interrupted_full_sync,
+)
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
@@ -74,6 +78,7 @@ from app.edition_services import (
     stop_sync_reaper,
     sync_executor_enabled,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
@@ -173,11 +178,14 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
     Never touches DELETING — that doc is mid-deletion, not mid-sync.
 
     A stale FULL_SYNCING also gets pendingFullSync. That sync's prep deleted the
-    connector's sync points and permission edges before it was cut off, so the
-    records it had not reached yet are unreadable. Reset to a bare IDLE, the
-    connector looked healthy and its next sync was incremental, which does not
-    revisit them. With the flag, the boot resume below runs it again in full,
-    and for a MANUAL connector the next sync anyone starts is a full one.
+    connector's sync points before it was cut off, and what the source no longer
+    has is only unlinked once a full sync runs to the end. Reset to a bare IDLE,
+    the connector looked healthy and its next sync was incremental, which never
+    does that cleanup. With the flag, the boot resume below runs it again in full.
+
+    It also gets pendingResync: nothing finished that run, so the request it
+    was serving is still owed, and that is what lets the boot resume restart it
+    on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
     """
     try:
         # Both lookups go through get_nodes_by_field_in: it is the one that
@@ -252,7 +260,14 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
                 "updatedAtTimestamp": now,
-                **({ConnectorStateKeys.PENDING_FULL_SYNC: True} if key in full_sync_keys else {}),
+                **(
+                    {
+                        ConnectorStateKeys.PENDING_FULL_SYNC: True,
+                        ConnectorStateKeys.PENDING_RESYNC: True,
+                    }
+                    if key in full_sync_keys
+                    else {}
+                ),
             }
             for key in stuck_keys
         ]
@@ -271,7 +286,7 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
         if owed:
             logger.warning(
                 f"Startup sweep: full sync did not finish on {len(owed)} connector(s); "
-                f"their next sync runs in full: {owed}"
+                f"they resume in full: {owed}"
             )
     except Exception as e:
         logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
@@ -383,6 +398,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         connector_name=connector_name,
                         connector_id=connector_id,
                         org_id=org_id,
+                        app=app,
+                        graph_provider=graph_provider,
                     )
                 return connector_name, connector_id, connector
 
@@ -403,6 +420,38 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
 
+
+async def _current_app(
+    graph_provider: IGraphDBProvider | None, logger: logging.Logger, connector_id: str, snapshot: dict | None
+) -> dict | None:
+    """The app doc as it is now, not as the boot traversal read it.
+
+    That read came before the connector's init (OAuth, a live connection test),
+    which can take seconds while the API already serves requests, and a stop in
+    that window clears pendingResync in the database, not in the snapshot.
+
+    If the read fails, the snapshot is used. Not resuming would leave the marks
+    set with nothing published until the next boot. Publishing is safe: the
+    event is marked bootResume, and the start handler reads the doc again
+    before it queues or deletes anything (``event_service._handle_start_sync``).
+    """
+    if graph_provider is None:
+        return snapshot
+    try:
+        # raise_on_error: by default a failed read answers None, which reads as
+        # "no such connector" and would skip a resume that is owed. None from
+        # here means the doc is gone, and nothing is resumed.
+        return await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not re-read {connector_id} before resuming it; publishing the "
+            f"resume anyway, the start handler checks it again: {e}"
+        )
+        return snapshot
+
+
 async def _publish_startup_resync(
     app_container: ConnectorAppContainer,
     config_service,
@@ -411,23 +460,34 @@ async def _publish_startup_resync(
     connector_name: str,
     connector_id: str,
     org_id: str,
+    app: dict | None = None,
+    graph_provider: IGraphDBProvider | None = None,
 ) -> None:
     """Hand a startup sync to whichever process consumes sync events.
 
     Respects the MANUAL strategy, which the event handler deliberately does not:
     that path also carries the user's resync button, and MANUAL means "not on a
-    schedule", not "never".
+    schedule", not "never". The one exception is a full sync a restart cut
+    short, which resumes (``resumes_interrupted_full_sync``).
 
     Publishing rather than sharding by hash keeps this a single pass with no
     shard-count to get wrong, and the consumer's capacity gate meters the
     arrivals so a large fleet does not stampede one of them.
     """
     try:
-        if await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id):
+        manual = await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id)
+        if manual:
+            if not resumes_interrupted_full_sync(app) or not resumes_interrupted_full_sync(
+                await _current_app(graph_provider, logger, connector_id, app)
+            ):
+                logger.info(
+                    f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                )
+                return
             logger.info(
-                f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                f"Resuming {connector_name} {connector_id}: sync strategy is MANUAL, "
+                "but a restart cut its full sync short"
             )
-            return
         dispatcher = get_dispatcher()
         if dispatcher is None:
             logger.warning(
@@ -439,6 +499,7 @@ async def _publish_startup_resync(
                 connector_id=connector_id,
                 connector_name=connector_name,
                 org_id=org_id,
+                boot_resume=manual,
             )
         )
         logger.info(f"Startup resync for {connector_id}: {result.value}")

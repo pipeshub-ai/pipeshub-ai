@@ -100,6 +100,11 @@ export interface PlatformFeatureFlagDef {
    * Labs UI. Use for legacy / internal-only flags we don't want users to toggle.
    */
   hidden?: boolean;
+  /**
+   * When true, Labs keeps the flag off the main list and shows it only after
+   * the admin opens "Show advanced feature flags".
+   */
+  advanced?: boolean;
 }
 
 export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
@@ -130,6 +135,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       'Allow admins to clean up (delete all embeddings) and reindex the vector store from the Connectors page. Disable to hide these actions.',
     defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_PROJECTS',
@@ -151,6 +157,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       'Scope searches by the containers a user can reach (connector, record group) instead of sending every accessible record id to the vector database. Bounds the filter sent to the vector database on large workspaces. Records in an APP_LEVEL connector or a RECORD_GROUP_LEVEL record group are granted on container membership, without a per-record permission check. Disable to fall back to the record-id path.',
     defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_SOFT_DELETE',
@@ -158,6 +165,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       'When you delete a record, move it to the trash instead of removing it straight away. It disappears from search, chat and lists at once, and its search data is removed, but the record, its file and its sharing are kept. Files and folders deleted from a collection can be restored from its Recently deleted page (or the records API), and a record a connector sync put there comes back when the source has it again; restoring re-indexes it. Every two weeks a cleanup permanently removes records that have been in the trash for at least 14 days, with their files; this cannot be undone. Disable to delete records immediately, as before; records already in the trash are still removed on that schedule.',
     defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_NAMED_ENTITY_EXTRACTION',
@@ -165,6 +173,7 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       'During indexing, extract typed named entities (people, organizations, dates, amounts) and store them for search filters and agent tools. Disable to skip extraction and remove mention links from records indexed while this is off. Always on when the deployment sets HIGH_ACCURACY_MODE=true.',
     defaultEnabled: false,
+    advanced: true,
   },
   {
     key: 'ENABLE_USER_CONTEXT',
@@ -172,5 +181,6 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     description:
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
     defaultEnabled: true,
+    advanced: true,
   },
 ];

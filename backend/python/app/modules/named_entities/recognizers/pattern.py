@@ -37,6 +37,17 @@ _NATIONAL_IDS = (
 _TLD_OK = re.compile(r"\.[A-Za-z]{2,}$")
 
 
+def is_pattern_surface(kind: EntityKind, text: str) -> bool:
+    """Whether the whole of ``text`` is what this recognizer stores as ``kind``
+    (an email or a URL), so a lookup by a name never builds a contact key for
+    something indexing would not have recognized."""
+    if kind is EntityKind.EMAIL:
+        return _EMAIL.fullmatch(text) is not None and _TLD_OK.search(text) is not None
+    if kind is EntityKind.URL:
+        return _URL.fullmatch(text) is not None
+    return False
+
+
 def _luhn_ok(digits: str) -> bool:
     if not digits.isdigit() or not (13 <= len(digits) <= 19):
         return False

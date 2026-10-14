@@ -63,6 +63,12 @@ _CLOCK = re.compile(r"([0-9]{1,9}):([0-9]{1,2})(?::([0-9]{1,2}(?:\.[0-9]{1,9})?)
 _UNITS = {0: None, 1: "seconds", -1: "per second"}
 # Digits carried beyond an argument's own when taking its log.
 _LOG_GUARD_DIGITS = 30
+# Significant digits an exact angle's residual keeps after reduction by pi/2.
+_RESIDUAL_DIGITS = 17
+# A rational p/q is no closer to a multiple of pi than about q**-7 (pi's
+# irrationality measure is below 8), so 8 times an angle's digits bounds the
+# precision its reduction can need.
+_PRECISION_PER_ANGLE_DIGIT = 8
 # Largest rounding error (radians) an approximate trig angle may carry.
 _ANGLE_TOLERANCE = 1e-6
 _IMPRECISE_ANGLE = (
@@ -608,9 +614,9 @@ def _atan2(y: Value, x: Value) -> float:
 
 
 def _trigonometric(name: str, value: Value) -> float:
-    if isinstance(value, Fraction) and abs(value) > 1:
-        angle = _reduced_angle(value)
-        result = _bounded(_FLOAT_FUNCTIONS[name](angle), nonzero=name != "cos")
+    if isinstance(value, Fraction):
+        # A non-zero rational angle is never a zero of sin, cos or tan.
+        return _bounded(_exact_angle_function(name, value), nonzero=True)
     else:
         # An approximate angle carries at least half an ulp of rounding, and
         # a sine or cosine passes it straight to the result (|sin'| <= 1):
@@ -663,22 +669,57 @@ def _exact_logarithm(value: Fraction, base: Fraction) -> Fraction | None:
     return Fraction(power) if base**power == value else None
 
 
-def _reduced_angle(value: Fraction) -> float:
-    """An exact angle reduced by a whole number of turns in decimal before it
-    is rounded to a double: 10**300 as a double is off by about 10**284
-    radians, and even 100000.1 by 7e-12, which a sine would carry."""
-    integer_digits = len(str(abs(value.numerator) // value.denominator))
-    with localcontext(Context(prec=integer_digits + _LOG_GUARD_DIGITS)):
-        angle = Decimal(value.numerator) / Decimal(value.denominator)
-        turn = 2 * _decimal_pi()
-        return float(angle - turn * (angle / turn).to_integral_value())
+def _exact_angle_function(name: str, value: Fraction) -> float:
+    """sin, cos or tan of an exact angle. The angle is reduced by quarter
+    turns in decimal, to a residual within pi/4, before anything is rounded:
+    10**300 as a double is off by about 10**284 radians, and near a zero or
+    pole the residual is tiny (sin(3.14159265358979323846) is 2.6e-21, not
+    the 1.2e-16 of the double nearest pi)."""
+    turns, residual = _quarter_turns(value)
+    quadrant = turns % 4
+    if name == "tan":
+        if quadrant % 2 == 0:
+            return math.tan(residual)
+        if residual == 0:
+            raise _OutsideFloatRange("The result is too large.", too_large=True)
+        return -1 / math.tan(residual)
+    # cos(r + k*pi/2) is sin shifted by one quarter turn.
+    quadrant = (quadrant + 1) % 4 if name == "cos" else quadrant
+    return (math.sin, math.cos, lambda r: -math.sin(r), lambda r: -math.cos(r))[quadrant](residual)
 
 
-@functools.cache
-def _decimal_pi() -> Decimal:
-    """pi to more digits than any exact value can have (the series from the
-    decimal module's documentation), computed once."""
-    with localcontext(Context(prec=MAX_DIGITS + 2 * _LOG_GUARD_DIGITS)):
+def _quarter_turns(value: Fraction) -> tuple[int, float]:
+    """`value` as k * pi/2 + r with |r| <= pi/4, r to double precision.
+
+    The subtraction cancels the angle's leading digits, as many more as the
+    residual is small: 1647533557310758242795542778250 leaves 2.6e-31. So
+    the residual is accurate to the working precision minus the digits that
+    cancelled, and it is computed again at a higher precision until at
+    least `_RESIDUAL_DIGITS` of its digits survive."""
+    digits = len(str(value.numerator)) + len(str(value.denominator))
+    precision = digits + _LOG_GUARD_DIGITS
+    ceiling = _PRECISION_PER_ANGLE_DIGIT * digits + _LOG_GUARD_DIGITS
+    while True:
+        with localcontext(Context(prec=precision)):
+            angle = Decimal(value.numerator) / Decimal(value.denominator)
+            quarter = _decimal_pi(precision) / 2
+            turns = (angle / quarter).to_integral_value()
+            residual = angle - turns * quarter
+        cancelled = angle.adjusted() - residual.adjusted() if residual else precision
+        if precision - cancelled >= _RESIDUAL_DIGITS:
+            return int(turns), float(residual)
+        if precision >= ceiling:
+            raise CalculationError(_IMPRECISE_ANGLE)
+        precision = min(ceiling, max(2 * precision, cancelled + _RESIDUAL_DIGITS + _LOG_GUARD_DIGITS))
+
+
+@functools.lru_cache(maxsize=4)
+def _decimal_pi(precision: int) -> Decimal:
+    """pi to `precision` digits (the series from the decimal module's
+    documentation), rounded up to a multiple of 100 digits so nearby
+    precisions share one cached value."""
+    digits = -(-precision // 100) * 100
+    with localcontext(Context(prec=digits + 5)):
         last, term, total, n, n_step, d, d_step = Decimal(0), Decimal(3), Decimal(3), 1, 0, 0, 24
         while total != last:
             last = total

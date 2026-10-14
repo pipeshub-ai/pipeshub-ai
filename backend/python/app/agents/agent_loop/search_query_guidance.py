@@ -7,17 +7,17 @@ main agent delegates retrieval to it.
 
 from __future__ import annotations
 
-from app.utils.env_utils import accuracy_feature_enabled
+from app.utils.env_utils import env_bool
 
-# Follows HIGH_ACCURACY_MODE when unset: hybrid search embeds the query and
-# matches it against document text, where meta-phrasing is noise. Unmeasured,
-# so not yet shown to every model.
+# Opt-in only; HIGH_ACCURACY_MODE does not turn it on. Models already write
+# keyword-style queries without it, and with it they searched more often
+# without better answers.
 KEYWORD_SEARCH_QUERIES_ENV_VAR = "KEYWORD_SEARCH_QUERIES"
 
 
 def keyword_search_query_rule(search_tool: str) -> str | None:
     """The rule for `search_tool`'s query text, or None while the feature is off."""
-    if not accuracy_feature_enabled(KEYWORD_SEARCH_QUERIES_ENV_VAR):
+    if not env_bool(KEYWORD_SEARCH_QUERIES_ENV_VAR, False):
         return None
     return (
         f"Query text for `{search_tool}`: keyword-dense, the entities, terms "

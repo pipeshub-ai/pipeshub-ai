@@ -365,6 +365,18 @@ export function ModelConfigDialog({
         }
       }
       setValues(initial);
+      const existingModel = String(initial.model ?? '').trim();
+      if (existingModel) {
+        setPicked([
+          {
+            id: existingModel,
+            modelFriendlyName: String(initial.modelFriendlyName ?? '').trim() || undefined,
+            isReasoning: boolValue(initial.isReasoning),
+            isMultimodal: boolValue(initial.isMultimodal),
+            contextLength: positiveIntOrNull(initial.contextLength),
+          },
+        ]);
+      }
     } else {
       const defaults: Record<string, unknown> = {};
       for (const f of capFields) {
@@ -758,7 +770,9 @@ export function ModelConfigDialog({
       setDefaultModelId(settled[0]?.id ?? null);
     }
     // Deployments are usually named after their model; follow it until the user types their own.
+    // Edit already has a stored deployment — do not overwrite it when the model chip changes.
     const deploymentFollowsModel =
+      mode === 'add' &&
       fields.some((f) => f.name === 'deploymentName') &&
       (!touchedFieldsRef.current.has('deploymentName') || String(values.deploymentName ?? '').trim() === '');
     if (settled.length === 1 && (picked.length !== 1 || picked[0].id !== settled[0].id)) {
@@ -846,7 +860,7 @@ export function ModelConfigDialog({
   const primaryBlocked = saving || batch.running || !provider || !capability || !formValid;
 
   const discoveryMode = provider?.discovery?.mode ?? 'manual';
-  const canListModels = mode === 'add' && discoveryMode !== 'manual';
+  const canListModels = discoveryMode !== 'manual';
   const requiredFields = provider?.discovery?.requiredFields ?? [];
   const credentialKey = [...requiredFields, ...DISCOVERY_SCOPE_FIELDS]
     .map((name) => String(values[name] ?? ''))
@@ -882,10 +896,11 @@ export function ModelConfigDialog({
         capability: capability ?? undefined,
         configuration,
         query: discoveryMode === 'search' ? searchQuery.trim() || undefined : undefined,
+        ...(mode === 'edit' && editModel?.modelKey ? { modelKey: editModel.modelKey } : {}),
       });
     }, DISCOVERY_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [open, provider, capability, canDiscover, credentialKey, discoveryMode, searchQuery, fetchModels]);
+  }, [open, provider, capability, canDiscover, credentialKey, discoveryMode, searchQuery, fetchModels, mode, editModel?.modelKey]);
 
   /** Configuration every picked model shares: credentials and endpoint, never per-model fields. */
   const sharedBatchConfiguration = (): Record<string, unknown> => {
@@ -952,7 +967,7 @@ export function ModelConfigDialog({
   };
 
   const modelField = fields.find((f) => f.name === 'model');
-  const multipleModels = !fields.some((f) => f.name === 'deploymentName');
+  const multipleModels = mode === 'add' && !fields.some((f) => f.name === 'deploymentName');
   const discoveryHint = ((): { text: string | null; tone: 'gray' | 'red' } => {
     if (!canListModels) return { text: t('workspace.aiModels.modelHintManual'), tone: 'gray' };
     if (!canDiscover) return { text: t('workspace.aiModels.modelHintNeedsFields'), tone: 'gray' };
@@ -1089,7 +1104,7 @@ export function ModelConfigDialog({
         onReveal={canReveal ? () => void handleReveal() : undefined}
         revealing={revealState === 'loading'}
         discoverySlot={mode === 'add' ? discoverySlot : undefined}
-        modelFieldSlot={mode === 'add' ? modelFieldSlot : undefined}
+        modelFieldSlot={modelFieldSlot}
         revealed={revealState === 'shown'}
       />
       {downloadTarget && (

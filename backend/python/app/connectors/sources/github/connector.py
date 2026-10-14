@@ -70,6 +70,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.github.common.apps import GithubApp
 from app.connectors.sources.github_teams.connector import AUTHORIZE_URL, TOKEN_URL, GitHubTeamsConnector
+from app.connectors.sources.github_teams.common.utils import updated_since_filter_field
 from app.connectors.sources.github_teams.projects import ProjectsSync
 from app.models.permission import Permission
 
@@ -218,6 +219,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(updated_since_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
             display_name="Index Issues",

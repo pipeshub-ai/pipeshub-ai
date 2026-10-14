@@ -530,8 +530,12 @@ class GraphTransactionStore(TransactionStore):
         )
         return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
-    async def get_user_groups(self, connector_id: str, org_id: str) -> list[AppUserGroup]:
-        return await self.graph_provider.get_user_groups(connector_id, org_id, transaction=self.txn)
+    async def get_user_groups(
+        self, connector_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUserGroup]:
+        return await self.graph_provider.get_user_groups(
+            connector_id, org_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def batch_upsert_people(self, people: list[Person]) -> None:
         return await self.graph_provider.batch_upsert_people(people, transaction=self.txn)
@@ -1087,9 +1091,13 @@ class GraphTransactionStore(TransactionStore):
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_to_node(
+        self, node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges pointing to a specific node"""
-        return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_to_node(
+            node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
         """Get all edges originating from a specific node"""

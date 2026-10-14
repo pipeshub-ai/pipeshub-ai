@@ -49,6 +49,8 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
     lastActivityAt: { type: Number, default: Date.now },
+    /** Identifies the run that currently owns the thread, so only it can release or keep it alive. Internal: never selected. */
+    activeRunId: { type: String, select: false },
     status: {
       type: String,
       enum: ['None', 'Inprogress', 'Complete', 'Failed', 'Stopped'],

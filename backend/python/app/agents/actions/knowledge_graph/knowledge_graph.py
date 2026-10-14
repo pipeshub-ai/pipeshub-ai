@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
+from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
@@ -31,18 +32,22 @@ from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
 )
+from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
 from app.utils.chat_helpers import resolve_frontend_url
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
+from .ops.results import result_text, search_result_summary
 from .ops.scope import resolve_scope
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
 
 if TYPE_CHECKING:
+    from app.agent_loop_lib.core.messages import Part
     from app.agent_loop_lib.core.types import ToolResult
+    from app.agent_loop_lib.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 
@@ -779,9 +784,7 @@ class KnowledgeGraph:
                if args.get("source_ids") else "")
             if args.get("query") else None
         ),
-        result_summary=lambda args, result: (
-            _search_result_summary(args, result)
-        ),
+        result_summary=search_result_summary,
         display_name="Searched the knowledge base",
     )
     async def search(
@@ -793,7 +796,7 @@ class KnowledgeGraph:
         modified_after: str | None = None,
         modified_before: str | None = None,
         entity_ids: list[str] | None = None,
-    ) -> str:
+    ) -> str | list[Part]:
         """Semantic search — calls ops/search.py execute_search."""
         from .ops.search import execute_search
         return await execute_search(
@@ -894,6 +897,28 @@ class KnowledgeGraph:
             entity_types=entity_types,
             top_k=top_k,
             named_entity_kinds=named_entity_kinds,
+        )
+
+    async def _search_entities_with_queries(
+        self,
+        query: str | None = None,
+        entity_types: list[str] | None = None,
+        top_k: int = 10,
+        named_entity_kinds: list[str] | None = None,
+        queries: list[str] | None = None,
+    ) -> tuple[bool, str]:
+        """``search_entities`` where ``search_by_entities`` is offered
+        (``entity_search_surface``): several queries per call, and kinds it
+        cannot serve explained."""
+        from .ops.entity_discovery import execute_search_entities
+        return await execute_search_entities(
+            self.state,
+            query=query,
+            entity_types=entity_types,
+            top_k=top_k,
+            named_entity_kinds=named_entity_kinds,
+            queries=queries,
+            entity_search_offered=True,
         )
 
     # -----------------------------------------------------------------------
@@ -1044,6 +1069,92 @@ class KnowledgeGraph:
         )
 
     # -----------------------------------------------------------------------
+    # search_by_entities — offered only where the deployment turns it on
+    # -----------------------------------------------------------------------
+
+    @tool(
+        path="/tools/knowledgegraph/search_by_entities",
+        short_description="Search inside the records that mention named people, organizations, products or places",
+        description=(
+            "Search inside the records that mention specific named things: people, customers, "
+            "organizations, products, projects, events or places. Pass their names; each is linked to "
+            "the entities extracted from the documents: an exact name settles it, and otherwise the "
+            "look-alikes found are checked, so 'Acme Robotics' never returns 'Acme Financial'. "
+            "The result opens with how each name was resolved (and which look-alikes are not the "
+            "same), then the best passages for query inside the readable records that mention them, "
+            "cited like search results.\n\n"
+            "Use it when the question names one or more specific entities, especially to find where "
+            "two or more appear together: match=\"all\" keeps records that mention every name, most "
+            "relevant where they appear within a few blocks of each other. Pass several names in one "
+            "call rather than one call each. Example: mentions=[{\"name\": \"Contoso\", \"kind\": "
+            "\"organization\"}, {\"name\": \"Northwind CRM\", \"kind\": \"product\"}], "
+            "match=\"all\", query=\"migration cutover\".\n\n"
+            "Do not use it for topics, ideas or document titles (use search or search_entities), or "
+            "for dates and amounts (use find_records_by_value). A name on most records (the company's "
+            "own name, a first name) narrows little on its own; pair it with a rarer name or a query. "
+            "People are found by their name as written, or by a first name that starts a full one; a "
+            "surname alone is not looked up. Only records indexed while named-entity extraction was on "
+            "are linked to names, so confirm a name that is not found with search before saying it "
+            "is absent."
+        ),
+        parameters=[
+            ToolParameter(
+                name="mentions",
+                type=ParameterType.ARRAY,
+                description=(
+                    "1-5 names to look up, each {\"name\": ..., \"kind\": ...}; kind is optional "
+                    "and is what you believe the name is."
+                ),
+                required=True,
+                items={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "description": "The name as a document would write it."},
+                        "kind": {"type": "string", "enum": list(MENTION_KIND_HINTS)},
+                    },
+                    "required": ["name"],
+                },
+            ),
+            ToolParameter(
+                name="match",
+                type=ParameterType.STRING,
+                description="'any' (default): records mentioning any name; 'all': records mentioning every name.",
+                required=False,
+                enum=["any", "all"],
+            ),
+            ToolParameter(
+                name="query",
+                type=ParameterType.STRING,
+                description=(
+                    "What to look for inside those records, in a document's words. Omit to rank the "
+                    "passages that mention the names."
+                ),
+                required=False,
+            ),
+        ],
+        tags=[Tag(key="category", value="knowledge"), Tag(key="type", value="read")],
+        args_summary=lambda args: _search_by_entities_args_summary(args),
+        result_summary=lambda args, result: _search_by_entities_result_summary(args, result),
+        display_name="Searched records mentioning named entities",
+    )
+    async def search_by_entities(
+        self,
+        mentions: list[dict[str, Any]] | None = None,
+        match: str | None = None,
+        query: str | None = None,
+    ) -> tuple[bool, str] | str | list[Part]:
+        """Entity-linked search — calls ops/entity_search.py."""
+        from .ops.entity_search import execute_search_by_entities
+        return await execute_search_by_entities(self.state, mentions=mentions, match=match, query=query)
+
+    def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
+        """This request's tools: ``search_by_entities`` and the descriptions
+        that go with it only where the deployment offers it
+        (``entity_search_surface``)."""
+        from .entity_search_surface import tools_for_request
+        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
+
+    # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)
     # -----------------------------------------------------------------------
 
@@ -1181,33 +1292,18 @@ async def _get_user_key(graph_provider: Any, user_id: str) -> str | None:
 # Summary helpers for the new knowledgegraph tools
 # ---------------------------------------------------------------------------
 
-def _search_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
-    import re
-    from app.agents.actions.util.tool_summaries import as_text, parse_json_maybe, bullet_list
+def _search_by_entities_args_summary(args: dict[str, Any]) -> str | None:
+    names = [
+        str(item.get("name")) for item in args.get("mentions") or []
+        if isinstance(item, dict) and item.get("name")
+    ]
+    return f"Looked up {', '.join(names)}" if names else None
 
-    text = as_text(result.content)
-    if not text:
-        return None
-    parsed = parse_json_maybe(text)
-    if isinstance(parsed, dict) and parsed.get("status") == "error":
-        return f"Search failed: {parsed.get('message') or 'Unknown error'}"
-    if isinstance(parsed, dict) and (
-        parsed.get("result_count") == 0 or (isinstance(parsed.get("results"), list) and not parsed["results"])
-    ):
-        return str(parsed.get("message") or "No results found")
 
-    match = re.search(r"^Top (\d+) blocks? from (\d+) records?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        match = re.search(r"^Retrieved (\d+) knowledge blocks? from (\d+) documents?", text, re.IGNORECASE | re.MULTILINE)
-    if not match:
-        return None
-    blocks, docs = match.group(1), match.group(2)
-    header = f"Retrieved {blocks} block{'s' if blocks != '1' else ''} from {docs} record{'s' if docs != '1' else ''}"
-    name_re = re.compile(r"^Name\s*:\s*(.+)$", re.MULTILINE)
-    names = [n.strip() for n in name_re.findall(text) if n.strip()]
-    if not names:
-        return header
-    return header + "\n" + bullet_list(names)
+def _search_by_entities_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
+    if result.is_error:
+        return result_text(result.content) or "Entity search failed"
+    return search_result_summary(args, result) or "Looked up the named entities"
 
 
 def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") -> str | None:
@@ -1221,6 +1317,13 @@ def _search_entities_result_summary(args: dict[str, Any], result: "ToolResult") 
         return "Entity search failed" if result.is_error else None
     if result.is_error or parsed.get("status") == "error":
         return parsed.get("message") or "Entity search failed"
+    if isinstance(parsed.get("queries"), list):
+        groups = [q for q in parsed["queries"] if isinstance(q, dict)]
+        found = sum(len(q.get("results") or []) for q in groups)
+        return (
+            f"Found {found} entit{'y' if found == 1 else 'ies'} across "
+            f"{len(groups)} quer{'y' if len(groups) == 1 else 'ies'}"
+        )
     results = parsed.get("results") or []
     if not results:
         return parsed.get("message") or "No matching entities found"

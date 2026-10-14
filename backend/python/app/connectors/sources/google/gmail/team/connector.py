@@ -71,6 +71,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
+from app.connectors.sources.google.common.gmail_message_parts import find_message_part
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -2769,21 +2770,17 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.error(f"Message or payload not found for message ID {message_id}")
                 raise not_found_at_source(self.display_name)
 
-            # Search for the part with matching partId
-            parts = message["payload"].get("parts", [])
-            for part in parts:
-                if part.get("partId") == part_id:
-                    actual_attachment_id = part.get("body", {}).get("attachmentId")
-                    if not actual_attachment_id:
-                        raise not_downloadable(
-                            "This attachment has no downloadable content in Gmail.",
-                            connector=self.display_name,
-                        )
-                    self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                    break
-            else:
+            part = find_message_part(message["payload"].get("parts"), part_id)
+            if part is None:
                 self.logger.error(f"Part {part_id} not found in message {message_id}")
                 raise not_found_at_source(self.display_name)
+            actual_attachment_id = part.get("body", {}).get("attachmentId")
+            if not actual_attachment_id:
+                raise not_downloadable(
+                    "This attachment has no downloadable content in Gmail.",
+                    connector=self.display_name,
+                )
+            self.logger.info(f"Found attachment ID: {actual_attachment_id}")
 
         # Try to get the attachment from Gmail
         try:

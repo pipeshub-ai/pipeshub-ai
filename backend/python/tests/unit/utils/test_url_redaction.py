@@ -6,7 +6,8 @@ from collections.abc import Iterator
 from urllib.parse import quote, unquote
 
 import pytest
-from app.utils.url_redaction import redact_sensitive_query_params, redact_url
+
+from app.utils.url_redaction import REDACTED, redact_sensitive_query_params, redact_url
 
 
 class TestRedactUrl:
@@ -38,6 +39,10 @@ class TestRedactSensitiveQueryParams:
             redact_sensitive_query_params("/api/v1/index/o/drive/record/r?token=a.b.c&x=1")
             == "/api/v1/index/o/drive/record/r?token=[REDACTED]&x=1"
         )
+
+    def test_an_oauth_callbacks_code_and_state_are_replaced(self) -> None:
+        out = redact_sensitive_query_params("/api/v1/mcp-servers/oauth/callback?code=c-secret&state=s-secret")
+        assert out == f"/api/v1/mcp-servers/oauth/callback?code={REDACTED}&state={REDACTED}"
 
     def test_param_names_match_case_insensitively(self) -> None:
         assert "secret" not in redact_sensitive_query_params("/cb?Code=secret")

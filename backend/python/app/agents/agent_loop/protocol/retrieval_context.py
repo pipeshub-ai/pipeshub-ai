@@ -16,11 +16,16 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.modules.retrieval.provenance import (
     RetrievalLayer,  # noqa: TC001 - pydantic resolves it at runtime
 )
+from app.utils.render_budget import (
+    TruncatedBy,
+)
 
 RETRIEVAL_CONTEXT_EVENT_NAME = "retrieval_context"
 RETRIEVAL_CONTEXT_SCHEMA_VERSION = 1
 
 RetrievalSource = Literal["prefetch", "tool"]
+# The renderer's own reasons, so the wire contract cannot drift from them.
+FetchTruncatedBy = TruncatedBy
 RetrievalStatus = Literal["ok", "empty", "skipped", "error"]
 
 
@@ -49,6 +54,15 @@ class FetchedRangePayload(BaseModel):
     # `startBlock` + `blocksRendered` alone cannot say which blocks were read.
     shownBlocks: list[int] | None = None
     tableTruncation: TableTruncationPayload | None = None
+    # Why an incomplete render stopped: its character share ("chars"), a block
+    # limit ("blocks"), relevance selection, no room left in the call, or an
+    # offset past the record's last block.
+    truncatedBy: FetchTruncatedBy | None = None
+    # The model's own `max_blocks` and whether it named `start_block` itself:
+    # some models send both on every call, which these separate from a
+    # deliberate request for a slice.
+    requestedMaxBlocks: int | None = None
+    startBlockSent: bool | None = None
 
 
 class RetrievedRecordPayload(BaseModel):

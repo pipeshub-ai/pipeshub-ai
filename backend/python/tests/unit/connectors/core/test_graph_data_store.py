@@ -756,7 +756,9 @@ class TestGraphTransactionStore:
     @pytest.mark.asyncio
     async def test_get_user_groups(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_user_groups("conn1", "org1")
-        mock_graph_provider.get_user_groups.assert_awaited_once_with("conn1", "org1", transaction="txn-123")
+        mock_graph_provider.get_user_groups.assert_awaited_once_with(
+            "conn1", "org1", transaction="txn-123", raise_on_error=False
+        )
 
     @pytest.mark.asyncio
     async def test_batch_create_user_app_edges(self, tx_store, mock_graph_provider) -> None:
@@ -920,7 +922,14 @@ class TestGraphTransactionStore:
     async def test_get_edges_to_node(self, tx_store, mock_graph_provider) -> None:
         await tx_store.get_edges_to_node("node1", "edge_coll")
         mock_graph_provider.get_edges_to_node.assert_awaited_once_with(
-            "node1", "edge_coll", transaction="txn-123"
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_get_edges_to_node_passes_raise_on_error(self, tx_store, mock_graph_provider) -> None:
+        await tx_store.get_edges_to_node("node1", "edge_coll", raise_on_error=True)
+        mock_graph_provider.get_edges_to_node.assert_awaited_once_with(
+            "node1", "edge_coll", transaction="txn-123", raise_on_error=True
         )
 
     @pytest.mark.asyncio

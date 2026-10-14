@@ -65,6 +65,7 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
+from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
@@ -502,9 +503,10 @@ class EventProcessor:
             prev_virtual_record_id=prev_virtual_record_id,
         )
 
-        ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-            ctx, self.logger, self.sink_orchestrator
-        )
+        with stage("reconcile"):
+            ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                ctx, self.logger, self.sink_orchestrator
+            )
 
         defer_extraction = (
             ctx.settings.get("defer_extraction")
@@ -531,26 +533,32 @@ class EventProcessor:
         else:
             ner_task = None
             try:
-                departments = await self.graph_provider.get_departments(org_id)
                 ner_task = asyncio.create_task(
                     self.sink_orchestrator.extract_named_entities(ctx, client=self.extraction_client)
                 )
-                semantic_metadata = await self.extraction_client.classify(
-                    block_container=block_container,
-                    org_id=org_id,
-                    departments=departments or [],
-                    record_name=record.record_name,
-                    record_type=record.record_type.value,
-                )
-                extraction = await ner_task
+                with stage("extract"):
+                    departments = await self.graph_provider.get_departments(org_id)
+                    semantic_metadata = await self.extraction_client.classify(
+                        block_container=block_container,
+                        org_id=org_id,
+                        departments=departments or [],
+                        record_name=record.record_name,
+                        record_type=record.record_type.value,
+                    )
+                # Entity extraction runs alongside classification; only the wait
+                # left once classification is done counts here.
+                with stage("entities.extract"):
+                    extraction = await ner_task
 
                 record.semantic_metadata = semantic_metadata
                 if semantic_metadata:
                     # Taxonomy names must be resolved before the summary,
                     # blob and graph writes below all consume them.
-                    await self.sink_orchestrator.resolve_entities(ctx)
+                    with stage("entities.resolve"):
+                        await self.sink_orchestrator.resolve_entities(ctx)
                     self.sink_orchestrator.attach_named_entities(ctx, extraction)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
+                    # Not wrapped in a stage: it times its own steps.
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
                         virtual_record_id,
@@ -560,7 +568,8 @@ class EventProcessor:
                     )
 
                 await self.sink_orchestrator.enrich(ctx)
-                await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+                with stage("entities.persist"):
+                    await self.sink_orchestrator.persist_named_entities(ctx, extraction)
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
                 )
@@ -588,7 +597,7 @@ class EventProcessor:
         try:
             from app.modules.named_entities.stage import extraction_blob_holder
 
-            with extraction_blob_holder(record, extraction):
+            with stage("blob.write"), extraction_blob_holder(record, extraction):
                 await self.sink_orchestrator.blob_storage.apply(ctx)
         except Exception as blob_exc:
             self.logger.error(

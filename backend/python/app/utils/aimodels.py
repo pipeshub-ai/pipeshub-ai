@@ -1129,6 +1129,16 @@ _RESPONSES_API_PROVIDERS = frozenset({
 _OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
 
 
+def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
+    """A custom base URL on the native OpenAI provider is some other server.
+    It does not implement /v1/responses just because the provider id is openAI."""
+    return (
+        provider == LLMProvider.OPENAI.value
+        and bool(base_url)
+        and not _targets_openai_responses_api(base_url)
+    )
+
+
 def _targets_openai_responses_api(base_url: str | None) -> bool:
     if not base_url:
         return False
@@ -1195,7 +1205,13 @@ def _is_qwen_38_or_later(model_name: str | None) -> bool:
 # they support `reasoning_effort` + bound tools on Chat Completions today
 # (with a documented, non-fatal loss of cross-turn reasoning persistence),
 # unlike gpt-5.x which hard-rejects the combination with a 400.
-_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+#
+# The later generations (gpt-6, gpt-6.1, ...) behave the same way: Azure
+# OpenAI answers "'temperature' does not support 0.2 with this model" for
+# gpt-6-luna and gpt-6.1-sol, and refuses reasoning with tools on Chat
+# Completions. So the major version is any single digit from 5 up, the same
+# range `_BEDROCK_OPENAI_GPT_RE` uses. A single digit keeps `gpt-50` out.
+_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
 
 # gpt-5-chat / gpt-5.x-chat-latest are non-reasoning chat variants: they
 # don't accept a `reasoning`/`reasoning_effort` value at all and must never
@@ -1203,10 +1219,12 @@ _OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.
 # reason — langchain-openai itself special-cases them the same way
 # (`"chat" not in model_lower`, `validate_temperature`/
 # `_construct_responses_api_payload` in langchain_openai's chat_models/base.py).
-_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
+_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
 
 
 def _is_openai_gpt5_model(model_name: str | None) -> bool:
+    """True for OpenAI's gpt-5 family and the generations after it (gpt-6,
+    gpt-6.1, ...), excluding their non-reasoning ``-chat`` variants."""
     if not model_name:
         return False
     if _OPENAI_GPT5_CHAT_PATTERN.search(model_name):
@@ -1220,7 +1238,7 @@ def _default_temperature(
 ) -> float:
     """Default ``temperature`` for a provider's constructor kwargs.
 
-    OpenAI gpt-5.x (and o-series) reasoning models only accept
+    OpenAI gpt-5.x and later (and o-series) reasoning models only accept
     ``temperature=1`` (any other value 400s on both Chat Completions and the
     Responses API) — this is the one check shared verbatim by every provider
     branch below that constructs a LangChain client, so it lives here once
@@ -1370,8 +1388,12 @@ def _reasoning_effort_kwargs(
     - ``LLMApiMode.RESPONSES``: this model needs the Responses API even
       though the name/host heuristic didn't detect it — take that branch
       whenever ``provider in _OPENAI_FAMILY`` (still gated on
-      ``effort != "none"`` like the heuristic path, since reasoning-off
-      never needs it). Gated on the provider family, not applied
+      ``effort != "none"`` like the heuristic path). It also applies with
+      ``isReasoning`` off: a model that reasons by default (Azure's gpt-6)
+      refuses tools on Chat Completions even with no reasoning setting, so
+      it gets ``use_responses_api`` alone. Neither path applies to Qwen 3.8+
+      or to the native OpenAI provider pointed at another server, which
+      have no /v1/responses. Gated on the provider family, not applied
       unconditionally, because ``api_mode`` is looked up only by
       ``(model_key, model_name)`` with no provider check — an unrelated
       provider reusing the same pair (e.g. after reconfiguring a model
@@ -1388,6 +1410,18 @@ def _reasoning_effort_kwargs(
       hands a model an unfloored ``"none"``.
     """
     if not config.get("isReasoning"):
+        # Reasoning is unticked, but this model was seen to refuse tools on
+        # Chat Completions and accept them on the Responses API (Azure's
+        # gpt-6 models do this: they reason by default). Keep using the
+        # Responses API, with no reasoning setting so the model keeps its own
+        # default, exactly as the retry that succeeded was sent.
+        if (
+            api_mode == LLMApiMode.RESPONSES.value
+            and provider in _OPENAI_FAMILY
+            and not _is_qwen_38_or_later(model_name)
+            and not _is_openai_custom_endpoint(provider, base_url)
+        ):
+            return {"use_responses_api": True}
         return {}
 
     if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:
@@ -1430,13 +1464,7 @@ def _reasoning_effort_kwargs(
     elif provider == LLMProvider.ANTHROPIC.value:
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
-    # A custom base URL on the native OpenAI provider is some other server.
-    # It does not implement /v1/responses just because the provider id is openAI.
-    openai_custom_endpoint = (
-        provider == LLMProvider.OPENAI.value
-        and bool(base_url)
-        and not _targets_openai_responses_api(base_url)
-    )
+    openai_custom_endpoint = _is_openai_custom_endpoint(provider, base_url)
     needs_responses_api = effort != "none" and not openai_custom_endpoint and (
         provider in _RESPONSES_API_PROVIDERS
         or (
@@ -1479,11 +1507,16 @@ _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
 }
 _BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
 
-# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
-# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
-# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
-# mid-token names like ``my-gpt-5-compatible``.
-_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+# OpenAI's closed GPT-5+ models on Bedrock (GPT-5.x, GPT-6 Sol/Luna/Astra).
+# Bedrock IDs are dot-delimited (``us.openai.gpt-6-luna``), so the name must be
+# bare, follow a ``/`` (an inference-profile ARN), or sit under the ``openai.``
+# namespace -- another provider's ``amazon.gpt-6-model`` is not OpenAI. A
+# substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and mid-token names
+# like ``my-gpt-5-compatible``. The major is a single digit on purpose;
+# ``gpt-oss`` never matches.
+_BEDROCK_OPENAI_GPT_RE = re.compile(
+    r"(?:^|/|\bopenai\.)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE,
+)
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
@@ -1519,14 +1552,14 @@ def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
     return bool(model_name) and "gpt-oss" in model_name.lower()
 
 
-def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
-    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+def _bedrock_is_openai_gpt(model_name: str | None) -> bool:
+    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss."""
     if not model_name:
         return False
     lowered = model_name.lower()
     if "gpt-oss" in lowered:
         return False
-    return bool(_GPT5_MODEL_RE.search(lowered))
+    return bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
 
 
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
@@ -1538,7 +1571,7 @@ def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
     return (
         "openai" in lowered
         or "gpt-oss" in lowered
-        or bool(_GPT5_MODEL_RE.search(lowered))
+        or bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
     )
 
 
@@ -1619,8 +1652,8 @@ def _bedrock_additional_model_request_fields(
         if _bedrock_is_gpt_oss(model_name):
             effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
         else:
-            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
-            # through. ``none`` is already floored to low above.
+            # GPT-5.6 / GPT-6 Converse models: pass UI effort through.
+            # ``none`` is already floored to low above.
             effort = effort_input
         return {"reasoning_effort": effort}
 
@@ -1694,7 +1727,8 @@ def _bedrock_temperature(
     - Claude models that dropped sampling params → omit.
     - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
     - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
-    - GPT-5.x on Bedrock typically rejects temperature → omit.
+    - GPT-5.x / GPT-6 on Bedrock Converse reject temperature at any value
+      (including 1) → omit.
     - Otherwise use configured temperature (default 0.2). Never force 1 for
       Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
     """
@@ -1704,7 +1738,7 @@ def _bedrock_temperature(
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
 
-    if _bedrock_is_openai_gpt5(model_name):
+    if _bedrock_is_openai_gpt(model_name):
         return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
@@ -1753,7 +1787,7 @@ def _identify_bedrock_provider(model_name: str | None) -> str | None:
         return LLMProvider.MISTRAL.value
     if "claude" in lowered or "anthropic" in lowered:
         return LLMProvider.ANTHROPIC.value
-    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
+    if "openai" in lowered or "gpt-oss" in lowered or _BEDROCK_OPENAI_GPT_RE.search(lowered):
         return "openai"
     if "llama" in lowered or "meta" in lowered:
         return "meta"
