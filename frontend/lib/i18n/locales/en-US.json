@@ -1014,6 +1014,7 @@
     "stoppedMarker": "Stopped",
     "toolCard": {
       "arguments": "Arguments",
+      "query": "Query",
       "result": "Result",
       "error": "Error",
       "blocked": "Blocked",

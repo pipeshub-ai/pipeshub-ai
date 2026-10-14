@@ -1014,6 +1014,7 @@
     "stoppedMarker": "已停止",
     "toolCard": {
       "arguments": "参数",
+      "query": "查询",
       "result": "结果",
       "error": "错误",
       "blocked": "已阻止",

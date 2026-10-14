@@ -121,3 +121,35 @@ export function toolStatusLabel(toolName: string, displayName?: string): string 
   if (displayName) return displayName;
   return SKILL_TOOL_LABELS[toolName]?.present ?? `Using ${humanizeToolName(toolName)}`;
 }
+
+/** The SQL tool's name in the agent loop (`sql__execute_sql_query`, see
+ * `tool_summarizer.py`) and in chat modes (`execute_sql_query`). */
+const SQL_QUERY_TOOL_NAMES = new Set(['sql__execute_sql_query', 'execute_sql_query']);
+
+/** Reads a JSON string field out of JSON that may be cut off: the client and
+ * server both cap `args`, so a long query can leave invalid JSON behind. */
+function extractTruncatedJsonStringField(text: string, key: string): string | undefined {
+  const match = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)`).exec(text);
+  if (!match) return undefined;
+  // Drop a `\uXX` escape that the cap cut in half, unless its backslash is itself escaped.
+  const raw = match[1].replace(/(^|[^\\])((?:\\\\)*)\\u[0-9a-fA-F]{0,3}$/, '$1$2');
+  try {
+    const value = JSON.parse(`"${raw}"`) as string;
+    return value.trim() ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The SQL text of a SQL tool call's raw `args` JSON, shown in the tool card's
+ * Query section. Undefined for any other tool, or when no query is left. */
+export function extractSqlQuery(toolName: string | undefined, args: string | undefined): string | undefined {
+  if (!toolName || !SQL_QUERY_TOOL_NAMES.has(toolName) || !args) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(args);
+    const query = (parsed as { query?: unknown } | null)?.query;
+    return typeof query === 'string' && query.trim() ? query : undefined;
+  } catch {
+    return extractTruncatedJsonStringField(args, 'query');
+  }
+}
