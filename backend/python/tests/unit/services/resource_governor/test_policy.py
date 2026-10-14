@@ -1562,6 +1562,24 @@ class TestDownstreamBrake:
         assert held
         assert limit <= highest_limit
 
+    def test_too_few_holds_leave_the_estimate_alone(self) -> None:
+        """After sparse samples one large record is all there is: it must
+        not stand for the pool, and neither may the mean."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL,
+            blocked_acquires=3,
+            completions=1,
+            hold_seconds_by_sample=((), (), (), (self._CHAT_HOLD,), (self._PR_HOLD,)),
+        )
+        assert policy_mod._typical_hold(demand) is None
+        assert policy_mod._track_hold_time(state, demand) == state
+
+    def test_without_reported_holds_the_mean_is_still_used(self) -> None:
+        state = PoolState(hold_ewma=2.0, hold_baseline=2.0)
+        demand = PoolDemand(permit_seconds=400.0, blocked_acquires=0, completions=40)
+        assert policy_mod._track_hold_time(state, demand).hold_ewma > 2.0
+
     @pytest.mark.parametrize("burst", [2, 4])
     def test_large_records_finishing_together_do_not_move_the_typical_hold(
         self, burst: int

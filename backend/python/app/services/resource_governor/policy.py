@@ -739,7 +739,7 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
 
 def _typical_hold(demand: PoolDemand) -> float | None:
     """The median of the most recent reported permit holds, or None when
-    none were reported.
+    fewer than ``HOLD_MIN_HOLDS`` were reported across every retained sample.
 
     The window is the newest ``HOLD_MIN_SAMPLES`` samples, widened further
     back until it holds ``HOLD_MIN_HOLDS``. Two samples, so a burst of large
@@ -755,7 +755,7 @@ def _typical_hold(demand: PoolDemand) -> float | None:
         window[:0] = sample
         if used >= HOLD_MIN_SAMPLES and len(window) >= HOLD_MIN_HOLDS:
             break
-    return statistics.median(window) if window else None
+    return statistics.median(window) if len(window) >= HOLD_MIN_HOLDS else None
 
 
 def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
@@ -777,6 +777,11 @@ def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
     if demand.completions <= 0:
         return state
     typical = _typical_hold(demand)
+    if typical is None and any(demand.hold_seconds_by_sample):
+        # Holds were reported, but too few to say what a typical record
+        # takes: one large record must not stand for the pool, and the mean
+        # would read it the same way. Leave the estimate where it is.
+        return state
     mean_hold = (
         typical
         if typical is not None
