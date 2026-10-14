@@ -30,6 +30,7 @@ describe('Connector Routes', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      aiBackend: 'http://localhost:8000',
       storage: { endpoint: 'http://localhost:3003' },
     }
 
@@ -1034,6 +1035,7 @@ describe('Connector Routes - handler coverage', () => {
       scopedJwtSecret: 'test-secret',
       cmBackend: 'http://localhost:3004',
       connectorBackend: 'http://localhost:8088',
+      aiBackend: 'http://localhost:8000',
       storage: { endpoint: 'http://localhost:3003' },
     }
 
@@ -1715,6 +1717,102 @@ describe('Connector Routes - handler coverage', () => {
       const headers = exec.firstCall.args[2]
       expect(headers).to.not.have.property('X-Is-Admin')
       expect(headers).to.not.have.property('cookie')
+    })
+
+    describe('GET /record/:recordId/content', () => {
+      async function readContent(query: any) {
+        const req: any = {
+          user: { userId: 'u1', orgId: 'o1' },
+          query,
+          params: { recordId: 'rec-1' },
+          body: {},
+          headers: {},
+        }
+        const errors: any[] = []
+        const next = sinon.stub().callsFake((err?: any) => {
+          if (err) errors.push(err)
+        })
+        for (const handler of findAllHandlers('/record/:recordId/content', 'get')) {
+          await Promise.resolve(handler(req, mockRes(), next))
+          if (errors.length > 0) break
+        }
+        return errors.length > 0 ? errors[0] : null
+      }
+
+      it('returns the whole record from the connector service when no part is asked for', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        const error = await readContent({})
+
+        expect(error).to.be.null
+        expect(exec.firstCall.args[0]).to.equal(
+          'http://localhost:8088/api/v1/records/rec-1/content',
+        )
+      })
+
+      it('sends a budgeted read to the query service under the names Python declares', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        const error = await readContent({
+          query: 'when was it rolled back',
+          startBlock: '40',
+          maxChars: '20000',
+        })
+
+        expect(error).to.be.null
+        const url: string = exec.firstCall.args[0]
+        expect(url.startsWith('http://localhost:8000/api/v1/records/rec-1/read?')).to.be.true
+        expect(url).to.include('start_block=40')
+        expect(url).to.include('max_chars=20000')
+        expect(url).to.include('query=when+was+it+rolled+back')
+        expect(url).to.not.include('startBlock=')
+      })
+
+      it('sends a thread read to the query service', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ mode: 'thread', startRecord: '3' })
+
+        const url: string = exec.firstCall.args[0]
+        expect(url).to.include('/api/v1/records/rec-1/read?')
+        expect(url).to.include('mode=thread')
+        expect(url).to.include('start_record=3')
+      })
+
+      it('keeps a startBlock of 0, which means "read in order from the top"', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ startBlock: '0' })
+
+        expect(exec.firstCall.args[0]).to.include('start_block=0')
+      })
+
+      const invalid: Array<[string, Record<string, string>]> = [
+        ['a budget below 2000 characters', { maxChars: '100' }],
+        ['a budget above 140000 characters', { maxChars: '500000' }],
+        ['a negative startBlock', { startBlock: '-1' }],
+        ['an unknown mode', { mode: 'channel' }],
+      ]
+      for (const [name, query] of invalid) {
+        it(`rejects ${name} without reaching a backend`, async () => {
+          const exec = sinon
+            .stub(connectorUtils, 'executeConnectorCommand')
+            .resolves({ statusCode: 200, data: {} })
+
+          const error = await readContent(query)
+
+          expect(isValidationError(error)).to.be.true
+          expect(exec.called).to.be.false
+        })
+      }
     })
   })
 })

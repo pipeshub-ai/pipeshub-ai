@@ -28,6 +28,7 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.openai_models import router as openai_models_router
+from app.api.routes.records import router as records_router
 from app.api.routes.health import router as health_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
@@ -503,6 +504,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")

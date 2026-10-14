@@ -365,10 +365,35 @@ const getConnectorStatsSchema = z.object({
 });
 
 /**
- * Schema for getting a record's full parsed content
+ * Schema for getting a record's parsed content. With no query parameters the
+ * whole record is returned, as it always was; any of them asks for a budgeted
+ * read (part of the record, or its Slack thread). Bounds match the query
+ * service's `/records/{record_id}/read`.
  */
 const getRecordContentSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  query: z.object({
+    mode: z.enum(['record', 'thread']).optional(),
+    query: z.string().trim().min(1).max(2000).optional(),
+    startBlock: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(0),
+      )
+      .optional(),
+    startRecord: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(0),
+      )
+      .optional(),
+    maxChars: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(2000).max(140000),
+      )
+      .optional(),
+  }),
 });
 
 /**

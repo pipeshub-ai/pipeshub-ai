@@ -73,7 +73,9 @@ valid_group_labels = [
     ]
 
 from app.utils.record_block_selection import (  # noqa: E402
+    FETCH_RECORD_HINTS,
     RECORD_CLOSE,
+    ReadHints,
     continuation_hint,
     describe_gaps,
     no_fit_hint,
@@ -4181,6 +4183,7 @@ def record_to_message_content(
     image_origin: "ImageOrigin" = ImageOrigin.FETCHED_RECORD,
     budget: "RenderBudget | None" = None,
     include_blocks: set[int] | None = None,
+    hints: ReadHints = FETCH_RECORD_HINTS,
 ) -> tuple[list[dict[str, Any]], CitationRefMapper]:
     """
     Convert a record JSON object to message content format matching get_message_content.
@@ -4213,6 +4216,9 @@ def record_to_message_content(
         include_blocks: A relevance selection; blocks outside it are skipped
             and the gaps announced. A table entered through a selected row
             reads its rows in order from that row.
+        hints: How the gap markers and the trailing hint say to read more.
+            The fetch tool's phrasing unless the caller reads some other way
+            (the record-content API).
 
     Returns:
         Tuple of (content list, ref_mapper)
@@ -4231,7 +4237,7 @@ def record_to_message_content(
     render_budget.begin_record(record_key)
     _all_block_indices = _renderable_block_indices(record)
     gap_markers = (
-        describe_gaps(include_blocks, _all_block_indices) if include_blocks is not None else {}
+        describe_gaps(include_blocks, _all_block_indices, hints) if include_blocks is not None else {}
     )
     gaps_emitted = False
 
@@ -4239,7 +4245,9 @@ def record_to_message_content(
         content = []
         context_metadata = record.get("context_metadata", "") or ""
         fk_text = _fk_lines_text(record)
-        trailer_reserve = record_trailer_reserve(record, selection=include_blocks is not None)
+        trailer_reserve = record_trailer_reserve(
+            record, selection=include_blocks is not None, hints=hints,
+        )
         # A frame that leaves no room to show a block is cut, not overrun:
         # what is printed has to be what was charged. The cut leaves room for
         # one (clipped) block so the read advances, keeps the start of the
@@ -4816,7 +4824,7 @@ def record_to_message_content(
             content.append({
                 "type": "text",
                 "text": selection_hint(
-                    record_label, len(outcome.shown_blocks), len(_all_block_indices), resume,
+                    record_label, len(outcome.shown_blocks), len(_all_block_indices), resume, hints,
                 ),
             })
         else:
@@ -4826,13 +4834,13 @@ def record_to_message_content(
                 render_budget.stop_at(unshown[0], "chars")
                 next_start = unshown[0]
             if next_start is not None and _renderable_rendered == 0:
-                content.append({"type": "text", "text": no_fit_hint(record_label, next_start)})
+                content.append({"type": "text", "text": no_fit_hint(record_label, next_start, hints)})
             elif next_start is not None:
                 total_blocks = len([b for b in blocks if b.get("parent_block_index") is None])
                 content.append({
                     "type": "text",
                     "text": continuation_hint(
-                        record_label, start_block, next_start - 1, total_blocks, next_start,
+                        record_label, start_block, next_start - 1, total_blocks, next_start, hints,
                     ),
                 })
 
