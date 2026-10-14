@@ -225,25 +225,47 @@ class TestReadingAThread:
         assert read["threadRecordCount"] == 3
         assert [r["recordId"] for r in read["records"]] == ["t-0", "t-1", "t-2"]
 
+    @staticmethod
+    async def _follow(records: list[dict], max_chars: int) -> tuple[list[str], int]:
+        """Read a thread by following only the cursor each read returns."""
+        seen: list[str] = []
+        record, block, reads = 0, 0, 0
+        while True:
+            read = await read_thread(records, max_chars=max_chars, start_record=record, start_block=block)
+            reads += 1
+            assert read["chars"] <= max_chars
+            seen.extend(re.findall(r"<m(\d+)>", read["content"]))
+            if read["nextStartRecord"] is None:
+                assert read["complete"] is True, "a null cursor means the thread was read in full"
+                return seen, reads
+            assert read["complete"] is False
+            record, block = read["nextStartRecord"], read["nextStartBlock"]
+            assert f"startRecord={record} and startBlock={block}" in read["content"]
+            assert reads < 200
+
     async def test_a_long_thread_continues_by_record_and_reads_each_once(self) -> None:
         records = [_burst(f"t-{n}", n, f"<m{n}> " + "y" * 1_500) for n in range(20)]
-        seen: list[str] = []
-        start = 0
-        reads = 0
-        while True:
-            read = await read_thread(records, max_chars=5_000, start_record=start)
-            reads += 1
-            assert read["chars"] <= 5_000
-            seen.extend(re.findall(r"<m(\d+)>", read["content"]))
-            if read["complete"]:
-                break
-            assert f"startRecord={read['nextStartRecord']}" in read["content"]
-            start = read["nextStartRecord"]
-            assert reads < 50
+
+        seen, _ = await self._follow(records, max_chars=5_000)
 
         assert seen == [str(n) for n in range(20)]
 
-    async def test_a_burst_larger_than_the_budget_is_read_as_far_as_it_fits(self) -> None:
+    async def test_a_record_larger_than_the_budget_is_finished_before_the_cursor_moves_on(self) -> None:
+        """Following the returned cursor alone must reach every block of every
+        record exactly once -- including the tail of a record too large for
+        one read, and when that record is the last one."""
+        records = [
+            _burst("t-0", 1, *[f"<m{i}> " + "z" * 900 for i in range(20)]),
+            _burst("t-1", 2, "<m20> a short reply"),
+            _burst("t-2", 3, *[f"<m{i}> " + "w" * 900 for i in range(21, 40)]),
+        ]
+
+        seen, reads = await self._follow(records, max_chars=5_000)
+
+        assert seen == [str(i) for i in range(40)]
+        assert reads > 3, "the large records took several reads each"
+
+    async def test_the_cursor_stays_on_a_cut_record(self) -> None:
         records = [
             _burst("t-0", 1, *[f"<m{i}> " + "z" * 900 for i in range(20)]),
             _burst("t-1", 2, "<m99> the last reply"),
@@ -251,10 +273,9 @@ class TestReadingAThread:
 
         read = await read_thread(records, max_chars=5_000)
 
-        assert read["chars"] <= 5_000
         assert read["records"][0]["complete"] is False
-        assert read["records"][0]["nextStartBlock"] is not None
-        assert read["nextStartRecord"] == 1
+        assert read["nextStartRecord"] == 0
+        assert read["nextStartBlock"] == read["records"][0]["nextStartBlock"] > 0
         assert "<m99>" not in read["content"]
 
     async def test_a_thread_with_nothing_readable_is_empty_and_complete(self) -> None:

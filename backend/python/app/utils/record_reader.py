@@ -186,11 +186,19 @@ async def read_record(
     }
 
 
-def _thread_note(shown_from: int, shown_to: int, total: int, next_record: int) -> str:
+def _thread_note(
+    shown_from: int, shown_to: int, total: int, next_record: int, next_block: int,
+) -> str:
     return (
         f"\n[Thread: showed records {shown_from + 1}–{shown_to + 1} of {total}. "
-        f"To read on, request this thread again with startRecord={next_record}.]\n"
+        f"To read on, request this thread again with startRecord={next_record} "
+        f"and startBlock={next_block}.]\n"
     )
+
+
+def _widest_block(records: list[dict[str, Any]]) -> int:
+    """The largest block offset a thread cursor can name, for reserving room."""
+    return max((max(_renderable_block_indices(r), default=0) for r in records), default=0) + 1
 
 
 async def read_thread(
@@ -198,49 +206,68 @@ async def read_thread(
     *,
     max_chars: int = DEFAULT_READ_CHARS,
     start_record: int = 0,
+    start_block: int = 0,
 ) -> dict[str, Any]:
     """The records of one Slack thread, oldest first, within `max_chars`.
 
+    The cursor is a record and a block in it: `start_block` applies to the
+    record at `start_record`, and every later record is read from its start.
     Records are read whole and in order, because a conversation read with a
     reply missing in the middle reads as a different conversation. A record
     that does not fit is left for the next read -- unless it is the first one
-    of this read, which is read as far as it fits (with its own `startBlock`
-    to continue it) so that every read makes progress.
+    of this read, which is read as far as it fits so that every read makes
+    progress. The cursor then stays on that record, at the block where it
+    stopped, and moves on only once the record has been read to its end.
     """
     total = len(records)
     budget = RenderBudget(max_chars=max_chars, max_blocks=FETCH_SAFETY_MAX_BLOCKS)
-    widest = len(str(total + 1))
+    widest_record = 10 ** len(str(total + 1)) - 1
+    widest_block = 10 ** len(str(_widest_block(records))) - 1
     # Held back so the closing note always fits.
-    budget.charge_framing_chars(len(_thread_note(10**widest - 1, 10**widest - 1, total, 10**widest - 1)))
+    budget.charge_framing_chars(
+        len(_thread_note(widest_record, widest_record, total, widest_record, widest_block)),
+    )
 
     parts: list[str] = []
     shown: list[dict[str, Any]] = []
     next_record: int | None = None
+    next_block = 0
     for position in range(start_record, total):
         record = records[position]
         key = _record_key(record)
+        offset = start_block if position == start_record else 0
         budget.begin_record(key)
         if shown and estimate_render_chars(record) > budget.call_chars_remaining:
-            next_record = position
+            next_record, next_block = position, 0
             break
         budget.allot(key, None)
-        parts.append(_render(record, budget, start_block=0, include_blocks=None))
+        parts.append(_render(record, budget, start_block=offset, include_blocks=None))
         outcome = budget.outcome(key)
+        resume = None if outcome.complete else outcome.stopped_at_block
         shown.append({
             "recordId": record.get("id"),
             "recordName": record.get("record_name"),
+            "startBlock": offset,
             "complete": outcome.complete,
-            "nextStartBlock": None if outcome.complete else outcome.stopped_at_block,
+            "nextStartBlock": resume,
         })
         if not outcome.complete:
-            # Nothing after a record that was cut short: the reader continues
-            # it first, from the offset its hint gave.
-            next_record = position + 1 if position + 1 < total else None
+            # Nothing after a record that was cut short: the cursor stays on
+            # it, at the block where it stopped. A record with nowhere to
+            # resume (one block larger than the whole budget) cannot be read
+            # further at this `max_chars`, so the cursor moves past it rather
+            # than return the same block forever.
+            if resume is not None and (position != start_record or resume > offset):
+                next_record, next_block = position, resume
+            elif position + 1 < total:
+                next_record, next_block = position + 1, 0
             break
 
     text = "\n".join(parts)
     if next_record is not None and shown:
-        text += _thread_note(start_record, start_record + len(shown) - 1, total, next_record)
+        text += _thread_note(
+            start_record, start_record + len(shown) - 1, total, next_record, next_block,
+        )
     elif start_record >= total:
         text = f"[No records at startRecord={start_record}: this thread has {total}.]\n"
 
@@ -249,10 +276,14 @@ async def read_thread(
         "mode": "thread",
         "threadRecordCount": total,
         "startRecord": start_record,
+        "startBlock": start_block,
         "records": shown,
-        # Nothing of the thread is left after this read.
+        # Nothing of the thread is left after this read, and all of it was
+        # read in full. Null `nextStartRecord` with `complete` false means a
+        # single block was larger than `max_chars`.
         "complete": next_record is None and all(r["complete"] for r in shown),
         "nextStartRecord": next_record,
+        "nextStartBlock": next_block if next_record is not None else None,
         "chars": len(text),
         "maxChars": max_chars,
     }

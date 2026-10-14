@@ -1777,12 +1777,13 @@ describe('Connector Routes - handler coverage', () => {
           .stub(connectorUtils, 'executeConnectorCommand')
           .resolves({ statusCode: 200, data: { content: 'x' } })
 
-        await readContent({ mode: 'thread', startRecord: '3' })
+        await readContent({ mode: 'thread', startRecord: '3', startBlock: '5' })
 
         const url: string = exec.firstCall.args[0]
         expect(url).to.include('/api/v1/records/rec-1/read?')
         expect(url).to.include('mode=thread')
         expect(url).to.include('start_record=3')
+        expect(url).to.include('start_block=5')
       })
 
       it('keeps a startBlock of 0, which means "read in order from the top"', async () => {

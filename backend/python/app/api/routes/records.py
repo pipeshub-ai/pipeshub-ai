@@ -99,7 +99,11 @@ async def read_record_content(
         ),
     ),
     start_block: int | None = Query(
-        None, ge=0, description="Read in order from this block (the `nextStartBlock` of a previous read).",
+        None, ge=0,
+        description=(
+            "Read in order from this block (the `nextStartBlock` of a previous read). "
+            "In thread mode it applies to the record at `start_record`."
+        ),
     ),
     start_record: int = Query(
         0, ge=0, description="Thread mode: start at this record (the `nextStartRecord` of a previous read).",
@@ -120,8 +124,19 @@ async def read_record_content(
 
     if mode == "thread":
         # Told apart before reading, so "not a thread" is the caller's 422
-        # rather than a failure of ours.
-        if not await _resolve_thread_record_group(record_id, graph_provider):
+        # rather than a failure of ours -- and a graph read that failed is
+        # ours, a 500, not a claim that the record has no thread.
+        try:
+            thread_group = await _resolve_thread_record_group(
+                record_id, graph_provider, raise_on_error=True,
+            )
+        except Exception as exc:
+            logger.error("Error resolving the thread of %s: %s", record_id, exc, exc_info=True)
+            raise HTTPException(
+                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                detail="Failed to read the thread",
+            ) from exc
+        if not thread_group:
             raise HTTPException(
                 status_code=HttpStatusCode.UNPROCESSABLE_ENTITY.value,
                 detail=(
@@ -152,7 +167,10 @@ async def read_record_content(
                 detail="Failed to read the thread",
             )
         response = await read_thread(
-            result.get("records") or [], max_chars=max_chars, start_record=start_record,
+            result.get("records") or [],
+            max_chars=max_chars,
+            start_record=start_record,
+            start_block=start_block or 0,
         )
         # Replies the caller may see but whose content could not be loaded:
         # named, so a gap in the conversation is not read as silence.

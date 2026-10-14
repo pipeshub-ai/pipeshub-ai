@@ -5504,7 +5504,9 @@ components:
             blocks to show; the blocks are then not contiguous.
         startBlock:
           type: integer
-          description: Budgeted record reads only. Where this read started.
+          description: >-
+            Budgeted reads only. Where this read started (in a thread read,
+            within the record at `startRecord`).
         totalBlocks:
           type: integer
           description: Budgeted record reads only. Blocks in the record.
@@ -5532,8 +5534,9 @@ components:
           type: integer
           nullable: true
           description: >-
-            Budgeted record reads only. Pass as `startBlock` to read on; null
-            when complete.
+            Pass as `startBlock` to read on; null when nothing is left. In a
+            thread read it is the block of the record at `nextStartRecord`
+            (0 unless that record was cut short).
         threadRecordCount:
           type: integer
           description: Thread reads only. Records in the thread the caller may see.
@@ -5544,8 +5547,11 @@ components:
           type: integer
           nullable: true
           description: >-
-            Thread reads only. Pass as `startRecord` to read on; null when the
-            thread is finished.
+            Thread reads only. Pass as `startRecord`, with `nextStartBlock` as
+            `startBlock`, to read on. It stays on a record that was cut short
+            until that record has been read to its end. Null when nothing is
+            left to read; `complete` is then true, unless a single block was
+            larger than `maxChars` (raise it to read that block in full).
         records:
           type: array
           description: Thread reads only. The records shown, oldest first.
@@ -5557,6 +5563,8 @@ components:
               recordName:
                 type: string
                 nullable: true
+              startBlock:
+                type: integer
               complete:
                 type: boolean
               nextStartBlock:
@@ -36588,7 +36596,9 @@ paths:
           required: false
           description: >-
             Read in order from this block: the `nextStartBlock` of a previous
-            read, or 0 for the top. Takes precedence over `query`.
+            read, or 0 for the top. Takes precedence over `query`. In thread
+            mode it applies to the record at `startRecord`; later records are
+            read from their start.
           schema:
             type: integer
             minimum: 0
@@ -36618,7 +36628,8 @@ paths:
           required: false
           description: >-
             Thread mode: start at this record of the thread, the
-            `nextStartRecord` of a previous read.
+            `nextStartRecord` of a previous read. Pass the read's
+            `nextStartBlock` with it.
           schema:
             type: integer
             minimum: 0

@@ -156,6 +156,31 @@ class TestThreadMode:
         assert body["complete"] is True
         assert body["unreadableRecordIds"] == ["t-9"]
 
+    async def test_the_thread_cursor_reaches_the_reader(self) -> None:
+        """`start_block` applies to the record at `start_record`."""
+        request, _, _ = _request()
+        records = [
+            _record("t-0", "parent", created=1),
+            _record("t-1", *[f"reply {i}" for i in range(6)], created=2),
+        ]
+        with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value={"record_group_id": "g"})), \
+                patch.object(route, "_fetch_thread_records_impl",
+                             AsyncMock(return_value={"ok": True, "records": records})):
+            body = await _read(request, mode="thread", start_record=1, start_block=4)
+
+        assert body["startRecord"] == 1 and body["startBlock"] == 4
+        assert "reply 4" in body["content"] and "reply 3" not in body["content"]
+        assert "parent" not in body["content"]
+
+    async def test_a_thread_lookup_that_fails_is_a_500_not_a_claim_about_the_record(self) -> None:
+        request, _, _ = _request()
+        resolve = AsyncMock(side_effect=RuntimeError("graph down"))
+        with patch.object(route, "_resolve_thread_record_group", resolve), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, mode="thread")
+        assert err.value.status_code == 500
+        assert resolve.await_args.kwargs["raise_on_error"] is True
+
     async def test_a_record_outside_any_thread_is_a_422_that_says_why(self) -> None:
         request, _, _ = _request()
         with patch.object(route, "_resolve_thread_record_group", AsyncMock(return_value=None)), \

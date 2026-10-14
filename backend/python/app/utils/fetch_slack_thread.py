@@ -247,6 +247,8 @@ async def _fetch_record_by_id(
 async def _resolve_thread_record_group(
     record_id: str,
     graph_provider: "IGraphDBProvider",
+    *,
+    raise_on_error: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Resolve a Slack record id to its SLACK_THREAD RecordGroup id + connector_id.
 
@@ -261,11 +263,17 @@ async def _resolve_thread_record_group(
 
     Anything else (channel burst, non-parent single, non-Slack record) returns None
     — there is no thread to expand.
+
+    A graph read that fails also returns None, unless ``raise_on_error`` is
+    set: a caller that answers "not a thread" for None must not say so about a
+    thread it simply could not read.
     """
     try:
         record = await graph_provider.get_record_by_id(record_id)
     except Exception as e:
         logger.warning(f"Failed to fetch record {record_id} from graph: {e}")
+        if raise_on_error:
+            raise
         return None
 
     if not record:
@@ -310,6 +318,8 @@ async def _resolve_thread_record_group(
             logger.warning(
                 f"Failed to look up thread RG external_id={ext_thread_id}: {e}"
             )
+            if raise_on_error:
+                raise
             return None
         if thread_rg:
             rg_dict = _model_to_dict(thread_rg)
