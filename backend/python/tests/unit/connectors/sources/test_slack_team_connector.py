@@ -5952,7 +5952,10 @@ class TestSlackTeamConnectorCoverageBoost:
     @pytest.mark.asyncio
     async def test_an_edit_whose_links_cannot_be_read_is_not_applied(self) -> None:
         """Reading the held link records comes first: when it fails, the edit
-        writes nothing, rather than updating the text and keeping a stale link."""
+        writes nothing and raises, rather than updating the text and keeping a
+        stale link."""
+        from app.connectors.core.base.data_processor.record_links import LinkRecordsUnreadableError
+
         c = _connector_pipeline_ready()
         c.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("graph down"))
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
@@ -5966,8 +5969,38 @@ class TestSlackTeamConnectorCoverageBoost:
             patch.object(type(c), "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
             patch.object(type(c), "_build_burst_block_containers", return_value=MagicMock()),
         ):
-            assert await c._handle_edited_message({"ts": "1.0", "text": "x", "edited": {}}, "C1", "1.0") == 0
+            with pytest.raises(LinkRecordsUnreadableError):
+                await c._handle_edited_message({"ts": "1.0", "text": "x", "edited": {}}, "C1", "1.0")
         c.data_entities_processor.on_record_content_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_links_leave_the_channel_checkpoint_for_the_next_run(self) -> None:
+        """The scan reads by message time, not edit time: an edit dropped here
+        would never be seen again, so the channel's checkpoint must stay."""
+        from app.connectors.core.base.data_processor.record_links import LinkRecordsUnreadableError
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache = {"C1": "rg"}
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_check_time": 1000})
+        page = MagicMock(success=True, data={
+            "messages": [{"ts": "1.0", "user": "U1", "text": "x", "edited": {"ts": "1.1"}}],
+            "response_metadata": {"next_cursor": ""},
+        })
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=page)
+        with (
+            patch.object(SlackConnector, "_compute_sync_window_oldest", return_value="1.0"),
+            patch.object(SlackConnector, "_refresh_user_caches", new_callable=AsyncMock),
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(
+                SlackConnector, "_handle_edited_message", new_callable=AsyncMock,
+                side_effect=LinkRecordsUnreadableError("down"),
+            ),
+        ):
+            await c._sync_message_changes()
+
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_edit_writes_new_link_records_and_deletes_dropped_ones(self) -> None:

@@ -46,6 +46,11 @@ _CONFLUENCE_PATH = re.compile(r"^(.*?/spaces/[^/]+/pages/\d+)(?:/[^/]*)?/?$")
 _TRAILING = ".,;:!?)]}>'\""
 
 
+class LinkRecordsUnreadableError(RuntimeError):
+    """The link records stored under a record could not be read, so a change to
+    its links cannot be applied safely. Callers retry the whole change later."""
+
+
 @dataclass(frozen=True)
 class LinkTarget:
     """Where a linked address can be found.

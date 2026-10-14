@@ -242,7 +242,9 @@ class TestFailedLookupsLoseNothing:
         tx.get_records_by_weburls = AsyncMock(side_effect=RuntimeError("graph down"))
         message = _message(_by_address(JIRA))
 
-        await proc._process_record(message, [], tx)
+        # The failure still fails the save, so the connector retries it.
+        with pytest.raises(RuntimeError, match="graph down"):
+            await proc._process_record(message, [], tx)
 
         tx.delete_edges_by_relationship_types.assert_not_awaited()
         assert _edges(tx) == []
@@ -278,26 +280,21 @@ class TestBackfillReadsEveryHolder:
         assert tx.get_records_linking_to_weburls.await_count == 3
 
 
-class TestBackfillOnlyForANewAddress:
+class TestBackfillRunsOnEverySave:
     @pytest.mark.asyncio
-    async def test_a_resave_at_the_same_address_does_not_read_again(self) -> None:
+    async def test_a_failed_read_is_repaired_by_the_next_save_at_the_same_address(self) -> None:
+        """On Neo4j's auto-commit sessions the record row is stored before the
+        backfill read runs, so the next save sees the same address: it must read
+        again, not skip."""
         proc = _processor()
-        tx = _tx_store(holders=["msg-1"])
-        stored = _pull_request()
-        tx.get_record_by_external_id = AsyncMock(return_value=stored)
+        tx = _tx_store()
+        tx.get_records_linking_to_weburls = AsyncMock(side_effect=[RuntimeError("graph down"), ["msg-1"]])
+        with pytest.raises(RuntimeError):
+            await proc._process_record(_pull_request(), [], tx)
 
+        tx.get_record_by_external_id = AsyncMock(return_value=_pull_request())
         await proc._process_record(_pull_request(), [], tx)
 
-        tx.get_records_linking_to_weburls.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_a_changed_address_is_looked_up(self) -> None:
-        proc = _processor()
-        tx = _tx_store(holders=["msg-1"])
-        stored = _pull_request()
-        stored.weburl = "https://github.com/acme/old-name/pull/3081"
-        tx.get_record_by_external_id = AsyncMock(return_value=stored)
-
-        await proc._process_record(_pull_request(), [], tx)
-
-        tx.get_records_linking_to_weburls.assert_awaited()
+        assert [(e["_from"], e["_to"]) for e in _edges(tx)] == [
+            (f"{CollectionNames.RECORDS.value}/msg-1", f"{CollectionNames.RECORDS.value}/pr-1"),
+        ]

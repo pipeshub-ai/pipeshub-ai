@@ -640,10 +640,12 @@ class DataSourceEntitiesProcessor:
         try:
             at_addresses = await self._records_at_addresses(record, related_external_records, tx_store)
         except Exception as e:
+            # Nothing deleted yet, so the edges stay; the failure still fails the
+            # save, so the connector retries it.
             self.logger.warning(
                 f"Kept the link edges of record {record.id}: its linked addresses could not be looked up: {e}"
             )
-            return
+            raise
 
         # Always clean up all possible link relation types to handle removed links
         relation_types_to_delete = self.LINK_RELATION_TYPES
@@ -812,8 +814,7 @@ class DataSourceEntitiesProcessor:
             return
         after: str | None = None
         while True:
-            # A failed read raises and the save does not commit: the record is
-            # still new (or at its old address) next time, so the read runs again.
+            # A failed read raises and fails the save; the next save reads again.
             holders = await tx_store.get_records_linking_to_weburls(
                 list(addresses), record.org_id or self.org_id,
                 self.ADDRESS_LINK_HOLDER_CONNECTORS, limit=self.LINK_HOLDER_PAGE, after=after,
@@ -1957,15 +1958,11 @@ class DataSourceEntitiesProcessor:
         if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
-        # Records that pasted this record's address before it was indexed. Only
-        # when the address is new to the graph: a record re-saved at the same
-        # address was joined when it got it, and a full sync re-saves every record.
-        if (
-            existing_record is None
-            or existing_record.is_placeholder
-            or existing_record.weburl != record.weburl
-        ):
-            await self._join_records_linking_here(record, tx_store)
+        # Records that pasted this record's address before it was indexed. On
+        # every save: on Neo4j's default auto-commit sessions the record row is
+        # already stored when this read runs, so skipping a same-address re-save
+        # would leave a failed read unrepaired for good.
+        await self._join_records_linking_here(record, tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):

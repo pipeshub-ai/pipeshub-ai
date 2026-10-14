@@ -65,6 +65,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_processor.record_links import (
+    LinkRecordsUnreadableError,
     canonical_address,
     related_for_urls,
 )
@@ -3435,6 +3436,10 @@ class SlackIndividualConnector(BaseConnector):
                     if md.get("reply_count", 0) > 0 and md.get("thread_ts") == ts:
                         await self._handle_new_thread(md, channel_id, ts)
 
+                except LinkRecordsUnreadableError:
+                    # Fail the scan: the checkpoint stays, and this window is
+                    # read again, edit included, on the next run.
+                    raise
                 except Exception as exc:
                     self.logger.error(
                         f"Change check ts={ts} in {channel_id}: {exc}",
@@ -3537,8 +3542,6 @@ class SlackIndividualConnector(BaseConnector):
                 related_external_records=self._related_for_messages([md]),
             )
             held = await self._held_link_records(updated_rec)
-            if held is None:
-                return 0  # links could not be read; leave the record for the next pass
             await self.data_entities_processor.on_record_content_update(updated_rec)
             await self._sync_edited_links(updated_rec, [md], ctx, held)
             return 1
@@ -3598,8 +3601,6 @@ class SlackIndividualConnector(BaseConnector):
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
 
         held = await self._held_link_records(burst_rec)
-        if held is None:
-            return 0  # links could not be read; leave the burst for the next pass
         await self.data_entities_processor.on_record_content_update(burst_rec)
         await self._sync_edited_links(burst_rec, burst_msgs, ctx, held)
         return 1
@@ -3637,10 +3638,11 @@ class SlackIndividualConnector(BaseConnector):
                 return messages
         return None
 
-    async def _held_link_records(self, rec: MessageRecord) -> Optional[list[Record]]:
-        """The link records stored under ``rec``, or None when they could not be
-        read. Read before an edit writes anything, so a failed read leaves the
-        edit undone rather than half done."""
+    async def _held_link_records(self, rec: MessageRecord) -> list[Record]:
+        """The link records stored under ``rec``. Read before an edit writes
+        anything. A failed read raises LinkRecordsUnreadableError, which fails the
+        channel's change scan so its window is scanned again: the edit is not
+        applied half done, and not lost."""
         try:
             return list(await self.data_entities_processor.get_records_by_parent(
                 connector_id=self.connector_id,
@@ -3648,8 +3650,9 @@ class SlackIndividualConnector(BaseConnector):
                 record_type=RecordType.LINK.value,
             ) or [])
         except Exception as exc:
-            self.logger.warning(f"Link records of {rec.external_record_id} not read; edit skipped: {exc}")
-            return None
+            raise LinkRecordsUnreadableError(
+                f"Link records of {rec.external_record_id} could not be read"
+            ) from exc
 
     async def _sync_edited_links(
         self,
