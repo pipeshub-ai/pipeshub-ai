@@ -1857,6 +1857,7 @@ class LinearConnector(BaseConnector):
             return
 
         failed_team_keys: List[str] = []
+        synced_team_ids = {str(rg.external_group_id) for rg, _ in team_record_groups if rg.external_group_id}
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -1885,7 +1886,8 @@ class LinearConnector(BaseConnector):
                 async for batch_records in self._fetch_projects_for_team_batch(
                     team_id=team_id,
                     team_key=team_key,
-                    last_sync_time=last_sync_time
+                    last_sync_time=last_sync_time,
+                    synced_team_ids=synced_team_ids,
                 ):
                     if not batch_records:
                         continue
@@ -1937,7 +1939,8 @@ class LinearConnector(BaseConnector):
         team_id: str,
         team_key: str,
         last_sync_time: Optional[int] = None,
-        batch_size: int = 10
+        batch_size: int = 10,
+        synced_team_ids: set[str] | None = None,
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch projects for a team with pagination and incremental sync, yielding batches.
@@ -2007,6 +2010,17 @@ class LinearConnector(BaseConnector):
                     else:
                         full_project_data = full_project_response.data.get("project", {}) if full_project_response.data else project_data
 
+                    # accessibleTeams returns a project once per team it has. Write it only in its first
+                    # synced team's pass, or it and its documents and links change team on every pass.
+                    project_team_ids = sorted(
+                        str(node.get("id"))
+                        for node in ((full_project_data.get("teams") or {}).get("nodes") or [])
+                        if isinstance(node, dict) and node.get("id")
+                        and (not synced_team_ids or str(node.get("id")) in synced_team_ids)
+                    )
+                    if project_team_ids and project_team_ids[0] != str(team_id):
+                        continue
+
                     # Look up existing record to handle versioning
                     existing_record = await self.data_entities_processor.get_record_by_external_id(
                         connector_id=self.connector_id,
@@ -2026,8 +2040,8 @@ class LinearConnector(BaseConnector):
                         team_id=team_id,
                     )
 
-                    # Add project-related records to batch
-                    batch_records.extend(project_batch_records)
+                    # Written after the project below: a child written first finds no parent in its team.
+                    child_records = list(project_batch_records)
 
                     # Set indexing status based on filters
                     if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
@@ -2063,10 +2077,11 @@ class LinearConnector(BaseConnector):
                             indexing_filter_key=IndexingFilterKey.PROJECTS,
                             is_full_sync=(last_sync_time is None),
                         )
-                        batch_records.extend(new_file_records)
+                        child_records.extend(new_file_records)
 
                     # Records inherit permissions from RecordGroup (team), so pass empty list
                     batch_records.append((project_record, []))
+                    batch_records.extend(child_records)
 
                 except Exception as e:
                     project_id = project_data.get("id", "unknown")
