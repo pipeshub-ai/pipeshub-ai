@@ -36231,15 +36231,18 @@ paths:
         - Connector Registry
       summary: Get connector configuration schema
       description: |
-        Get the configuration schema for a specific connector type.<br><br>
-        <b>Overview:</b><br>
-        Returns JSON Schema definitions for authentication, sync settings, and
-        filter options. Use this to dynamically build configuration forms.<br><br>
-        <b>Schema Sections:</b><br>
+        The configuration form for one connector type.<br><br>
+        <b>Sections:</b><br>
         <ul>
-        <li><b>authSchema:</b> Fields for authentication (credentials, tokens)</li>
-        <li><b>syncSchema:</b> Sync settings (schedule, incremental options)</li>
-        <li><b>filterSchema:</b> Filter field definitions</li>
+        <li><b>auth:</b> <code>supportedAuthTypes</code>, and per auth type in <code>schemas</code> the
+        fields to send in <code>config.auth</code> (by <code>name</code>) plus, for OAuth, the
+        <code>redirectUri</code> path</li>
+        <li><b>sync:</b> <code>supportedStrategies</code>, <code>scheduledConfig</code> defaults, and the
+        connector's own settings in <code>customFields</code> (sent in <code>config.sync</code> by
+        <code>name</code>)</li>
+        <li><b>filters:</b> the <code>sync</code> and <code>indexing</code> filter fields; a field with
+        <code>optionSourceType: dynamic</code> gets its values from
+        <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code></li>
         </ul>
       operationId: getConnectorSchema
       security:
@@ -36249,11 +36252,11 @@ paths:
         - name: connectorType
           in: path
           required: true
-          description: Connector type identifier
+          description: 'Connector type: `type` from GET /connectors/registry'
           schema:
             type: string
             pattern: ^(?!\.{1,2}$)[^/\\?#%\x00-\x1f\x7f]+$
-          example: google-drive
+          example: Jira
       responses:
         '200':
           description: Connector schema retrieved
@@ -38388,7 +38391,7 @@ paths:
           schema:
             type: string
             pattern: ^(?!\.{1,2}$)[^/\\?#%\x00-\x1f\x7f]+$
-          example: folders
+          example: buckets
         - name: page
           in: query
           schema:
