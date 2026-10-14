@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections import deque
+from dataclasses import replace
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -1461,6 +1462,7 @@ class TestDownstreamBrake:
                     blocked_acquires=3,
                     completions=completions,
                     hold_seconds=tuple(recent) if report_holds else (),
+                    new_holds=completions if report_holds else 0,
                 )
                 for p in Pool
             }
@@ -1502,6 +1504,55 @@ class TestDownstreamBrake:
         """Every record taking three times as long moves the median too."""
         _limits, held = self._mixed_run(report_holds=True, downstream_factor=3.0)
         assert held
+
+    def test_a_slowdown_holds_growth_before_slow_start_runs_away(self) -> None:
+        """The hold has to engage while the pool is still near its size when
+        the slowdown began, not after slow start has doubled it to the
+        ceiling. A pool of 15 with a learned 17.6 s baseline; then every
+        record takes three times as long, four released per sample."""
+        ceilings = self._index_ceilings()
+        snap = self._healthy_snapshot()
+        limits = self._limits(16, 15)
+        state = ControllerState.initial()
+        learned = replace(
+            state.get(Pool.INDEX_LIGHT),
+            hold_ewma=self._CHAT_HOLD,
+            hold_baseline=self._CHAT_HOLD,
+        )
+        state = ControllerState(pools={**state.pools, Pool.INDEX_LIGHT: learned})
+        recent: deque[float] = deque([self._CHAT_HOLD] * 32, maxlen=32)
+
+        for i in range(10):
+            recent.extend([self._CHAT_HOLD * 3] * 4)
+            demand = {
+                p: PoolDemand(
+                    permit_seconds=15 * INTERVAL,
+                    blocked_acquires=3,
+                    completions=4,
+                    hold_seconds=tuple(recent),
+                    new_holds=4,
+                )
+                for p in Pool
+            }
+            limits, state = next_limits(
+                limits, snap, ceilings, state, demand, now=1000.0 + i * INTERVAL,
+            )
+            if policy_mod._latency_hold(state.get(Pool.INDEX_LIGHT)):
+                break
+        assert policy_mod._latency_hold(state.get(Pool.INDEX_LIGHT))
+        assert limits.get(Pool.INDEX_LIGHT) <= 18
+
+    def test_one_or_two_large_records_finishing_alone_read_through_the_window(self) -> None:
+        """A sample that released fewer than four holds is judged by the
+        recent window, so a lone 600 s record does not stand for the pool."""
+        state = PoolState(hold_ewma=self._CHAT_HOLD, hold_baseline=self._CHAT_HOLD)
+        window = (self._CHAT_HOLD,) * 30 + (self._PR_HOLD, self._PR_HOLD)
+        demand = PoolDemand(
+            permit_seconds=15 * INTERVAL, blocked_acquires=3, completions=2,
+            hold_seconds=window, new_holds=2,
+        )
+        state = policy_mod._track_hold_time(state, demand)
+        assert state.hold_ewma == pytest.approx(self._CHAT_HOLD)
 
     def test_no_feedback_argument_keeps_the_old_behaviour(self) -> None:
         limits, _ = next_limits(

@@ -125,6 +125,7 @@ class AdmissionGate:
         self._max_in_use = 0
         self._rate_limited_acquires = 0
         self._recent_holds: deque[float] = deque(maxlen=_HOLD_WINDOW)
+        self._new_holds = 0
         self._last_change = clock()
 
     # -- loop binding ---------------------------------------------------
@@ -240,6 +241,7 @@ class AdmissionGate:
         self._completions += 1
         if held_seconds is not None and held_seconds >= 0:
             self._recent_holds.append(held_seconds)
+            self._new_holds += 1
         self._wake_head()
 
     @contextlib.asynccontextmanager
@@ -269,7 +271,9 @@ class AdmissionGate:
             max_in_use=self._max_in_use,
             rate_limited_acquires=self._rate_limited_acquires,
             hold_seconds=tuple(self._recent_holds),
+            new_holds=min(self._new_holds, len(self._recent_holds)),
         )
+        self._new_holds = 0
         self._permit_seconds = 0.0
         self._blocked_acquires = 0
         self._total_wait_seconds = 0.0

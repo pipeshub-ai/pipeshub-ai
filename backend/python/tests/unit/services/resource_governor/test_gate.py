@@ -269,6 +269,22 @@ class TestRecentHoldTimes:
 
         assert asyncio.run(scenario()) == (17.6, 600.0)
 
+    def test_the_demand_says_which_holds_are_new(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[int, int]:
+            for held in (1.0, 2.0, 3.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+            first = gate.drain_demand().new_holds
+            await gate.acquire()
+            gate.release(held_seconds=4.0)
+            second = gate.drain_demand()
+            assert second.hold_seconds[-second.new_holds:] == (4.0,)
+            return first, second.new_holds
+
+        assert asyncio.run(scenario()) == (3, 1)
+
     def test_only_the_most_recent_holds_are_kept(self) -> None:
         gate = self._gate()
 

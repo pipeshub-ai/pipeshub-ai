@@ -214,6 +214,9 @@ class PoolDemand:
     ``permit_seconds / completions`` is a mean, and a few records far larger
     than the rest pull a mean up as far as a slow downstream does (see
     policy ``_track_hold_time``)."""
+    new_holds: int = 0
+    """How many of ``hold_seconds`` (the newest ones, at the end) were
+    released during this interval."""
 
     @staticmethod
     def empty() -> "PoolDemand":

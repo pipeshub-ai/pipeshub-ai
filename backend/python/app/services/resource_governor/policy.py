@@ -173,6 +173,9 @@ DOWNSTREAM_TIMEOUT_SHRINK_FACTOR = 0.75
 DOWNSTREAM_GROW_CONFIRM_SAMPLES = 2
 DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
 HOLD_EWMA_ALPHA = 0.3
+# Holds released in one sample needed before the latency hold reads that
+# sample's median on its own; below it, the median of the gate's recent window.
+HOLD_MIN_FRESH_SAMPLES = 4
 HOLD_BASELINE_DRIFT = 0.05
 
 MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
@@ -747,12 +750,21 @@ def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
     fifteen seconds read as a pool whose every record has slowed down, and
     the pool stops growing for as long as they run. A downstream slowdown
     moves the median with everything else; a few large records do not. The
-    mean remains the fallback when no hold times were reported."""
+    mean remains the fallback when no hold times were reported.
+
+    The median is of this sample's holds when it released at least
+    ``HOLD_MIN_FRESH_SAMPLES``, so a slowdown shows within a sample, before
+    slow start has doubled the pool a few times. A sample that released
+    fewer is read through the gate's window of recent holds instead, so one
+    or two large records finishing alone do not stand for the whole pool."""
     if demand.completions <= 0:
         return state
+    holds = demand.hold_seconds
+    if demand.new_holds >= HOLD_MIN_FRESH_SAMPLES:
+        holds = holds[-demand.new_holds:]
     mean_hold = (
-        statistics.median(demand.hold_seconds)
-        if demand.hold_seconds
+        statistics.median(holds)
+        if holds
         else demand.permit_seconds / demand.completions
     )
     ewma = (
