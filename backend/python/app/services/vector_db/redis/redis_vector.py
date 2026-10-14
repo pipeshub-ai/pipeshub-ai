@@ -63,6 +63,7 @@ from app.services.vector_db.models import (
     HybridSearchRequest,
     QuantizationType,
     ScrollResult,
+    ScrollWindowExceededError,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
@@ -905,6 +906,18 @@ class RedisVectorService(IVectorDBService):
             except (ValueError, TypeError):
                 int_offset = 0
 
+        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
+        # Refused here, not on the page before: that page is still returned,
+        # with a next_offset, so the caller sees every point the window holds
+        # and cannot mistake the ceiling for the end of the scroll.
+        if int_offset >= _MAX_SEARCH_RESULTS:
+            raise ScrollWindowExceededError(
+                f"Scroll of '{collection_name}' reached the RediSearch result "
+                f"ceiling at offset {int_offset} (MAXSEARCHRESULTS). Narrow the "
+                f"filter or raise MAXSEARCHRESULTS; continuing would silently "
+                f"drop the remainder."
+            )
+
         # With ON HASH and no RETURN/NOCONTENT clause, FT.SEARCH returns all
         # hash fields for each matching document.  dense_embedding is skipped
         # by decode_hash_doc since it's a binary blob with no payload value.
@@ -960,17 +973,6 @@ class RedisVectorService(IVectorDBService):
         # how many documents we managed to decode.
         next_page_start = int_offset + returned_docs
         more_available = next_page_start < total_count
-
-        # RediSearch refuses offsets past MAXSEARCHRESULTS (10k by default).
-        # Returning next_offset=None there would look identical to "that was the
-        # last page", so the caller would stop early believing it had everything.
-        if more_available and next_page_start >= _MAX_SEARCH_RESULTS:
-            raise RuntimeError(
-                f"Scroll of '{collection_name}' reached the RediSearch result "
-                f"ceiling at {next_page_start} of {total_count} matches. Narrow "
-                f"the filter or raise MAXSEARCHRESULTS; continuing would silently "
-                f"drop the remainder."
-            )
 
         next_offset: str | None = str(next_page_start) if more_available else None
         return ScrollResult(points=points, next_offset=next_offset)

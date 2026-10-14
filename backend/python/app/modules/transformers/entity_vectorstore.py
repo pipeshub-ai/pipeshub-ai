@@ -68,6 +68,7 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.models import (
     CollectionConfig,
     FilterExpression,
+    ScrollWindowExceededError,
     SearchResult,
     VectorPoint,
 )
@@ -843,11 +844,11 @@ class EntityVectorStore:
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
         model's points. Points that predate the field are paged past until
-        one records a model or the scroll ends. A page past the first that
-        cannot be read ends the walk with the model unknown, as when no point
-        records one: Redis refuses scroll offsets past its 10,000-result
-        window, and initialisation must not fail on a collection it accepted
-        before."""
+        one records a model or the scroll ends. Where the provider cannot page
+        further (``ScrollWindowExceededError``, Redis's result window) the
+        model is unknown, as when no point records one: initialisation must
+        not fail on a collection it accepted before. Any other failed read
+        raises."""
         collection = collection or self.collection_name
         page = await self._entity_page(collection, _MODEL_PROBE_PAGE)
         seen = 0
@@ -861,7 +862,7 @@ class EntityVectorStore:
                 return None
             try:
                 page = await self._entity_page(collection, _MODEL_PROBE_PAGE, page.next_offset)
-            except Exception as exc:
+            except ScrollWindowExceededError as exc:
                 self.logger.warning(
                     "Read %d entity points of '%s' without finding a recorded embedding model "
                     "and cannot read further (%s); treating the collection as written by the "

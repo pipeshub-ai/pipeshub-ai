@@ -291,6 +291,11 @@ class CollectionConfig:
     quantization_always_ram: bool = False
 
 
+class ScrollWindowExceededError(RuntimeError):
+    """A scroll offset lies past what the provider can page to (RediSearch's
+    MAXSEARCHRESULTS). Every page before it was returned; the rest cannot be."""
+
+
 @dataclass
 class ScrollResult:
     points: list[VectorPoint]

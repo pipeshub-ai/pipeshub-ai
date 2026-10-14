@@ -12,6 +12,7 @@ from app.services.vector_db.models import (
     FilterExpression,
     HealthStatus,
     HybridSearchRequest,
+    ScrollWindowExceededError,
     VectorPoint,
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
@@ -1106,16 +1107,23 @@ class TestRedisFailuresAreLoud:
 
 class TestRedisScrollCeilingAndFanOut:
     @pytest.mark.asyncio
-    async def test_scroll_raises_at_result_ceiling(self, service, mock_redis_client) -> None:
-        """Returning next_offset=None at the ceiling is indistinguishable from
-        'last page', so the caller would stop believing it had everything."""
+    async def test_scroll_returns_the_page_that_reaches_the_ceiling(self, service, mock_redis_client) -> None:
+        """Every point inside the window comes back, with a cursor; the call
+        for the offset past it is refused rather than answered with
+        next_offset=None, which the caller would read as the last page."""
         page = []
         for i in range(100):
             page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
         mock_redis_client.execute_command = AsyncMock(return_value=[50000, *page])
 
-        with pytest.raises(RuntimeError, match="ceiling"):
-            await service.scroll("records", FilterExpression(), limit=100, offset="9950")
+        result = await service.scroll("records", FilterExpression(), limit=100, offset="9950")
+        assert len(result.points) == 100
+        assert result.next_offset == "10050"
+
+        mock_redis_client.execute_command.reset_mock()
+        with pytest.raises(ScrollWindowExceededError, match="ceiling"):
+            await service.scroll("records", FilterExpression(), limit=100, offset=result.next_offset)
+        mock_redis_client.execute_command.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client) -> None:

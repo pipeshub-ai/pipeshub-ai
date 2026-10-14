@@ -26,7 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
     EntityVectorStore,
 )
-from app.services.vector_db.models import VectorPoint
+from app.services.vector_db.models import ScrollWindowExceededError, VectorPoint
 from tests.support.embedding_config import (
     another_process,
     config_service,
@@ -182,31 +182,62 @@ class TestWrites:
             await _store(db, config, owner=False).embedding_fingerprint()
         assert db.deletions == 0
 
-    async def test_a_scroll_that_cannot_go_deeper_leaves_the_model_unknown(self, monkeypatch, caplog) -> None:
-        """Redis refuses offsets past its result window: what was read decides."""
-        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
-        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
-        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(6)], merge_membership=False)
-        for point in list(db.points.values())[:5]:
-            del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
+    @staticmethod
+    def _window(db: FakeEntityVectorDB, monkeypatch: pytest.MonkeyPatch, ceiling: int) -> None:
+        """Pages past ``ceiling`` refused, as Redis refuses offsets past its window."""
         scroll = db.scroll
 
         async def window(*args: object, offset: str | None = None, **kwargs: object) -> object:
-            if int(offset or 0) >= 4:
-                raise RuntimeError("reached the RediSearch result ceiling")
+            if int(offset or 0) >= ceiling:
+                raise ScrollWindowExceededError("past MAXSEARCHRESULTS")
             return await scroll(*args, offset=offset, **kwargs)
 
         monkeypatch.setattr(db, "scroll", window)
+
+    async def _old_model_at(self, index: int, total: int) -> tuple[FakeEntityVectorDB, ConfigurationService]:
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch(
+            [_topic(f"t{i}") for i in range(total)], merge_membership=False,
+        )
+        for i, point in enumerate(db.points.values()):
+            if i != index:
+                del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
+        await switch_embedding_model(config, SMALL_CONFIG)
+        return db, config
+
+    async def test_the_last_page_inside_the_window_is_read(self, monkeypatch) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(5, total=8)
+        self._window(db, monkeypatch, ceiling=6)
+
+        with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-ada-002"):
+            await _store(db, config, owner=False).embedding_fingerprint()
+        assert db.deletions == 0
+
+    async def test_past_the_window_the_model_is_unknown(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(7, total=8)
+        self._window(db, monkeypatch, ceiling=6)
+
         with caplog.at_level(logging.WARNING, logger="entity-model-test"):
             assert await _store(db, config, owner=False)._model_of_a_stored_point() is None
         assert any("cannot read further" in r.getMessage() for r in caplog.records)
 
-    async def test_a_first_page_that_cannot_be_read_still_fails(self, monkeypatch) -> None:
-        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
-        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
-        monkeypatch.setattr(db, "scroll", AsyncMock(side_effect=RuntimeError("scroll timed out")))
-        with pytest.raises(RuntimeError, match="scroll timed out"):
-            await _store(db, config, owner=False)._model_of_a_stored_point()
+    async def test_any_other_failed_page_fails_the_probe(self, monkeypatch) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(7, total=8)
+        scroll = db.scroll
+
+        async def timeout_on_page_two(*args: object, offset: str | None = None, **kwargs: object) -> object:
+            if offset:
+                raise TimeoutError("scroll timed out")
+            return await scroll(*args, offset=offset, **kwargs)
+
+        monkeypatch.setattr(db, "scroll", timeout_on_page_two)
+        store = _store(db, config, owner=False)
+        with pytest.raises(TimeoutError):
+            await store.embedding_fingerprint()
+        assert not store._initialized
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""
