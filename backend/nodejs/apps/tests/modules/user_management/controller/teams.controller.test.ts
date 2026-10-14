@@ -297,6 +297,19 @@ describe('TeamsController', () => {
       expect(responseArg.teams).to.deep.equal([]);
     });
 
+    it('passes a 503 on instead of answering an empty team list', async () => {
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 503,
+        data: { detail: "We couldn't reach PipesHub's database just now. Please try again in a few seconds." },
+      });
+
+      await controller.getUserTeams(req, res, next);
+
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].statusCode).to.equal(503);
+    });
+
     it('should call next with error when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
 

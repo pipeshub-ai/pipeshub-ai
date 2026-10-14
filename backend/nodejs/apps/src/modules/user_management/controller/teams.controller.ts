@@ -436,6 +436,10 @@ export class TeamsController {
       if (!aiResponse) {
         throw new InternalServerError('No response from AI service');
       }
+      // An unreadable database must not look like a person with no teams.
+      if (aiResponse.statusCode === HTTP_STATUS.SERVICE_UNAVAILABLE) {
+        throw handleBackendError(aiResponse, 'get user teams');
+      }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(HTTP_STATUS.OK).json({
           teams: [],

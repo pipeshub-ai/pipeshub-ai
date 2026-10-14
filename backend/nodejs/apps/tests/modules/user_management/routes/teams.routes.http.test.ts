@@ -440,10 +440,18 @@ describe('Teams over HTTP', () => {
     }
 
     it('shows an empty first page when the team service cannot list teams', async () => {
-      backend.on('GET', '/api/v1/entity/user/teams', { status: 503, body: { detail: 'down' } })
+      backend.on('GET', '/api/v1/entity/user/teams', { status: 500, body: { detail: 'down' } })
       const res = await send('GET', '/user/teams', session(READER))
       expect(res.status).to.equal(200)
       expect(res.body).to.deep.equal({ teams: [], pagination: { page: 1, limit: 10, total: 0, pages: 0 } })
+    })
+
+    it('passes a 503 on, so an unreadable database does not look like no teams', async () => {
+      const detail = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      backend.on('GET', '/api/v1/entity/user/teams', { status: 503, body: { detail } })
+      const res = await send('GET', '/user/teams', session(READER))
+      expect(res.status).to.equal(503)
+      expect(JSON.stringify(res.body)).to.contain(detail)
     })
   })
 
