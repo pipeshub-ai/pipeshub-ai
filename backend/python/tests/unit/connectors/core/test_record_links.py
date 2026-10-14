@@ -4,10 +4,12 @@ import pytest
 
 from app.config.constants.arangodb import RecordRelations
 from app.connectors.core.base.data_processor.record_links import (
+    MAX_ISSUE_KEYS,
     MAX_LINKED_URLS,
     addresses_linking_to,
     canonical_address,
     link_target,
+    mentions_in,
     related_for_urls,
 )
 from app.models.entities import RecordType
@@ -143,3 +145,52 @@ class TestRelatedForUrls:
     def test_capped(self) -> None:
         urls = [f"https://github.com/acme/api/pull/{n}" for n in range(MAX_LINKED_URLS + 10)]
         assert len(related_for_urls(urls)) == MAX_LINKED_URLS
+
+
+class TestMentionsIn:
+    def test_pull_request_title_and_markdown_body(self) -> None:
+        related = mentions_in(
+            "PA-1844: fix the export",
+            "Fixes [PA-1718](https://acme.atlassian.net/browse/PA-1718).\n"
+            "Design: https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Plan\n"
+            "Also touches PA-1844 and OPS-7.",
+        )
+        assert [r.weburl for r in related if r.weburl] == [
+            "https://acme.atlassian.net/browse/PA-1718",
+            "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Plan",
+        ]
+        # The link text "PA-1718" is a key too; both resolve to the same issue.
+        assert [r.issue_key for r in related if r.issue_key] == ["PA-1844", "PA-1718", "OPS-7"]
+
+    def test_key_inside_an_address_is_not_read_again(self) -> None:
+        related = mentions_in("see https://acme.atlassian.net/browse/PA-1718")
+        assert [r.issue_key for r in related if r.issue_key] == []
+
+    def test_jira_description_document(self) -> None:
+        adf = {"type": "doc", "content": [
+            {"type": "paragraph", "content": [
+                {"type": "text", "text": "Blocked by OPS-12, see "},
+                {"type": "text", "text": "the PR", "marks": [
+                    {"type": "link", "attrs": {"href": "https://github.com/acme/api/pull/3081"}},
+                ]},
+                {"type": "inlineCard", "attrs": {"url": "https://github.com/acme/api/pull/3100"}},
+            ]},
+        ]}
+        related = mentions_in("Ship the export", adf)
+        assert [r.weburl for r in related if r.weburl] == [
+            "https://github.com/acme/api/pull/3081",
+            "https://github.com/acme/api/pull/3100",
+        ]
+        assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
+    @pytest.mark.parametrize("text", ["utf-8", "UTF8", "A-1", "x-PA-1", "PA-0", "PA-1x"])
+    def test_not_issue_keys(self, text: str) -> None:
+        assert [r.issue_key for r in mentions_in(text) if r.issue_key] == []
+
+    def test_nothing_in_empty_or_missing_bodies(self) -> None:
+        assert mentions_in(None, "", {}, []) == []
+
+    def test_keys_are_capped(self) -> None:
+        text = " ".join(f"PA-{n}" for n in range(1, MAX_ISSUE_KEYS + 20))
+        assert len(mentions_in(text)) == MAX_ISSUE_KEYS
+

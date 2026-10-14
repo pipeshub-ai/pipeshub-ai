@@ -26,6 +26,7 @@ from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.blocks import (
@@ -270,6 +271,9 @@ class PullRequestsSync:
                 review_email=reviewer_emails,
                 last_commit_sha=getattr(pr.head, "sha", None) if getattr(pr, "head", None) else None,
                 inherit_permissions=True,
+                # Jira keys and addresses in the title and description join the PR
+                # to those records, in whichever connector holds them.
+                related_external_records=mentions_in(pr.title or "", getattr(pr, "body", "") or ""),
             )
             if not self._prs_indexing_enabled():
                 pr_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value

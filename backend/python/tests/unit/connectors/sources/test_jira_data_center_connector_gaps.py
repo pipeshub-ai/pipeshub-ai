@@ -536,6 +536,17 @@ class TestUserAndGroupGaps:
 
 
 class TestIssueLinkAndEpicDiscoveryGaps:
+    def test_related_records_add_what_the_description_names(self) -> None:
+        conn = _make_connector()
+        issue = {"fields": {
+            "summary": "Ship it",
+            "description": "See https://github.com/acme/api/pull/3081 and OPS-12",
+            "issuelinks": [],
+        }}
+        related = conn._related_records(issue)
+        assert [r.weburl for r in related if r.weburl] == ["https://github.com/acme/api/pull/3081"]
+        assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
     def test_parse_issue_links_skips_missing_linked_id(self):
         conn = _make_connector()
         issue = {

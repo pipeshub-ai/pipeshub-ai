@@ -5405,6 +5405,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
             raise
 
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 20,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not org_id or not connector_names:
+            return []
+        # The (orgId, recordType) index narrows this to the org's tickets.
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.orgId == @org_id
+                AND record.recordType == "TICKET"
+                AND record.connectorName IN @connector_names
+                AND IS_STRING(record.webUrl)
+                AND {aql_live_record("record")}
+            LET at = FIND_LAST(record.webUrl, "/browse/")
+            FILTER at > 0
+            COLLECT site = SUBSTRING(record.webUrl, 0, at)
+            LIMIT @limit
+            RETURN site
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {"org_id": org_id, "connector_names": list(connector_names), "limit": limit},
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_issue_sites failed: %s", str(e))
+            return []
+
     async def get_records_linking_to_weburls(
         self,
         weburls: list[str],

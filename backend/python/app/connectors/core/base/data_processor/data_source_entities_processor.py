@@ -676,13 +676,15 @@ class DataSourceEntitiesProcessor:
                 )
                 continue
 
-            if related_ext_record.weburl:
-                # Named by address: the record at that address, in any connector,
-                # or nothing yet. Joined from its side when it is indexed later.
-                target_id = at_addresses.get(related_ext_record.weburl)
+            mention = self._mention_key(related_ext_record)
+            if mention:
+                # Named by address or issue key: the record that lives there, in
+                # any connector, or nothing yet. Never a placeholder.
+                target_id = at_addresses.get(mention)
                 if target_id:
                     edges_to_create.append(self._address_link_edge(
-                        record.id, target_id, related_ext_record.relation_type.value
+                        record.id, target_id, related_ext_record.relation_type.value,
+                        matched_by="key" if mention.startswith("key:") else "url",
                     ))
                 continue
 
@@ -776,15 +778,51 @@ class DataSourceEntitiesProcessor:
         cache[org_id] = (now, keeps)
         return keeps
 
+    # Connectors whose tickets live at ``<site>/browse/<KEY>``: an issue key found
+    # in text is looked up on their sites.
+    ISSUE_KEY_CONNECTORS = [
+        Connectors.JIRA.value,
+        Connectors.JIRA_PERSONAL.value,
+        Connectors.JIRA_CLOUD_PERSONAL.value,
+        Connectors.JIRA_DATA_CENTER.value,
+        Connectors.JIRA_DATA_CENTER_PERSONAL.value,
+    ]
+    # Sites change only when a Jira connector is added; reading them once per
+    # this many milliseconds per org keeps key lookups to one indexed read.
+    ISSUE_SITES_TTL_MS = 10 * 60 * 1000
+
     @staticmethod
-    def _address_link_edge(from_id: str, to_id: str, relation_type: str) -> dict:
+    def _mention_key(related: object) -> str | None:
+        """How a related record named by address or issue key is keyed while
+        resolving; None for one named by its id in the record's own connector."""
+        if not isinstance(related, RelatedExternalRecord):
+            return None
+        if related.weburl:
+            return related.weburl
+        if related.issue_key:
+            return f"key:{related.issue_key}"
+        return None
+
+    async def _issue_sites(self, org_id: str, tx_store: TransactionStore) -> list[str]:
+        cache: dict[str, tuple[int, list[str]]] = self.__dict__.setdefault("_issue_sites_cache", {})
+        now = get_epoch_timestamp_in_ms()
+        cached = cache.get(org_id)
+        if cached and now - cached[0] < self.ISSUE_SITES_TTL_MS:
+            return cached[1]
+        sites = list(await tx_store.get_issue_sites(org_id, self.ISSUE_KEY_CONNECTORS) or [])
+        cache[org_id] = (now, sites)
+        return sites
+
+    @staticmethod
+    def _address_link_edge(from_id: str, to_id: str, relation_type: str, matched_by: str = "url") -> dict:
         now = get_epoch_timestamp_in_ms()
         return {
             "_from": f"{CollectionNames.RECORDS.value}/{from_id}",
             "_to": f"{CollectionNames.RECORDS.value}/{to_id}",
             "relationshipType": relation_type,
-            # How the two were joined: one record pastes the other's address.
-            "matchedBy": "url",
+            # How the two were joined: one record pastes the other's address
+            # ("url") or names the issue by its key ("key").
+            "matchedBy": matched_by,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
             "constraintName": "",
@@ -796,35 +834,48 @@ class DataSourceEntitiesProcessor:
         related_external_records: list[RelatedExternalRecord],
         tx_store: TransactionStore,
     ) -> dict[str, str]:
-        """For each related record named by address, the id of the record stored
-        at that address in any connector of the org, when there is one.
+        """For each related record named by address or issue key (keyed as
+        ``_mention_key`` keys it), the id of the record stored there in any
+        connector of the org, when there is one.
 
-        One indexed read for all of the record's addresses. Of several records
-        at one address (a ticket and the attachments that share its address),
-        the one that is not a dependent node is taken.
+        One indexed read for all of the record's addresses, plus, when it names
+        issue keys, the org's Jira sites (cached). Of several records at one
+        address (a ticket and the attachments that share its address), the one
+        that is not a dependent node is taken.
         """
-        targets = {}
+        org_id = record.org_id or self.org_id
+        targets: dict[str, tuple[str, ...]] = {}
+        keys: dict[str, str] = {}
         for related in related_external_records:
-            weburl = getattr(related, "weburl", None)
-            if isinstance(related, RelatedExternalRecord) and weburl and weburl not in targets:
-                target = link_target(weburl)
+            mention = self._mention_key(related)
+            if not mention or mention in targets or mention in keys:
+                continue
+            if related.weburl:
+                target = link_target(related.weburl)
                 if target is not None:
-                    targets[weburl] = target
+                    targets[mention] = target.candidates
+            else:
+                keys[mention] = related.issue_key
+        if keys:
+            sites = await self._issue_sites(org_id, tx_store)
+            for mention, key in keys.items():
+                if sites:
+                    targets[mention] = tuple(f"{site}/browse/{key}" for site in sites)
         if not targets:
             return {}
-        candidates = list(dict.fromkeys(c for t in targets.values() for c in t.candidates))
-        rows = await tx_store.get_records_by_weburls(candidates, record.org_id or self.org_id)
+        candidates = list(dict.fromkeys(c for cands in targets.values() for c in cands))
+        rows = await tx_store.get_records_by_weburls(candidates, org_id)
         by_address: dict[str, list[dict]] = {}
         for row in rows or []:
             if row.get("id") and row["id"] != record.id:
                 by_address.setdefault(row.get("webUrl"), []).append(row)
         found: dict[str, str] = {}
-        for weburl, target in targets.items():
-            for candidate in target.candidates:
+        for mention, cands in targets.items():
+            for candidate in cands:
                 here = by_address.get(candidate)
                 if here:
                     best = min(here, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))
-                    found[weburl] = best["id"]
+                    found[mention] = best["id"]
                     break
         return found
 
@@ -2020,6 +2071,12 @@ class DataSourceEntitiesProcessor:
         if (
             isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord))
             and not (isinstance(record, MessageRecord) and record.related_external_records is None)
+        # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
+        # are the addresses and issue keys in its text (see record_links). An
+        # edit can remove one, so they are always cleaned up as well.
+        if isinstance(
+            record,
+            (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
         ):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 

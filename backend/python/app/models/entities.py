@@ -224,6 +224,10 @@ class RelatedExternalRecord(BaseModel):
     # names it. It is then looked up by that address in every connector of the
     # org, and no placeholder is made when it is not there yet.
     weburl: Optional[str] = Field(default=None, description="Web address of the related record, looked up across connectors; never creates a placeholder")
+    # Set when the related record is a Jira issue named only by its key, as a pull
+    # request title names one ("PA-12: fix export"). Looked up on every Jira site
+    # the org syncs; never creates a placeholder.
+    issue_key: Optional[str] = Field(default=None, description="Jira issue key of the related record, looked up on every synced Jira site; never creates a placeholder")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
         description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"

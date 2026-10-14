@@ -191,3 +191,70 @@ def related_for_urls(urls: list[str]) -> list[RelatedExternalRecord]:
         if len(related) >= MAX_LINKED_URLS:
             break
     return related
+
+
+# A Jira issue key: project key, a dash, the number. Not preceded by a letter,
+# digit, "/" or "-", so the key inside ".../browse/PA-1" (an address) or
+# "X-PA-1" is not read again on its own.
+_ISSUE_KEY = re.compile(r"(?<![A-Za-z0-9_/\-])([A-Z][A-Z0-9_]{1,9}-[1-9]\d{0,6})(?![A-Za-z0-9_\-])")
+# Addresses in plain or Markdown text; Markdown's closing ")" is trimmed by _clean.
+_URL_IN_TEXT = re.compile(r"https?://[^\s<>\"'\]\[|]+", re.IGNORECASE)
+# Most issue keys read from one record's text.
+MAX_ISSUE_KEYS = 25
+
+
+def _walk_text(body: object, texts: list[str], urls: list[str], depth: int = 0) -> None:
+    """Text and link targets of a string or an Atlassian document (ADF) tree."""
+    if depth > 60 or body is None:
+        return
+    if isinstance(body, str):
+        texts.append(body)
+        return
+    if isinstance(body, list):
+        for item in body:
+            _walk_text(item, texts, urls, depth + 1)
+        return
+    if not isinstance(body, dict):
+        return
+    text = body.get("text")
+    if isinstance(text, str):
+        texts.append(text)
+    attrs = body.get("attrs")
+    if isinstance(attrs, dict):
+        urls.extend(attrs[key] for key in ("href", "url") if isinstance(attrs.get(key), str))
+    for key in ("content", "marks"):
+        if key in body:
+            _walk_text(body[key], texts, urls, depth + 1)
+
+
+def mentions_in(*bodies: object) -> list[RelatedExternalRecord]:
+    """The records a record's own text names: every web address it contains,
+    and every Jira issue key.
+
+    ``bodies`` are plain or Markdown strings (a pull request's title and
+    description) or Atlassian document trees (a Jira description). An address
+    is resolved as a pasted link is (``related_for_urls``); a key is resolved
+    on every Jira site the org syncs, by the processor. Neither ever creates a
+    placeholder: a key that names no synced issue ("UTF-8") joins nothing.
+    """
+    texts: list[str] = []
+    urls: list[str] = []
+    for body in bodies:
+        _walk_text(body, texts, urls)
+    for text in texts:
+        urls.extend(_URL_IN_TEXT.findall(text))
+    related = related_for_urls(urls)
+    keys = list(dict.fromkeys(
+        key for text in texts for key in _ISSUE_KEY.findall(_URL_IN_TEXT.sub(" ", text))
+    ))
+    related.extend(
+        RelatedExternalRecord(
+            external_record_id=key,
+            record_type=RecordType.TICKET,
+            relation_type=RecordRelations.LINKED_TO,
+            issue_key=key,
+        )
+        for key in keys[:MAX_ISSUE_KEYS]
+    )
+    return related
+

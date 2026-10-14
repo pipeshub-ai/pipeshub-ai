@@ -2133,6 +2133,32 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 20,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """The Jira sites the org syncs, read from its live tickets' addresses.
+
+        A ticket stored at ``https://acme.atlassian.net/browse/PA-1`` gives
+        ``https://acme.atlassian.net``: what comes before ``/browse/``. Used to
+        turn an issue key found in text into the addresses the issue may be
+        stored under.
+
+        Args:
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only tickets of these connectors are read.
+            limit: Most sites returned.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct site prefixes. ``[]`` on a query failure, which is logged.
+        """
+        pass
+
+    @abstractmethod
     async def get_records_linking_to_weburls(
         self,
         weburls: list[str],

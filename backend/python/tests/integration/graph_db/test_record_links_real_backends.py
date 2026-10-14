@@ -110,6 +110,18 @@ def _records(org_id: str, other_org: str) -> dict[str, Record]:
         ),
         "link": link("link", PR + "/files"),
         "other_link": link("other_link", PR + "/files", Connectors.LINEAR),
+        "server_ticket": TicketRecord(
+            **_base(org_id, "server_ticket", Connectors.JIRA_DATA_CENTER, "https://jira.corp.example/jira/browse/OPS-9"),
+            record_type=RecordType.TICKET,
+        ),
+        "github_issue": TicketRecord(
+            **_base(org_id, "github_issue", Connectors.GITHUB, "https://github.com/acme/api/issues/9"),
+            record_type=RecordType.TICKET,
+        ),
+        "other_org_ticket": TicketRecord(
+            **_base(other_org, "other_org_ticket", Connectors.JIRA, "https://elsewhere.atlassian.net/browse/X-1"),
+            record_type=RecordType.TICKET,
+        ),
         "other_holder": MessageRecord(
             **_base(org_id, "other_holder", Connectors.LINEAR, None), record_type=RecordType.MESSAGE,
         ),
@@ -211,3 +223,13 @@ async def test_only_the_named_connectors_and_org_are_read(seeded: _Graph) -> Non
 async def test_empty_input_reads_nothing(seeded: _Graph) -> None:
     assert await seeded.graph.get_records_by_weburls([], seeded.org_id) == []
     assert await seeded.graph.get_records_linking_to_weburls([PR], seeded.org_id, []) == []
+
+
+async def test_issue_sites_are_read_from_the_orgs_jira_tickets(seeded: _Graph) -> None:
+    jira = [Connectors.JIRA.value, Connectors.JIRA_DATA_CENTER.value]
+    sites = await seeded.graph.get_issue_sites(seeded.org_id, jira)
+
+    # The live ticket's site and a server under a path; not the deleted ticket's
+    # duplicate, not GitHub's issues, not another org's site.
+    assert sorted(sites) == ["https://acme.atlassian.net", "https://jira.corp.example/jira"]
+    assert await seeded.graph.get_issue_sites(seeded.org_id, []) == []

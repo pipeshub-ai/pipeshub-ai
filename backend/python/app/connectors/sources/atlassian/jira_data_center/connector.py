@@ -33,6 +33,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector, 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -3497,6 +3498,12 @@ class JiraDataCenterConnector(BaseConnector):
     # Issue Processing
     # ============================================================================
 
+    def _related_records(self, issue: dict[str, Any]) -> list[RelatedExternalRecord]:
+        """Issue links, then the addresses and issue keys in the summary and
+        description, which join the issue to those records in any connector."""
+        fields = (issue or {}).get("fields") or {}
+        return self._parse_issue_links(issue) + mentions_in(fields.get("summary"), fields.get("description"))
+
     def _parse_issue_links(self, issue: dict[str, Any]) -> list[RelatedExternalRecord]:
         """
         Parse issue links from Jira API response and convert to RelatedExternalRecord objects.
@@ -4376,7 +4383,7 @@ class JiraDataCenterConnector(BaseConnector):
                     issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Parse issue links and set related_external_records for creating LINKED_TO edges
-                related_external_records = self._parse_issue_links(issue)
+                related_external_records = self._related_records(issue)
                 if related_external_records:
                     issue_record.related_external_records = related_external_records
                     self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")

@@ -266,6 +266,9 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_records_by_weburls(self, weburls, org_id) -> list:
         return []
 
+    async def get_issue_sites(self, org_id, connector_names) -> list:
+        return []
+
     async def get_records_linking_to_weburls(self, weburls, org_id, connector_names, limit=100, after=None) -> list:
         return []
 

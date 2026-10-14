@@ -512,6 +512,11 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        """The Jira sites the org syncs; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
     async def get_records_linking_to_weburls(
         self,
         weburls: list[str],

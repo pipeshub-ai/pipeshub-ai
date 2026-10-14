@@ -488,6 +488,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_record_by_weburl": "test_weburl_lookup",
     "get_records_by_weburls": "test_weburl_lookup",
     "get_records_linking_to_weburls": "test_records_linking_to_an_address",
+    "get_issue_sites": "test_issue_sites",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
@@ -646,6 +647,23 @@ async def test_records_linking_to_an_address(world: _World) -> None:
     )
 
     assert holders == [world.ids["live"]]
+
+
+async def test_issue_sites(world: _World) -> None:
+    """A live ticket's site is read; a trashed ticket's is not."""
+    g = world.graph
+    for name, trashed, site in (("live", False, "https://live.example"), ("trashed", True, "https://gone.example")):
+        ticket_id = f"ticket-{name}-{uuid.uuid4().hex[:8]}"
+        world.ids[f"ticket_{name}"] = ticket_id
+        node = _file(world, "live", trashed=False).to_arango_base_record()
+        node.update(
+            id=ticket_id, _key=ticket_id, recordType=RecordType.TICKET.value,
+            connectorName=Connectors.JIRA.value, webUrl=f"{site}/browse/PA-1",
+            externalRecordId=f"ext-{ticket_id}", isDeleted=trashed,
+        )
+        await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
+
+    assert await g.get_issue_sites(world.org_id, [Connectors.JIRA.value]) == ["https://live.example"]
 
 
 async def test_entity_candidate_records(world: _World) -> None:

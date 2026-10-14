@@ -289,6 +289,9 @@ class MockTransactionStore:
             and doc.get("recordType") != RecordType.LINK.value and doc.get("isDeleted") is not True
         ]
 
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        return []
+
     async def get_records_linking_to_weburls(
         self, weburls: list[str], org_id: str, connector_names: list[str],
         limit: int = 100, after: str | None = None,

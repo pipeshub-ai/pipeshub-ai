@@ -727,6 +727,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
         return await self.graph_provider.get_records_by_weburls(weburls, org_id, transaction=self.txn)
 
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        return await self.graph_provider.get_issue_sites(org_id, connector_names, transaction=self.txn)
+
     async def get_records_linking_to_weburls(
         self,
         weburls: list[str],

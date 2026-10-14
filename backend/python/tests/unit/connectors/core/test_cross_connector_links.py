@@ -64,6 +64,7 @@ def _tx_store(at_address: list[dict] | None = None, holders: list[str] | None = 
     tx.get_records_by_weburls = AsyncMock(return_value=at_address or [])
     tx.get_records_linking_to_weburls = AsyncMock(return_value=holders or [])
     tx.get_org_apps = AsyncMock(return_value=[{"type": "Slack Workspace"}])
+    tx.get_issue_sites = AsyncMock(return_value=[])
     return tx
 
 
@@ -419,3 +420,74 @@ class TestAnEmptyAppListIsNotTrusted:
 
         assert tx.get_records_linking_to_weburls.await_count == 2
         assert tx.get_org_apps.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_changed_address_is_looked_up(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"])
+        stored = _pull_request()
+        stored.weburl = "https://github.com/acme/old-name/pull/3081"
+        tx.get_record_by_external_id = AsyncMock(return_value=stored)
+
+        await proc._process_record(_pull_request(), [], tx)
+
+        tx.get_records_linking_to_weburls.assert_awaited()
+def _by_key(*keys: str) -> list[RelatedExternalRecord]:
+    return [
+        RelatedExternalRecord(external_record_id=key, record_type=RecordType.TICKET, issue_key=key)
+        for key in keys
+    ]
+
+
+class TestIssueKeysJoinTheIssue:
+    @pytest.mark.asyncio
+    async def test_pull_request_naming_a_key_joins_the_jira_issue(self) -> None:
+        proc = _processor()
+        tx = _tx_store(at_address=[{"id": "jira-ticket", "webUrl": JIRA, "isDependentNode": False}])
+        tx.get_issue_sites = AsyncMock(return_value=["https://acme.atlassian.net", "https://other.example"])
+        pr = _pull_request()
+        pr.related_external_records = _by_key("PA-1718", "UTF-8")
+
+        await proc._process_record(pr, [], tx)
+
+        looked_up = tx.get_records_by_weburls.await_args.args[0]
+        assert JIRA in looked_up and "https://other.example/browse/PA-1718" in looked_up
+        edges = [e for e in _edges(tx) if e["_from"] == f"{CollectionNames.RECORDS.value}/pr-1"]
+        assert [(e["_to"], e["matchedBy"]) for e in edges] == [
+            (f"{CollectionNames.RECORDS.value}/jira-ticket", "key"),
+        ]
+        assert _saved_ids(tx) <= {"pr-1"}
+
+    @pytest.mark.asyncio
+    async def test_sites_are_read_once_per_org_while_fresh(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        tx.get_issue_sites = AsyncMock(return_value=["https://acme.atlassian.net"])
+        for n in range(3):
+            pr = _pull_request(f"pr-{n}")
+            pr.related_external_records = _by_key("PA-1")
+            await proc._handle_related_external_records(pr, pr.related_external_records, tx)
+
+        assert tx.get_issue_sites.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_jira_site_means_no_lookup(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        pr = _pull_request()
+        pr.related_external_records = _by_key("PA-1")
+
+        await proc._handle_related_external_records(pr, pr.related_external_records, tx)
+
+        tx.get_records_by_weburls.assert_not_awaited()
+        assert _edges(tx) == []
+
+    @pytest.mark.asyncio
+    async def test_pull_request_without_mentions_drops_old_ones(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+
+        await proc._process_record(_pull_request(), [], tx)
+
+        kwargs = tx.delete_edges_by_relationship_types.await_args.kwargs
+        assert kwargs["from_id"] == "pr-1"

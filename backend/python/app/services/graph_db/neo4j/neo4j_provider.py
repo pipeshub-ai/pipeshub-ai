@@ -16765,6 +16765,39 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ get_records_by_weburls failed: {str(e)}")
             raise
 
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 20,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not org_id or not connector_names:
+            return []
+        query = f"""
+        MATCH (r:Record)
+        WHERE r.orgId = $org_id AND r.recordType = 'TICKET'
+          AND r.connectorName IN $connector_names
+          AND r.webUrl CONTAINS '/browse/'
+          AND {cypher_live_record("r")}
+        WITH DISTINCT substring(
+            r.webUrl, 0, size(r.webUrl) - size(last(split(r.webUrl, '/browse/'))) - size('/browse/')
+        ) AS site
+        WHERE size(site) > 0
+        RETURN site
+        LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={"org_id": org_id, "connector_names": list(connector_names), "limit": limit},
+                txn_id=transaction,
+            )
+            return [row["site"] for row in rows or [] if row.get("site")]
+        except Exception as e:
+            self.logger.error(f"❌ get_issue_sites failed: {str(e)}")
+            return []
+
     async def get_records_linking_to_weburls(
         self,
         weburls: list[str],
