@@ -876,31 +876,41 @@ class DataSourceEntitiesProcessor:
             return {}
         candidates = list(dict.fromkeys(c for cands in targets.values() for c in cands))
         rows = await tx_store.get_records_by_weburls(candidates, org_id)
+        # This record stays in: a ticket whose text names its own key must count
+        # its own site as having that key. It is never joined to itself below.
         by_address: dict[str, list[dict]] = {}
         for row in rows or []:
-            if row.get("id") and row["id"] != record.id:
+            if row.get("id"):
                 by_address.setdefault(row.get("webUrl"), []).append(row)
         def best(rows: list[dict]) -> str:
             return min(rows, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))["id"]
 
         found: dict[str, str] = {}
         for mention, cands in targets.items():
-            matched = [(candidate, by_address[candidate]) for candidate in cands if by_address.get(candidate)]
-            if not matched:
-                continue
             if mention in keys:
-                # One key can name an issue on two Jira sites. Join the record's
-                # own site when it has the key, else only a key exactly one site
-                # has: guessing would join the wrong issue, and the next save
-                # could move the edge.
-                own = [rows for candidate, rows in matched if own_site and candidate.startswith(own_site + "/browse/")]
-                if own:
-                    found[mention] = best(own[0])
-                elif len(matched) == 1:
-                    found[mention] = best(matched[0][1])
+                # One key can name an issue on two Jira sites. A site has the key
+                # when a ticket (not an attachment sharing its address) is there,
+                # this record included. Join the record's own site when it has
+                # the key, else only a key exactly one site has: guessing would
+                # join the wrong issue, and the next save could move the edge.
+                sites_with_key = [
+                    (candidate, [r for r in by_address.get(candidate, []) if not r.get("isDependentNode")])
+                    for candidate in cands
+                ]
+                sites_with_key = [(candidate, rows) for candidate, rows in sites_with_key if rows]
+                own = [rows for candidate, rows in sites_with_key if own_site and candidate.startswith(own_site + "/browse/")]
+                chosen = own[0] if own else (sites_with_key[0][1] if len(sites_with_key) == 1 else None)
+                if chosen:
+                    target_id = best(chosen)
+                    if target_id != record.id:
+                        found[mention] = target_id
                 continue
             # An address: its candidates are forms of one record, most likely first.
-            found[mention] = best(matched[0][1])
+            for candidate in cands:
+                here = [r for r in by_address.get(candidate, []) if r["id"] != record.id]
+                if here:
+                    found[mention] = best(here)
+                    break
         return found
 
     async def _join_records_linking_here(self, record: Record, tx_store: TransactionStore) -> None:

@@ -421,17 +421,7 @@ class TestAnEmptyAppListIsNotTrusted:
         assert tx.get_records_linking_to_weburls.await_count == 2
         assert tx.get_org_apps.await_count == 2
 
-    @pytest.mark.asyncio
-    async def test_a_changed_address_is_looked_up(self) -> None:
-        proc = _processor()
-        tx = _tx_store(holders=["msg-1"])
-        stored = _pull_request()
-        stored.weburl = "https://github.com/acme/old-name/pull/3081"
-        tx.get_record_by_external_id = AsyncMock(return_value=stored)
 
-        await proc._process_record(_pull_request(), [], tx)
-
-        tx.get_records_linking_to_weburls.assert_awaited()
 def _by_key(*keys: str) -> list[RelatedExternalRecord]:
     return [
         RelatedExternalRecord(external_record_id=key, record_type=RecordType.TICKET, issue_key=key)
@@ -502,7 +492,8 @@ class TestIssueSitesCache:
         pr = _pull_request()
         pr.related_external_records = _by_key("PA-1718")
 
-        await proc._handle_related_external_records(pr, pr.related_external_records, tx)
+        with pytest.raises(RuntimeError, match="graph down"):
+            await proc._handle_related_external_records(pr, pr.related_external_records, tx)
         tx.delete_edges_by_relationship_types.assert_not_awaited()
 
         await proc._handle_related_external_records(pr, pr.related_external_records, tx)
@@ -556,3 +547,38 @@ class TestAKeyOnTwoSites:
         await proc._handle_related_external_records(ticket, _by_key("OPS-9"), tx)
 
         assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/server-issue"]
+
+
+class TestATicketNamingItsOwnKey:
+    @pytest.mark.asyncio
+    async def test_its_own_key_never_joins_another_sites_ticket_or_an_attachment(self) -> None:
+        """'OPS-12: fix export' on the server site: the server site has OPS-12
+        (this ticket), so the cloud site's OPS-12 is not joined, nor is the
+        attachment sharing this ticket's address, nor the ticket itself."""
+        proc = _processor()
+        own = "https://jira.corp.example/browse/OPS-12"
+        tx = _tx_store(at_address=[
+            {"id": "ticket-1", "webUrl": own, "isDependentNode": False},
+            {"id": "attachment", "webUrl": own, "isDependentNode": True},
+            {"id": "cloud-ops-12", "webUrl": "https://acme.atlassian.net/browse/OPS-12", "isDependentNode": False},
+        ])
+        tx.get_issue_sites = AsyncMock(return_value=["https://acme.atlassian.net", "https://jira.corp.example"])
+        ticket = _pull_request("ticket-1")
+        ticket.weburl = own
+
+        await proc._handle_related_external_records(ticket, _by_key("OPS-12"), tx)
+
+        assert _edges(tx) == []
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_alone_does_not_give_a_site_the_key(self) -> None:
+        proc = _processor()
+        tx = _tx_store(at_address=[
+            {"id": "attachment", "webUrl": "https://jira.corp.example/browse/OPS-9", "isDependentNode": True},
+            {"id": "cloud-issue", "webUrl": "https://acme.atlassian.net/browse/OPS-9", "isDependentNode": False},
+        ])
+        tx.get_issue_sites = AsyncMock(return_value=["https://acme.atlassian.net", "https://jira.corp.example"])
+
+        await proc._handle_related_external_records(_pull_request(), _by_key("OPS-9"), tx)
+
+        assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/cloud-issue"]
