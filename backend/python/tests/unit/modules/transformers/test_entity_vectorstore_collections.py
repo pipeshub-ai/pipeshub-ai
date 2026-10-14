@@ -22,7 +22,7 @@ from tests.support.embedding_config import (
     switch_embedding_model,
 )
 from tests.support.entity_collections_db import FakeEntityCollections
-from tests.support.entity_vector_db import FakeEmbeddingModel, embedding_models
+from tests.support.entity_vector_db import FakeEmbeddingModel, embedding_models, recreate_lock_redis
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -41,7 +41,8 @@ ORG_A, ORG_B = "org_a_entities", "org_b_entities"
 @pytest.fixture(autouse=True)
 def _models() -> Iterator[None]:
     models = {"text-embedding-3-small": SMALL, "text-embedding-ada-002": ADA}
-    with embedding_models(models), patch.object(module, "get_default_embedding_model", return_value=BGE):
+    with embedding_models(models), patch.object(module, "get_default_embedding_model", return_value=BGE), \
+            recreate_lock_redis():
         yield
 
 

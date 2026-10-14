@@ -338,9 +338,15 @@ are re-embedded in place.
   or nothing) is dropped and recreated by any indexing replica, on its next
   entity call. This is a fresh install: the rebuild's first tick creates the
   collection with the default model before an admin configures one. Nothing
-  is lost, so writes do not wait for the leader. Just before the drop the
-  store reads the collection again and keeps it if another replica has
-  already recreated it for the new model. "Holds" is what a filtered scroll
+  is lost, so writes do not wait for the leader.
+- Every drop and re-create, the leader's included, runs under a Redis lock
+  per collection (`entity_collection:recreate:<collection>`, 2 minutes), because the vector stores
+  delete a collection by name only: a replica acting on a stale read would
+  otherwise drop a collection another had just recreated and written to.
+  Under the lock the store reads the collection again and keeps it if
+  another replica has already recreated it for the new model. A store that
+  cannot take the lock, or cannot reach Redis, drops nothing; its call fails
+  and the next one after the 30-second retry window tries again. "Holds" is what a filtered scroll
   sees: on OpenSearch, points written since the last refresh do not count,
   and those have the old dimension anyway.
 - Two replicas creating the collection at the same moment is not an error:

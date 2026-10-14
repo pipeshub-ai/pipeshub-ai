@@ -52,9 +52,10 @@ from app.modules.transformers.entity_vectorstore import (
 )
 from app.services.vector_db.models import HealthStatus
 from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.entity_vector_db import recreate_lock_redis
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterator
 
     from app.services.vector_db.interface.vector_db import IVectorDBService
 
@@ -536,6 +537,11 @@ class TestFinalSweep:
 
 class TestRebuildSupport:
     """What the entity index rebuild relies on, per backend."""
+
+    @pytest.fixture(autouse=True)
+    def _recreate_lock(self) -> Iterator[None]:
+        with recreate_lock_redis():
+            yield
 
     async def test_points_of_an_org_page_to_the_end(self, store: EntityVectorStore) -> None:
         org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"

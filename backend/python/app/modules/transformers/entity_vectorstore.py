@@ -71,6 +71,10 @@ from app.services.vector_db.models import (
     SearchResult,
     VectorPoint,
 )
+from app.services.vector_db.rebuild_state import (
+    RebuildJobLock,
+    redis_from_config_service,
+)
 from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
@@ -177,6 +181,18 @@ EMBEDDING_MODEL_FIELD = "embeddingModel"
 # are derived from "org:type:id", which this name cannot be.
 _STAMP_POINT_ID = str(uuid.uuid5(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "entity-index-stamp"))
 _STAMP_FIELD = "indexStamp"
+
+# Every drop and re-create of a collection, by any replica, runs under a
+# Redis lock: the vector stores delete by name only, so a replica acting on a
+# stale read would otherwise drop a collection another had just recreated and
+# written to. Long enough for one drop and create; a holder that dies frees it.
+_RECREATE_LOCK_SECONDS = 120
+
+
+def _recreate_lock_key(collection: str) -> str:
+    """One lock per collection, so recreating one org's never blocks another's."""
+    return f"entity_collection:recreate:{collection}"
+
 
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
@@ -637,18 +653,16 @@ class EntityVectorStore:
             # field its index does not have.
             await self._ensure_payload_indexes(name)
         mismatch = await self._collection_mismatch(name, info)
-        if mismatch and await self._drop_mismatched(name, mismatch, leader=recreate):
-            await self._create_collection(name)
+        if mismatch:
+            await self._recreate_mismatched(name, mismatch, leader=recreate)
         elif not info.exists:
             if not create:
                 return False
             await self._create_collection(name)
         return True
 
-    async def _drop_mismatched(self, name: str, mismatch: str, *, leader: bool) -> bool:
-        """Drop a collection that cannot serve the configured model. Returns
-        whether it is gone; False when another replica already recreated it
-        for this model.
+    async def _recreate_mismatched(self, name: str, mismatch: str, *, leader: bool) -> None:
+        """Drop and re-create a collection that cannot serve the configured model.
 
         One that holds entities is dropped only on the rebuild leader's
         request (``leader``), which then refills it from the graph. One that
@@ -673,11 +687,31 @@ class EntityVectorStore:
                 "The indexing service recreates it.",
                 details={"collection": name},
             )
-        # Read again just before the drop: another replica may have recreated
-        # it for this model meanwhile, and may already be writing to it.
+        redis = await redis_from_config_service(self.config_service)
+        try:
+            lock = RebuildJobLock(redis, key=_recreate_lock_key(name), ttl_seconds=_RECREATE_LOCK_SECONDS)
+            if not await lock.try_acquire():
+                raise VectorStoreError(
+                    "Entity collection is being recreated by another replica; retrying later",
+                    details={"collection": name},
+                )
+            try:
+                await self._drop_and_create_under_lock(name, mismatch, holds_entities=holds_entities)
+            finally:
+                try:
+                    await lock.release()
+                except Exception as exc:
+                    self.logger.warning("Entity collection recreate lock not released (it expires): %s", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
+
+    async def _drop_and_create_under_lock(self, name: str, mismatch: str, *, holds_entities: bool) -> None:
+        # Read again under the lock: another replica may have recreated it for
+        # this model since the read that found the mismatch.
         current = await self.vector_db_service.get_collection_info(name)
         if current.exists and not await self._collection_mismatch(name, current):
-            return False
+            return
         # The collection is a projection of the graph; the rebuild's marker
         # includes the model and the collection's stamp, so every pass re-runs
         # and refills it.
@@ -687,7 +721,7 @@ class EntityVectorStore:
         )
         if current.exists:
             await self.vector_db_service.delete_collection(name)
-        return True
+        await self._create_collection(name)
 
     async def _create_collection(self, name: str) -> None:
         try:

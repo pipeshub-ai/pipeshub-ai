@@ -15,6 +15,7 @@ import threading
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 
+import fakeredis.aioredis
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
@@ -35,6 +36,7 @@ from tests.support.entity_vector_db import (
     FakeEmbeddingModel,
     FakeEntityVectorDB,
     embedding_models,
+    recreate_lock_redis,
 )
 
 if TYPE_CHECKING:
@@ -84,6 +86,12 @@ MODELS: dict[str, FakeEmbeddingModel] = {
 @pytest.fixture(autouse=True)
 def _models() -> Iterator[None]:
     with embedding_models(MODELS), patch.object(module, "get_default_embedding_model", return_value=BGE):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
         yield
 
 
@@ -351,6 +359,64 @@ class TestFreshInstall:
         assert (db.deletions, db.dimension) == (0, BGE.dimension)
         assert _models_of(db) == {"t1": (BGE_FP, BGE.value)}
         assert any("rebuild leader" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+class TestOneRecreateAtATime:
+    """The vector stores delete a collection by name only, so drops and
+    re-creates by different replicas are serialised by a Redis lock."""
+
+    async def test_a_replica_racing_a_recreate_does_not_lose_its_write(self, monkeypatch) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        first, second = _store(db, config), _store(db, another_process(config))
+        delete = db.delete_collection
+        raced: list[object] = []
+
+        async def delete_while_another_writes(collection_name: str) -> None:
+            # The second replica found the same mismatch and writes now, between
+            # the first one's last read and its drop.
+            try:
+                raced.append(await second.upsert_entities_batch([_topic("t2")], merge_membership=False))
+            except VectorStoreError as exc:
+                raced.append(exc)
+            await delete(collection_name)
+
+        monkeypatch.setattr(db, "delete_collection", delete_while_another_writes)
+        assert (await first.upsert_entities_batch([_topic("t1")], merge_membership=False)).written == 1
+
+        assert isinstance(raced[0], VectorStoreError) and "being recreated" in str(raced[0])
+        monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
+        assert (await second.upsert_entities_batch([_topic("t2")], merge_membership=False)).written == 1
+        assert set(_models_of(db)) == {"t1", "t2"}
+        assert db.deletions == 1
+
+    async def test_while_another_replica_holds_the_lock_nothing_is_dropped(self) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with recreate_lock_redis() as server:
+            await fakeredis.aioredis.FakeRedis(server=server).set(module._recreate_lock_key("entities"), "another-replica")
+            with pytest.raises(VectorStoreError, match="being recreated"):
+                await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+
+    async def test_the_lock_is_released_after_a_recreate_and_after_a_failed_one(self, monkeypatch) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with recreate_lock_redis() as server:
+            redis = fakeredis.aioredis.FakeRedis(server=server)
+            monkeypatch.setattr(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed")))
+            with pytest.raises(RuntimeError, match="create failed"):
+                await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+            assert await redis.get(module._recreate_lock_key("entities")) is None
+
+            monkeypatch.undo()
+            assert (await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)).written == 1
+            assert await redis.get(module._recreate_lock_key("entities")) is None
+        assert db.dimension == SMALL.dimension
+
+    async def test_without_redis_nothing_is_dropped(self) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with patch.object(module, "redis_from_config_service", AsyncMock(side_effect=ConnectionError("redis down"))), \
+                pytest.raises(ConnectionError):
+            await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
 
 
 class TestRecreateOnSwitch:

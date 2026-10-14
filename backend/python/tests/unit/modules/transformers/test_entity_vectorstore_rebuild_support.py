@@ -5,7 +5,7 @@ the model's dimension changed."""
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,8 +24,18 @@ from app.services.vector_db.models import (
 )
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.embedding_config import skip_bootstrap
+from tests.support.entity_vector_db import recreate_lock_redis
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ORG = "org-1"
+
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
 
 
 class _StatefulVectorDB:
