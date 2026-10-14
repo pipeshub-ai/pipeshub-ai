@@ -129,9 +129,9 @@ class TestFetchIssuesBatched:
         assert persisted[0][0].record_type.value == "TICKET"
 
     async def test_checkpoint_not_advanced_when_a_batch_fails(self) -> None:
-        """The listing is sorted `updated asc`, so advancing on a later batch's
-        success would commit past an earlier failure and those issues would
-        never be re-fetched."""
+        """The checkpoint is committed only after the whole sweep: committing
+        on a later batch's success would move past an earlier failure, and
+        those issues would never be re-fetched."""
         c = make_mock_connector()
         c.batch_size = 1
         repo = make_repo(repo_id=1)
@@ -198,8 +198,7 @@ class TestFetchIssuesBatched:
         assert len(first_call.args[0]) == 100
 
     async def test_page_failure_does_not_advance_the_checkpoint(self) -> None:
-        """The listing is sorted `updated asc`, so committing past a failed
-        page would skip those issues permanently."""
+        """Committing past a failed page would skip those issues permanently."""
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         c.runtime.ds_call.side_effect = _dispatch(c, {

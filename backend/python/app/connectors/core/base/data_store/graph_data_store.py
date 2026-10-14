@@ -334,8 +334,12 @@ class GraphTransactionStore(TransactionStore):
         self._memo_put(key, value)
         return value
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
-        return await self.graph_provider.get_user_by_source_id(source_user_id, connector_id, transaction=self.txn)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> Optional[User]:
+        return await self.graph_provider.get_user_by_source_id(
+            source_user_id, connector_id, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_app_user_by_email(self, email: str, connector_id: str) -> Optional[AppUser]:
         return await self.graph_provider.get_app_user_by_email(email, connector_id, transaction=self.txn)
@@ -518,8 +522,12 @@ class GraphTransactionStore(TransactionStore):
         users_dict = await self.graph_provider.get_users(org_id, active=active)
         return [User.from_arango_user(user_dict) for user_dict in users_dict if user_dict is not None]
 
-    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
-        app_users_dict = await self.graph_provider.get_app_users(org_id, connector_id)
+    async def get_app_users(
+        self, org_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUser]:
+        app_users_dict = await self.graph_provider.get_app_users(
+            org_id, connector_id, raise_on_error=raise_on_error
+        )
         return [AppUser.from_arango_user(user_dict) for user_dict in app_users_dict if user_dict is not None]
 
     async def get_user_groups(self, connector_id: str, org_id: str) -> list[AppUserGroup]:
@@ -1079,9 +1087,13 @@ class GraphTransactionStore(TransactionStore):
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
         return await self.graph_provider.batch_create_entity_relations(edges, transaction=self.txn)
 
-    async def get_edges_to_node(self, node_id: str, edge_collection: str) -> list[dict]:
+    async def get_edges_to_node(
+        self, node_id: str, edge_collection: str, *, raise_on_error: bool = False
+    ) -> list[dict]:
         """Get all edges pointing to a specific node"""
-        return await self.graph_provider.get_edges_to_node(node_id, edge_collection, transaction=self.txn)
+        return await self.graph_provider.get_edges_to_node(
+            node_id, edge_collection, transaction=self.txn, raise_on_error=raise_on_error
+        )
 
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict]:
         """Get all edges originating from a specific node"""

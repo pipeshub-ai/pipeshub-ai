@@ -22,12 +22,15 @@ from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
+from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.exceptions.indexing_exceptions import IndexingError
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.models.entities import Record
     from app.modules.entity_resolution import EntityResolver
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
 
 
 class SinkOrchestrator(Transformer):
@@ -52,6 +55,7 @@ class SinkOrchestrator(Transformer):
         # Canonicalises taxonomy names between classification and the graph
         # write; optional so the sink stays constructible without it.
         self.entity_resolver = entity_resolver
+        self.config_service = config_service
         self.logger = logger
         # Runs before the blob write below, which is the only reason it lives
         # here: a description generated later would never reach the stored
@@ -160,18 +164,21 @@ class SinkOrchestrator(Transformer):
                     full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
                 )
 
-            await self._describe_images(ctx)
+            with stage("images.describe"):
+                await self._describe_images(ctx)
 
             try:
-                await self.blob_storage.apply(ctx)
+                with stage("blob.write"):
+                    await self.blob_storage.apply(ctx)
             finally:
                 if full_block_containers is not None:
                     record.block_containers = full_block_containers
 
         record_id = record.id
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
+        with stage("graph.read"):
+            record_doc = await self.graph_provider.get_document(
+                record_id, CollectionNames.RECORDS.value
+            )
         if record_doc is None:
             self.logger.error(f"❌ Record {record_id} not found in database")
             raise Exception(f"Record {record_id} not found in database")
@@ -216,10 +223,13 @@ class SinkOrchestrator(Transformer):
             # Per-record indexing success counter (powers the Ingestion dashboard).
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
-            await self._update_indexing_status(ctx)
+            with stage("graph.status"):
+                await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
-            await self._save_reconciliation_metadata(ctx)
-            await self._sync_record_identity_entities(ctx)
+            with stage("blob.metadata"):
+                await self._save_reconciliation_metadata(ctx)
+            with stage("entities.identity"):
+                await self._sync_record_identity_entities(ctx)
 
     async def _sync_record_identity_entities(self, ctx: TransformContext) -> None:
         """Write the record's own entity points, its title and its record group
@@ -343,6 +353,29 @@ class SinkOrchestrator(Transformer):
                         # taxonomy entities are schema-free, not part of a
                         # fixed ontology.
                         type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
+                    )
+                )
+
+            from app.modules.named_entities.domain.kinds import spec_for
+
+            for row in await self.graph_provider.get_named_entities_for_record(str(record_key)) or []:
+                kind = row.get("kind")
+                spec = spec_for(kind) if kind else None
+                entity_id = row.get("_key") or row.get("id")
+                if not entity_id or spec is None or not spec.embeddable or spec.is_pii:
+                    continue
+                if row.get("orgId") and row.get("orgId") != org_id:
+                    continue
+                entities.append(
+                    EntityRecord(
+                        entity_id=str(entity_id),
+                        entity_type=EntityType.NAMED_ENTITY,
+                        name=str(row.get("name") or entity_id),
+                        org_id=org_id,
+                        kind=str(kind),
+                        connector_ids=connector_ids,
+                        record_group_ids=record_group_ids,
+                        type_category=EntityTypeCategory.PREDEFINED,
                     )
                 )
 
@@ -505,14 +538,16 @@ class SinkOrchestrator(Transformer):
         synced to the entity vector store (non-blocking: failures are logged
         but do not affect the record's extractionStatus).
         """
-        touched_entities = await self.graphdb.apply(ctx)
+        with stage("graph.enrich"):
+            touched_entities = await self.graphdb.apply(ctx)
         self.logger.debug(
             "✅ Graph enrichment completed for record %s", ctx.record.id
         )
 
         if self.entity_vector_store and touched_entities:
             try:
-                await self.entity_vector_store.upsert_entities_batch(touched_entities)
+                with stage("entities.upsert", detail=f"{len(touched_entities)} entities"):
+                    await self.entity_vector_store.upsert_entities_batch(touched_entities)
             except Exception as exc:
                 # Entity sync is best-effort; do not fail the record pipeline
                 self.logger.warning(
@@ -520,6 +555,120 @@ class SinkOrchestrator(Transformer):
                     ctx.record.id,
                     exc,
                 )
+
+    async def extract_named_entities(self, ctx: TransformContext, *, client=None, reextract: bool = False):
+        """Bounded extraction. A failure returns FAILED and does not raise.
+        ``reextract``: completing an earlier extraction that left text unread."""
+        import time
+
+        from app.modules.named_entities.domain.models import NamedEntityExtraction
+        from app.modules.named_entities.stage import extract_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+        from app.telemetry.modules.named_entity_metrics import observe_extract
+
+        started = time.perf_counter()
+        strategy = "none"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            extraction = await extract_named_entities(
+                ctx, config_service=self.config_service, client=client, enabled=enabled, reextract=reextract,
+            )
+            strategy = extraction.strategy
+            return extraction
+        except Exception as exc:
+            # Tracebacks from the model or extraction client can echo document text.
+            self.logger.warning(
+                "Named-entity extraction failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            return NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
+        finally:
+            observe_extract(strategy, time.perf_counter() - started)
+
+    async def reproject_named_entities(
+        self, ctx: TransformContext, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str | None:
+        """Write the record's named entities again from the extraction its blob
+        holds: no model call. Returns the persist outcome, or None when the blob
+        holds no extraction. ``retry_due`` makes it a persist retry's write."""
+        from app.modules.named_entities.domain.models import read_stored_extraction
+
+        metadata = ctx.record.semantic_metadata
+        extraction = read_stored_extraction(getattr(metadata, "named_entities", None) if metadata else None)
+        if extraction is None:
+            return None
+        return await self.persist_named_entities(
+            ctx, extraction, retry_due=retry_due, retry_attempts=retry_attempts,
+        )
+
+    def attach_named_entities(self, ctx: TransformContext, extraction) -> None:
+        from app.modules.named_entities.stage import attach_named_entities
+
+        attach_named_entities(ctx.record, extraction)
+
+    async def persist_named_entities(
+        self, ctx: TransformContext, extraction, *, retry_due: int | None = None, retry_attempts: int = 0,
+    ) -> str:
+        """Never raises, and never fails the document's own indexing. A failed
+        write is recorded as a durable retry: the recovery pass writes the record's
+        stored extraction again when it is due (see named_entity_persist_retry)."""
+        from app.modules.named_entities.stage import persist_named_entities
+        from app.services.featureflag.platform_settings import is_named_entity_extraction_enabled
+
+        error = "persist_failed"
+        try:
+            enabled = await is_named_entity_extraction_enabled(self.config_service)
+            outcome = await persist_named_entities(
+                ctx,
+                extraction,
+                graph_provider=self.graph_provider,
+                graph_data_store=self.graphdb.graph_data_store,
+                entity_vector_store=self.entity_vector_store,
+                enabled=enabled,
+                retry_due=retry_due,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Named-entity persist failed for record %s: %s", ctx.record.id, type(exc).__name__
+            )
+            outcome, error = "failed", type(exc).__name__
+        if outcome == "failed":
+            await self._schedule_named_entity_retry(ctx.record, error, retry_attempts)
+        elif outcome == "written":
+            await self._schedule_named_entity_reextract(ctx.record, extraction)
+        return outcome
+
+    async def _schedule_named_entity_reextract(self, record: "Record", extraction: "NamedEntityExtraction") -> None:
+        """After the write: the write itself drops any pending job for the record."""
+        from app.modules.named_entities.stage import needs_reextract
+
+        if not needs_reextract(extraction):
+            return
+        try:
+            await self.graph_provider.schedule_named_entity_reextract(record.org_id, record.id)
+            self.logger.info("Named entities of record %s left text unread; queued to extract again", record.id)
+        except Exception as exc:
+            # The record keeps the entities just written until it is next indexed.
+            self.logger.warning(
+                "Named-entity re-extraction for record %s could not be queued: %s", record.id, type(exc).__name__
+            )
+
+    async def _schedule_named_entity_retry(self, record, error: str, attempts_so_far: int = 0) -> None:
+        try:
+            attempts = await self.graph_provider.schedule_named_entity_persist_retry(
+                record.org_id, record.id, error, attempts_so_far,
+            )
+            self.logger.info("Named-entity persist for record %s queued for retry (failure %d)", record.id, attempts)
+        except Exception as exc:
+            # The record keeps its last good entities until it is next indexed.
+            self.logger.warning(
+                "Named-entity persist retry for record %s could not be recorded: %s", record.id, type(exc).__name__
+            )
+
+    async def enrich_named_entities(self, ctx: TransformContext, *, client=None) -> None:
+        """Extract, attach and persist. Safe to call on its own; never raises."""
+        extraction = await self.extract_named_entities(ctx, client=client)
+        self.attach_named_entities(ctx, extraction)
+        await self.persist_named_entities(ctx, extraction)
 
     async def _save_reconciliation_metadata(self, ctx: TransformContext) -> None:
         if ctx.reconciliation_context and ctx.reconciliation_context.new_metadata:

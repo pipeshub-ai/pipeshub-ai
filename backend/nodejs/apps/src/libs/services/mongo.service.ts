@@ -114,9 +114,8 @@ export class MongoService {
       logger.error('Mongoose connection error:', error);
     });
 
-    // Handle process termination
-    process.on('SIGINT', this.gracefulShutdown.bind(this));
-    process.on('SIGTERM', this.gracefulShutdown.bind(this));
+    // No signal handlers here: `Application.stop()` owns shutdown order and
+    // disconnects via `destroy()` only after in-flight requests have drained.
   }
 
   /**
@@ -157,15 +156,6 @@ export class MongoService {
         error instanceof Error ? error : new Error('Unknown error occurred');
       logger.error('Failed to ensure collections:', err.message);
       // Don't throw - allow app to continue, collections might already exist
-    }
-  }
-
-  private async gracefulShutdown(): Promise<void> {
-    try {
-      await this.destroy();
-    } catch (error) {
-      logger.error('Error during graceful shutdown:', error);
-      process.exit(1);
     }
   }
 

@@ -259,3 +259,18 @@ class TestRateLimiting:
         transport = transport_factory(_policy(max_retries=0), [_response(429)])
         assert (await _run(transport)).status_code == 429
         assert transport.attempts == 1
+
+
+class TestRetryLogRedaction:
+    @pytest.mark.asyncio
+    async def test_retry_warning_does_not_log_query_credentials(self, transport_factory, caplog):
+        import logging
+
+        transport = transport_factory(_policy(), [_response(503), _response(200)])
+        with caplog.at_level(logging.WARNING):
+            await transport.handle_async_request(
+                httpx.Request("GET", "https://api.example.com/v1/x?key=fake-api-key&page=2")
+            )
+        assert "retrying" in caplog.text
+        assert "fake-api-key" not in caplog.text
+        assert "page=2" in caplog.text

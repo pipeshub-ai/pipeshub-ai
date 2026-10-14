@@ -226,10 +226,6 @@ class TestTokenScopes:
 
 
 class TestSyncing:
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a later page of history fails, the personal connector still moves the checkpoint "
-        "to the newest message it saw, so the older messages on the failed pages are never synced."
-    ))
     async def test_a_failed_later_page_does_not_lose_older_messages(self, workspace, store, checkpoints) -> None:
         stamps = [ts_minutes_ago(m) for m in (400, 300, 200, 100)]
         for ts in stamps:

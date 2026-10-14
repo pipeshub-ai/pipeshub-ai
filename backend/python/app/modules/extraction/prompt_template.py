@@ -57,7 +57,8 @@ Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.
       Sub-category Level 3: "Confidentiality Agreement"
 
 3. Languages:
-   - List all languages found in the content
+   - List the natural (human) languages the document is written in
+   - Programming languages, markup and data formats (Python, SQL, HTML, JSON, YAML) are not languages here
    - Use full ISO language names (e.g., "English", "French", "German").
 
 4. **Topics**:

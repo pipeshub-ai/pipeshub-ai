@@ -27,7 +27,7 @@ from app.models.blocks import (
     SemanticMetadata,
 )
 from app.utils.jinja_templates import compiled_template
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import format_epoch_ms_for_llm, get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
 EnumType = TypeVar('EnumType', bound=Enum)
@@ -320,7 +320,9 @@ class Record(BaseModel):
     def _format_timestamp(self, epoch_ms: int | None) -> str:
         if epoch_ms is None:
             return "N/A"
-        return datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        # UTC as before, then the user's local time with its weekday, which
+        # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
+        return format_epoch_ms_for_llm(epoch_ms)
 
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
@@ -1278,8 +1280,22 @@ class CommentRecord(Record):
             **Record.delete_state_from_arango(record_doc),
         )
 
+# How a ticket's source is named beside its own status name ("Status: NEW
+# (Jira: Backlog)"). Only the Jira connectors store `source_status` today.
+_SOURCE_STATUS_LABELS: dict[Connectors, str] = {
+    Connectors.JIRA: "Jira",
+    Connectors.JIRA_PERSONAL: "Jira",
+    Connectors.JIRA_CLOUD_PERSONAL: "Jira",
+    Connectors.JIRA_DATA_CENTER: "Jira",
+    Connectors.JIRA_DATA_CENTER_PERSONAL: "Jira",
+}
+
+
 class TicketRecord(Record):
     status: Status | str | None = None
+    # The status name as the source tool shows it (Jira's "Backlog"), kept
+    # beside `status`, which the value mapper normalises ("Backlog" -> NEW).
+    source_status: str | None = None
     priority: Priority | str | None = None
     type: ItemType | str | None = None
     delivery_status: DeliveryStatus | str | None = None
@@ -1306,7 +1322,7 @@ class TicketRecord(Record):
         specific_lines = []
         if self.status:
             status_val = self.status.value if isinstance(self.status, Enum) else self.status
-            specific_lines.append(f"* Status: {status_val}")
+            specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority
@@ -1337,6 +1353,26 @@ class TicketRecord(Record):
             lines.extend(specific_lines)
 
         return "\n".join(lines)
+
+    def _source_status_suffix(self, status_val: str) -> str:
+        """`` (Jira: Backlog)`` when the source's own status name says more.
+
+        The normalised status alone misleads: Jira's "Backlog" and "To Do" are
+        both stored as NEW, and "In Review" and "Testing" both as QA, so a
+        reader asked for an issue's status would answer "NEW" where Jira says
+        "Backlog". Left out when the two differ only in case or spacing
+        ("In Progress" / IN_PROGRESS).
+        """
+        if not self.source_status:
+            return ""
+
+        def _norm(value: str) -> str:
+            return " ".join(value.replace("_", " ").replace("-", " ").lower().split())
+
+        if _norm(self.source_status) == _norm(status_val):
+            return ""
+        source = _SOURCE_STATUS_LABELS.get(self.connector_name, "source")
+        return f" ({source}: {self.source_status})"
 
     async def to_llm_context_with_live_fields(
         self,
@@ -1371,6 +1407,7 @@ class TicketRecord(Record):
             "_key": self.id,
             "orgId": self.org_id,
             "status": _get_value(self.status),
+            "sourceStatus": self.source_status,
             "priority": _get_value(self.priority),
             "type": _get_value(self.type),
             "deliveryStatus": _get_value(self.delivery_status),
@@ -1441,6 +1478,7 @@ class TicketRecord(Record):
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
             status=TicketRecord._safe_enum_parse(ticket_doc.get("status"), Status),
+            source_status=ticket_doc.get("sourceStatus"),
             priority=TicketRecord._safe_enum_parse(ticket_doc.get("priority"), Priority),
             type=TicketRecord._safe_enum_parse(ticket_doc.get("type"), ItemType),
             delivery_status=TicketRecord._safe_enum_parse(ticket_doc.get("deliveryStatus"), DeliveryStatus),
@@ -2280,6 +2318,26 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+# What the GitHub connector stores as a pull request's status, spelled out.
+# `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
+# DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
+# the rest. "DONE" alone does not tell a reader the PR was merged. Any other
+# value (GitLab stores its own state words, such as "merged") is shown as stored.
+_PULL_REQUEST_STATUS_LABELS: dict[str, str] = {
+    Status.DONE.value: "Merged",
+    Status.CANCELLED.value: "Closed without merging",
+    Status.OPEN.value: "Open",
+}
+
+# GitHub's `requested_reviewers` drops a person once they submit a review, so
+# the list the GitHub connector stores is only who is still being asked.
+# GitLab's `reviewers` keeps them after they review, so plain "Reviewers" fits.
+_REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
+    Connectors.GITHUB,
+    Connectors.GITHUB_TEAMS,
+})
+
+
 class PullRequestRecord(Record):
     """Record class for Github Pull Request"""
     status: str | None = None
@@ -2293,6 +2351,49 @@ class PullRequestRecord(Record):
     merged_by: str | None = None
     labels: list[str] | None = Field(default_factory=list)
     last_commit_sha: str | None = Field(default=None)
+
+    def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
+        """Returns formatted pull-request-specific metadata for LLM context.
+
+        Without this the model sees only the base header (name, type, dates,
+        URL) and has to guess whether a PR was merged.
+        """
+        base = super().to_llm_context(frontend_url=frontend_url, include_full_semantic=include_full_semantic)
+        lines = [base]
+
+        specific_lines = []
+        if self.status:
+            specific_lines.append(f"* Status: {_PULL_REQUEST_STATUS_LABELS.get(self.status, self.status)}")
+
+        if self.creator_name or self.creator_email:
+            specific_lines.append(f"* Author: {self._format_person(self.creator_name, self.creator_email)}")
+
+        if self.merged_by:
+            specific_lines.append(f"* Merged By: {self.merged_by}")
+
+        # Names and emails are separate lists, and the email list only holds
+        # the people whose address is known, so the two cannot be paired up.
+        assignees = self.assignee or self.assignee_email
+        if assignees:
+            specific_lines.append(f"* Assignees: {', '.join(assignees)}")
+
+        reviewers = self.review_name or self.review_email
+        if reviewers:
+            label = (
+                "Requested Reviewers"
+                if self.connector_name in _REQUESTED_REVIEWER_CONNECTORS
+                else "Reviewers"
+            )
+            specific_lines.append(f"* {label}: {', '.join(reviewers)}")
+
+        if self.labels:
+            specific_lines.append(f"* Labels: {', '.join(self.labels)}")
+
+        if specific_lines:
+            lines.append("Pull Request Information:")
+            lines.extend(specific_lines)
+
+        return "\n".join(lines)
 
     def to_kafka_record(self) -> dict:
         return {
@@ -3351,6 +3452,7 @@ class EntityType(str, Enum):
     LANGUAGE = "language"
     RELATIONSHIP = "relationship"
     CUSTOM = "custom"
+    NAMED_ENTITY = "named_entity"
 
 
 class EntityTypeCategory(str, Enum):
@@ -3393,6 +3495,7 @@ class EntityRecord(BaseModel):
     connector_ids: list[str] = Field(default_factory=list, description="Connector instances that reference this entity; used for targeted disconnect cleanup")
     record_group_ids: list[str] = Field(default_factory=list, description="Record groups (e.g. folders, Jira projects) of records that reference this entity")
     level: str | None = Field(default=None, description="Subcategory level (\"1\", \"2\" or \"3\"); None for every other entity type. Subcategories only resolve against their own level.")
+    kind: str | None = Field(default=None, description="Named-entity kind. Set only for entity_type named_entity.")
 
     @property
     def embedding_text(self) -> str:
@@ -3449,7 +3552,7 @@ class EntityRecord(BaseModel):
         it), matching the records collection's ``VectorChunkPayload`` — see
         ``EntityVectorStore.upsert_entities_batch``.
         """
-        return {
+        payload = {
             "entityId": self.entity_id,
             "entityType": self.entity_type.value,
             "orgId": self.org_id,
@@ -3460,6 +3563,9 @@ class EntityRecord(BaseModel):
             "aliases": self.aliases,
             "level": self.level,
         }
+        if self.kind:
+            payload["kind"] = self.kind
+        return payload
 
 
 # Rebuild models to resolve forward references after all imports are complete

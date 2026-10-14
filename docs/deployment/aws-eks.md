@@ -24,7 +24,7 @@ You need AWS credentials (`aws sts get-caller-identity` works) and a hostname. I
 ./deployment/helm/aws/deploy.sh --domain pipeshub.example.com --region us-east-1
 ```
 
-The app image is `pipeshubai/pipeshub-ai:0.9.1-slim`. Pass `--image` to use another public tag, such as `pipeshubai/pipeshub-ai:nightly`. A private image also needs a registry token. The token is stored only as a Kubernetes pull secret. It is not written into the chart and it is not printed.
+The app image is `pipeshubai/pipeshub-ai:0.10.0-slim`. Pass `--image` to use another public tag, such as `pipeshubai/pipeshub-ai:nightly`. A private image also needs a registry token. The token is stored only as a Kubernetes pull secret. It is not written into the chart and it is not printed.
 
 ```bash
 PIPESHUB_DOCKER_TOKEN='...' ./deployment/helm/aws/deploy.sh \
@@ -33,7 +33,7 @@ PIPESHUB_DOCKER_TOKEN='...' ./deployment/helm/aws/deploy.sh \
   --image myorg/pipeshub-ee:1.2.0
 ```
 
-`--image` is `account/image` or `account/image:tag`. With no tag, the tag is `0.9.1-slim`. The Docker username defaults to that account. Pass `--docker-username` when the token belongs to a different user, such as a robot account for an organization image. Omit the token and `--image` to deploy the public image. Pass both again on later runs: a run without them switches back to the public image. Prefer `PIPESHUB_DOCKER_TOKEN` over `--docker-token` so the token is not saved in shell history.
+`--image` is `account/image` or `account/image:tag`. With no tag, the tag is `0.10.0-slim`. The Docker username defaults to that account. Pass `--docker-username` when the token belongs to a different user, such as a robot account for an organization image. Omit the token and `--image` to deploy the public image. Pass both again on later runs: a run without them switches back to the public image. Prefer `PIPESHUB_DOCKER_TOKEN` over `--docker-token` so the token is not saved in shell history.
 
 It shows a plan and asks once before creating anything; `--yes` skips the prompt. It then:
 
@@ -69,6 +69,119 @@ To also delete that cluster's database disks, snapshots, S3 bucket, backup vault
 `--purge` implies `--destroy`. It deletes a disk only when the disk is detached and tagged for this cluster (`kubernetes.io/cluster/<name>=owned` and `pipeshub-backup=true`). It deletes only the default bucket `pipeshub-<cluster>-<account>-<region>`. A different `--bucket` is refused. The KMS key is kept so the next deploy can reuse it.
 
 The rest of this guide is the same install step by step, for when you want to run or review each part yourself.
+
+## Install into an existing cluster in one zone
+
+Use this when PipesHub joins a cluster you already run, and every pod stays in one availability zone. One node can fail. The whole zone going down takes the service with it. Without `--existing-cluster`, `deploy.sh` builds a new cluster and spreads databases across three zones.
+
+From the repository root, with AWS credentials for the account that owns the cluster:
+
+```bash
+./deployment/helm/aws/deploy.sh \
+  --domain pipeshub.internal.example.com --region us-east-1 \
+  --existing-cluster --cluster my-cluster --zone us-east-1a
+```
+
+This creates:
+
+- the S3 bucket `pipeshub-<cluster>-<account>-<region>`: private, SSE-KMS, versioned. Pass `--bucket` for another name.
+- the IAM role `PipesHub-<cluster>-S3`, limited to that bucket, with a Pod Identity association for the app's service account.
+- the ACM certificate, the Route 53 record when the zone is in this account, and the Helm release.
+- a Secrets Manager copy of `secret-key` as `<cluster>/secret-key`.
+- the daily EBS backup plan, if the storage class tags volumes `pipeshub-backup=true` through a `tagSpecification_*` parameter and the EBS CSI driver tags them `kubernetes.io/cluster/<cluster>=owned`. Otherwise the script skips it and says so. Put the tag only on a class PipesHub alone uses, or other workloads in the cluster are backed up too.
+
+It does not create or change the cluster, its nodes, add-ons, storage classes, or the AWS Load Balancer Controller. It stops before installing anything if the cluster or the EKS Pod Identity Agent is missing. Remove only PipesHub with the same command plus `--destroy`. That keeps the cluster, the volume claims, the bucket and the saved `secret-key`. `--purge` is refused here.
+
+`--zone` must match `topology.kubernetes.io/zone` on the nodes. The script checks that at least one Ready node is in that zone, then pins every PipesHub pod to it.
+
+Before you run it:
+
+- The EKS Pod Identity Agent add-on is installed. The app gets S3 access through it.
+- The EBS CSI driver is installed. Disks are `ReadWriteOnce` and cannot move to another zone.
+- `--storage-class` exists, is encrypted, and uses `volumeBindingMode: WaitForFirstConsumer`. The default name is `gp3`. `WaitForFirstConsumer` creates each disk in the zone of the node its pod lands on.
+- The AWS Load Balancer Controller is installed.
+- The autoscaler can add nodes in that zone. Qdrant and Neo4j each request 4 CPU and 8 GiB, and they will not run on the same node. MongoDB's three members will not run on the same node as each other. Plan for at least four nodes in that zone that can fit a 4 CPU / 8 GiB pod, with CPU left for MongoDB and the app.
+
+`PIPESHUB_EXTRA_VALUES` is a colon-separated list of extra values files, applied after the single-zone overlay. Use it for ElastiCache, a sandbox choice, or your own node pool.
+
+To install only the Helm release and set up S3, the certificate and DNS yourself, point `kubectl` at the cluster and run `install.sh`. The S3 setup is step 8 (Pod Identity). For IRSA, pass an extra values file that sets `serviceAccount.annotations."eks.amazonaws.com/role-arn"`. `PIPESHUB_INGRESS=false` skips the controller check and the chart's Ingress, for when you publish the service yourself.
+
+```bash
+FRONTEND_PUBLIC_URL=https://pipeshub.internal.example.com \
+  PIPESHUB_HOST=pipeshub.internal.example.com ALB_CERT_ARN=arn:aws:acm:... \
+  PIPESHUB_TOPOLOGY=single-az PIPESHUB_ZONE=us-east-1a STORAGE_CLASS=gp3 \
+  ./deployment/helm/aws/install.sh
+```
+
+The Ingress is an internal ALB. AWS still requires its subnets in two zones. The pods stay in `PIPESHUB_ZONE`.
+
+### What happens when one node fails
+
+| Piece | When its node fails |
+| --- | --- |
+| App | The other replicas keep serving. |
+| MongoDB | The replica set keeps serving. |
+| Qdrant | The other two nodes keep serving. Each shard is stored on two of the three nodes. |
+| Neo4j | Unavailable until the pod starts on another node in the zone and re-attaches its disk. That is typically 5 to 15 minutes. Neo4j Community cannot cluster. |
+| Chart-owned Redis | Same restart window. The app talks only to the master, so the replica is not used until the master pod is back. |
+| ElastiCache | Failover is automatic and does not wait on a Kubernetes node. |
+
+A node that stops responding gets a `NoExecute` taint, and its pods tolerate that for 300 seconds before they are evicted. Eviction alone does not replace a StatefulSet pod such as Neo4j or Redis: Kubernetes cannot confirm the old pod has stopped, so the replacement waits until the node object is deleted, which on EKS follows the instance being terminated. That is why the restart takes that long. Node auto-repair or Karpenter node repair shortens it. On a node you already know is dead, this taint lets the pod and its volume move immediately:
+
+```bash
+kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute
+```
+
+Remove it once the node is replaced or back, or nothing will schedule there:
+
+```bash
+kubectl taint nodes <node> node.kubernetes.io/out-of-service=nodeshutdown:NoExecute-
+```
+
+### Redis on ElastiCache
+
+Leave Redis in the cluster, or use one ElastiCache replication group with cluster mode disabled, one replica, automatic failover, in-transit encryption, and an AUTH token. Cluster mode disabled matters: the app's background worker cannot talk to Redis Cluster, so cluster mode would need a second Redis just for that worker.
+
+The EKS network policy allows DNS, pods in the namespace, HTTPS, and the Pod Identity agent. ElastiCache on port 6379 needs an extra rule. Save this as `elasticache.yaml` (use your VPC CIDR):
+
+```yaml
+redis:
+  enabled: false
+  builtin:
+    enabled: false
+  mode: standalone
+  external:
+    enabled: true
+    host: master.my-redis.abc.use1.cache.amazonaws.com
+  clientTls:
+    enabled: true
+networkPolicy:
+  extraEgress:
+    - to:
+        - ipBlock:
+            cidr: 10.0.0.0/16
+      ports:
+        - protocol: TCP
+          port: 6379
+```
+
+Put the AUTH token in the `redis-password` key of the app Secret (`pipeshub-ai-secrets` unless you set `SECRET_NAME`). Create that Secret before the first install. The script reuses it and does not change `redis-password`. If the script creates the Secret, the password is random and will not match the AUTH token: replace the key and restart the app deployment.
+
+```bash
+PIPESHUB_EXTRA_VALUES="$PWD/elasticache.yaml" ./deployment/helm/aws/deploy.sh \
+  --domain pipeshub.internal.example.com --region us-east-1 \
+  --existing-cluster --cluster my-cluster --zone us-east-1a
+```
+
+### Code execution
+
+`run_code` starts containers in a privileged Docker daemon beside the app pod. `install.sh` labels the namespace `pod-security.kubernetes.io/enforce=privileged` for that daemon. In a shared cluster this is the setting most likely to be rejected.
+
+Three ways to avoid running that daemon on the shared nodes:
+
+- Put the app pods on their own node pool. Set `nodeSelector` and `tolerations` in an extra values file. The single-zone file clears the `pipeshub/role` selector; your file replaces it.
+- Set `config.sandboxMode=e2b` and provide `E2B_API_KEY` (see `extraEnv` in `values.yaml`) so code runs outside the cluster. Also set `sandbox.dind.enabled=false`.
+- Point `config.dockerHost` at a Docker daemon you run, and set `sandbox.dind.enabled=false`.
 
 ## Manual install
 
@@ -411,7 +524,7 @@ The ACM certificate must cover `connect.example.com` too. Request one for both n
 
 ## 10. Backups and restore
 
-AWS Backup takes daily snapshots of every volume tagged `pipeshub-backup=true`. The `gp3` class adds that tag.
+AWS Backup takes daily snapshots of every volume tagged both `pipeshub-backup=true` and `kubernetes.io/cluster/${CLUSTER}=owned`. The `gp3` class adds the first tag and the EBS CSI driver adds the second, so another cluster's volumes stay out of this vault.
 
 ```bash
 aws backup create-backup-vault --region "$AWS_REGION" --backup-vault-name pipeshub
@@ -427,7 +540,7 @@ PLAN_ID="$(aws backup create-backup-plan --region "$AWS_REGION" --query BackupPl
   '{"BackupPlanName":"pipeshub-daily","Rules":[{"RuleName":"daily","TargetBackupVaultName":"pipeshub","ScheduleExpression":"cron(0 3 * * ? *)","StartWindowMinutes":60,"CompletionWindowMinutes":240,"Lifecycle":{"DeleteAfterDays":30}}]}')"
 
 aws backup create-backup-selection --region "$AWS_REGION" --backup-plan-id "$PLAN_ID" --backup-selection \
-  "{\"SelectionName\":\"pipeshub-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/PipesHubBackup\",\"ListOfTags\":[{\"ConditionType\":\"STRINGEQUALS\",\"ConditionKey\":\"pipeshub-backup\",\"ConditionValue\":\"true\"}]}"
+  "{\"SelectionName\":\"pipeshub-ebs\",\"IamRoleArn\":\"arn:aws:iam::${ACCOUNT_ID}:role/PipesHubBackup\",\"Resources\":[\"arn:aws:ec2:*:*:volume/*\"],\"Conditions\":{\"StringEquals\":[{\"ConditionKey\":\"aws:ResourceTag/pipeshub-backup\",\"ConditionValue\":\"true\"},{\"ConditionKey\":\"aws:ResourceTag/kubernetes.io/cluster/${CLUSTER}\",\"ConditionValue\":\"owned\"}]}}"
 ```
 
 Verify the next morning:
@@ -497,7 +610,7 @@ Set the new app and sandbox versions, then upgrade:
 helm upgrade pipeshub-ai ./deployment/helm/pipeshub-ai \
   -n "$NAMESPACE" -f ./deployment/helm/pipeshub-ai/values-eks.yaml \
   --reuse-values \
-  --set image.tag=0.9.1-slim \
+  --set image.tag=0.10.0-slim \
   --set config.sandboxDockerImage=pipeshubai/pipeshub-sandbox:0.8.0 \
   --wait --timeout 30m
 ```
@@ -525,6 +638,8 @@ The app scales from two to four pods. More pods do not fit on two app nodes. To 
 **`run_code` cannot pull an image.** The sandbox image is set by `config.sandboxDockerImage`. Check that the tag exists on Docker Hub and that the app nodes have outbound HTTPS through the NAT gateway. The network policy allows TCP 443.
 
 **S3 errors with "could not load credentials".** The pod started before the Pod Identity association existed. Restart the deployment. Confirm the association with `eksctl get podidentityassociation --cluster "$CLUSTER" --region "$AWS_REGION"`.
+
+**"We couldn't confirm your sign-in" and onboarding shows no providers.** The query service logs `Caller role lookup failed: ConnectError` and returns 503. Images up to `0.10.0` look for the Node API at `endpoints.nodejs` in the config store, and fall back to port 3000; the chart runs Node on 3001. `install.sh` writes that key after the release is Ready. If it printed `could not set endpoints.nodejs`, re-run `install.sh` (or the deploy command) once the app pods are Running.
 
 **Login works, then every integration fails after a reinstall.** `secret-key` changed. Restore the previous Secret from Secrets Manager. There is no recovery without that key.
 

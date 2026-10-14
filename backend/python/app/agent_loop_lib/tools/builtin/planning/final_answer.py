@@ -146,8 +146,9 @@ def _build_parameters() -> list[ToolParameter]:
 class FinalAnswerTool(Tool):
     """Delivers the agent's answer as a structured call, stopping the loop.
 
-    Parameters are built lazily so the confidence field is included only when
-    ``PIPESHUB_ENABLE_CONFIDENCE`` is set — avoiding parameter-list churn on
+    Parameters are built lazily so the confidence field follows
+    ``confidence_enabled()`` (on unless ``PIPESHUB_ENABLE_CONFIDENCE`` is set
+    to something other than ``"true"``) — avoiding parameter-list churn on
     every import.
     """
 

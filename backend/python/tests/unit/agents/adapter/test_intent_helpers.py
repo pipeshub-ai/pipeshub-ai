@@ -178,6 +178,23 @@ class TestParseClarifyBlock:
     def test_empty_questions(self) -> None:
         assert _parse_clarify_block('```clarify\n{"questions": []}\n```') is None
 
+    def test_blank_questions_are_dropped(self) -> None:
+        opts = '[{"label": "A"}, {"label": "B"}, {"label": "C"}]'
+        text = (
+            '```clarify\n{"questions": ['
+            f'{{"question": "  ", "options": {opts}}}, '
+            f'{{"question": "Which project?", "options": {opts}}}'
+            ']}\n```'
+        )
+        result = _parse_clarify_block(text)
+        assert result is not None
+        assert [q.question for q in result] == ["Which project?"]
+
+    def test_only_blank_questions_mean_no_clarification(self) -> None:
+        opts = '[{"label": "A"}, {"label": "B"}, {"label": "C"}]'
+        text = f'```clarify\n{{"questions": [{{"question": "", "options": {opts}}}]}}\n```'
+        assert _parse_clarify_block(text) is None
+
 
 class TestDecisionFromTextClarifyJsonError:
     """Covers the except (ValueError, AttributeError, TypeError) branch at line 273."""

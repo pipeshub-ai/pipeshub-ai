@@ -26,8 +26,8 @@ every adapter-layer piece built in Phases 2-6:
     residual instead of the raw flat tool list.
   - `compose_domain_agents` (react/planExecute; off for quick): for every
     OTHER loop kind, the top-level `spec.tool_names` is narrowed to a
-    handful of `AgentTool` delegates (coding/web/internal-search/
-    calculator/calendar) plus whatever tools no domain claimed —
+    handful of `AgentTool` delegates (coding/web/internal-search) plus
+    whatever tools no domain claimed —
     `plan_domain_agents()` runs BEFORE `select_loop_and_goal()` so the
     `planExecute` mode's planner is steered with the same composed names
     the executing agent ends up with, and `register_domain_agents()` runs
@@ -103,12 +103,18 @@ from app.agent_loop_lib.transport.opik_tracing import (
 )
 from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings, routing_key
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME
 from app.agents.agent_loop.artifact_store import build_artifact_store
 from app.agents.agent_loop.cancellation_transport import with_cancellation
 from app.agents.agent_loop.direct_transport import build_direct_transport
 from app.agents.agent_loop.domain_agents import (
     plan_domain_agents,
     register_domain_agents,
+)
+from app.agents.agent_loop.entity_search_tool import (
+    ENTITY_SEARCH_OFFERED_STATE_KEY,
+    SEARCH_BY_ENTITIES_TOOL_NAME,
+    entity_search_tool_offered,
 )
 from app.agents.agent_loop.hooks import (
     CitationCollector,
@@ -123,6 +129,7 @@ from app.agents.agent_loop.hooks import (
     resolve_attachments_for_goal,
     resolve_history_attachments,
     result_accumulation,
+    retrieval_context_emission,
     retry_with_status,
     seed_visible_tools_from_history,
     shape_image_injection,
@@ -185,12 +192,14 @@ from app.agents.agent_loop.skills_wiring import (
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader
 from app.agents.agent_loop.tool_summarizer import PipesHubToolSummarizer
+from app.agents.agent_loop.usage_transport import with_usage_reporting
 from app.agents.mcp.service import is_mcp_enabled
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.utils.image_policy import resolve_image_policy
+from app.utils.render_budget import fetch_result_cap
 
 
-def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
+def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:  # noqa: F821
     """Register FinalAnswerTool when PIPESHUB_ENABLE_FINAL_ANSWER is set."""
     from app.agent_loop_lib.tools.builtin.planning.final_answer import (
         FinalAnswerTool,
@@ -198,7 +207,7 @@ def _register_final_answer_if_enabled(tool_registry: "ToolRegistry") -> None:
     )
     if final_answer_enabled():
         tool_registry.register_tool(FinalAnswerTool())
-from app.modules.agents.qna.tool_system import code_execution_enabled
+from app.modules.agents.qna.tool_system import code_execution_enabled  # noqa: E402
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -216,6 +225,11 @@ _DOMAIN_SHARED_NAV_TOOL_NAMES: frozenset[str] = frozenset({
     "knowledgegraph__navigate",
     "knowledgegraph__lookup_record",
 })
+
+# Tools a deployment switch adds to the knowledge tools. Not counted toward
+# the lazy-disclosure threshold, so turning one on never hides web search or
+# connector tools behind fetch_tools for a request that was eager without it.
+_SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
@@ -337,6 +351,7 @@ class PipesHubAgentFactory:
         ).max_images_per_request
 
         output_cap = max_turn_output_chars()
+        configured_window = context.configured_context_window
         cache_settings = PromptCacheSettings.from_env()
         cache_key = routing_key(context.org_id, context.conversation_id, cache_settings.routing_shards)
 
@@ -353,14 +368,17 @@ class PipesHubAgentFactory:
                 ),
             )
 
+        # Opt-in: every agent of this request resolves its model from this
+        # registry, so its transports are where each call's usage is counted.
+        usage_sink = context.usage_ledger.add if context.include_retrieval_context else None
         transport_registry = TransportRegistry()
         transport_registry.register(
             "langchain",
-            traced_transport_factory(
-                lambda: with_output_cap(_langchain_transport(), output_cap),
+            with_usage_reporting(traced_transport_factory(
+                lambda: with_output_cap(_langchain_transport(), output_cap, context_window=configured_window),
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
         # Same model as "langchain" above, reached through the provider's own
         # SDK instead. LangChain builds an AIMessageChunk per streamed token and
@@ -395,18 +413,18 @@ class PipesHubAgentFactory:
                 # `context.cancellation_token` is `None` (no `runId`
                 # registered for this request).
                 return with_cancellation(
-                    with_output_cap(with_image_cap(direct, image_cap), output_cap),
+                    with_output_cap(with_image_cap(direct, image_cap), output_cap, context_window=configured_window),
                     context.cancellation_token,
                 )
-            return with_output_cap(_langchain_transport(), output_cap)
+            return with_output_cap(_langchain_transport(), output_cap, context_window=configured_window)
 
         transport_registry.register(
             DIRECT_TRANSPORT,
-            traced_transport_factory(
+            with_usage_reporting(traced_transport_factory(
                 _direct_or_langchain,
                 opik_active=opik_active,
                 project_name=opik_project_name,
-            ),
+            ), usage_sink),
         )
 
         # Gate on the SAME resolution the legacy LangGraph path uses
@@ -441,6 +459,7 @@ class PipesHubAgentFactory:
         if context.has_knowledge:
             skip_apps |= {"retrieval", "knowledgehub"}
         _mark("f:transports")
+        context.tool_state[ENTITY_SEARCH_OFFERED_STATE_KEY] = await entity_search_tool_offered(context.tool_state)
         tool_registry = await PipesHubToolLoader().load(
             context, skip_apps=skip_apps,
         )
@@ -710,7 +729,10 @@ class PipesHubAgentFactory:
             # construction is equivalent to having registered it earlier;
             # it just needs `runtime` itself for `run_child()`, which
             # doesn't exist until this line.
-            register_skill_learning(hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name)
+            register_skill_learning(
+                hooks, skill_manager, runtime, provider=_transport_provider(), model_name=model_name,
+                context_window=configured_window,
+            )
 
         # Domain-agent composition, registration half: now that the
         # AgentRuntime exists, actually build each claimed domain's child
@@ -753,10 +775,11 @@ class PipesHubAgentFactory:
                 apply=lazy_tools_enabled() and lazy_tools_scope() in ("domain", "both"),
                 essential_names=frozenset(essential_toolset_names),
                 context=context,
+                uncounted_names=_SWITCHED_TOOL_NAMES,
             )
             composed_names = register_domain_agents(
                 composition_plan, tool_registry, runtime, context,
-                provider=_transport_provider(), model_name=model_name,
+                provider=_transport_provider(), model_name=model_name, context_window=configured_window,
                 lazy_tools=domain_lazy_tools,
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
@@ -774,7 +797,7 @@ class PipesHubAgentFactory:
                 runtime.spec_factory = domain_spec_factory(
                     provider=_transport_provider(), model_name=model_name,
                     default_tool_names=_initial_entity_tool_grant(composed_names, context),
-                    context=context,
+                    context=context, context_window=configured_window,
                 )
             elif mode.loop_kind == "plan_execute":
                 # `composition_plan` was snapshotted by `plan_domain_agents()`
@@ -797,7 +820,7 @@ class PipesHubAgentFactory:
                     [n for n in tool_registry.names() if n not in COORDINATION_TOOL_NAMES],
                     context,
                 ),
-                context=context,
+                context=context, context_window=configured_window,
             )
 
         # `run_code`'s own description (see `CodingSandboxTool.description`)
@@ -843,6 +866,7 @@ class PipesHubAgentFactory:
             ),
             essential_names=frozenset(essential_toolset_names),
             context=context,
+            uncounted_names=_SWITCHED_TOOL_NAMES,
         )
         tool_names, tool_disclosure = top_level_lazy_tools(tool_registry, tool_names)
         # `list_toolsets`/`fetch_tools` were appended unconditionally above
@@ -893,7 +917,7 @@ class PipesHubAgentFactory:
             tool_names=tool_names,
             tool_disclosure=tool_disclosure,
             pinned_toolsets=pinned_toolsets,
-            model=ModelSpec(provider=_transport_provider(), model=model_name),
+            model=ModelSpec(provider=_transport_provider(), model=model_name, context_window=configured_window),
             loop=loop,
             max_turns=_MAX_TURNS,
         )
@@ -929,7 +953,7 @@ class PipesHubAgentFactory:
         return agent, runtime, goal, clarifying_questions
 
     @staticmethod
-    def _build_event_emitter(context: "AgentContext") -> Any:
+    def _build_event_emitter(context: "AgentContext") -> Any:  # noqa: ANN401
         """`AGUIEventEmitter` composed with a `TranscriptCollector` (see
         that module's docstring for why it has to be wired at this same
         `EventEmitter` layer rather than downstream of it) when this
@@ -949,9 +973,9 @@ class PipesHubAgentFactory:
 
     @staticmethod
     def _build_hooks(
-        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,
-        artifact_store: Any = None, tool_registry: Any = None,
-        transport_registry: Any = None, model_name: str = "",
+        context: "AgentContext", sandbox_manager: Any = None, *, allow_network: bool = False,  # noqa: ANN401
+        artifact_store: Any = None, tool_registry: Any = None,  # noqa: ANN401
+        transport_registry: Any = None, model_name: str = "",  # noqa: ANN401
         supports_multipart_tool_result: bool = True,
     ) -> HookRegistry:
         """Phase 5's hooks, wired onto a fresh `HookRegistry` (never a
@@ -974,7 +998,7 @@ class PipesHubAgentFactory:
         # and annotated with ToolMessageMeta.  Full content stays for the
         # current turn; PRE_MODEL shapers below compact it on later turns.
         if artifact_store is not None:
-            def _resolve_schema(tool_name: str):
+            def _resolve_schema(tool_name: str):  # noqa: ANN202
                 if tool_registry is None:
                     return None
                 try:
@@ -1012,7 +1036,12 @@ class PipesHubAgentFactory:
             # Only registered for providers that actually need it so
             # Anthropic/Gemini never see an image delivered twice.
             hooks.on(HookEvent.PRE_MODEL).use(shape_retrieved_image_injection(context))  # L0.1
-        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction())           # L1
+        # Fetch sized by characters gets a cap equal to its own budget, so
+        # the shared 64K cap never cuts a fetch in the middle.
+        fetch_cap = fetch_result_cap(context.context_length)
+        hooks.on(HookEvent.PRE_MODEL).use(shape_budget_reduction(             # L1
+            tool_caps={FETCH_RECORD_TOOL_NAME: fetch_cap} if fetch_cap else None,
+        ))
         hooks.on(HookEvent.PRE_MODEL).use(shape_artifact_compaction(          # L2
             keep_last_n_turns=2,
         ))
@@ -1068,6 +1097,11 @@ class PipesHubAgentFactory:
 
         hooks.on(HookEvent.PRE_TOOL_USE).use(stash_tool_call_metadata)
         hooks.on(HookEvent.POST_TOOL_USE).use(result_accumulation(context))
+        if context.include_retrieval_context:
+            # Opt-in: diffs the retrieval accumulators after every tool call
+            # and streams only what is new. Off by default, so a normal
+            # request pays nothing for it.
+            hooks.on(HookEvent.POST_TOOL_USE).use(retrieval_context_emission(context))
 
         hooks.on(HookEvent.POST_TOOL_USE).use(ask_user_question_sse(context))
 
@@ -1117,7 +1151,7 @@ class PipesHubAgentFactory:
         state = context.tool_state
         ref_mapper = state.get("citation_ref_mapper")
         if ref_mapper is None:
-            from app.utils.chat_helpers import CitationRefMapper  # noqa: PLC0415
+            from app.utils.chat_helpers import CitationRefMapper
             ref_mapper = CitationRefMapper()
             state["citation_ref_mapper"] = ref_mapper
 
@@ -1127,8 +1161,8 @@ class PipesHubAgentFactory:
         state["virtual_record_id_to_result"] = vrmap
 
         is_multimodal = context.is_multimodal_llm
-        from app.utils.chat_helpers import ImageBudget  # noqa: PLC0415
-        from app.utils.image_admission import admission_from_state  # noqa: PLC0415
+        from app.utils.chat_helpers import ImageBudget
+        from app.utils.image_admission import admission_from_state
         image_budget: ImageBudget = state.setdefault("image_budget", ImageBudget())
 
         ctx = ContextManager()
@@ -1185,8 +1219,8 @@ def _inject_images_into_message(
     image_blocks: list[dict[str, Any]],
 ) -> None:
     """Convert ``image_url`` dicts to ``ImagePart`` and set multipart content."""
-    from app.agent_loop_lib.core.messages import TextPart  # noqa: PLC0415
-    from app.agents.agent_loop.hooks.attachment_resolver import (  # noqa: PLC0415
+    from app.agent_loop_lib.core.messages import TextPart
+    from app.agents.agent_loop.hooks.attachment_resolver import (
         _langchain_image_to_part,
     )
 

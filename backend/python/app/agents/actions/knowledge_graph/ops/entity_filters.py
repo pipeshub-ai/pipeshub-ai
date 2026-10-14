@@ -44,7 +44,9 @@ ENTITY_TYPE_TO_FILTER_KEY: dict[str, str] = {
 # Scoped through the permission-checked record resolver instead of a name
 # filter: record groups have no filter key, and subcategory entities carry no
 # level while the per-level subcategory filters do.
-RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset({RECORD_GROUP_ENTITY_TYPE, "subcategory"})
+RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset(
+    {RECORD_GROUP_ENTITY_TYPE, "subcategory", "named_entity"}
+)
 
 ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"
 RECORD_SCOPED_ENTITY_CACHE_KEY = "_kg_record_scoped_entities"
@@ -107,9 +109,9 @@ def merge_filter_groups(
     extra: dict[str, list[str]] | None,
 ) -> dict[str, list[str]]:
     """Union *extra*'s lists into *base* (new dict; *base* not mutated)."""
-    if not extra:
-        return base
     merged = {k: list(v) for k, v in base.items()}
+    if not extra:
+        return merged
     for key, values in extra.items():
         if not values:
             continue

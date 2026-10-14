@@ -285,6 +285,7 @@ class SourceCatalog:
         # names and has no entity tools. find_records_by_entity is named
         # literally: it unlocks mid-run, and the prompt text must not change.
         search_entities = granted("knowledgegraph.search_entities", _tool_names)
+        search_by_entities = granted("knowledgegraph.search_by_entities", _tool_names)
         content_search = (
             granted("knowledgegraph.search", _tool_names)
             or granted("retrieval.search_internal_knowledge", _tool_names)
@@ -339,6 +340,14 @@ class SourceCatalog:
                 "`knowledgegraph__find_records_by_entity(entity_id=...)` (available after "
                 f"{search_entities}) lists the records connected to one entity, newest first, "
                 f"paging with `cursor` copied from its output. {entity_content_hint}".rstrip(),
+                *(
+                    [
+                        f"For named people, organizations, products or places, `{search_by_entities}"
+                        "(mentions=[...])` takes the names directly and searches the records that "
+                        "mention them, or where they appear together with `match=\"all\"`."
+                    ]
+                    if search_by_entities else []
+                ),
                 "",
             ])
         # ID-specific header — only when connector IDs are actionable (agent route).

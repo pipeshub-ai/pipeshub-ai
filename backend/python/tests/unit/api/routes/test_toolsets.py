@@ -6776,7 +6776,8 @@ class TestListToolsetOAuthConfigsNonAdmin:
                 assert "clientSecret" not in cfg
 
     @pytest.mark.asyncio
-    async def test_admin_sees_secret_fields_masked(self) -> None:
+    async def test_admin_sees_secret_fields_masked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HIDE_SECRET_CONFIG", "true")
         from app.api.routes.toolsets import list_toolset_oauth_configs
         from app.edition_config import REDACTED_PLACEHOLDER
         cs = AsyncMock()

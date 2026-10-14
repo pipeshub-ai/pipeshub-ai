@@ -141,6 +141,15 @@ class ScriptedTransport(LLMTransport):
         ))
         return self
 
+    def add_text_and_tool_call(
+        self, text: str, call: ToolCall, usage: TokenUsage | None = None,
+    ) -> "ScriptedTransport":
+        """One turn that narrates and calls a tool, as models often do."""
+        self._script.append(ScriptedStep(
+            message=AssistantMessage(content=text, tool_calls=[call]), usage=usage,
+        ))
+        return self
+
     def add_tool_calls(self, calls: list[ToolCall], usage: TokenUsage | None = None) -> "ScriptedTransport":
         self._script.append(ScriptedStep(
             message=AssistantMessage(tool_calls=list(calls)), usage=usage,

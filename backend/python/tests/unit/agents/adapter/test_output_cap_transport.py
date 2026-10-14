@@ -204,6 +204,24 @@ class TestRunawayToolCallIsStopped:
         assert final.response.message.content == []
         assert final.response.message.tool_calls == [ToolCall(id="call_1", name="final_answer")]
 
+    async def test_the_configured_window_decides_what_fits_back(self) -> None:
+        """Text too long for the default 128k window fits a configured 1M one."""
+        blocks = _TOO_LONG_TO_SEND_BACK // len(_BLOCK) + 1
+
+        def _turn() -> "Iterator[StreamEvent]":
+            return itertools.chain(
+                (TextDeltaEvent(delta=_BLOCK) for _ in range(blocks)),
+                [ToolCallDeltaEvent(index=0, id="call_1", name="final_answer", arguments_delta='{"a": "')],
+                _endless_arguments(),
+            )
+
+        cap = blocks * len(_BLOCK) + 100
+        default = (await _events(with_output_cap(_Streams(_turn()), cap)))[-1]
+        configured = (await _events(with_output_cap(_Streams(_turn()), cap, context_window=1_000_000)))[-1]
+
+        assert default.response.message.content == []
+        assert configured.response.message.text == _BLOCK * blocks
+
     async def test_every_call_in_the_turn_is_kept_in_the_order_it_was_made(self) -> None:
         inner = _Streams(itertools.chain(
             [
@@ -314,8 +332,10 @@ class TestConfiguration:
 
         assert "output_cap = max_turn_output_chars()" in source
         assert langchain_arm.count("with_output_cap(") == 1
-        assert "with_output_cap(with_image_cap(direct, image_cap), output_cap)" in direct_arm
+        assert "with_output_cap(with_image_cap(direct, image_cap), output_cap, context_window=configured_window)" in direct_arm
         assert direct_arm.count("with_output_cap(") == 2
+        assert langchain_arm.count("output_cap, context_window=configured_window)") == 1
+        assert direct_arm.count("output_cap, context_window=configured_window)") == 2
 
 
 class _EndlessModel:

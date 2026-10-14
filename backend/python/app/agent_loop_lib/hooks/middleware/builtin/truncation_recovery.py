@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.agent_loop_lib.core.finish_moves import TASK_COMPLETE, can_call
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.core.types import UserMessage
 from app.agent_loop_lib.hooks.middleware.context import ModelResponseContext
@@ -21,8 +22,7 @@ _TOOL_CALL_TRUNCATION_NOTE = (
     "[Tool call not executed: your response was cut off at the "
     "maximum output-token limit, so this call's arguments were "
     "incomplete. Retry with a shorter response — for long final "
-    "outputs, emit the content across multiple turns or trim it "
-    "before calling task_complete.]"
+    "outputs, emit the content across multiple turns or trim it{finish}.]"
 )
 
 _TOOL_CALL_TRUNCATION_ESCALATED = (
@@ -30,11 +30,16 @@ _TOOL_CALL_TRUNCATION_ESCALATED = (
     "maximum output-token limit AGAIN. You have already been "
     "truncated multiple times in a row — you MUST change your "
     "approach:\n"
-    "- Split your code into SMALLER pieces across multiple "
-    "run_code calls (e.g. build part 1, then part 2)\n"
+    "{split}"
     "- Reduce the amount of content in a single tool call\n"
     "- Write a shorter, simpler version\n"
     "Do NOT retry the same long output — it will be truncated again.]"
+)
+
+_RUN_CODE = "run_code"
+_SPLIT_CODE_LINE = (
+    f"- Split your code into SMALLER pieces across multiple {_RUN_CODE} "
+    "calls (e.g. build part 1, then part 2)\n"
 )
 
 _TEXT_ONLY_CONTINUATION_NOTE = (
@@ -46,6 +51,17 @@ _TEXT_ONLY_CONTINUATION_NOTE = (
 _CONSECUTIVE_TRUNCATION_THRESHOLD = 2
 
 
+def _tool_call_truncation_note(scope: object) -> str:
+    finish = f" before calling {TASK_COMPLETE}" if can_call(scope, TASK_COMPLETE) else ""
+    return _TOOL_CALL_TRUNCATION_NOTE.format(finish=finish)
+
+
+def _tool_call_truncation_escalated(scope: object) -> str:
+    return _TOOL_CALL_TRUNCATION_ESCALATED.format(
+        split=_SPLIT_CODE_LINE if can_call(scope, _RUN_CODE) else "",
+    )
+
+
 def default_truncation_recovery():
     consecutive_truncations = 0
 
@@ -55,9 +71,9 @@ def default_truncation_recovery():
             consecutive_truncations += 1
             if ctx.tool_calls:
                 note = (
-                    _TOOL_CALL_TRUNCATION_ESCALATED
+                    _tool_call_truncation_escalated(ctx.scope)
                     if consecutive_truncations > _CONSECUTIVE_TRUNCATION_THRESHOLD
-                    else _TOOL_CALL_TRUNCATION_NOTE
+                    else _tool_call_truncation_note(ctx.scope)
                 )
                 ctx.recovery_tool_results = [
                     CoreToolResult(tool_call_id=c.id, name=c.name, content=note, is_error=True)

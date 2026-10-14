@@ -360,6 +360,7 @@ class TestAbstractMethodInventory:
         "remove_sync_point",
         "delete_sync_points_by_connector_id",
         "delete_connector_sync_edges",
+        "unlink_nodes_missed_by_full_sync",
         # Batch operations
         "batch_upsert_app_users",
         "batch_upsert_user_groups",
@@ -464,6 +465,29 @@ class TestAbstractMethodInventory:
         "filter_accessible_virtual_record_ids",
         "filter_accessible_record_ids",
         "get_record_parent_adjacency",
+        # Named entities (NamedEntityGraphMixin implements them for both providers)
+        "create_named_entities_if_absent",
+        "find_named_entities",
+        "get_named_entities_by_ids",
+        "find_named_entities_by_key_prefix",
+        "get_named_entity_mentions_in_records",
+        "add_named_entity_aliases",
+        "query_named_entities",
+        "get_records_for_named_entities",
+        "get_named_entities_for_record",
+        "copy_named_entity_mentions",
+        "find_orphan_named_entities",
+        "delete_orphan_named_entities",
+        "mark_orphan_named_entities",
+        "clear_orphan_named_entity_marks",
+        "delete_dangling_named_entity_mentions",
+        "resolve_named_entity_redirects",
+        "replace_named_entity_values",
+        "delete_dangling_named_entity_values",
+        "schedule_named_entity_persist_retry",
+        "get_due_named_entity_persist_retries",
+        "clear_named_entity_persist_retry",
+        "schedule_named_entity_reextract",
     ]
 
     def test_all_expected_methods_are_abstract(self):

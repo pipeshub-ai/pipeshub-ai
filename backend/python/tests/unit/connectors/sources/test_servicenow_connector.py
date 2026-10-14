@@ -30,6 +30,7 @@ from app.sources.external.servicenow.models import (
     TableAPIRecord,
     TableAPIResponse,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +271,8 @@ class TestServiceNowConnectorInit:
             "auth": {},
             "credentials": {},
         })
-        assert await servicenow_connector.init() is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await servicenow_connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
     async def test_init_fails_oauth_not_found(self, mock_fetch_oauth, servicenow_connector):

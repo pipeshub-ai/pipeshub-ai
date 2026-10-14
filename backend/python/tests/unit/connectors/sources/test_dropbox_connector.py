@@ -36,6 +36,7 @@ from app.connectors.sources.dropbox_individual.connector import (
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import AppUser
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +302,8 @@ class TestDropboxConnectorInit:
             scope="team",
             created_by="test-user",
         )
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await conn.init()
 
 
 # ===========================================================================
@@ -1658,14 +1660,16 @@ class TestDropboxInitMethod:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_no_oauth_config_id(self):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         c = _make_connector()
         c.config_service.get_config = AsyncMock(return_value={
             "credentials": {"access_token": "tok", "refresh_token": "ref"},
-            "auth": {}
+            "auth": auth,
         })
-        result = await c.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await c.init()
 
     @pytest.mark.asyncio
     async def test_init_success(self):

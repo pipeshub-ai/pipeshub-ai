@@ -3544,7 +3544,9 @@ class TestApplyFileEventBatchOrdering:
         async def on_new(batch) -> None:
             calls.append("new:" + ",".join(r.local_fs_relative_path for r, _p in batch))
 
-        async def on_moved(batch) -> None:
+        async def on_moved(batch, *, permissions_fetched: bool = False) -> None:
+            # Local FS moves carry the record's whole permission list.
+            assert permissions_fetched is True
             calls.append("moved:" + ",".join(r.local_fs_relative_path for _o, r, _p in batch))
 
         async def on_deleted(external_ids, _user_id) -> list[str]:

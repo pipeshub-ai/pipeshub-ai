@@ -385,6 +385,17 @@ tags:
       - `once`: Run once at a specific future time
 components:
   parameters:
+    RevealStoredSecrets:
+      name: reveal
+      in: query
+      required: false
+      description: |
+        Set to `true` to receive stored secrets instead of placeholders. Honoured only for an
+        admin's own configuration where the deployment allows it (see `GET
+        /configurationManager/secretReveal`); ignored for OAuth-app tokens and any other value.
+      schema:
+        type: string
+        enum: ['true']
     InternalDocumentId:
       name: documentId
       in: path
@@ -5023,15 +5034,29 @@ components:
 
         For `TICKET` records (e.g. Jira) the metadata header is refreshed with
         live ticket fields (status, assignee, comments) at request time rather
-        than the last-indexed snapshot. `content` may be empty for records with
-        no extractable text (e.g. image-only or not-yet-parsed records).
+        than the last-indexed snapshot. `content` may be empty for an indexed
+        record with no extractable text (e.g. image-only).
+
+        A record that exists and that the caller may read, but whose content
+        is not indexed yet (`indexingStatus` other than `COMPLETED`), has no
+        parsed text. `content` is then a description of the record instead:
+        its metadata header (name, link, dates, type-specific fields) followed
+        by a paragraph that starts `Not indexed:` and names the status, e.g.
+        `(status: AUTO_INDEX_OFF)`. It is not the record's text.
+
+        `content` is the literal `No record found` when the caller may read
+        an indexed record but its stored content could not be loaded. An id
+        that does not exist, a record in the trash, and a record the caller
+        may not read all answer `403` instead.
       required:
         - content
       properties:
         content:
           type: string
           description: >-
-            The record's full parsed content as a single plain-text string.
+            The record's full parsed content as a single plain-text string;
+            for a record whose content is not indexed yet, a description of
+            the record and its indexing status instead (see above).
 
     KnowledgeGraphNodeRefSchema:
       type: object
@@ -6710,6 +6735,127 @@ components:
           description: |
             Knowledge-base app ids to scope retrieval for this turn.
             Each element must be a valid UUID.
+        entityFilters:
+          type: object
+          additionalProperties: false
+          x-pipeshub-stability: experimental
+          description: |
+            **Experimental** named-entity constraints (Labs flag `ENABLE_NAMED_ENTITY_EXTRACTION`, or `HIGH_ACCURACY_MODE`).
+            Every constraint must hold for the same record: an amount and a date match a record
+            that mentions both, not one entity that is both. `name`/`entityIds` match entity nodes;
+            `mentionedDate`, `amount`, `quantity` and `percent` match typed values the record
+            mentions (any date mentioned, not a role such as "signed on"). A kind of a typed
+            constraint's own kind narrows it (`currency` with `amount`); other kinds are a
+            constraint of their own. Only records the caller may read are considered: every empty
+            result reads the same.
+
+            An unusable filter (unknown kind, bad currency, a range whose low end is above its high
+            end, or a blank name) fails request validation with 400, including on conversation
+            requests. On `POST /search`, a valid filter matching too many readable records is
+            refused with 422. Conversation operations apply a valid filter to every search behind
+            the answer; if retrieval refuses it, the request does not fail and the answer says why
+            the filter could not be applied.
+          properties:
+            kinds:
+              type: array
+              minItems: 1
+              maxItems: 23
+              description: Lowercase, as listed. The server trims and lowercases each kind before checking it.
+              items:
+                type: string
+                enum:
+                  - person
+                  - person_type
+                  - organization
+                  - event
+                  - product
+                  - skill
+                  - location
+                  - city
+                  - state
+                  - country_region
+                  - address
+                  - date
+                  - date_range
+                  - date_time
+                  - duration
+                  - currency
+                  - percentage
+                  - age
+                  - dimension
+                  - email
+                  - url
+                  - phone
+                  - ip
+            name:
+              type: string
+              minLength: 1
+              maxLength: 256
+              description: Case-insensitive prefix of an entity name; surrounding blanks are trimmed and a blank name is refused.
+            entityIds:
+              type: array
+              minItems: 1
+              maxItems: 100
+              items:
+                type: string
+                format: uuid
+              description: Entity node ids, as returned by entity search. Typed values have no id.
+            mentionedDate:
+              type: object
+              additionalProperties: false
+              description: Overlap with a date the record mentions; half-open, `from` must not be after `to`.
+              properties:
+                from:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+                to:
+                  oneOf:
+                    - type: integer
+                      description: Epoch milliseconds.
+                    - type: string
+                      description: ISO-8601 date or date-time; a date alone is UTC midnight.
+            amount:
+              type: object
+              additionalProperties: false
+              description: "`min` must not be after `max`."
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                currency:
+                  type: string
+                  pattern: "^[A-Za-z]{3}$"
+                  description: ISO 4217 code, case-insensitive.
+            quantity:
+              type: object
+              additionalProperties: false
+              description: In SI units of the dimension. `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+                dimension:
+                  type: string
+                  pattern: "^[A-Za-z_]{1,32}$"
+                  description: For example `length`, `weight`, `speed`, `temperature`, `age`.
+            percent:
+              type: object
+              additionalProperties: false
+              description: Fractions (0.125 is 12.5%). `min` must not be after `max`.
+              properties:
+                min:
+                  type: number
+                max:
+                  type: number
+        where:
+          description: Reserved for the typed filter tree that will replace `entityFilters`; any value is refused with 400.
+          not: {}
+          x-speakeasy-ignore: true
 
     AppliedFilterNode:
       type: object
@@ -6972,6 +7118,15 @@ components:
             that already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7178,6 +7333,15 @@ components:
             send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7409,6 +7573,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -7580,6 +7753,15 @@ components:
             already send it.
         agentCapabilities:
           $ref: '#/components/schemas/AgentCapabilities'
+        includeRetrievalContext:
+          type: boolean
+          default: false
+          description: >-
+            Opt in to measurement frames on this stream: CUSTOM
+            `retrieval_context` events naming the records and blocks that
+            reached the model, and one CUSTOM `run_usage` event carrying the
+            run's token totals and loop outcome. Identifiers only, never block
+            text. Does not change the answer.
         runId:
           type: string
           format: uuid
@@ -13913,6 +14095,7 @@ components:
             - ENABLE_VECTOR_STORE_REBUILD: Allow admins to clean up and reindex the vector store
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+            - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -14608,7 +14791,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT.
+            ENABLE_USER_CONTEXT, ENABLE_NAMED_ENTITY_EXTRACTION.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -27235,7 +27418,7 @@ paths:
 
         **User IDs:** Provide graph user document IDs (the `id` field from list permissions / user `graphId` after graph sync), not Mongo user `_id` values.
 
-        **Request body:** Send both `userIds` and `teamIds` arrays (use `[]` when not removing that entity type). Omitting either field can cause a server error because the controller reads `.length` on both arrays.
+        **Request body:** Send `userIds`, `teamIds`, or both. Either array may be omitted; a request that names neither, or sends both empty, returns **400**.
 
         Users or teams without an existing permission on the KB are skipped. If none of the supplied entities have a permission to remove, the request returns **404**.
 
@@ -32514,7 +32697,12 @@ paths:
         '400':
           description: |
             Invalid request — `query` is missing, empty, or the request
-            body fails validation.
+            body fails validation, including an unusable
+            `filters.entityFilters` or any `filters.where`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: |
             Missing or invalid bearer token.
@@ -32525,6 +32713,14 @@ paths:
           description: |
             A referenced knowledge base or app filter could not be
             resolved.
+        '422':
+          description: |
+            `filters.entityFilters` matches too many records the caller can
+            read. Narrow it: a tighter range, a name, or fewer kinds.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Unexpected server error while executing the search, or the
@@ -36011,9 +36207,13 @@ paths:
       responses:
         '200':
           description: |
-            Successful operation. When the record has no available content
-            (e.g. not indexed), `content` is the literal `No record found`
-            rather than an error status.
+            Successful operation. When the record exists but its content is
+            not indexed yet, `content` describes the record (name, link,
+            dates) and ends with a `Not indexed:` paragraph naming its
+            indexing status. When the record is indexed but its stored
+            content could not be loaded, `content` is the literal
+            `No record found`. Neither is an error status. An id that does
+            not exist, or a record the caller may not read, answers `403`.
           content:
             application/json:
               schema:
@@ -36672,15 +36872,28 @@ paths:
         stored value, so the configuration can be sent back as it was read. The
         response masks stored secrets the same way.<br><br>
         <b>Signing out:</b><br>
-        Only a change to <code>auth</code>, or a different top-level
-        <code>oauthConfigId</code>, signs the connector out and clears its OAuth
-        tokens. Sending <code>auth</code> back unchanged, with secrets as the mask,
-        keeps it signed in.<br><br>
-        <b>OAuth apps:</b><br>
-        A new secret in <code>auth</code> replaces only this connector's own stored
-        value. It does not change the <code>clientSecret</code> of a linked OAuth app,
-        which is what sign-in uses. To rotate that, update the OAuth app
-        (<code>PUT /oauth/{connectorType}/{configId}</code>).
+        A change to <code>auth</code>, a different top-level <code>oauthConfigId</code>,
+        or a linked OAuth app that now holds a different client signs the connector
+        out and clears its OAuth tokens. Sending <code>auth</code> back as it was read,
+        with secrets as the mask or in full, keeps it signed in.<br><br>
+        <b>OAuth apps (OAUTH connectors):</b><br>
+        An OAUTH connector signs in with the client ID and secret of its linked OAuth
+        app, so client credentials an admin sends in <code>auth</code> go into an app,
+        as on <code>PUT /{connectorId}/config/auth</code>:
+        <ul>
+          <li>On a connector with no app, an app is created from them and linked
+          (<code>auth.oauthConfigId</code> in the response) once every required OAuth
+          field is present; until then the values are kept on the connector.</li>
+          <li>On a linked connector, changed values update the app named in
+          <code>auth.oauthConfigId</code>, and only the fields that changed. Without that
+          field a new app is created and linked; the previously linked app, which other
+          connectors may share, is not changed.</li>
+          <li>The new app is named <code>auth.oauthInstanceName</code>, or else after the
+          connector.</li>
+        </ul>
+        A linked connector stores no copy of its app's secret fields: they are not
+        stored, and not returned, in <code>config.auth</code>. Its client ID and provider
+        URLs are the app's. Only an admin's credentials create or change an app.
       operationId: updateConnectorConfig
       security:
         - bearerAuth: []
@@ -36714,10 +36927,23 @@ paths:
           description: |
             Invalid configuration or connector is active.
             Disable connector before updating.
+            For an OAUTH connector also: a new client ID sent without its client
+            secret; a replacement OAuth app that would lack a required field; or a
+            client secret sent while the connector still lacks its own authorize and
+            token URLs (ServiceNow). Nothing is stored.
         '401':
           description: Unauthorized
         '404':
-          description: Connector not found
+          description: Connector, or the OAuth app named in <code>auth.oauthConfigId</code>, not found
+        '409':
+          description: |
+            An OAuth app with the name the new app would take already exists in the
+            organization. Send a different <code>auth.oauthInstanceName</code>, or name the
+            app to update in <code>auth.oauthConfigId</code>.
+        '500':
+          description: |
+            The OAuth app or the connector's settings could not be stored. An app this
+            request created is removed, and an app it updated is put back.
 
   /connectors/{connectorId}/config/auth:
     put:
@@ -38456,6 +38682,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Instance retrieved successfully
@@ -38707,6 +38934,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configs retrieved successfully
@@ -39842,6 +40070,7 @@ paths:
           in: query
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configurations retrieved
@@ -39935,6 +40164,7 @@ paths:
           required: true
           schema:
             type: string
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -40373,6 +40603,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: SMTP configuration retrieved
@@ -40450,6 +40682,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Azure AD configuration retrieved
@@ -40498,6 +40732,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Microsoft auth configuration retrieved
@@ -40546,6 +40782,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Google auth configuration retrieved
@@ -40649,6 +40887,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: OAuth configuration retrieved
@@ -40682,6 +40922,7 @@ paths:
           schema:
             $ref: '#/components/schemas/ModelType'
           description: Type of AI model
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Models retrieved
@@ -41716,6 +41957,8 @@ paths:
       security:
         - bearerAuth: []
         - oauth2: [config:read]
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Web search providers and settings retrieved
@@ -42093,6 +42336,7 @@ paths:
         - ENABLE_VECTOR_STORE_REBUILD: Enable vector store cleanup/reindex from Connectors (default: false)
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
+        - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -42251,8 +42495,10 @@ paths:
       description: |
         Tells the settings UI whether to offer its "show stored values" button. Where it
         is available, an admin can add `?reveal=true` to a configuration GET (SMTP, AI
-        models by type, web search, Slack bot) to receive the stored values instead of
-        placeholders. The flag is ignored for OAuth-app tokens. Admin only.
+        models by type, web search, Slack bot, sign-in providers under `authConfig/*`,
+        connector and action OAuth apps, action credentials) to receive the stored values
+        instead of placeholders. Secrets are masked by default when `HIDE_SECRET_CONFIG=true`.
+        The flag is ignored for OAuth-app tokens. Admin only.
       operationId: getSecretRevealStatus
       security:
         - bearerAuth: []
@@ -42760,6 +43006,8 @@ paths:
       operationId: getSlackBotConfigs
       security:
         - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RevealStoredSecrets'
       responses:
         '200':
           description: Slack bot configs retrieved

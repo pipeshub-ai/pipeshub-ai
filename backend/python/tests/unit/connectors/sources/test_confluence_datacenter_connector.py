@@ -2399,11 +2399,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -4075,10 +4075,11 @@ class TestGetAppUsersByEmailsFullCoverage:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrlFullCoverage:

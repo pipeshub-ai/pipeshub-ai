@@ -479,3 +479,83 @@ class TestDepartmentLookupIsOrgAware:
 
         departments = [e.entity_id for e in entities if e.entity_type.value == "department"]
         assert departments == ([expected] if expected else [])
+
+
+def _neo4j_node(properties: dict, collection: str) -> dict:
+    """What the Neo4j provider returns for a node with these properties."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    return Neo4jProvider._neo4j_to_arango_node(MagicMock(), properties, collection)
+
+
+class TestTaxonomyNodeWithoutKey:
+    """A taxonomy node with no `id` property (Neo4j) has no key. Linking to it
+    wrote an edge to "<collection>/None" and an entity with no id, which
+    failed the record's metadata save."""
+
+    @staticmethod
+    def _store(monkeypatch, nodes_for) -> AsyncMock:
+        store = _make_tx_store()
+        store.get_nodes_by_filters = AsyncMock(
+            side_effect=lambda collection, filters, **_kwargs: nodes_for(collection, filters),
+        )
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn: store,
+        )
+        return store
+
+    @staticmethod
+    def _edge_targets(store) -> list[str]:
+        return [
+            f"{edge['to_collection']}/{edge['to_id']}"
+            for call in store.batch_create_edges.call_args_list
+            for edge in call.args[0]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_edge_or_entity_for_a_node_without_a_key(self, monkeypatch) -> None:
+        logger = MagicMock()
+        transformer = _make_transformer(logger=logger)
+        store = self._store(
+            monkeypatch,
+            lambda collection, filters: [_neo4j_node({"name": filters.get("name")}, collection)],
+        )
+        metadata = SemanticMetadata(
+            categories=["Finance"], sub_category_level_1="Budget",
+            topics=["Tax"], languages=["English"], departments=[],
+        )
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert entities == []
+        assert not [t for t in self._edge_targets(store) if t.endswith("/None")]
+        assert store.batch_create_edges.await_count == 0
+        # A keyless match is not replaced by a new node of the same name.
+        assert all(
+            call.args[1] == CollectionNames.RECORDS.value
+            for call in store.batch_upsert_nodes.call_args_list
+        )
+        assert store.batch_update_nodes.call_args.args[0][0]["extractionStatus"] == "COMPLETED"
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keyed", [
+        {"_key": "cat-1", "name": "Finance"},
+        _neo4j_node({"id": "cat-1", "name": "Finance"}, CollectionNames.CATEGORIES.value),
+    ], ids=["arangodb", "neo4j"])
+    async def test_a_keyed_node_of_the_same_name_is_linked(self, monkeypatch, keyed) -> None:
+        transformer = _make_transformer()
+        keyless = _neo4j_node({"name": "Finance"}, CollectionNames.CATEGORIES.value)
+        store = self._store(
+            monkeypatch,
+            lambda collection, filters: (
+                [keyless, keyed] if collection == CollectionNames.CATEGORIES.value else []
+            ),
+        )
+        metadata = SemanticMetadata(categories=["Finance"], topics=[], languages=[], departments=[])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert [e.entity_id for e in entities] == ["cat-1"]
+        assert self._edge_targets(store) == [f"{CollectionNames.CATEGORIES.value}/cat-1"]

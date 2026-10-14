@@ -38,6 +38,7 @@ be and let an operator raise it.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
 
 from app.utils.env_utils import env_int
@@ -72,10 +73,28 @@ class ImagePolicy:
     # Where `max_images_per_request` came from, for logs and tests:
     # "env" | "provider" | "unknown-default" | "text-only".
     source: str
+    # Whether part of the cap is held back for images the user or the model
+    # asked for. False only for `permissive_policy`, whose cap is the
+    # conversation ceiling rather than a model limit.
+    reserve_for_requested: bool = True
 
     @property
     def allows_images(self) -> bool:
         return self.max_images_per_request > 0
+
+    @property
+    def max_retrieved_images(self) -> int:
+        """How many of the cap search hits, prefetch and history may take.
+
+        Retrieval runs before the model can ask for anything, so without a
+        reserve it fills the cap and a record the model then fetches for its
+        figures gets none. `ceil(cap / 2)` stays free for attachments and
+        fetched records, which may use the whole cap.
+        """
+        cap = self.max_images_per_request
+        if not self.reserve_for_requested:
+            return cap
+        return cap - math.ceil(cap / 2)
 
 
 def _policy(
@@ -144,7 +163,7 @@ def permissive_policy(max_images: int) -> ImagePolicy:
     Kept here so every `ImagePolicy` value in the system is constructed by
     this module and nothing else invents limits.
     """
-    return _policy(max_images, source="permissive")
+    return replace(_policy(max_images, source="permissive"), reserve_for_requested=False)
 
 
 def _normalize_provider(provider: str | None) -> str:

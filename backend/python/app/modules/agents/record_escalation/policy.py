@@ -209,7 +209,23 @@ def build_candidates(
     )
 
 
-def policy_text(tool_ref: str) -> str:
+# Under a full-read policy (enterprise search with THOROUGH_RETRIEVAL), every
+# text that tells the model when it may skip a fetch says this instead of
+# "the fact is already visible in a block".
+ONE_BLOCK_IS_NOT_ENOUGH = (
+    "A fact seen in one block still needs the rest of the record when your "
+    "answer rests on it: the rest can revise, qualify or complete it."
+)
+
+
+# The only exits a full-read policy leaves; every text that states one uses this.
+FULL_READ_SKIP = (
+    "you already hold the record in full or nearly so, or its metadata alone "
+    "(status, assignee) settles the question"
+)
+
+
+def policy_text(tool_ref: str, *, read_in_full: bool = False) -> str:
     """
     Return the full-record fetch policy injected into system prompts.
 
@@ -224,7 +240,25 @@ def policy_text(tool_ref: str) -> str:
     equal billing reads as permission to stop after step 1.
 
     `tool_ref` is the tool name the model should call.
+
+    ``read_in_full`` (enterprise search under THOROUGH_RETRIEVAL) narrows the
+    skip case to a record already held in full: an answer resting on a fact
+    seen in one block used an outdated value or half a list, which the rest
+    of the record would have revised or completed.
     """
+    skip_case = (
+        f"{FULL_READ_SKIP}."
+        if read_in_full else
+        "the exact fact needed is already visible in a block you hold, or "
+        "metadata alone (status, assignee) settles the goal."
+    )
+    # In the scope sentence, not after the skip clause, where "This covers
+    # both..." would read as narrowing the one-block rule to its two cases.
+    single_fact = (
+        ", and a single fact seen in one block that your answer rests on: the "
+        "rest of the record can revise, qualify or complete it"
+        if read_in_full else ""
+    )
     return (
         f"## Reading Records in Full\n\n"
         f"Search results are ranked fragments, not complete documents. "
@@ -233,12 +267,10 @@ def policy_text(tool_ref: str) -> str:
         f"each record the question is actually about:\n\n"
         f"1. Is the record relevant? If not, skip it.\n"
         f"2. If it is relevant, call `{tool_ref}` with those record_ids in "
-        f"ONE call, then answer — UNLESS the exact fact needed is already "
-        f"visible in a block you hold, or metadata alone (status, assignee) "
-        f"settles the goal. This covers both no content yet from lookup/"
+        f"ONE call, then answer — UNLESS {skip_case} This covers both no content yet from lookup/"
         f"navigate/list_files, and incomplete coverage for a whole-document "
         f"property (a summary, risks or key points, a comparison, whether it "
-        f"mentions something anywhere). Never infer content from a title.\n\n"
+        f"mentions something anywhere){single_fact}. Never infer content from a title.\n\n"
         f"A retrieval result may include a candidate list showing how much of "
         f"each record you hold ('you have 4 of 87 blocks'), which tells you "
         f"whether reading further would add anything; use it when present. "

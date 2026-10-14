@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -41,6 +42,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -258,6 +260,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
 
+        app.state.entity_store_warmup_task = asyncio.create_task(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
         # Collections created before keyword scoring was fixed (Qdrant IDF,
         # OpenSearch stemming) are updated in place. A deployment that only
         # serves search never reaches the indexing write path that would
@@ -357,7 +363,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task",
+        "lexical_reconcile_task", "entity_store_warmup_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -486,7 +492,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s", request.method, request.url, errors
+        "Request validation failed for %s %s: %s",
+        request.method,
+        redact_sensitive_query_params(str(request.url)),
+        errors,
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})

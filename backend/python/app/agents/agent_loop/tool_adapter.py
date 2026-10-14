@@ -7,11 +7,13 @@ that are built by factory functions and have no toolset registry entry.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.decorators import accepted_argument_names, reject_unknown_arguments
 from app.modules.agents.context.tool_descriptions import _extract_parameters_from_schema
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
 from app.modules.agents.qna.helpers import clean_tool_result
@@ -283,24 +285,7 @@ def _stringify(payload: Any) -> str:  # noqa: ANN401
         return str(payload)
 
 
-class _PermissiveValidationMixin:
-    """PipesHub tools tolerate loosely-typed LLM tool-call arguments today
-    (no Pydantic re-validation happens between `RegistryToolWrapper.arun()`
-    and the underlying action — see `_execute_class_method_async`, which
-    just filters to known parameter names). `agent_loop.tools.base.Tool`'s
-    default `validate()` is strict (rejects unknown keys, raises on type
-    mismatches like an LLM sending `"5"` for an int field) and runs BEFORE
-    `execute()` inside `ToolExecutor._run()`, so overriding it here is the
-    only way to preserve the legacy path's lenient behavior — real failures
-    still surface as a normal `ToolOutput(success=False, ...)` from
-    `execute()`'s own error handling instead of a hard `ToolValidationError`.
-    """
-
-    def validate(self, kwargs: dict[str, Any]) -> None:
-        return
-
-
-class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
+class PipesHubStructuredToolAdapter(Tool):
     """Wraps a per-request dynamic LangChain `StructuredTool` (built by the
     factory functions in `tool_system.py`/`app/utils/*_tool.py`) as an
     agent-loop `Tool`. These have no `_global_tools_registry` entry, so
@@ -337,7 +322,14 @@ class PipesHubStructuredToolAdapter(_PermissiveValidationMixin, Tool):
         return _params_from_schema(getattr(self._structured_tool, "args_schema", None), self.name)
 
     def validate(self, kwargs: dict[str, Any]) -> None:
-        """Permissive validation — dynamic tools handle their own input normalization."""
+        """Only unknown argument names are rejected; dynamic tools normalize
+        loosely typed values themselves."""
+        reject_unknown_arguments(self._accepted_args, kwargs)
+
+    @functools.cached_property
+    def _accepted_args(self) -> frozenset[str] | None:
+        target = getattr(self._structured_tool, "coroutine", None) or getattr(self._structured_tool, "func", None)
+        return accepted_argument_names(target) if target is not None else None
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         coroutine = getattr(self._structured_tool, "coroutine", None)
