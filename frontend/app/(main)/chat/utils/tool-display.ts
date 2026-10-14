@@ -32,6 +32,11 @@ export function isSkillTool(toolName: string | undefined): boolean {
   return !!toolName && Object.prototype.hasOwnProperty.call(SKILL_TOOL_LABELS, toolName);
 }
 
+/** MCP tools are named `mcp_{server}_{tool}`; toolset tools carry an `{app}__` prefix instead. */
+export function isMcpTool(toolName: string | undefined): boolean {
+  return !!toolName && toolName.startsWith('mcp_') && !toolName.includes('__');
+}
+
 /** Drops any `{app}__` namespace prefix, splits on separators, title-cases. */
 export function humanizeToolName(name: string): string {
   const segment = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
@@ -87,7 +92,7 @@ function replaceToolCall(parts: MessagePart[], next: MessagePart): MessagePart[]
  * from the backend's `displayName`. */
 export function extractToolsetLabel(toolName: string | undefined): string | undefined {
   if (!toolName) return undefined;
-  if (!toolName.includes('__')) return toolName.startsWith('mcp_') ? 'MCP' : undefined;
+  if (!toolName.includes('__')) return isMcpTool(toolName) ? 'MCP' : undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;
   const words = prefix.split(/[_\-\s]+/).filter(Boolean);

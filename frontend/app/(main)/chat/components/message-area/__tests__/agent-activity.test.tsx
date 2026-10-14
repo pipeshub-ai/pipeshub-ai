@@ -393,19 +393,19 @@ describe('ToolCallCard — raw arguments and result', () => {
   });
 
   it('shows the raw arguments when there is no summary', () => {
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
 
     expect(screen.getByText(/"q": "hi"/)).toBeTruthy();
   });
 
   it.each(['{}', 'null', '   '])('hides the Arguments section for empty args %j', (args) => {
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args });
 
     expect(screen.queryByText('Arguments')).toBeNull();
   });
 
   it('labels the arguments section', () => {
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
 
     expect(screen.getByText('Arguments')).toBeTruthy();
   });
@@ -440,20 +440,20 @@ describe('ToolCallCard — raw arguments and result', () => {
 
   it('shows a truncated (non-JSON) preview verbatim', () => {
     const preview = '{"events":[{"id":1},… [truncated: 9000 chars total]';
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', resultPreview: preview });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', resultPreview: preview });
 
     expect(screen.getByText(preview)).toBeTruthy();
   });
 
   it('shows the reason for a blocked call', () => {
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'blocked', resultPreview: 'denied by policy' });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'blocked', resultPreview: 'denied by policy' });
 
     expect(screen.getByText('Blocked')).toBeTruthy();
     expect(screen.getByText('denied by policy')).toBeTruthy();
   });
 
   it('says a call is waiting for approval', () => {
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'awaiting_approval', resultPreview: 'Waiting for your approval' });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'awaiting_approval', resultPreview: 'Waiting for your approval' });
 
     expect(screen.getByText('Waiting for approval')).toBeTruthy();
   });
@@ -461,11 +461,56 @@ describe('ToolCallCard — raw arguments and result', () => {
   it('copies the formatted payload', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
-    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'x', status: 'completed', args: '{"q":"hi"}' });
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'mcp_demo_lookup', status: 'completed', args: '{"q":"hi"}' });
 
     fireEvent.click(screen.getByRole('button', { name: /copy/i }));
 
     expect(writeText).toHaveBeenCalledWith('{\n  "q": "hi"\n}');
+  });
+});
+
+describe('ToolCallCard — a tool that is not from an MCP server', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  it('shows only the summaries, as before, without the raw payloads', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'load_skill',
+      status: 'completed',
+      argsSummary: 'Loading skill pptx',
+      args: '{"name":"pptx"}',
+      resultSummary: 'Loaded skill pptx',
+      resultPreview: '# pptx',
+    });
+
+    expect(screen.getByText('Loading skill pptx')).toBeTruthy();
+    expect(screen.getByText('Loaded skill pptx')).toBeTruthy();
+    expect(screen.queryByText(/"name"/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /copy/i })).toBeNull();
+  });
+
+  it('shows the raw result, unformatted, only when there is no summary', () => {
+    expand({ type: 'tool_call', toolCallId: 'c', toolName: 'list_toolsets', status: 'completed', resultPreview: '{"toolsets":[]}' });
+
+    expect(screen.getByText('{"toolsets":[]}')).toBeTruthy();
+  });
+
+  it('ignores a result view', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'c',
+      toolName: 'knowledgegraph__search',
+      status: 'completed',
+      resultSummary: 'Found 2 records',
+      resultView: { kind: 'records', columns: ['Name'], rows: [{ cells: ['A'] }], total: 1 },
+    });
+
+    expect(screen.getByText('Found 2 records')).toBeTruthy();
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
   });
 });
 

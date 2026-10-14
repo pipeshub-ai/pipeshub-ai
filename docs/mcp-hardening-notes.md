@@ -24,8 +24,8 @@ Ready to paste into the pull request.
 **What and why.** This reworks how PipesHub connects to MCP servers: more reliable tool calls,
 safer handling of servers and credentials, and more control over what agents may run.
 
-- **Readable tool calls:** clear arguments, a one-line summary of each result, and a small table
-  of what a tool found.
+- **Readable MCP tool calls:** clear arguments, a one-line summary of each result, and a small
+  table of what a tool found.
 - **Tool selection:** an agent gets all of a server's tools, or only the ones chosen for it.
 - **Faster chats:** a server's tool list is cached per sign-in instead of being fetched on every
   turn.
@@ -219,8 +219,8 @@ and the agent stays. That flow is kept. On top of it:
 
 **Interface**
 - **Chat:**
-  - tool cards show real arguments;
-  - results get a one-line summary ("Found 23 issues") and a small table of what was found,
+  - MCP tool cards show the real arguments (other tools keep their summaries, as before);
+  - MCP results get a one-line summary ("Found 23 issues") and a small table of what was found,
     with links, or a record's fields. The raw output is behind "View raw". The view is built on
     the backend from the full result, is size-limited, and is the same after a reload;
   - an agent chat stopped on an unconnected server offers Connect;
@@ -398,8 +398,9 @@ and the agent stays. That flow is kept. On top of it:
     small, self-healing lost-update window.
 
 #### Reviewing this PR
-It is large (about 340 files, +43k/−4.5k lines), in two commits: the rework, then round 7 (fixes
-from live testing with more servers). The notes follow the work in order:
+It is large (about 340 files, +43k/−4.5k lines), in three commits: the rework, round 7 (fixes
+from live testing with more servers), and the raw tool-card views kept to MCP tools. The notes
+follow the work in order:
 1. phases 0 to 6, then round 2: security, reliability, sign-in, UI;
 2. round 3: the `mcp` 2.x move, the tool cache, approvals, Slack;
 3. round 4: the testbed decisions and the in-chat sign-in;

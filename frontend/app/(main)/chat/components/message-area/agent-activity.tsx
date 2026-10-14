@@ -28,6 +28,7 @@ import { createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
   extractToolsetLabel,
+  isMcpTool,
   isSkillTool,
   toolActivityLabel as toolActivityLabelUtil,
 } from '../../utils/tool-display';
@@ -812,21 +813,10 @@ function PlainResultText({ text }: { text: string }) {
  * `getTimelineIcon`); nested usage inside an expanded `ToolCallGroup` has
  * no rail of its own, so it keeps its own inline icon (the default). */
 export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; showIcon?: boolean }) {
-  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const status = part.status ?? 'running';
   const toolsetLabel = extractToolsetLabel(part.toolName);
   const sourceInfo = extractSourcesFromSummary(part.argsSummary);
-  const hasRawArgs = !isEmptyToolArgs(part.args);
-  // A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file
-  // content (see `LoadSkillTool`/`LoadSkillResourceTool.summarize_result`) — never
-  // worth showing.
-  const showRawResult = Boolean(part.resultPreview) && !isSkillTool(part.toolName);
-  const rawResult = part.resultPreview ?? '';
-  const view = useMemo(() => (status === 'completed' ? toolResultView(part.resultView) : null), [status, part.resultView]);
-  const plainResult = showRawResult && !view && !looksLikeJson(rawResult);
-  // Prose whose first line is the summary needn't say it twice.
-  const summaryShown = Boolean(part.resultSummary) && !(plainResult && part.resultSummary?.trim() === rawResult.trim().split('\n')[0]?.trim());
 
   return (
     <Box
@@ -911,45 +901,109 @@ export function ToolCallCard({ part, showIcon = true }: { part: MessagePart; sho
             gap: 'var(--space-2)',
           }}
         >
-          {(part.argsSummary || hasRawArgs) && (
-            <Box>
-              <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
-                {t('chat.toolCard.arguments')}
-              </Text>
-              {part.argsSummary && <ToolSummaryText content={part.argsSummary} />}
-              {hasRawArgs && <RawToolPayload raw={part.args ?? ''} />}
-            </Box>
-          )}
-          {(part.resultSummary || showRawResult || view) && (
-            <Box>
-              <Text
-                size="1"
-                weight="medium"
-                style={{ color: status === 'failed' ? 'var(--red-11)' : 'var(--slate-9)' }}
-              >
-                {status === 'failed'
-                  ? t('chat.toolCard.error')
-                  : status === 'blocked'
-                    ? t('chat.toolCard.blocked')
-                    : status === 'awaiting_approval'
-                      ? t('chat.toolCard.awaitingApproval')
-                      : t('chat.toolCard.result')}
-              </Text>
-              {summaryShown && <ToolSummaryText content={part.resultSummary ?? ''} />}
-              {view && <ToolResultViewBlock view={view} />}
-              {showRawResult &&
-                (view ? (
-                  <RawResultToggle raw={rawResult} />
-                ) : plainResult ? (
-                  <PlainResultText text={rawResult} />
-                ) : (
-                  <RawToolPayload raw={rawResult} />
-                ))}
-            </Box>
+          {isMcpTool(part.toolName) ? (
+            <McpToolDetails part={part} status={status} />
+          ) : (
+            <ToolDetails part={part} status={status} />
           )}
         </Box>
       )}
     </Box>
+  );
+}
+
+const RESULT_LABEL_KEY: Record<NonNullable<MessagePart['status']>, string> = {
+  running: 'chat.toolCard.result',
+  completed: 'chat.toolCard.result',
+  failed: 'chat.toolCard.error',
+  blocked: 'chat.toolCard.blocked',
+  awaiting_approval: 'chat.toolCard.awaitingApproval',
+};
+
+function ResultLabel({ status }: { status: NonNullable<MessagePart['status']> }) {
+  const { t } = useTranslation();
+  return (
+    <Text size="1" weight="medium" style={{ color: status === 'failed' ? 'var(--red-11)' : 'var(--slate-9)' }}>
+      {t(RESULT_LABEL_KEY[status])}
+    </Text>
+  );
+}
+
+const TOOL_TEXT_STYLE: React.CSSProperties = {
+  fontFamily: 'var(--font-mono, monospace)',
+  fontSize: 'var(--font-size-1)',
+  color: 'var(--slate-11)',
+  whiteSpace: 'pre-wrap',
+  wordBreak: 'break-word',
+};
+
+/** A built-in or toolset tool: the server's summary, or the raw text when there is none. */
+function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {(part.argsSummary || part.args) && (
+        <Box>
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.toolCard.arguments')}
+          </Text>
+          {part.argsSummary ? <ToolSummaryText content={part.argsSummary} /> : <Box style={TOOL_TEXT_STYLE}>{part.args}</Box>}
+        </Box>
+      )}
+      {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content
+          (see `LoadSkillTool`/`LoadSkillResourceTool.summarize_result`): never worth showing. */}
+      {(part.resultSummary || (part.resultPreview && !isSkillTool(part.toolName))) && (
+        <Box>
+          <ResultLabel status={status} />
+          {part.resultSummary ? (
+            <ToolSummaryText content={part.resultSummary} />
+          ) : (
+            <Box style={TOOL_TEXT_STYLE}>{part.resultPreview}</Box>
+          )}
+        </Box>
+      )}
+    </>
+  );
+}
+
+/** An MCP tool: the summary plus the raw arguments, and a table or fields of what it found with
+ * the raw output, since an external server's payload is all the person can check it against. */
+function McpToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
+  const { t } = useTranslation();
+  const hasRawArgs = !isEmptyToolArgs(part.args);
+  const showRawResult = Boolean(part.resultPreview);
+  const rawResult = part.resultPreview ?? '';
+  const view = useMemo(() => (status === 'completed' ? toolResultView(part.resultView) : null), [status, part.resultView]);
+  const plainResult = showRawResult && !view && !looksLikeJson(rawResult);
+  // Prose whose first line is the summary needn't say it twice.
+  const summaryShown = Boolean(part.resultSummary) && !(plainResult && part.resultSummary?.trim() === rawResult.trim().split('\n')[0]?.trim());
+  return (
+    <>
+      {(part.argsSummary || hasRawArgs) && (
+        <Box>
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.toolCard.arguments')}
+          </Text>
+          {part.argsSummary && <ToolSummaryText content={part.argsSummary} />}
+          {hasRawArgs && <RawToolPayload raw={part.args ?? ''} />}
+        </Box>
+      )}
+      {(part.resultSummary || showRawResult || view) && (
+        <Box>
+          <ResultLabel status={status} />
+          {summaryShown && <ToolSummaryText content={part.resultSummary ?? ''} />}
+          {view && <ToolResultViewBlock view={view} />}
+          {showRawResult &&
+            (view ? (
+              <RawResultToggle raw={rawResult} />
+            ) : plainResult ? (
+              <PlainResultText text={rawResult} />
+            ) : (
+              <RawToolPayload raw={rawResult} />
+            ))}
+        </Box>
+      )}
+    </>
   );
 }
 
