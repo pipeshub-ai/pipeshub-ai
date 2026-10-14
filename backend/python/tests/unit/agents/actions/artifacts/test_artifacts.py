@@ -181,6 +181,19 @@ class TestBinaryDocumentsMustBeReal:
         assert "not a real PDF file" in json.loads(payload)["error"]
         registry.register_output.assert_not_awaited()
 
+    async def test_a_zip_under_a_pdf_name_is_refused_even_with_a_word_mime_type(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(
+            name="notes.pdf", content=base64.b64encode(b"PK\x03\x04zip").decode(), is_base64=True,
+            mime_type=DOCX_MIME,
+        )
+
+        assert success is False
+        assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
     async def test_updating_a_docx_artifact_with_text_is_refused(self) -> None:
         registry = MagicMock()
         registry.resolve = AsyncMock(return_value=_make_metadata(name="minutes.docx", mime_type=DOCX_MIME))
