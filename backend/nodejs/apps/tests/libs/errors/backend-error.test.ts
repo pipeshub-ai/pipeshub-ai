@@ -147,6 +147,14 @@ describe('handleBackendError', () => {
       )
     })
 
+    it("keeps Python's 503 for an unreadable user record", () => {
+      const detail =
+        "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+      const result = handleBackendError({ statusCode: 503, data: { detail } }, 'get team')
+      expect(result).to.be.instanceOf(ServiceUnavailableError)
+      expect(result.message).to.equal(detail)
+    })
+
     // An unknown 5xx message is replaced however readable it looks: guessing
     // from shape is what let topology through.
     for (const [label, detail] of [

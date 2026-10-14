@@ -47,6 +47,9 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // (PERMISSION_CHECK_UNAVAILABLE_MESSAGE) — the 503 when search cannot read
   // which documents the user may see, and shows none.
   "We couldn't check which documents you have access to just now, so no results are shown. Please try again in a minute.",
+  // backend/python/app/utils/user_messages.py (DATABASE_UNREACHABLE) — the 503
+  // when a route cannot read the calling user's record.
+  "We couldn't reach PipesHub's database just now. Please try again in a few seconds.",
 ]);
 
 const normalise = (text: string): string => text.trim().replace(/\s+/g, ' ');
