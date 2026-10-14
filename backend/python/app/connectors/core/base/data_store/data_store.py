@@ -508,7 +508,12 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_records_linking_to_weburls(
-        self, weburls: list[str], org_id: str, connector_names: list[str]
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: Optional[str] = None,
     ) -> list[str]:
         """Records holding a link to any of ``weburls``; see IGraphDBProvider."""
         pass

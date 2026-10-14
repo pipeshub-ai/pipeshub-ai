@@ -67,12 +67,18 @@ def _clean(url: str) -> str:
     return url
 
 
-def _dedup(values: list[str]) -> tuple[str, ...]:
+def _dedup(values: list[str], cap: int = _MAX_CANDIDATES) -> tuple[str, ...]:
     seen: list[str] = []
     for value in values:
         if value and value not in seen:
             seen.append(value)
-    return tuple(seen[:_MAX_CANDIDATES])
+    return tuple(seen[:cap])
+
+
+def _is_github_host(host: str) -> bool:
+    # github.com, or a GitHub Enterprise server named for it (github.corp.example).
+    # Another site's /a/b/issues/1 is not a GitHub address.
+    return host == "github.com" or host.endswith(".github.com") or "github" in host.split(".")
 
 
 def _origin(parts: SplitResult) -> str:
@@ -100,7 +106,7 @@ def link_target(url: str) -> LinkTarget | None:
     origin = _origin(parts)
     path = parts.path
 
-    github = _GITHUB_PATH.match(path)
+    github = _GITHUB_PATH.match(path) if _is_github_host(origin.split("://", 1)[1]) else None
     if github:
         owner, repo, kind, number = github.groups()
         base = f"{origin}/{owner}/{repo}"
@@ -135,18 +141,32 @@ def link_target(url: str) -> LinkTarget | None:
 
 
 def addresses_linking_to(weburl: str | None) -> tuple[str, ...]:
-    """The addresses a link to the record stored at ``weburl`` is usually pasted
-    as. Used from the record's side: when it is indexed after the link was."""
+    """The ``webUrl`` a link record pointing at the record stored at ``weburl``
+    can have. Used from the record's side, when it is indexed after the link was.
+
+    A link record keeps the canonical form of what was pasted (``link_target``),
+    so the canonical forms of this record's own address match it whatever query,
+    anchor or tab the paste carried. Link records written before that kept the
+    raw paste; the plain forms of it (trailing slash, a pull request tab) match
+    those too.
+    """
     if not isinstance(weburl, str) or not weburl:
         return ()
     target = link_target(weburl)
     if target is None:
         return ()
-    stored = _clean(weburl)
-    forms = [stored, target.url, target.url + "/"]
+    forms = [target.url, *target.candidates, _clean(weburl), target.url + "/"]
     if target.record_type is RecordType.PULL_REQUEST:
         forms.extend(f"{target.url}/{tab}" for tab in _GITHUB_PR_TABS)
-    return _dedup(forms)
+    return _dedup(forms, cap=16)
+
+
+def canonical_address(url: str) -> str:
+    """The form a link record stores for a pasted address: what
+    ``addresses_linking_to`` looks for. The address itself when it is not one
+    ``link_target`` reads."""
+    target = link_target(url)
+    return target.url if target is not None else url
 
 
 def related_for_urls(urls: list[str]) -> list[RelatedExternalRecord]:

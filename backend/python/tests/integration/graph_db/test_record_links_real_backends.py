@@ -165,6 +165,12 @@ async def test_finds_the_records_living_at_the_addresses(seeded: _Graph) -> None
     assert found[seeded.ids["attachment"]]["isDependentNode"] is True
 
 
+async def test_a_tight_limit_keeps_the_ticket_over_its_attachment(seeded: _Graph) -> None:
+    rows = await seeded.graph.get_records_by_weburls([JIRA], seeded.org_id, limit=1)
+
+    assert [row["id"] for row in rows] == [seeded.ids["ticket"]]
+
+
 async def test_link_records_are_not_where_an_address_lives(seeded: _Graph) -> None:
     rows = await seeded.graph.get_records_by_weburls([PR + "/files"], seeded.org_id)
 
@@ -175,6 +181,16 @@ async def test_finds_the_message_holding_a_link_to_the_address(seeded: _Graph) -
     holders = await seeded.graph.get_records_linking_to_weburls([PR, PR + "/files"], seeded.org_id, [SLACK])
 
     assert holders == [seeded.ids["message"]]
+
+
+async def test_holders_are_paged_in_id_order(seeded: _Graph) -> None:
+    both = [Connectors.SLACK_WORKSPACE.value, Connectors.LINEAR.value]
+    first = await seeded.graph.get_records_linking_to_weburls([PR + "/files"], seeded.org_id, both, limit=1)
+    rest = await seeded.graph.get_records_linking_to_weburls(
+        [PR + "/files"], seeded.org_id, both, limit=1, after=first[0]
+    )
+
+    assert first + rest == sorted([seeded.ids["message"], seeded.ids["other_holder"]])
 
 
 async def test_only_the_named_connectors_and_org_are_read(seeded: _Graph) -> None:

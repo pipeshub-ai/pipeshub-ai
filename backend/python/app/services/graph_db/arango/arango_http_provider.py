@@ -5438,6 +5438,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND record.recordType != "LINK"
                 AND record.isPlaceholder != true
                 AND {aql_live_record("record")}
+            SORT record.isDependentNode == true, record._key
             LIMIT @limit
             RETURN {{
                 id: record._key,
@@ -5455,7 +5456,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) or []
         except Exception as e:
             self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
-            return []
+            raise
 
     async def get_records_linking_to_weburls(
         self,
@@ -5463,6 +5464,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         connector_names: list[str],
         limit: int = 100,
+        after: str | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         if not weburls or not org_id or not connector_names:
@@ -5479,7 +5481,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", holder)
                     AND holder.orgId == @org_id
                     AND {aql_live_record("holder")}
+                FILTER @after == null OR holder._key > @after
                 COLLECT id = holder._key
+                SORT id
                 LIMIT @limit
                 RETURN id
         """
@@ -5491,12 +5495,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "org_id": org_id,
                     "connector_names": list(connector_names),
                     "limit": limit,
+                    "after": after,
                 },
                 txn_id=transaction,
             ) or []
         except Exception as e:
             self.logger.error("❌ get_records_linking_to_weburls failed: %s", str(e))
-            return []
+            raise
 
     async def get_records_by_parent(
         self,

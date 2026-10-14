@@ -232,3 +232,46 @@ class TestJoinedWhenTheLinkedRecordArrivesLater:
         await proc._join_records_linking_here(no_address, tx)
 
         tx.get_records_linking_to_weburls.assert_not_awaited()
+
+
+class TestFailedLookupsLoseNothing:
+    @pytest.mark.asyncio
+    async def test_failed_address_lookup_keeps_the_existing_edges(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        tx.get_records_by_weburls = AsyncMock(side_effect=RuntimeError("graph down"))
+        message = _message(_by_address(JIRA))
+
+        await proc._process_record(message, [], tx)
+
+        tx.delete_edges_by_relationship_types.assert_not_awaited()
+        assert _edges(tx) == []
+
+    @pytest.mark.asyncio
+    async def test_failed_backfill_lookup_does_not_fail_the_save(self) -> None:
+        proc = _processor()
+        tx = _tx_store()
+        tx.get_records_linking_to_weburls = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        result, _ = await proc._process_record(_pull_request(), [], tx)
+
+        assert result is not None
+
+
+class TestBackfillReadsEveryHolder:
+    @pytest.mark.asyncio
+    async def test_holders_past_the_first_page_are_joined(self) -> None:
+        proc = _processor()
+        proc.LINK_HOLDER_PAGE = 2
+        tx = _tx_store()
+        pages = {None: ["msg-1", "msg-2"], "msg-2": ["msg-3", "msg-4"], "msg-4": ["msg-5"]}
+        tx.get_records_linking_to_weburls = AsyncMock(
+            side_effect=lambda urls, org, names, limit, after: pages[after]
+        )
+
+        await proc._join_records_linking_here(_pull_request(), tx)
+
+        assert sorted(e["_from"] for e in _edges(tx)) == [
+            f"{CollectionNames.RECORDS.value}/msg-{n}" for n in range(1, 6)
+        ]
+        assert tx.get_records_linking_to_weburls.await_count == 3

@@ -263,7 +263,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_records_by_weburls(self, weburls, org_id) -> list:
         return []
 
-    async def get_records_linking_to_weburls(self, weburls, org_id, connector_names) -> list:
+    async def get_records_linking_to_weburls(self, weburls, org_id, connector_names, limit=100, after=None) -> list:
         return []
 
     async def delete_records_and_relations(self, record_key, hard_delete=False):

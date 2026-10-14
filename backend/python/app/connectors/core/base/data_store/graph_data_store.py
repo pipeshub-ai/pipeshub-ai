@@ -728,10 +728,15 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def get_records_linking_to_weburls(
-        self, weburls: list[str], org_id: str, connector_names: list[str]
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: Optional[str] = None,
     ) -> list[str]:
         return await self.graph_provider.get_records_linking_to_weburls(
-            weburls, org_id, connector_names, transaction=self.txn
+            weburls, org_id, connector_names, limit=limit, after=after, transaction=self.txn
         )
 
     async def get_records_by_parent(

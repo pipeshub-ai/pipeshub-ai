@@ -5910,6 +5910,75 @@ class TestSlackTeamConnectorCoverageBoost:
         assert lr.related_external_records == []
 
     @pytest.mark.asyncio
+    async def test_link_record_stores_the_canonical_address(self) -> None:
+        """A record indexed later finds the link by its own address, whatever
+        query or anchor the paste carried; the paste itself stays on url."""
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import ProcessingContext
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "g"}, c.rate_limiter)
+        parent = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="1.0", external_record_group_id="C1", record_group_id="rg",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id, mime_type=MimeTypes.BLOCKS.value,
+        )
+        pasted = "https://acme.atlassian.net/browse/PA-1718?focusedCommentId=1"
+        lr = await c._process_link(pasted, parent, ctx, {})
+        assert lr.weburl == "https://acme.atlassian.net/browse/PA-1718"
+        assert lr.url == pasted
+
+    @pytest.mark.asyncio
+    async def test_burst_window_is_read_to_the_end_or_not_at_all(self) -> None:
+        c = _connector_pipeline_ready()
+        page1 = MagicMock(success=True, data={"messages": [{"ts": "1.0"}], "response_metadata": {"next_cursor": "c2"}})
+        page2 = MagicMock(success=True, data={"messages": [{"ts": "2.0"}], "response_metadata": {"next_cursor": ""}})
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(side_effect=[page1, page2])
+        with patch.object(type(c), "_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+            msgs = await c._fetch_burst_window("C1", "1.0", "2.0")
+        assert [m["ts"] for m in msgs] == ["1.0", "2.0"]
+        assert ds.conversations_history.await_args_list[1].kwargs["cursor"] == "c2"
+
+        failing = MagicMock()
+        failing.conversations_history = AsyncMock(side_effect=[page1, MagicMock(success=False)])
+        with patch.object(type(c), "_fresh_datasource", new_callable=AsyncMock, return_value=failing):
+            assert await c._fetch_burst_window("C1", "1.0", "2.0") is None
+
+    @pytest.mark.asyncio
+    async def test_edit_writes_new_link_records_and_deletes_dropped_ones(self) -> None:
+        """A link the edit removed must not be found later by the record it pointed at."""
+        import hashlib
+
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import ProcessingContext
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "g"}, c.rate_limiter)
+        rec = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="burst_C1_x", external_record_group_id="C1", record_group_id="rg",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id, mime_type=MimeTypes.BLOCKS.value,
+        )
+        kept_url = "https://github.com/acme/api/pull/7"
+        kept = MagicMock(external_record_id=hashlib.md5(kept_url.encode()).hexdigest())
+        dropped = MagicMock(external_record_id="md5-of-a-removed-link")
+        dep = c.data_entities_processor
+        dep.get_records_by_parent = AsyncMock(return_value=[kept, dropped])
+        dep.get_record_by_weburl = AsyncMock(return_value=None)
+        dep.delete_record_by_external_id = AsyncMock()
+
+        await c._sync_edited_links(rec, [{"ts": "1.0", "text": f"now only <{kept_url}>"}], ctx)
+
+        saved = [r for call in dep.on_new_records.await_args_list for r, _ in call.args[0]]
+        assert [r.url for r in saved] == [kept_url]
+        dep.delete_record_by_external_id.assert_awaited_once_with(c.connector_id, "md5-of-a-removed-link")
+
+    @pytest.mark.asyncio
     async def test_process_link_exception_returns_none(self):
         from app.connectors.sources.slack.team.connector import ProcessingContext, SlackConnector
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes

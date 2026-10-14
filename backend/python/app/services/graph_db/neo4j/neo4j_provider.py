@@ -16749,6 +16749,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
           AND {cypher_live_record("r")}
         RETURN r.id AS id, r.recordType AS recordType, r.connectorName AS connectorName,
                r.webUrl AS webUrl, coalesce(r.isDependentNode, false) AS isDependentNode
+        ORDER BY isDependentNode, id
         LIMIT $limit
         """
         try:
@@ -16760,7 +16761,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return [dict(row) for row in rows or []]
         except Exception as e:
             self.logger.error(f"❌ get_records_by_weburls failed: {str(e)}")
-            return []
+            raise
 
     async def get_records_linking_to_weburls(
         self,
@@ -16768,6 +16769,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str,
         connector_names: list[str],
         limit: int = 100,
+        after: str | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         if not weburls or not org_id or not connector_names:
@@ -16782,7 +16784,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE rel.relationshipType = 'PARENT_CHILD'
           AND holder.orgId = $org_id
           AND {cypher_live_record("holder")}
+          AND ($after IS NULL OR holder.id > $after)
         RETURN DISTINCT holder.id AS id
+        ORDER BY id
         LIMIT $limit
         """
         try:
@@ -16793,13 +16797,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "org_id": org_id,
                     "connector_names": list(connector_names),
                     "limit": limit,
+                    "after": after,
                 },
                 txn_id=transaction,
             )
             return [row["id"] for row in rows or [] if row.get("id")]
         except Exception as e:
             self.logger.error(f"❌ get_records_linking_to_weburls failed: {str(e)}")
-            return []
+            raise
 
     async def get_record_parent_info(
         self,

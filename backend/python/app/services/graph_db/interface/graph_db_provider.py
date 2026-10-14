@@ -2121,8 +2121,12 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Rows ``{"id", "recordType", "connectorName", "webUrl",
-            "isDependentNode"}``, in no particular order. ``[]`` on a query
-            failure, which is logged: a missed join must not fail a record write.
+            "isDependentNode"}``, records that are not dependent nodes first, so
+            ``limit`` never drops a ticket in favour of its attachments.
+
+        Raises:
+            Exception: on a query failure. Callers must not read a failure as
+            "nothing lives at this address".
         """
         pass
 
@@ -2133,6 +2137,7 @@ class IGraphDBProvider(ABC):
         org_id: str,
         connector_names: list[str],
         limit: int = 100,
+        after: str | None = None,
         transaction: str | None = None,
     ) -> list[str]:
         """Ids of the live records that hold a link to any of ``weburls``.
@@ -2147,11 +2152,16 @@ class IGraphDBProvider(ABC):
                 ``[]`` without querying.
             org_id: Organization scope. Empty returns ``[]`` without querying.
             connector_names: Only link records of these connectors are read.
-            limit: Most ids returned.
+            limit: Most ids returned: one page.
+            after: Return only ids after this one; pass the last id of a page
+                to read the next.
             transaction: Optional transaction ID.
 
         Returns:
-            Distinct record ids. ``[]`` on a query failure, which is logged.
+            Distinct record ids in ascending order.
+
+        Raises:
+            Exception: on a query failure.
         """
         pass
 

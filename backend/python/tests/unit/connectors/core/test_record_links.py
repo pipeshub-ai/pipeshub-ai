@@ -6,6 +6,7 @@ from app.config.constants.arangodb import RecordRelations
 from app.connectors.core.base.data_processor.record_links import (
     MAX_LINKED_URLS,
     addresses_linking_to,
+    canonical_address,
     link_target,
     related_for_urls,
 )
@@ -86,7 +87,36 @@ class TestLinkTarget:
         assert link_target(value) is None
 
 
+class TestGitHubShapeOnlyOnGitHub:
+    def test_another_sites_issues_path_is_an_ordinary_address(self) -> None:
+        target = link_target("https://docs.example.com/api/v1/issues/42/details")
+        assert target.url == "https://docs.example.com/api/v1/issues/42/details"
+        assert target.record_type is RecordType.WEBPAGE
+
+    def test_enterprise_server_named_for_github(self) -> None:
+        target = link_target("https://github.corp.example/acme/api/pull/7/files")
+        assert target.url == "https://github.corp.example/acme/api/pull/7"
+
+
 class TestAddressesLinkingTo:
+    @pytest.mark.parametrize("pasted", [
+        JIRA + "?focusedCommentId=10001",
+        JIRA + "?atlOrigin=eyJpIjoi",
+        JIRA + "#comment",
+    ])
+    def test_a_link_record_for_any_paste_of_the_issue_is_found(self, pasted: str) -> None:
+        # A link record stores the canonical form of its paste.
+        assert canonical_address(pasted) in addresses_linking_to(JIRA)
+
+    @pytest.mark.parametrize("pasted", [PR + "/files#diff-1", PR + "?w=1", "https://github.com/acme/api/issues/3081"])
+    def test_a_link_record_for_any_paste_of_the_pull_request_is_found(self, pasted: str) -> None:
+        assert canonical_address(pasted) in addresses_linking_to(PR)
+
+    def test_page_retitled_since_the_paste(self) -> None:
+        pasted = "https://acme.atlassian.net/wiki/spaces/ENG/pages/12345/Old+title"
+        assert canonical_address(pasted) in addresses_linking_to(PAGE)
+
+
     def test_pull_request_includes_its_tabs(self) -> None:
         forms = addresses_linking_to(PR)
         assert PR in forms

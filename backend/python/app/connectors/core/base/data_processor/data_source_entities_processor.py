@@ -634,6 +634,17 @@ class DataSourceEntitiesProcessor:
             related_external_records: List of RelatedExternalRecord objects (strict type checking)
             tx_store: Transaction store
         """
+        # Find the records the addresses name before any edge is deleted: if the
+        # read fails, the record keeps the edges it has rather than losing them
+        # to a lookup that only looked empty.
+        try:
+            at_addresses = await self._records_at_addresses(record, related_external_records, tx_store)
+        except Exception as e:
+            self.logger.warning(
+                f"Kept the link edges of record {record.id}: its linked addresses could not be looked up: {e}"
+            )
+            return
+
         # Always clean up all possible link relation types to handle removed links
         relation_types_to_delete = self.LINK_RELATION_TYPES
 
@@ -654,7 +665,6 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
 
         edges_to_create = []
-        at_addresses = await self._records_at_addresses(record, related_external_records, tx_store)
 
         for related_ext_record in related_external_records:
             if not isinstance(related_ext_record, RelatedExternalRecord):
@@ -728,6 +738,8 @@ class DataSourceEntitiesProcessor:
     # that pasted it. Their link records are how a record indexed after the
     # message that linked it finds that message.
     ADDRESS_LINK_HOLDER_CONNECTORS = [Connectors.SLACK_WORKSPACE.value, Connectors.SLACK.value]
+    # Records holding a link to one record, read per page by the backfill.
+    LINK_HOLDER_PAGE = 100
 
     @staticmethod
     def _address_link_edge(from_id: str, to_id: str, relation_type: str) -> dict:
@@ -798,16 +810,29 @@ class DataSourceEntitiesProcessor:
         addresses = addresses_linking_to(record.weburl)
         if not addresses:
             return
-        holders = await tx_store.get_records_linking_to_weburls(
-            list(addresses), record.org_id or self.org_id, self.ADDRESS_LINK_HOLDER_CONNECTORS
-        )
-        edges = [
-            self._address_link_edge(holder_id, record.id, RecordRelations.LINKED_TO.value)
-            for holder_id in holders
-            if holder_id and holder_id != record.id
-        ]
-        if edges:
-            await tx_store.batch_upsert_record_relations(edges)
+        after: str | None = None
+        while True:
+            try:
+                holders = await tx_store.get_records_linking_to_weburls(
+                    list(addresses), record.org_id or self.org_id,
+                    self.ADDRESS_LINK_HOLDER_CONNECTORS, limit=self.LINK_HOLDER_PAGE, after=after,
+                )
+            except Exception as e:
+                # Only a join missed until the next save: this path never deletes edges.
+                self.logger.warning(f"Could not look for records linking to {record.id}: {e}")
+                return
+            holders = [holder_id for holder_id in holders or [] if holder_id]
+            edges = [
+                self._address_link_edge(holder_id, record.id, RecordRelations.LINKED_TO.value)
+                for holder_id in holders
+                if holder_id != record.id
+            ]
+            if edges:
+                await tx_store.batch_upsert_record_relations(edges)
+            # Pages come in id order; a short page is the last.
+            if len(holders) < self.LINK_HOLDER_PAGE or (after is not None and holders[-1] <= after):
+                return
+            after = holders[-1]
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """

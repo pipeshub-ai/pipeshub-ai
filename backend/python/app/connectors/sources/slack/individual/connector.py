@@ -64,7 +64,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
-from app.connectors.core.base.data_processor.record_links import related_for_urls
+from app.connectors.core.base.data_processor.record_links import (
+    canonical_address,
+    related_for_urls,
+)
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
@@ -2794,7 +2797,9 @@ class SlackIndividualConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.MARKDOWN.value,
-                weburl=url,
+                # The canonical address, which a record indexed later looks for
+                # (record_links.addresses_linking_to); the paste stays on url.
+                weburl=canonical_address(url),
                 url=url,
                 title=unfurl.get("title"),
                 is_public=LinkPublicStatus.UNKNOWN,
@@ -3532,6 +3537,7 @@ class SlackIndividualConnector(BaseConnector):
                 related_external_records=self._related_for_messages([md]),
             )
             await self.data_entities_processor.on_record_content_update(updated_rec)
+            await self._sync_edited_links(updated_rec, [md], ctx)
             return 1
 
         # ── Case B: message is a member of a burst record ─────────────────
@@ -3544,16 +3550,8 @@ class SlackIndividualConnector(BaseConnector):
         # Fetch all messages in the burst window from Slack and rebuild block_containers
         # (block_containers are NOT stored in the DB; we must reconstruct them).
         try:
-            await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
-            resp = await ds.conversations_history(
-                channel=channel_id,
-                oldest=burst_rec.start_ts,
-                latest=burst_rec.end_ts,
-                inclusive=True,
-                limit=200,
-            )
-            if not resp or not resp.success:
+            fetched = await self._fetch_burst_window(channel_id, burst_rec.start_ts, burst_rec.end_ts)
+            if fetched is None:
                 self.logger.warning(
                     f"Could not fetch burst messages for channel={channel_id} "
                     f"ts={ts}; skipping burst update"
@@ -3562,7 +3560,7 @@ class SlackIndividualConnector(BaseConnector):
 
             burst_msgs = sorted(
                 [
-                    m for m in resp.data.get("messages", [])
+                    m for m in fetched
                     if (
                         m.get("ts")
                         and burst_rec.start_ts <= m["ts"] <= burst_rec.end_ts
@@ -3597,8 +3595,77 @@ class SlackIndividualConnector(BaseConnector):
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
 
         await self.data_entities_processor.on_record_content_update(burst_rec)
+        await self._sync_edited_links(burst_rec, burst_msgs, ctx)
         return 1
 
+
+    # Pages read to rebuild one burst on an edit. A burst is a five-minute window,
+    # so even one page is rarely full; a window still unread after these is not
+    # rebuilt at all, rather than rebuilt from part of its messages.
+    _EDIT_BURST_MAX_PAGES = 10
+
+    async def _fetch_burst_window(
+        self, channel_id: str, oldest: Optional[str], latest: Optional[str]
+    ) -> Optional[list[dict[str, Any]]]:
+        """Every message in [oldest, latest], or None when they could not all be read.
+
+        An edit rebuilds the burst from these, its links included, so a partial
+        read would drop the links of the messages it missed."""
+        messages: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+        for _page in range(self._EDIT_BURST_MAX_PAGES):
+            await self.rate_limiter.acquire(Tier.T3)
+            ds = await self._fresh_datasource()
+            kwargs: dict[str, Any] = {
+                "channel": channel_id, "oldest": oldest, "latest": latest,
+                "inclusive": True, "limit": 200,
+            }
+            if cursor:
+                kwargs["cursor"] = cursor
+            resp = await ds.conversations_history(**kwargs)
+            if not resp or not resp.success:
+                return None
+            messages.extend(resp.data.get("messages", []))
+            cursor = (resp.data.get("response_metadata") or {}).get("next_cursor") or None
+            if not cursor:
+                return messages
+        return None
+
+    async def _sync_edited_links(
+        self, rec: MessageRecord, msgs: list[dict[str, Any]], ctx: ProcessingContext
+    ) -> None:
+        """After an edit, keep the record's link records in step with its text.
+
+        A link added by the edit gets its link record; a link the edit removed
+        loses it. Otherwise a record indexed later would find the old link record
+        and join the message to an address it no longer pastes."""
+        links: list[LinkRecord] = []
+        for msg in msgs:
+            for url in self._extract_urls(msg.get("text", "")):
+                lr = await self._process_link(url, rec, ctx, msg)
+                if lr:
+                    if not self.indexing_filters.is_enabled(IndexingFilterKey.LINKS):
+                        lr.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+                    links.append(lr)
+        try:
+            held = await self.data_entities_processor.get_records_by_parent(
+                connector_id=self.connector_id,
+                parent_external_record_id=rec.external_record_id,
+                record_type=RecordType.LINK.value,
+            )
+        except Exception as exc:
+            self.logger.warning(f"Link records of {rec.external_record_id} not read: {exc}")
+            held = None
+        if links:
+            pairs: list[tuple[Record, list[Permission]]] = [(lr, []) for lr in links]
+            await self._enrich_link_records_linked_id(pairs)
+            await self.data_entities_processor.on_new_records(pairs)
+        kept = {lr.external_record_id for lr in links}
+        for old in held or []:
+            if old.external_record_id not in kept:
+                await self.data_entities_processor.delete_record_by_external_id(
+                    self.connector_id, old.external_record_id
+                )
 
     def _root_rg_id(self, ctx: ProcessingContext) -> Optional[str]:
         """Channel record group id: the root of a Slack record's group chain."""
