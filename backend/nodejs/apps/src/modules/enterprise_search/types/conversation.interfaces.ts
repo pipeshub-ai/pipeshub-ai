@@ -356,6 +356,8 @@ export interface AIServiceResponse<T> {
   statusCode: number;
   data?: T;
   msg?: string;
+  // Only the response headers a caller passes on, such as `retry-after`.
+  headers?: Record<string, string>;
 }
 
 export type AnswerMatchType =

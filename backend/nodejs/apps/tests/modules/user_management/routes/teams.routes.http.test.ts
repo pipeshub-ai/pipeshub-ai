@@ -448,10 +448,11 @@ describe('Teams over HTTP', () => {
 
     it('passes a 503 on, so an unreadable database does not look like no teams', async () => {
       const detail = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
-      backend.on('GET', '/api/v1/entity/user/teams', { status: 503, body: { detail } })
-      const res = await send('GET', '/user/teams', session(READER))
+      backend.on('GET', '/api/v1/entity/user/teams', { status: 503, body: { detail }, headers: { 'retry-after': '5' } })
+      const res = await fetch(`${origin}/api/v1/teams/user/teams`, { headers: { authorization: `Bearer ${session(READER)}` } })
       expect(res.status).to.equal(503)
-      expect(JSON.stringify(res.body)).to.contain(detail)
+      expect(res.headers.get('retry-after')).to.equal('5')
+      expect(await res.text()).to.contain(detail)
     })
   })
 
