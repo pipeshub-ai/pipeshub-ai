@@ -538,6 +538,21 @@ class TestAKeyOnTwoSites:
         assert _edges(tx) == []
 
     @pytest.mark.asyncio
+    async def test_a_pull_request_naming_only_the_key_keeps_its_edge_across_saves(self) -> None:
+        """Saved twice, it joins the same issue both times (here none, since two
+        sites have OPS-9), whatever order the sites come back in."""
+        proc = _processor()
+        results = []
+        for sites in (["https://acme.atlassian.net", "https://jira.corp.example"],
+                      ["https://jira.corp.example", "https://acme.atlassian.net"]):
+            tx = self._tx()
+            tx.get_issue_sites = AsyncMock(return_value=sites)
+            proc.__dict__.pop("_issue_sites_cache", None)
+            await proc._handle_related_external_records(_pull_request(), _by_key("OPS-9"), tx)
+            results.append([e["_to"] for e in _edges(tx)])
+        assert results == [[], []]
+
+    @pytest.mark.asyncio
     async def test_a_ticket_resolves_a_key_on_its_own_site(self) -> None:
         proc = _processor()
         tx = self._tx()
@@ -582,3 +597,19 @@ class TestATicketNamingItsOwnKey:
         await proc._handle_related_external_records(_pull_request(), _by_key("OPS-9"), tx)
 
         assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/cloud-issue"]
+
+
+class TestARecordLinkingItsOwnAddress:
+    @pytest.mark.asyncio
+    async def test_a_ticket_linking_its_own_page_joins_nothing(self) -> None:
+        proc = _processor()
+        tx = _tx_store(at_address=[
+            {"id": "ticket-1", "webUrl": JIRA, "isDependentNode": False},
+            {"id": "attachment", "webUrl": JIRA, "isDependentNode": True},
+        ])
+        ticket = _pull_request("ticket-1")
+        ticket.weburl = JIRA
+
+        await proc._handle_related_external_records(ticket, _by_address(JIRA), tx)
+
+        assert _edges(tx) == []

@@ -906,10 +906,15 @@ class DataSourceEntitiesProcessor:
                         found[mention] = target_id
                 continue
             # An address: its candidates are forms of one record, most likely first.
+            # When this record is what lives there (a ticket whose description
+            # links its own page), the address is skipped: it is never joined to
+            # itself, nor to an attachment stored at its URL.
             for candidate in cands:
-                here = [r for r in by_address.get(candidate, []) if r["id"] != record.id]
+                here = by_address.get(candidate)
                 if here:
-                    found[mention] = best(here)
+                    target_id = best(here)
+                    if target_id != record.id:
+                        found[mention] = target_id
                     break
         return found
 
@@ -2098,19 +2103,17 @@ class DataSourceEntitiesProcessor:
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
         # to clean up stale link edges even when related_external_records is empty (handles removed links)
-        # A MessageRecord's links are pasted addresses (see record_links), and an
-        # edit can remove one, so it is always cleaned up as well.
-        # None, unlike [], means the connector did not read the record's links on
-        # this save (a Slack reindex): its link edges are kept as they are.
-        if (
-            isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord))
-            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
         # A MessageRecord's links are pasted addresses, and a PullRequestRecord's
         # are the addresses and issue keys in its text (see record_links). An
         # edit can remove one, so they are always cleaned up as well.
-        if isinstance(
-            record,
-            (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
+        # None, unlike [], means the connector did not read the record's links on
+        # this save (a Slack reindex): its link edges are kept as they are.
+        if (
+            isinstance(
+                record,
+                (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord, PullRequestRecord),
+            )
+            and not (isinstance(record, MessageRecord) and record.related_external_records is None)
         ):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
 
