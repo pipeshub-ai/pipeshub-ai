@@ -23,19 +23,23 @@ const runGit: GitRunner = (args) => {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     });
-    return output.trim() || null;
+    return stringOrNull(output);
   } catch {
     return null;
   }
 };
 
 function stringOrNull(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
 }
 
 // The input is a file on disk or another service's response: do not trust its shape.
 export function parseBuildInfo(raw: unknown): BuildInfo | null {
-  if (!raw || typeof raw !== 'object') {
+  if (raw === null || typeof raw !== 'object') {
     return null;
   }
   const record = raw as Record<string, unknown>;
@@ -48,7 +52,7 @@ export function parseBuildInfo(raw: unknown): BuildInfo | null {
 export function readBuildInfoFromGit(git: GitRunner = runGit): BuildInfo {
   const tag = git(['describe', '--tags', '--abbrev=0', '--match', 'v*']);
   return {
-    version: tag ? tag.replace(/^v/, '') : null,
+    version: tag === null || tag === '' ? null : tag.replace(/^v/, ''),
     commitId: git(['rev-parse', 'HEAD']),
   };
 }

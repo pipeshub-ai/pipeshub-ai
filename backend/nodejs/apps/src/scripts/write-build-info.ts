@@ -12,15 +12,21 @@ export function writeBuildInfo(
   git?: GitRunner,
 ): boolean {
   const info = readBuildInfoFromGit(git);
-  if (!info.commitId) {
+  if (info.commitId === null || info.commitId === '') {
     // A file left by an earlier build would report the wrong commit.
     fs.rmSync(file, { force: true });
     return false;
   }
-  fs.writeFileSync(
-    file,
-    `${JSON.stringify(info, null, 2)}\n`,
-  );
+  // Write a temporary file and rename it, so a build stopped mid-write
+  // cannot leave half a JSON file behind.
+  const tmp = `${file}.${String(process.pid)}.tmp`;
+  try {
+    fs.writeFileSync(tmp, `${JSON.stringify(info, null, 2)}\n`);
+    fs.renameSync(tmp, file);
+  } catch (err) {
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
   return true;
 }
 

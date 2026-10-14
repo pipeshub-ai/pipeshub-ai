@@ -541,7 +541,9 @@ check "values already in the environment win" \
 check "a directory without git leaves version and commit empty" \
   "$(unset APP_VERSION GIT_COMMIT; export_build_info "$TMP_ROOT"; echo "[$APP_VERSION|$GIT_COMMIT]")" "[|]"
 check "local build exports the build info before compose up" "$inner" 'export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"'
-for f in docker-compose.yml docker-compose.build.neo4j.yml; do
+for f in docker-compose.yml docker-compose.build.neo4j.yml \
+  docker-compose.integration.arango.yml docker-compose.integration.neo4j.yml \
+  beta/docker-compose.build.neo4j.slim.yml beta/docker-compose.build.opensearch.neo4j.yml; do
   check "$f passes the build info as build args" "$(cat "$COMPOSE_DIR/$f")" 'GIT_COMMIT: ${GIT_COMMIT:-}'
 done
 
