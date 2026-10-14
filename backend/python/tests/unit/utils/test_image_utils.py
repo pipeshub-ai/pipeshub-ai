@@ -17,7 +17,52 @@ from app.utils.image_utils import (
     mime_to_extension,
     normalize_image_to_base64,
     supported_mime_types,
+    to_llm_image_format,
 )
+
+_RASTERIZE = "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64"
+
+
+def _svg_uri(svg: bytes) -> str:
+    return "data:image/svg+xml;base64," + base64.b64encode(svg).decode()
+
+
+class TestToLlmImageFormat:
+    def test_svg_is_rasterized_at_the_models_long_edge(self) -> None:
+        uri = _svg_uri(b'<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="1500"></svg>')
+        with patch(_RASTERIZE, return_value="UE5H") as rasterize:
+            assert to_llm_image_format(uri, max_long_edge_px=1500) == "data:image/png;base64,UE5H"
+        kwargs = rasterize.call_args.kwargs
+        assert (kwargs["output_width"], kwargs["output_height"]) == (1500, 750)
+
+    def test_svg_that_cannot_be_rasterized_is_unsendable(self) -> None:
+        uri = _svg_uri(b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>')
+        with patch(_RASTERIZE, side_effect=RuntimeError("bad svg")):
+            assert to_llm_image_format(uri, max_long_edge_px=1568) is None
+
+    def test_bmp_is_converted_to_png(self) -> None:
+        pillow = pytest.importorskip("PIL.Image")
+        import io
+
+        buffer = io.BytesIO()
+        pillow.new("RGB", (4, 3)).save(buffer, format="BMP")
+        uri = "data:image/bmp;base64," + base64.b64encode(buffer.getvalue()).decode()
+        converted = to_llm_image_format(uri, max_long_edge_px=1568)
+        assert converted.startswith("data:image/png;base64,iVBORw0KGgo")
+
+    def test_mislabeled_raster_is_relabeled(self) -> None:
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 20).decode()
+        assert (
+            to_llm_image_format(f"data:image/png;base64,{jpeg_b64}", max_long_edge_px=1568)
+            == f"data:image/jpeg;base64,{jpeg_b64}"
+        )
+
+    @pytest.mark.parametrize("uri", [
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC",
+        "https://example.com/photo.svg",
+    ])
+    def test_supported_images_and_urls_pass_through(self, uri: str) -> None:
+        assert to_llm_image_format(uri, max_long_edge_px=1568) == uri
 
 
 class TestNormalizeImageToBase64:

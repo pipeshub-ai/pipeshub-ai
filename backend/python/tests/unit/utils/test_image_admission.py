@@ -370,6 +370,37 @@ class TestNormalization:
         ])
         assert result.degraded[0].candidate.data_uri == oversized
 
+    _SVG = "data:image/svg+xml;base64," + base64.b64encode(
+        b'<svg xmlns="http://www.w3.org/2000/svg" width="1970" height="917"></svg>'
+    ).decode()
+
+    def test_an_svg_goes_out_as_png(self) -> None:
+        """LLM APIs reject SVG and fail the whole request (Azure OpenAI 400s)."""
+        png_b64 = self._png(10, 10).split(",", 1)[1]
+        admission = ImageAdmission(resolve_image_policy(provider="azureopenai", is_multimodal=True))
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64",
+            return_value=png_b64,
+        ):
+            admitted = admission.admit([_candidate(0, data_uri=self._SVG)]).admitted[0]
+
+        assert admitted.data_uri == f"data:image/png;base64,{png_b64}"
+        assert admission.rendered_uri(self._SVG) == admitted.data_uri
+
+    def test_an_svg_that_cannot_be_converted_degrades_without_spending_a_slot(self) -> None:
+        admission = _admission(max_images=1)
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64",
+            side_effect=RuntimeError("cairo missing"),
+        ):
+            result = admission.admit([
+                _candidate(0, data_uri=self._SVG),
+                _candidate(1, data_uri=self._png(20, 20)),
+            ])
+
+        assert [d.reason for d in result.degraded] == [DegradeReason.UNSUPPORTED_FORMAT]
+        assert [c.ref for c in result.admitted] == ["ref1"]
+
 
 class TestAdmissionFromState:
     def test_returns_the_seeded_arbiter(self) -> None:
