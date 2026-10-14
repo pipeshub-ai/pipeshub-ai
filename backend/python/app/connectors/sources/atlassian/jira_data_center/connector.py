@@ -534,8 +534,10 @@ class JiraDataCenterConnector(BaseConnector):
 
         The group list was refused, so roles are not synced (a role saved without its groups'
         members would lose them), but the role lists can still be read. A role a project grant
-        does not name is kept this way too. A role list that cannot be read reports an
-        incomplete read instead, so nothing is unlinked.
+        does not name is kept this way too. A role list that fails in a way that may pass on a
+        later run reports an incomplete read instead, so nothing is unlinked. A refused one
+        (403) is lasting: the roles the project's stored grants name are kept through the
+        project, and the others give no one access.
         """
         for project_key in project_keys:
             try:
@@ -546,6 +548,10 @@ class JiraDataCenterConnector(BaseConnector):
                 roles = response.json() or {}
                 if not isinstance(roles, dict):
                     raise ValueError("the role list is not a mapping")
+            except JiraReadError as e:
+                self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
+                self._note_unread(e.status)
+                continue
             except Exception as e:
                 self.logger.warning("⚠️ Could not read the roles of project %s to keep them: %s", project_key, e)
                 self._kept_unread_access = True
