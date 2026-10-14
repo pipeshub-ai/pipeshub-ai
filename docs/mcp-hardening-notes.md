@@ -142,7 +142,13 @@ and the agent stays. That flow is kept. On top of it:
 - **Server instructions** reach the model.
 - **Failures:** each one has one reason code (`auth_expired`, `unauthorized`,
   `needs_permission`, `blocked`, `timeout`, `unreachable`), so the model and the UI say what is
-  wrong and what fixes it.
+  wrong and what fixes it. A server's own error reaches the model whole (every line, up to
+  4,000 characters, URLs reduced), so it can correct a bad argument.
+- **Repeats:** the same MCP read with the same arguments is refused once it ran twice in the last
+  two turns, so a reply can't loop on one call.
+- **Tool budget:** a request never carries more than 128 tools, the strictest provider limit in
+  use. `fetch_tools` won't load a whole server past it and tells the model to search instead, and
+  `search_tools` ranks the tools of an app the person named first.
 
 **The `mcp` 2.3.0 client**
 - fastmcp is removed; the client uses the official SDK and its `httpx2`.
@@ -189,7 +195,9 @@ and the agent stays. That flow is kept. On top of it:
   - an answer to an ask-user question gets the same: its turn is put back, a lookup made alongside
     the question keeps its result, and the answer tells the model to carry on instead of stopping
     at "I'll do it now". A card asked after an answered question shows, and a Deny reaches the
-    model as the person's choice.
+    model as the person's choice;
+  - one card waits at a time: a second action asked for in the same step isn't run yet, and the
+    model asks for it again, with its own card, once the first is answered.
 - **Who sets them:** each person, for their own chats (assistant and agent alike), from the
   Workspace server card. Company-wide rules, rules per agent, and admins reviewing users'
   personal servers are Enterprise Edition features; the UI says so where they would be.
@@ -216,6 +224,8 @@ and the agent stays. That flow is kept. On top of it:
     with links, or a record's fields. The raw output is behind "View raw". The view is built on
     the backend from the full result, is size-limited, and is the same after a reload;
   - an agent chat stopped on an unconnected server offers Connect;
+  - the composer's MCP tab lists, under "Not connected", the servers the person can't use yet,
+    with Connect or Reconnect, or a badge when an administrator's shared key is missing;
   - the approval card: the tool, its server and its arguments, with Allow and Deny. Once
     answered, one line above the reply says what was done, and the tool's row is marked
     Approved, Declined or Expired;
@@ -230,8 +240,11 @@ and the agent stays. That flow is kept. On top of it:
   - Disconnect asks first;
   - status says what is wrong and what fixes it;
   - the form asks before an edit signs people out;
-  - sign-in popups say what happened, and Reconnect keeps the old token until the new one
-    works;
+  - sign-in popups say what happened, including why the provider refused the code exchange,
+    and Reconnect keeps the old token until the new one works;
+  - the Google server forms warn when a client secret doesn't start with `GOCSPX-` (copying it by
+    double-click leaves that part out);
+  - a working server's status reads "Connected" (it was "Ready");
   - when the tools were listed.
 - **Agent builder:** the MCP node shows the live server (gone, new and dropped tools).
 - Strings are in all 9 locales.
@@ -280,11 +293,17 @@ and the agent stays. That flow is kept. On top of it:
 | `MCP_OAUTH_CLIENT_METADATA_DOCUMENT` | on | `false` always registers a client instead |
 
 #### How it was tested
-- **Unit tests** cover every change in Python, Node and the frontend. The last full runs were on
-  2026-10-13, on Windows, after rebasing onto `main`; `main` moved four more times during testing,
-  and after each later rebase the suites for the areas it touched were run again. Every failure is in code this PR doesn't touch, or fails
-  only on Windows or in this machine's environment:
-  - **Python:**
+- **Unit tests** cover every change in Python, Node and the frontend. After the last rebase onto
+  `main` (2026-10-14), on Windows. Every failure is in code this PR doesn't touch, or fails only on
+  Windows or in this machine's environment:
+  - **CI's checks, run locally:** `main`'s changed-files gate (Ruff and ESLint, new findings only)
+    passes, as do the shadowed-test (F811) check, the Node build, the frontend typecheck, the i18n
+    checks, the Electron tests and the production frontend build.
+  - **Python:** the MCP, agent, agent-loop, route, graph-provider and config suites: 18,956 tests,
+    18,903 passed. The 43 failures: the 39 known ones below, `main`'s calculator nesting test
+    (fails on this machine), and three Windows-only tests: a prompt snapshot read without UTF-8
+    (it passes in UTF-8 mode), and two that start subprocesses with an empty environment.
+  - **Python, last full run** (2026-10-13, before the last rebase):
     - **Totals:** all of `tests/unit` except two files that hang on this machine
       (`test_fetch_strategy_curl_hop.py`, and an OpenCV PDF test that hangs on its own): about
       67,500 passed.
@@ -296,11 +315,11 @@ and the agent stays. That flow is kept. On top of it:
       UTF-8 with the Windows default encoding; and LibreOffice/PDF conversion.
     - **Under load:** timing-sensitive scheduler tests.
     - **Not run:** 5 files that need `fakeredis`, which isn't installed here.
-  - **Frontend:** the full suite passes, 1,996/1,996. `tsc` and the i18n check are clean, and ESLint
-    adds no findings on the changed files.
-  - **Node:** the full suite passes 12,319, with 8 failing. The 8: 5 storage tests (local disk
-    paths, and symlinks that need a privilege on Windows), and 3 log-capture tests that fail only on
-    Windows. `tsc` is clean.
+  - **Frontend:** the full suite with coverage passes, 2,039/2,039, and meets the coverage
+    thresholds.
+  - **Node:** the full suite passes 12,384, with 10 failing, all Windows-only: 5 storage tests
+    (local disk paths, and symlinks that need a privilege on Windows), 3 log-capture tests, and 2
+    IAM logging tests that pass on their own. `tsc` is clean.
   - **Integration helpers:** the admin-route inventory tests pass. The live permission suites need a
     running stack and were not run here.
 - **Approvals, end to end in the unit tests:**
@@ -311,6 +330,24 @@ and the agent stays. That flow is kept. On top of it:
     an expired card, someone else's answer, and a Deny set since the card was shown.
   - **Loops and cancellation:** a loop that adds a message before its first step (planExecute),
     and a run stopped mid-call.
+- **Live, in a browser, final run** (2026-10-14): a local instance of this branch, through Chrome,
+  with an administrator and a member account and real MCP servers: Linear, ClickUp, Exa, Notion and
+  Atlassian Rovo (Jira, Confluence) for the administrator, Google Drive for the member. 71
+  scenarios:
+  - **Reads** on every server, one app at a time and two together, next to the knowledge base.
+  - **Writes behind cards:** Linear issues and comments, ClickUp tasks created, renamed and
+    deleted, Confluence pages with a comment and an update, a Jira issue commented on and moved to
+    Done. Default rules, Allow, Deny, "Don't ask again", two writes in one step, a question then a
+    card, a reload while a card waits, and a card left to expire (it ran nothing, even when allowed
+    late). Every write asked once and ran once.
+  - **Reliability:** two whole servers loaded in one request (the 128-tool budget), a repeated read
+    stopped, a server's own argument error corrected by the model, a stop mid-call, a server that
+    can't be reached.
+  - **Accounts:** a member's personal server added, used, edited and deleted; disconnect; each
+    person's own rules; a personal server refused on a shared agent; a member asked to connect on a
+    shared agent; admin-only actions refused to a member; a Drive sign-in refreshed after its hour.
+  - **Security:** no token, secret or key in any transcript or service log (a scan for every
+    stored secret), and a used sign-in state refused.
 - **Live, in a browser** (2026-10-13): a local instance of this branch, used through Chrome,
   with real Atlassian (Confluence) and Notion MCP servers.
   - **Covered:** Allow, Deny, "Don't ask again", two cards in one reply, ask-user questions
@@ -325,8 +362,8 @@ and the agent stays. That flow is kept. On top of it:
     2.1 authorization server and a TCP proxy that really resets connections.
   - **What it drives:** this branch's own client code, routes and chat stack, over HTTP, SSE and
     stdio.
-  - **Coverage:** 169 scenarios in `TEST_PLAN.md`, with results in `RESULTS.md`. The last full
-    runs (2026-10-13, after each rebase onto `main`) passed 169/169.
+  - **Coverage:** 169 scenarios in `TEST_PLAN.md`, with results in `RESULTS.md`. It passes
+    169/169 after the last rebase onto `main` (2026-10-14).
   - **Fixed from its findings:** a tool cache that never cached 2026-07-28 servers, an
     unannounced 100-page tool list cut, the client identifying itself as the SDK, ignored 401
     challenge hints, and a legacy SSE session left in use after a refused POST.
@@ -361,7 +398,8 @@ and the agent stays. That flow is kept. On top of it:
     small, self-healing lost-update window.
 
 #### Reviewing this PR
-It is large (about 320 files, +41k/−4k lines). The notes follow the work in order:
+It is large (about 340 files, +43k/−4.5k lines), in two commits: the rework, then round 7 (fixes
+from live testing with more servers). The notes follow the work in order:
 1. phases 0 to 6, then round 2: security, reliability, sign-in, UI;
 2. round 3: the `mcp` 2.x move, the tool cache, approvals, Slack;
 3. round 4: the testbed decisions and the in-chat sign-in;
@@ -370,7 +408,10 @@ It is large (about 320 files, +41k/−4k lines). The notes follow the work in or
 5. round 6: company and per-agent rules and the admin view of personal servers left for the
    Enterprise Edition; an approval answer resumes the stopped call (one approval runs a call
    once); the approval UI simplified; then live testing against real Atlassian and Notion servers,
-   which led to keeping the stopped turn for approval and ask-user answers (R6-5).
+   which led to keeping the stopped turn for approval and ask-user answers (R6-5);
+6. round 7: live testing with Linear and ClickUp and the bug bash table: the server's whole error,
+   one card at a time, the repeated-read guard, `search_tools` ranking, the 128-tool budget, the
+   composer's Connect rows and clearer sign-in errors.
 
 Each entry names the files and the tests. The un-squashed history (one commit per change) is
 kept on local branches and can be pushed if reviewing commit by commit helps.
@@ -3789,3 +3830,150 @@ Before the fixes, his prompt took about 60 tool calls and 4 approvals.
 - the card shows under an answered question.
 
 The two frontend tests were checked to fail without their fix.
+
+## Round 7 (2026-10-13/14): live testing with Linear and ClickUp, and the bug bash table
+
+Tushar connected the Linear and ClickUp MCP servers and asked for:
+- browser testing of tool calls on both, since the remote bug bash had many tool-call failures;
+- an investigation of the bug bash table;
+- a fix plan, reviewed, then fixes committed phase by phase (local only).
+
+Setup: the local instance, the Playwright harness from R6-5, model gpt-5.4-mini. There were 21 runs:
+- Linear: 9 read scenarios and 1 write;
+- ClickUp: 9 (two with writes: a personal reminder, and a task answered with Deny);
+- both servers in one question;
+- two Confluence pages in one request.
+
+Each run records every tool call with its arguments, its status and the error text the model saw.
+
+### What the runs showed
+
+- **Linear reads all work.**
+  - `list_issues` (bug bash row 3) ran with valid arguments every time.
+  - Linear's own validation errors arrive as tool results ("limit: Too big: expected number to be <=250"), and they always reached the model whole.
+  - A value our local check refused (`list_cycles type: "all"`) was corrected on the next call.
+- **ClickUp reads all work** (row 6).
+  - With two ClickUp workspaces, the first call of every chat fails with "Multiple workspaces available … workspace_id". The model then asks which one, by numeric id, in every new chat.
+  - The error reaches the model whole, and it recovers. A weaker model may retry without `workspace_id` until the tool is blocked. That is the server's requirement (the field isn't marked required), not ours.
+- Not reproduced here:
+  - row 3 (Linear always failing);
+  - row 4 (UI stuck): no run hung; every reply finished;
+  - row 6 (ClickUp failing).
+- Plausible causes on the remote: the issues below, and the cut JSON-RPC errors fixed in 8255e952a. Remote logs or conversation ids would settle it.
+
+### R7-1 — the Edit panel's More actions menu (bug bash row 2)
+- Every item (Reauthenticate, Copy server URL, Disconnect, Remove server) showed but did nothing.
+- The menu is drawn into the drawer's nested-modal host, a full-screen layer with `pointer-events: none`. Radix turns the pointer back on only for modal layers, and this menu is non-modal, so every item inherited `none`.
+  - Checked in the browser: `elementFromPoint` at each item hit the panel underneath.
+- Fix: `pointerEvents: 'auto'` on the menu content, as `components/share/role-dropdown-menu.tsx` does.
+- Re-checked in the browser:
+  - every item is hit-testable;
+  - Copy server URL runs;
+  - Disconnect opens its dialog, and Cancel leaves the server Ready.
+
+### R7-2 — a second action in the same step gets its own card (bug bash row 7)
+- B7 ("create two pages") reproduced the bug. One card waits per request, so the second `createConfluencePage` of the same step was refused: "Another action is already waiting … don't run other actions that need approval now".
+- The answer to the first card resumes the turn with that text as the second call's result. The model took it as final: "the second page could not be created yet".
+- Fix:
+  - The refusal now says "Not run yet …", and tells the model to call the tool again with the same arguments after the user answers. The resumed reply then asks for it with a new card.
+  - A Deny now says "don't make that call again" (it said "don't run it again", naming the tool, which contradicted the second call's instruction).
+- Unchanged:
+  - still one card at a time;
+  - `_APPROVED_CALL` lasts only while the approved call runs, so the re-called action asks.
+
+### R7-3 — a server's destructive hint denies by default (finding; fix dropped)
+- L8 ("create a Linear issue") was refused with no card: "save_issue on Linear can delete data, so it's denied".
+- Linear marks every `save_*` (create or update an issue, comment, document, project) `destructiveHint: true`. So do ClickUp's update/move tools. Under the R5 rule ("3. Else `destructiveHint: true` means deletes") they start at Deny, so creating a Linear issue needs the person to set the tool to Allow on approval or Pre-approved first.
+- A fix was made: a hint alone would be a write that asks, with a "May overwrite data" card. Tushar chose to drop it and keep the R5 rule, so it isn't in the branch. The un-dropped history is on `mcp-module-rework-backup-2026-10-14-round7` (commit 455f1789f).
+
+### R7-4 — the same MCP read can't run over and over (bug bash row 5)
+- Row 5 was "the same call 14 times with the same arguments". Nothing stopped a call that succeeds:
+  - `ToolErrorTracker` counts failures;
+  - `TAG_DEDUP_EXACT` covers one wave;
+  - the agent may take 15 turns.
+- `hooks/repeated_reads.py` `RepeatedReadGuard` refuses an MCP read-only call with exactly the same arguments once it was called twice in the last two turns. From the second refusal on it says "stop calling it and answer the user now". Refused attempts count, so a looping model isn't let through every other turn.
+- Scope, from the plan review:
+  - MCP reads only;
+  - per run (a StateSlot children don't inherit);
+  - the last two turns only, because compaction and clearing tell the model to call again;
+  - a successful write starts the count again;
+  - the approved call an answer runs isn't counted.
+- Also: a locally refused argument no longer starts with the internal path `/mcp/<instance>/<tool>:`, which the card showed.
+
+### R7-5 — `search_tools` ranks a named app's tools by the words around it
+- X1 ("compare my Linear issues with my ClickUp tasks") searched "list open Linear issues and search ClickUp tasks". Plain keyword overlap ranked `list_issue_labels` and `clickup_search_reminders` first, and `filter_tasks` wasn't in the top 10. The answer was about reminders.
+- `ToolsetAwareToolIndex` (used by PipesHub's `search_tools` only):
+  - folds plurals and drops stopwords;
+  - a word that names a toolset (an MCP group's name or server name) picks it, and the words around it rank its tools, with named apps taking turns in query order;
+  - between equal matches, the tool whose name the query covers better wins.
+- `tool_preloading` keeps `KeywordToolIndex`, whose thresholds are tuned to its scores. The existing knowledge/Jira/Slack query tests run against both indexes.
+
+### R7-6 — a request never carries more tools than the model accepts
+- Found in the re-run of X1, after R7-1..R7-5: the model loaded both servers whole with `fetch_tools` (Linear 68 + ClickUp 61). The next model call was refused: "Invalid 'tools': array too long. Expected an array with maximum length 128, but got an array with length 153".
+- The reply was only that error. Any question that touches two large MCP servers can do this (whether the model loads them whole varies from run to run), which fits the bug bash's "not answering" reports.
+- `MAX_TOOLS_PER_REQUEST = 128` (`agent_loop_lib/tools/budget.py`), OpenAI's limit and the strictest in use:
+  - `fetch_tools` doesn't load a toolset that would pass it, and tells the model to use `search_tools` with the action and the app;
+  - `search_tools` makes callable only the matches that fit and lists the rest as `not_loaded`;
+  - tool preloading unlocks the most relevant toolsets while they fit and only points at the rest;
+  - `tool_schemas_for_turn` never sends more than 128 (essentials first) and logs a warning. That covers an eager grant that large and tools seeded from history.
+
+### The plan review
+An independent review of the plan (before code) changed:
+- R7-2: the Deny wording, plus a Deny test.
+- R7-3 (since dropped): a "May overwrite data" badge, so the warning wouldn't be lost.
+- R7-4: per run, not per request; MCP reads only; a recent-turn window; a write resets the count; `ctx.metadata` for the key.
+- R7-5: a separate index for `search_tools` only; app words only from group names and MCP server names.
+
+### Live results after the fixes (same harness, the rebuilt instance)
+
+| Check | Before | After |
+| --- | --- | --- |
+| More actions menu (row 2) | no item could be clicked | every item works; Disconnect asks, Cancel keeps it Ready |
+| Two pages in one request (row 7) | one card; the second page dropped | two cards in turn; both pages created once |
+| "Create a Linear issue" | denied, no card | unchanged (R7-3 dropped): denied until the tool's rule allows it |
+| Linear + ClickUp in one question (X1) | answered about reminders; in one run the request was refused (153 tools) | ClickUp's full list refused at 128; `search_tools` found `filter_tasks`; both compared |
+| "Load every Linear and ClickUp tool" (X2) | would be refused (153 tools) | the second load refused; the model used `search_tools`; both listed |
+| L1, K1 (Linear and ClickUp reads) | worked | still work |
+
+Tests:
+- Python: the approvals and parked-turn suites, the repeat guard (7), the index (7) and the tool budget (5), plus the adapter, agent-loop, agent-loop-lib and MCP folders. The only failures are known on this machine: the Windows sandbox tests, main's prompt-cache subprocess test, and the CRLF artifact test.
+- Frontend: the menu test, plus the approval card and details tests. The menu test and the error-message test were checked to fail without their fix.
+
+Left as they are, for Tushar:
+- Rows 3, 4 and 6 weren't reproduced here. The remote's query-service log or conversation ids would show which of the causes above they hit.
+- ClickUp's workspace question on every new chat is the server's behaviour (it needs `workspace_id` without saying so).
+- Leftovers from testing:
+  - a personal ClickUp reminder "[PipesHub E2E] reminder 1013a";
+  - Confluence pages "E2E two A/B 1013a/1014a" in Testspace.
+
+### R7-7 — the chat's MCP tab lists the servers to connect; "Ready" is now "Connected"
+Tushar's request, from his testing as a member.
+- **Before:** the composer's MCP tab (Agent mode in the main chat) listed only servers the person had signed in to. Everything else was invisible there.
+- **Now** (`chat-panel/expansion-panels/mcp-connect-rows.tsx`): a "Not connected" section below the connected servers lists the person's servers that a sign-in keeps out.
+  - Never connected: **Connect**.
+  - Sign-in expired: **Reconnect**.
+  - Waiting for an administrator's shared key: a badge, with no button (an administrator sees "Shared credential missing").
+  - Ones the person can fix come first; disabled servers are left out.
+- Connect uses the same flows as Workspace → MCP Servers:
+  - the OAuth popup (one at a time);
+  - or the key dialog, with the catalog's hint and link.
+- Once signed in, the list reloads in place. If the person had picked tools by hand, the new server's tools are switched on.
+- **Fixed on the way:** the composer closes its panels on any mouse-down outside itself, and a dialog is portaled outside. A click in the key dialog closed the panel and unmounted the dialog under the person typing. Clicks inside a dialog no longer count as outside (`chat-input.tsx`).
+- **Status label:** "Ready" is now "Connected" in all 9 languages (`workspace.mcpServers.status.ready`). Every MCP status badge uses that key: the server cards, the instance rows, the Edit panel header, and the agent builder's MCP node.
+- **Checked in the browser:**
+  - dev server, light, dark and 390 px, with the server list edited to show each state;
+  - the key dialog opens and survives typing, Cancel, then Connect;
+  - the popup opens, the other buttons wait, and closing it re-enables them.
+- **Seen, not changed:** at 390 px the chat page crashes with React error #300 ("Rendered fewer hooks than expected"). The build without this change does too, so it predates it.
+
+### R7-8 — Google sign-in: the real error in the window, and the `GOCSPX-` hint
+Tushar's Google Drive server failed every sign-in.
+- **Cause:** the connectors log said `invalid_client: The provided client secret is invalid`. The stored secret was the 28 characters after Google's `GOCSPX-` prefix, which is what a double-click copy selects. With the prefix, Google accepted the client.
+- **Nothing from #3478 was missing.** Checked against Google:
+  - the authorize URL;
+  - the `resource` parameter at authorize, code exchange and refresh;
+  - the token endpoint's authentication method.
+- **The error he saw** was only "Failed to exchange the authorization code for tokens". The callback now words each RFC 6749 refusal (`invalid_client`, `invalid_grant`, `unauthorized_client`, `invalid_scope`, `invalid_request`, `unsupported_grant_type`) and names the code. It uses our own text, because a provider's description can echo the request.
+  - `invalid_client` on an administrator's app: "its client ID or client secret is wrong".
+  - On PipesHub's own registration: "connect again, and PipesHub registers a new one".
+- **Prefix hint:** templates can set `client_secret_prefix`; the Google ones set `GOCSPX-`. The Edit panel shows "Starts with GOCSPX-…" under Client Secret, and an amber warning when the entered or revealed secret lacks the prefix. Checked in the browser.

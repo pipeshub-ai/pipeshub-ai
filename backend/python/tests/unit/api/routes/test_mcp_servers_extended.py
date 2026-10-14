@@ -6,6 +6,7 @@
 - update_oauth_config (1190-1219)
 """
 
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -208,7 +209,7 @@ class TestHandleOAuthCallbackCallerMismatch:
 
 
 @pytest.fixture
-def _instance_in_callers_org():
+def _instance_in_callers_org() -> Iterator[None]:
     """The handler under test looks the instance up (org-scoped); this one exists."""
     with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1"})):
         yield
@@ -298,7 +299,7 @@ class TestRefreshOAuthToken:
             assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_refresh_token_invalid_marks_unauthenticated_and_raises_409(self):
+    async def test_refresh_token_invalid_marks_unauthenticated_and_raises_409(self) -> None:
         from app.agents.mcp.oauth_client import MCPRefreshTokenInvalidError
         from app.api.routes.mcp_servers import refresh_oauth_token
 

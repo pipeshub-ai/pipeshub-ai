@@ -103,6 +103,9 @@ class MCPServerTemplate(MCPCamelModel):
     # `access_type=offline`). Protocol parameters are not overridable — see
     # `dcr.build_authorization_url`.
     authorization_params: dict[str, str] = Field(default_factory=dict)
+    # How this provider's client secrets start (Google's `GOCSPX-`): the setup form says so, and
+    # warns when a pasted secret doesn't, since copying it by double-click drops the prefix.
+    client_secret_prefix: Optional[str] = None
     # UI hint only (shown before a live probe resolves) — the authorize flow always
     # re-discovers via `app.agents.mcp.dcr.discover_oauth_metadata` (RFC 9728/8414) rather
     # than trusting this flag, since real DCR support can differ from what a template

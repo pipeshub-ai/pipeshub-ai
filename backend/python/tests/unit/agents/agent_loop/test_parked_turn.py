@@ -8,7 +8,13 @@ from types import SimpleNamespace
 from typing import Any
 
 from app.agent_loop_lib.context.manager import ContextManager
-from app.agent_loop_lib.core.messages import AssistantMessage, Message, ToolCall, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    Message,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.factory import inject_ask_user_question_resume
 from tests.unit.agents.adapter.conftest import make_context

@@ -45,6 +45,8 @@ export interface McpServerTemplate {
   tokenUrl?: string | null;
   defaultScopes: string[];
   supportsDcr: boolean;
+  /** How the provider's OAuth client secrets start (Google's `GOCSPX-`); the form warns when one doesn't. */
+  clientSecretPrefix?: string | null;
 
   documentationUrl?: string | null;
   authHint?: McpAuthHint | null;

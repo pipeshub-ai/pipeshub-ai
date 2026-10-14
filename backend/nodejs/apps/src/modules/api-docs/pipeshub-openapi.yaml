@@ -1574,6 +1574,10 @@ components:
             type: string
         supportsDcr:
           type: boolean
+        clientSecretPrefix:
+          type: string
+          nullable: true
+          description: How this provider's OAuth client secrets start (Google's `GOCSPX-`); the setup form warns when an entered secret doesn't.
         documentationUrl:
           type: string
           nullable: true

@@ -2683,7 +2683,7 @@
         "edit": "Bearbeiten"
       },
       "status": {
-        "ready": "Bereit",
+        "ready": "Verbunden",
         "notConnected": "Nicht verbunden",
         "reconnectNeeded": "Neue Verbindung nötig",
         "waitingForAdmin": "Wartet auf Admin",
@@ -2858,7 +2858,9 @@
         "callbackUrlLabel": "Callback-URL",
         "copyCallbackUrl": "Callback-URL kopieren",
         "callbackUrlCopied": "Callback-URL kopiert",
-        "providerDocsLink": "Setup-Dokumentation des Anbieters anzeigen"
+        "providerDocsLink": "Setup-Dokumentation des Anbieters anzeigen",
+        "clientSecretPrefixHint": "Beginnt mit {{prefix}}. Kopieren Sie das ganze Secret, einschließlich dieses Teils.",
+        "clientSecretPrefixMissing": "Dies beginnt nicht mit {{prefix}}, daher lehnt der Anbieter es ab. Beim Kopieren per Doppelklick fehlt dieser Teil: Kopieren Sie das ganze Secret."
       },
       "oauth": {
         "completingTitle": "Anmeldung wird abgeschlossen…",

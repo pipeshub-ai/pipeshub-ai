@@ -15,7 +15,12 @@ import pytest
 from app.agent_loop_lib.agent import Agent
 from app.agent_loop_lib.agent.loops import ReActLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
-from app.agent_loop_lib.core.messages import AssistantMessage, ToolCall, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    AssistantMessage,
+    ToolCall,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
 from app.agent_loop_lib.hooks.events import HookEvent
@@ -38,7 +43,10 @@ from app.agents.agent_loop.tool_approvals import (
 )
 from app.agents.mcp.models import MCPToolInfo
 from tests.unit.agents.adapter.conftest import make_context
-from tests.unit.agents.adapter.support.scripted_transport import ScriptedStep, ScriptedTransport
+from tests.unit.agents.adapter.support.scripted_transport import (
+    ScriptedStep,
+    ScriptedTransport,
+)
 
 
 class _Store:
@@ -236,7 +244,10 @@ class TestTheGate:
         second = await _gate(context, _adapter(read_only=False, name="update_issue"), key="X-1")
 
         assert second.decision == PreDecision.DENY
-        assert "already waiting" in (second.decision_reason or "")
+        reason = second.decision_reason or ""
+        assert "Not run yet" in reason and "another one is waiting" in reason
+        # Read when the other card's answer resumes the turn: it has to ask again then.
+        assert "call update_issue again with the same arguments" in reason
 
     async def test_a_deleting_tool_is_denied_and_the_model_is_told_how_to_allow_it(self) -> None:
         store = _Store()
@@ -492,7 +503,7 @@ async def _ask(store: _Store, mcp: _Server) -> str:
 
 
 async def _answer(
-    store: _Store, mcp: _Server, approval_id: str, decision: str, *model_calls: ToolCall,  # noqa: ANN401
+    store: _Store, mcp: _Server, approval_id: str, decision: str, *model_calls: ToolCall,
     remember: bool = False, history: list[dict[str, Any]] | None = None, loop: Any = None, **overrides: Any,  # noqa: ANN401
 ) -> _Request:
     answer = ToolApprovalAnswer(approval_id=approval_id, decision=decision, remember=remember)  # type: ignore[arg-type]
@@ -549,6 +560,29 @@ class TestAnsweringTheCard:
         assert len(mcp.calls) == 1
         (blocked,) = answered.events.of(EventType.TOOL_BLOCKED)
         assert blocked["status"] == ToolCallStatus.AWAITING_APPROVAL
+
+    @pytest.mark.parametrize("decision,ran", [("allow", [{"tool": "create_issue", "title": "Login is broken"}]), ("deny", [])])
+    async def test_two_actions_asked_for_at_once_get_a_card_each_in_turn(self, decision: str, ran: list[dict[str, Any]]) -> None:
+        """Bug bash: "create two pages" asked for the first, then dropped the second."""
+        store, mcp = _Store(), _Server()
+        second = ToolCall(id="c3", name="mcp_jira_create_issue", arguments={"title": "Signup is broken"})
+        both = AssistantMessage(content="", tool_calls=[_FILE_IT, second])
+        asked = await _request(_context(store), mcp, both, _DONE)
+        (blocked,) = [e for e in asked.events.of(EventType.TOOL_BLOCKED) if e.get("approval")]
+        assert mcp.calls == [] and len(store.pending()) == 1
+
+        again = ToolCall(id="c4", name="mcp_jira_create_issue", arguments={"title": "Signup is broken"})
+        answered = await _answer(store, mcp, blocked["approval"]["approvalId"], decision, again, _DONE)
+
+        assert mcp.calls == ran
+        first_step = answered.sent[0]
+        assert "call create_issue again" in str(_result_of(first_step, "c3").content)
+        if decision == "deny":
+            # About that call: it doesn't tell the model to leave the tool alone.
+            assert "don't make that call again" in str(_result_of(first_step, "c1").content)
+        (next_card,) = answered.events.of(EventType.TOOL_BLOCKED, "c4")
+        assert next_card["status"] == ToolCallStatus.AWAITING_APPROVAL
+        assert [p["arguments"] for p in store.pending() if p["toolCallId"] == "c4"] == [{"title": "Signup is broken"}]
 
     async def test_the_same_answer_twice_shows_what_happened_and_runs_nothing(self) -> None:
         store, mcp = _Store(), _Server()

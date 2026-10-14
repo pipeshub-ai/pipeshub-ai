@@ -354,9 +354,11 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
 async def _ask(context: "AgentContext", ctx: "ToolCallContext", adapter: "MCPToolAdapter", instance_id: str, tool_name: str) -> None:
     server = adapter.server.display_name
     if context.tool_state.get(_PENDING_IN_RUN):
+        # The model reads this when the answer to the other card resumes the turn: it must ask again
+        # then, or the action is silently dropped.
         ctx.deny(
-            "Another action is already waiting for the user's approval, so this one wasn't run. "
-            "Tell the user what you wanted to do; don't run other actions that need approval now."
+            "Not run yet: only one action can wait for the user's approval at a time, and another one is waiting. "
+            f"After the user answers it, call {tool_name} again with the same arguments to ask for this one."
         )
         return
     now = time.time()
@@ -513,7 +515,8 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 answer="declined", status="blocked", preview="Declined by the user.",
                 # Said plainly: models otherwise report it as "declined by the system".
                 result=f"The user declined: they chose Deny on the approval card for {tool} on {server}, so it didn't run. "
-                "Tell them you didn't do it because they declined, and don't run it again unless they ask for it.",
+                # "That call", not the tool: another call of it may still be waiting to be asked for.
+                "Tell them you didn't do it because they declined, and don't make that call again unless they ask for it.",
             )
             if answer.remember:
                 await _remember(context, pending, "block")

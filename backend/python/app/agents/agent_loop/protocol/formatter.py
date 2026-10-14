@@ -158,7 +158,9 @@ class LegacyFormatter(ProtocolFormatter):
     def error(self, context, *, message, code):
         return [{"event": "error", "data": {"message": message, "type": code}}]
 
-    def tool_progress(self, context, *, tool, progress, total, message):
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]:
         return [{
             "event": "status",
             "data": {"status": "running_tool", "tool": tool, "progress": progress, "total": total, "message": message},
@@ -243,7 +245,9 @@ class AGUIFormatter(ProtocolFormatter):
     def error(self, context, *, message, code):
         return [frame(AGUIEventType.RUN_ERROR, runId=context.run_id, message=message, code=code)]
 
-    def tool_progress(self, context, *, tool, progress, total, message):
+    def tool_progress(
+        self, context: "AgentContext", *, tool: str, progress: float, total: float | None, message: str | None,
+    ) -> list[dict[str, Any]]:
         """A `running_tool` snapshot like `write_state`'s, with the server's progress on it."""
         snapshot: dict[str, Any] = {"status": "running_tool", "current_tool": tool, "progress": progress}
         if total is not None:

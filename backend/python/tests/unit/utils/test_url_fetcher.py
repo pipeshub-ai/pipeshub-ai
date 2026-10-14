@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.utils.url_fetcher import (
-    check_http_url_without_resolving,
     _MAX_REDIRECTS,
     FetchError,
     FetchResult,
@@ -24,6 +23,7 @@ from app.utils.url_fetcher import (
     _try_cloudscraper,
     _try_curl_cffi,
     _try_requests,
+    check_http_url_without_resolving,
     fetch_url,
     resolve_public_http_target,
     validate_public_http_url,

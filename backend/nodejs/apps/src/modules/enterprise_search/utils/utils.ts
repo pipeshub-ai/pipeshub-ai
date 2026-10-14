@@ -736,7 +736,9 @@ const toolResultsFromParts = (
         // A blocked call, or one still waiting for approval, never ran: replaying it as a
         // success would tell the next turn it had.
         status:
-          part.status === 'failed' || part.status === 'blocked' || part.status === 'awaiting_approval'
+          part.status === 'failed' ||
+          part.status === 'blocked' ||
+          part.status === 'awaiting_approval'
             ? ('error' as const)
             : ('success' as const),
         ...(part.artifactId && { artifact_id: part.artifactId }),
@@ -1846,7 +1848,10 @@ export const savePartialConversation = async (
   conversation: IChatSessionDocument,
   partialText: string,
   session?: ClientSession | null,
-  options?: { replaceMessageId?: mongoose.Types.ObjectId | string; parts?: IMessagePart[] },
+  options?: {
+    replaceMessageId?: mongoose.Types.ObjectId | string;
+    parts?: IMessagePart[];
+  },
 ): Promise<void> => {
   try {
     const partialMessage: IMessage = {

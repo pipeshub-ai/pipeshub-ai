@@ -18,6 +18,7 @@ import { useToolRulesEditor } from '../../components/mcp-tool-rules-editor';
 import { mcpConnectionState, usesSharedCredential, type McpConnectionState } from '../../connection-state';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { McpPanelTitle, McpServerActionsMenu, type McpMenuEntry } from './mcp-panel-header';
+import { McpClientSecretPrefixHint } from './mcp-client-secret-prefix-hint';
 import { McpToolsApprovalsTab, type McpToolsLoad } from './mcp-tools-approvals-tab';
 import {
   isOauthClientMissing,
@@ -910,6 +911,7 @@ export function McpInstanceConfigPanel({
                     </IconButton>
                   </TextField.Slot>
                 </TextField.Root>
+                <McpClientSecretPrefixHint prefix={resolvedTemplate?.clientSecretPrefix} secret={oauthClientSecret} />
               </FormField>
               {mode === 'edit' && hasExistingOAuthClient && (
                 <Text size="1" style={{ color: 'var(--amber-11)' }}>

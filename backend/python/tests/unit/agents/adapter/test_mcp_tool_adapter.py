@@ -12,6 +12,8 @@ from unittest.mock import patch
 import httpx
 import mcp.types as mt
 import pytest
+from mcp.shared.exceptions import MCPError
+from mcp.types import CONNECTION_CLOSED, INVALID_PARAMS
 
 from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart
@@ -456,6 +458,9 @@ class TestValidationBlocksExecutionViaToolExecutor:
 
         assert result.is_error is True
         assert "must be one of" in result.content
+        # The card shows the first line: it names the argument, not the tool's internal path.
+        assert result.content.startswith("argument 'status' must be one of")
+        assert "/mcp/" not in result.content
         assert session_manager.calls == []
 
 
@@ -630,6 +635,50 @@ class TestExecuteFailure:
 
         assert output.success is False
         assert "totally unexpected" in output.error
+
+
+# How a TypeScript-SDK server refuses arguments: the field it wants is on a later line.
+_INVALID_PARAMS = (
+    "MCP error -32602: Invalid arguments for tool create_page: [\n"
+    '  {\n    "code": "invalid_type",\n    "expected": "string",\n    "received": "undefined",\n'
+    '    "path": ["title"],\n    "message": "Required"\n  }\n]'
+)
+
+
+class TestTheServersOwnErrorReachesTheModelWhole:
+    """So the model can correct its arguments: a first line alone ("Invalid arguments ...: [")
+    names no field, and three such failures block the tool for the rest of the request."""
+
+    async def test_an_invalid_arguments_error_names_the_field(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=MCPError(INVALID_PARAMS, _INVALID_PARAMS)))
+
+        output = await adapter.execute(query="PA")
+
+        assert output.success is False
+        assert output.error == f"The {_server().display_name} MCP server returned an error: {_INVALID_PARAMS}"
+
+    async def test_a_url_in_it_is_still_reduced(self) -> None:
+        message = "Upstream refused: GET https://user:pw@api.example.com/v1?token=abc returned 400\nfix the query"
+        adapter = _make_adapter(_FakeSessionManager(exc=MCPError(INVALID_PARAMS, message)))
+
+        output = await adapter.execute(query="PA")
+
+        assert "token=abc" not in output.error and "user:pw" not in output.error
+        assert "fix the query" in output.error
+
+    async def test_a_very_long_one_is_capped(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=MCPError(INVALID_PARAMS, "x" * 50_000)))
+
+        output = await adapter.execute(query="PA")
+
+        assert len(output.error) < 4_200
+
+    async def test_the_sdks_own_stand_in_is_not_taken_for_the_servers_message(self) -> None:
+        adapter = _make_adapter(_FakeSessionManager(exc=MCPError(CONNECTION_CLOSED, "Connection closed")))
+
+        output = await adapter.execute(query="PA")
+
+        assert "returned an error" not in output.error
 
 
 def _tool_result(content: object, *, is_error: bool = False) -> ToolResult:

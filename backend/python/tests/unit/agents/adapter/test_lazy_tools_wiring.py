@@ -280,6 +280,14 @@ class TestRegisterLazyToolMetaTools:
         register_lazy_tool_meta_tools(registry)
         assert set(META_TOOL_NAMES) <= set(registry.names())
 
+    def test_search_tools_ranks_with_the_toolset_aware_index(self) -> None:
+        """The model names the app as often as the action; tool_preloading keeps the plain index."""
+        from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+
+        registry = ToolRegistry()
+        register_lazy_tool_meta_tools(registry)
+        assert isinstance(registry.resolve_by_name("search_tools")._index, ToolsetAwareToolIndex)
+
     def test_second_call_on_same_registry_is_a_no_op(self) -> None:
         registry = ToolRegistry()
         register_lazy_tool_meta_tools(registry)

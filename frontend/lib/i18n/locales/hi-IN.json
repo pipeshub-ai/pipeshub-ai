@@ -2678,7 +2678,7 @@
         "edit": "संपादित करें"
       },
       "status": {
-        "ready": "तैयार",
+        "ready": "कनेक्टेड",
         "notConnected": "कनेक्ट नहीं है",
         "reconnectNeeded": "फिर से कनेक्ट करना होगा",
         "waitingForAdmin": "एडमिन की प्रतीक्षा",
@@ -2853,7 +2853,9 @@
         "callbackUrlLabel": "कॉलबैक URL",
         "copyCallbackUrl": "कॉलबैक URL कॉपी करें",
         "callbackUrlCopied": "कॉलबैक URL कॉपी हो गया",
-        "providerDocsLink": "प्रदाता सेटअप दस्तावेज़ देखें"
+        "providerDocsLink": "प्रदाता सेटअप दस्तावेज़ देखें",
+        "clientSecretPrefixHint": "{{prefix}} से शुरू होता है। पूरा सीक्रेट कॉपी करें, उस हिस्से समेत।",
+        "clientSecretPrefixMissing": "यह {{prefix}} से शुरू नहीं होता, इसलिए प्रोवाइडर इसे अस्वीकार करेगा। डबल-क्लिक से कॉपी करने पर वह हिस्सा छूट जाता है: पूरा सीक्रेट कॉपी करें।"
       },
       "oauth": {
         "completingTitle": "साइन-इन पूरा हो रहा है…",

@@ -1436,6 +1436,43 @@ async def _resolve_oauth_client_secret(
     raise ValueError("The OAuth app configuration for this instance changed during authorization.")
 
 
+# RFC 6749 §5.2 refusals of a code exchange, worded for the person connecting. Our own words: the
+# provider's description can echo the request. The code is named, so it can be looked up.
+_EXCHANGE_REFUSALS: dict[str, str] = {
+    "invalid_client": (
+        "The sign-in provider rejected this server's OAuth app: its client ID or client secret is wrong. "
+        "An administrator can correct them in the server's settings, then connect again."
+    ),
+    "unauthorized_client": (
+        "The sign-in provider doesn't allow this server's OAuth app to sign in this way. "
+        "Check the app's settings with the provider."
+    ),
+    "invalid_grant": (
+        "The sign-in provider didn't accept the sign-in code: it may have expired or been used already, "
+        "or the redirect URI registered for the app doesn't match. Try connecting again."
+    ),
+    "invalid_scope": "The sign-in provider refused the permissions this server asks for.",
+    "invalid_request": "The sign-in provider refused the token request. Try connecting again.",
+    "unsupported_grant_type": "The sign-in provider doesn't allow this kind of sign-in for this app.",
+}
+
+
+def _token_exchange_failure_message(error_code: Optional[str], *, registered_client: bool) -> str:
+    """What the sign-in window says when the provider refuses the code exchange.
+    `registered_client`: PipesHub's own registration or client document, which the next sign-in
+    replaces by itself, rather than an administrator's app."""
+    code = (error_code or "").lower()
+    if code == "invalid_client" and registered_client:
+        return (
+            "The sign-in provider no longer accepts PipesHub's registered client. Connect again, and "
+            "PipesHub registers a new one. (The provider answered invalid_client.)"
+        )
+    for known, message in _EXCHANGE_REFUSALS.items():
+        if code == known:
+            return f"{message} (The provider answered {known}.)"
+    return "Failed to exchange the authorization code for tokens. Please try connecting again."
+
+
 @router.get("/oauth/callback", dependencies=[Depends(require_scopes(OAuthScopes.MCP_WRITE))])
 async def handle_oauth_callback(
     request: Request,
@@ -1564,7 +1601,7 @@ async def handle_oauth_callback(
         return {
             "success": False,
             "error": "token_exchange_failed",
-            "errorMessage": "Failed to exchange the authorization code for tokens. Please try connecting again.",
+            "errorMessage": _token_exchange_failure_message(e.error_code, registered_client=is_dcr or metadata_document),
         }
     tokens = tokens.model_copy(update={"client_id": client_id})
 

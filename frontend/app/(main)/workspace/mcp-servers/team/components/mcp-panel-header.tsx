@@ -70,7 +70,8 @@ export function McpServerActionsMenu({ entries, container }: { entries: McpMenuE
           <MaterialIcon name="more_horiz" size={18} color="var(--slate-11)" />
         </IconButton>
       </DropdownMenu.Trigger>
-      <DropdownMenu.Content align="end" container={container ?? undefined} style={{ minWidth: 260 }}>
+      {/* The drawer's host ignores the pointer, and a non-modal menu doesn't turn it back on. */}
+      <DropdownMenu.Content align="end" container={container ?? undefined} style={{ minWidth: 260, pointerEvents: 'auto' }}>
         {entries.map((entry) => (
           <Fragment key={entry.id}>
             {entry.kind === 'separator' ? (

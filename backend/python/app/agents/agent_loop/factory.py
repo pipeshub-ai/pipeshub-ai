@@ -119,6 +119,7 @@ from app.agents.agent_loop.entity_search_tool import (
 )
 from app.agents.agent_loop.hooks import (
     CitationCollector,
+    RepeatedReadGuard,
     ToolErrorTracker,
     artifact_context_reminder,
     ask_user_question_sse,
@@ -1107,6 +1108,10 @@ class PipesHubAgentFactory:
         error_tracker = ToolErrorTracker()
         hooks.on(HookEvent.PRE_TOOL_USE).use(error_tracker.pre_tool_use)
         hooks.on(HookEvent.POST_TOOL_USE).use(error_tracker.post_tool_use)
+        # Successful repeats aren't failures: without this an identical MCP read can fill every turn.
+        repeated_reads = RepeatedReadGuard(context)
+        hooks.on(HookEvent.PRE_TOOL_USE).use(repeated_reads.pre_tool_use)
+        hooks.on(HookEvent.POST_TOOL_USE).use(repeated_reads.post_tool_use)
 
         collector = CitationCollector(context)
         hooks.on(HookEvent.POST_TOOL_USE).use(citation_tracking(context, collector))

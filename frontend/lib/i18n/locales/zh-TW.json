@@ -2820,7 +2820,7 @@
         "edit": "編輯"
       },
       "status": {
-        "ready": "就緒",
+        "ready": "已連線",
         "notConnected": "未連線",
         "reconnectNeeded": "需要重新連線",
         "waitingForAdmin": "等待管理員",
@@ -2995,7 +2995,9 @@
         "callbackUrlLabel": "回呼 URL",
         "copyCallbackUrl": "複製回呼 URL",
         "callbackUrlCopied": "已複製回呼 URL",
-        "providerDocsLink": "檢視提供者設定文件"
+        "providerDocsLink": "檢視提供者設定文件",
+        "clientSecretPrefixHint": "以 {{prefix}} 開頭。請複製完整的密鑰，包括這一部分。",
+        "clientSecretPrefixMissing": "此值不以 {{prefix}} 開頭，提供者會拒絕它。按兩下複製會漏掉這一部分：請複製完整的密鑰。"
       },
       "oauth": {
         "completingTitle": "正在完成登入…",

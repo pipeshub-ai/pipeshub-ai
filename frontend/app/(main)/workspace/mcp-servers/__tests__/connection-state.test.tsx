@@ -114,13 +114,18 @@ function renderPersonalCard(instance: McpMyServerEntry) {
 }
 
 describe('McpPersonalServerCard status', () => {
+  it('a working server says Connected', () => {
+    renderPersonalCard(entry());
+    expect(screen.getByText('Connected')).toBeTruthy();
+  });
+
   it('an expired sign-in says so and offers Reconnect', () => {
     const handlers = renderPersonalCard(
       entry({ toolsError: 'Sign-in expired. Reconnect this server.', toolsErrorCode: 'auth_expired' }),
     );
 
     expect(screen.getByText('Reconnect needed')).toBeTruthy();
-    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.queryByText('Connected')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Reconnect' }));
     expect(handlers.onReauthenticate).toHaveBeenCalledOnce();
     expect(handlers.onAuthenticate).not.toHaveBeenCalled();
@@ -176,7 +181,7 @@ describe('McpPersonalServerCard status', () => {
     renderPersonalCard(entry({ authMode: 'none', toolsError: 'Connection refused', toolsErrorCode: 'unreachable' }));
 
     expect(screen.getByText("Can't reach server")).toBeTruthy();
-    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.queryByText('Connected')).toBeNull();
   });
 });
 
@@ -187,7 +192,7 @@ describe('team page status', () => {
     );
 
     expect(screen.getByText('Shared credential missing')).toBeTruthy();
-    expect(screen.queryByText('Ready')).toBeNull();
+    expect(screen.queryByText('Connected')).toBeNull();
   });
 
   it('the row offers Reconnect for an expired sign-in', () => {

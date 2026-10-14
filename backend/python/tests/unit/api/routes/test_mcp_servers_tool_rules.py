@@ -9,7 +9,11 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 
 from app.api.routes import mcp_servers
-from app.api.routes.mcp_servers import ToolRulesBody, get_my_tool_rules, update_my_tool_rules
+from app.api.routes.mcp_servers import (
+    ToolRulesBody,
+    get_my_tool_rules,
+    update_my_tool_rules,
+)
 from tests.unit.api.routes.mcp_route_fakes import FakeConfigService, route_request
 
 _ORG = "/services/mcp/instances/inst-1"

@@ -60,6 +60,7 @@ from app.agent_loop_lib.tools.builtin.lazy_toolsets import (
     SearchToolsTool,
 )
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -409,9 +410,11 @@ def register_lazy_tool_meta_tools(
         except (DuplicateToolNameError, DuplicateToolPathError):
             continue
     try:
-        tool_registry.register_tool(
-            SearchToolsTool(tool_registry, global_fallback=PipesHubGlobalCatalogFallback(context))
-        )
+        # The model names the app as often as the action ("search ClickUp tasks"); preloading keeps
+        # the plain index its thresholds are tuned to.
+        tool_registry.register_tool(SearchToolsTool(
+            tool_registry, index=ToolsetAwareToolIndex(), global_fallback=PipesHubGlobalCatalogFallback(context),
+        ))
     except (DuplicateToolNameError, DuplicateToolPathError):
         pass
 

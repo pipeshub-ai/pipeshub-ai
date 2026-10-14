@@ -851,6 +851,22 @@ describe('ChatInput — connectors and collections', () => {
 
     expect(screen.queryByText('Choose the handbook')).toBeNull();
   });
+
+  it('keeps the panel open for a click inside a dialog opened from it', () => {
+    renderInput();
+    fireEvent.click(screen.getByText('apps').closest('button') as HTMLButtonElement);
+    // Like an MCP server's key dialog: portaled to the body, outside the composer.
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const field = document.createElement('input');
+    dialog.appendChild(field);
+    document.body.appendChild(dialog);
+
+    fireEvent.mouseDown(field);
+
+    expect(screen.getByText('Choose the handbook')).toBeTruthy();
+    dialog.remove();
+  });
 });
 
 describe('ChatInput — model, voice and search view', () => {

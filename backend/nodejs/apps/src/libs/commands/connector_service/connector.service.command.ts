@@ -29,7 +29,8 @@ const logger = Logger.getInstance({
   service: 'ConnectorServiceCommand',
 });
 
-const isTimeout = (error: unknown): boolean => (error as { name?: unknown } | null)?.name === 'TimeoutError';
+const isTimeout = (error: unknown): boolean =>
+  (error as { name?: unknown } | null)?.name === 'TimeoutError';
 
 export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResponse<T>> {
   private method: HttpMethod;
@@ -47,7 +48,12 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
   }
 
   private attempt(url: string, requestOptions: RequestInit): Promise<Response> {
-    return fetch(url, this.timeoutMs ? { ...requestOptions, signal: AbortSignal.timeout(this.timeoutMs) } : requestOptions);
+    return fetch(
+      url,
+      this.timeoutMs
+        ? { ...requestOptions, signal: AbortSignal.timeout(this.timeoutMs) }
+        : requestOptions,
+    );
   }
   
   // Execute the HTTP request based on the provided options.

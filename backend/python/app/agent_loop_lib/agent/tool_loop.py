@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -15,8 +16,11 @@ from app.agent_loop_lib.core.messages import (
 from app.agent_loop_lib.core.scope import StateSlot, ToolScope
 from app.agent_loop_lib.core.types import Artifact, Confidence, Goal, Message, ToolCall, ToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
+from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.special_route import RouteContext, SpecialRouteRegistry
 from app.agent_loop_lib.tools.tags import TAG_DEDUP_EXACT, TAG_LIFECYCLE_TERMINAL
+
+logger = logging.getLogger(__name__)
 
 # Internal tools whose execution should not produce frontend-visible events.
 # The tool still runs and its result enters the conversation; only the
@@ -246,7 +250,28 @@ def initial_visible_tools(spec: "AgentSpec", runtime: "AgentRuntime") -> set[str
 def tool_schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
     """Which tool schemas the model sees this turn — all of them, unless
     the registry opts into lazy toolsets, in which case it's essentials
-    plus whatever `agent.visible_tools` has grown to via fetch_tools."""
+    plus whatever `agent.visible_tools` has grown to via fetch_tools.
+    Never more than `MAX_TOOLS_PER_REQUEST`: past it the provider refuses
+    the whole request."""
+    registry = runtime.tool_registry
+    if registry is None:
+        return []
+    schemas = _schemas_for_turn(agent, spec, runtime)
+    if len(schemas) <= MAX_TOOLS_PER_REQUEST:
+        return schemas
+    # fetch_tools, search_tools and preloading keep within the limit; this catches the rest
+    # (an eager grant that large, tools seeded from history). Essentials stay.
+    essentials = initial_visible_tools(spec, runtime)
+    ordered = [s for s in schemas if s.name in essentials] + [s for s in schemas if s.name not in essentials]
+    kept = {s.name for s in ordered[:MAX_TOOLS_PER_REQUEST]}
+    logger.warning(
+        "tool_schemas_for_turn: %d tools is over the %d one request can carry; sending %d",
+        len(schemas), MAX_TOOLS_PER_REQUEST, len(kept),
+    )
+    return [s for s in schemas if s.name in kept]
+
+
+def _schemas_for_turn(agent, spec: "AgentSpec", runtime: "AgentRuntime") -> list["ToolSchema"]:
     registry = runtime.tool_registry
     if registry is None:
         return []

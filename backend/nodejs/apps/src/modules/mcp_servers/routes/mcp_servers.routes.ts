@@ -80,9 +80,19 @@ export function createMcpServersRouter(container: Container): Router {
   router.put('/instances/:instanceId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_WRITE), updateMcpInstance(config));
   router.delete('/instances/:instanceId', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_DELETE), deleteMcpInstance(config));
   router.get('/instances/:instanceId/tools', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMcpInstanceTools(config));
-  // Tool approvals: company rules (admins) and the caller's own rules.
-  router.get('/instances/:instanceId/my-tool-rules', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_READ), getMyMcpToolRules(config));
-  router.put('/instances/:instanceId/my-tool-rules', authMiddleware.authenticate, requireScopes(OAuthScopeNames.MCP_WRITE), updateMyMcpToolRules(config));
+  // Tool approvals: the caller's own rules.
+  router.get(
+    '/instances/:instanceId/my-tool-rules',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_READ),
+    getMyMcpToolRules(config),
+  );
+  router.put(
+    '/instances/:instanceId/my-tool-rules',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.MCP_WRITE),
+    updateMyMcpToolRules(config),
+  );
 
   // ---- Auth — API token / headers -----------------------------------------
 

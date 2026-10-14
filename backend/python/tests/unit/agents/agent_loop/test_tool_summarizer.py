@@ -442,30 +442,30 @@ class TestGenericArgs:
         assert len(result) < 120
         assert result.endswith("…\"")
 
-    def test_no_matching_key_lists_the_arguments(self):
+    def test_no_matching_key_lists_the_arguments(self) -> None:
         result = _generic_args_formatter({"foo": "bar", "limit": 5}, "app__tool")
         assert result == 'Tool — foo: "bar", limit: 5'
 
-    def test_no_arguments_is_just_the_label(self):
+    def test_no_arguments_is_just_the_label(self) -> None:
         assert _generic_args_formatter({}, "app__tool") == "Tool"
 
 
 class TestInlineArgs:
-    def test_none_for_no_arguments(self):
+    def test_none_for_no_arguments(self) -> None:
         assert inline_args({}) is None
 
-    def test_scalars_render_as_json_literals(self):
+    def test_scalars_render_as_json_literals(self) -> None:
         assert inline_args({"a": None, "b": True, "c": 1.5}) == "a: null, b: true, c: 1.5"
 
-    def test_collections_are_summarized(self):
+    def test_collections_are_summarized(self) -> None:
         assert inline_args({"ids": [1, 2], "one": [1], "filter": {"x": 1}}) == 'ids: [2 items], one: [1 item], filter: {…}'
 
-    def test_long_strings_are_truncated(self):
+    def test_long_strings_are_truncated(self) -> None:
         text = inline_args({"q": "x" * 200})
         assert text.startswith('q: "') and text.endswith('…"')
         assert len(text) < 100
 
-    def test_stops_after_max_items(self):
+    def test_stops_after_max_items(self) -> None:
         assert inline_args({"a": 1, "b": 2, "c": 3, "d": 4}) == "a: 1, b: 2, c: 3, …"
 
     def test_skips_empty_string(self):

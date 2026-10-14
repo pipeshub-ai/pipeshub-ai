@@ -425,11 +425,19 @@ def _http_failure_message(status: int, url: str, server_said: str = "") -> str:
     return f"The MCP server answered HTTP {status} at {url}{said}"
 
 
-def _server_said(error: BaseException) -> str:
-    """A JSON-RPC error's own message, when the server sent one."""
-    if not isinstance(error, MCPError) or _is_sdk_message(error):
+def server_error_message(error: BaseException, max_chars: int) -> str:
+    """A JSON-RPC error's own message as the server wrote it, every line of it (an invalid-params
+    error names the bad argument on a later line), with URLs reduced. "" for anything else,
+    including the SDK's own stand-ins."""
+    if not isinstance(error, MCPError) or _is_sdk_message(error) or not error.message:
         return ""
-    return redact_urls_in_text(error.message.splitlines()[0] if error.message else "")[:300]
+    return redact_urls_in_text(error.message.strip())[:max_chars]
+
+
+def _server_said(error: BaseException) -> str:
+    """A JSON-RPC error's own message, when the server sent one: its first line, for a status line."""
+    said = server_error_message(error, max_chars=10_000)
+    return said.splitlines()[0][:300] if said else ""
 
 
 def _wire_failure(record: wire.WireRecord, *, what: str) -> Optional[MCPConnectionError]:

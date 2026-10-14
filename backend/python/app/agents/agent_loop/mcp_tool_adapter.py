@@ -44,6 +44,7 @@ from app.agents.mcp.client import (
     MCPCallTooLongError,
     MCPConnectionError,
     MCPListingTimeoutError,
+    server_error_message,
 )
 from app.agents.mcp.errors import (
     MCPCallInterruptedError,
@@ -85,6 +86,8 @@ _SHORT_DESCRIPTION_MAX_LEN = 160
 
 _MAX_RESULT_SUMMARY_CHARS = 200
 _MAX_ERROR_CHARS = 300
+# A server's own error message is kept up to this, so a long validation report still names the field.
+_MAX_SERVER_ERROR_CHARS = 4_000
 # A server's progress on the activity row: at most this often, this long.
 _PROGRESS_INTERVAL_SECONDS = 0.5
 _MAX_PROGRESS_MESSAGE_CHARS = 200
@@ -322,9 +325,8 @@ class MCPToolAdapter(Tool):
         for param in params_by_name.values():
             if param.name not in kwargs:
                 if param.required:
-                    raise ToolValidationError(
-                        f"{self.path}: missing required argument '{param.name}'"
-                    )
+                    # No tool prefix: the message is that call's own result, and the card shows it.
+                    raise ToolValidationError(f"missing required argument '{param.name}'")
                 continue
 
             value = kwargs[param.name]
@@ -345,8 +347,7 @@ class MCPToolAdapter(Tool):
                     )
                     if coerced is _NO_COERCION:
                         raise ToolValidationError(
-                            f"{self.path}: argument '{param.name}' expected type "
-                            f"{param.type.value!r}, got {type(value).__name__!r}"
+                            f"argument '{param.name}' expected type {param.type.value!r}, got {type(value).__name__!r}"
                         )
                     kwargs[param.name] = value = coerced
 
@@ -355,10 +356,7 @@ class MCPToolAdapter(Tool):
                 if matched is not None:
                     kwargs[param.name] = matched
                 else:
-                    raise ToolValidationError(
-                        f"{self.path}: argument '{param.name}' must be one of "
-                        f"{param.enum}, got {value!r}"
-                    )
+                    raise ToolValidationError(f"argument '{param.name}' must be one of {param.enum}, got {value!r}")
 
     async def execute(self, **kwargs: Any) -> ToolOutput:  # noqa: ANN401
         try:
@@ -446,6 +444,9 @@ class MCPToolAdapter(Tool):
             return f"The {server} MCP server rejected the stored credentials (HTTP 401). Update them in Workspace → MCP Servers."
         # Some SDK paths raise the transport task group's ExceptionGroup rather than its member.
         exc = first_leaf(exc)
+        if said := server_error_message(exc, _MAX_SERVER_ERROR_CHARS):
+            # The server's own refusal, whole: which argument was wrong is what the model corrects.
+            return f"The {server} MCP server returned an error: {said}"
         if isinstance(exc, (httpx.HTTPStatusError, httpx2.HTTPStatusError)):
             return f"The {server} MCP server returned HTTP {exc.response.status_code}."
         if isinstance(exc, MCPHttpStatusError):

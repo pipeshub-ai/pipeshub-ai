@@ -2701,7 +2701,7 @@
         "edit": "Editar"
       },
       "status": {
-        "ready": "Listo",
+        "ready": "Conectado",
         "notConnected": "No conectado",
         "reconnectNeeded": "Hay que volver a conectar",
         "waitingForAdmin": "Esperando al administrador",
@@ -2879,7 +2879,9 @@
         "callbackUrlLabel": "URL de callback",
         "copyCallbackUrl": "Copiar URL de callback",
         "callbackUrlCopied": "URL de callback copiada",
-        "providerDocsLink": "Ver la documentación de configuración del proveedor"
+        "providerDocsLink": "Ver la documentación de configuración del proveedor",
+        "clientSecretPrefixHint": "Empieza por {{prefix}}. Copie el secreto completo, incluida esa parte.",
+        "clientSecretPrefixMissing": "No empieza por {{prefix}}, así que el proveedor lo rechazará. Al copiarlo con doble clic se omite esa parte: copie el secreto completo."
       },
       "oauth": {
         "completingTitle": "Completando el inicio de sesión…",

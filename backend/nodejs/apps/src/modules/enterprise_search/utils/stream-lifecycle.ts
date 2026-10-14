@@ -171,12 +171,17 @@ export class StreamedContentAccumulator {
   /** An AG-UI `TOOL_CALL_START` frame's JSON: a call a person approved is kept as a part. */
   feedToolCallStart(dataLine: string): void {
     try {
-      const data = JSON.parse(dataLine) as { toolCallId?: unknown; toolCallName?: unknown; approved?: unknown };
+      const data = JSON.parse(dataLine) as {
+        toolCallId?: unknown;
+        toolCallName?: unknown;
+        approved?: unknown;
+      };
       if (data.approved === true && typeof data.toolCallId === 'string') {
         this.approvedCalls.push({
           type: 'tool_call',
           toolCallId: data.toolCallId,
-          toolName: typeof data.toolCallName === 'string' ? data.toolCallName : 'tool',
+          toolName:
+            typeof data.toolCallName === 'string' ? data.toolCallName : 'tool',
           status: 'completed',
           approved: true,
         });

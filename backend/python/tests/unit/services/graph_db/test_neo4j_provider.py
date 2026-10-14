@@ -223,7 +223,7 @@ class TestCheckToolsetInstanceInUse:
 
 class TestCheckMcpInstanceInUse:
     @pytest.mark.asyncio
-    async def test_returns_agent_names_deduped_by_id(self, neo4j_provider: Neo4jProvider):
+    async def test_returns_agent_names_deduped_by_id(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(
             return_value=[
                 {"agentId": "a1", "agentName": "Sales bot"},
@@ -235,7 +235,7 @@ class TestCheckMcpInstanceInUse:
         assert await neo4j_provider.check_mcp_instance_in_use("inst-1") == ["Sales bot", "Sales bot"]
 
     @pytest.mark.asyncio
-    async def test_queries_mcp_server_nodes_and_skips_deleted_agents(self, neo4j_provider: Neo4jProvider):
+    async def test_queries_mcp_server_nodes_and_skips_deleted_agents(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
 
         await neo4j_provider.check_mcp_instance_in_use("inst-9", transaction="txn-1")
@@ -249,7 +249,7 @@ class TestCheckMcpInstanceInUse:
         assert kwargs["txn_id"] == "txn-1"
 
     @pytest.mark.asyncio
-    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider):
+    async def test_raises_on_query_error(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("neo4j down"))
 
         with pytest.raises(RuntimeError, match="neo4j down"):
@@ -364,7 +364,7 @@ class TestGetAgent:
         assert result["shareWithOrg"] is True
 
     @pytest.mark.asyncio
-    async def test_a_failed_mcp_read_is_flagged_on_the_agent(self, neo4j_provider: Neo4jProvider):
+    async def test_a_failed_mcp_read_is_flagged_on_the_agent(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "agent-1", "name": "Agent One"}}],  # agent query
@@ -594,7 +594,7 @@ class TestGetAllAgents:
         assert result[0]["can_delete"] is True
 
     @pytest.mark.asyncio
-    async def test_a_failed_mcp_read_is_flagged_not_passed_off_as_no_servers(self, neo4j_provider: Neo4jProvider):
+    async def test_a_failed_mcp_read_is_flagged_not_passed_off_as_no_servers(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10}, "role": "OWNER",
@@ -614,7 +614,7 @@ class TestGetAllAgents:
         assert agent["mcpServersUnavailable"] is True
 
     @pytest.mark.asyncio
-    async def test_a_successful_mcp_read_carries_no_flag(self, neo4j_provider: Neo4jProvider):
+    async def test_a_successful_mcp_read_carries_no_flag(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(
             side_effect=[
                 [{"agent": {"id": "a1", "name": "Agent 1", "updatedAtTimestamp": 10}, "role": "OWNER",

@@ -851,7 +851,11 @@ export const streamChat =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
@@ -1549,7 +1553,11 @@ export const addMessageStream =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
@@ -3162,14 +3170,22 @@ interface RegenerationConfig {
 }
 
 /** The app's answer to a tool approval card (Python `TOOL_APPROVAL_RESUME_PREFIX`): it carried on the turn that stopped on the card. */
-export function isToolApprovalAnswer(query: string | undefined | null): boolean {
-  return typeof query === 'string' && query.trimStart().startsWith('Tool approval:');
+export function isToolApprovalAnswer(
+  query: string | undefined | null,
+): boolean {
+  return (
+    typeof query === 'string' && query.trimStart().startsWith('Tool approval:')
+  );
 }
 
 /** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
-export function ranApprovedCall(parts: IMessagePart[] | undefined | null): boolean {
+export function ranApprovedCall(
+  parts: IMessagePart[] | undefined | null,
+): boolean {
   return (parts ?? []).some(
-    (part) => (part?.type === 'tool_call' && part.approved === true) || ranApprovedCall(part?.parts),
+    (part) =>
+      (part.type === 'tool_call' && part.approved === true) ||
+      ranApprovedCall(part.parts),
   );
 }
 
@@ -3433,7 +3449,10 @@ async function regenerateAnswersInternal(
         existingConversation,
         contentAccumulator.getText(),
         null,
-        { replaceMessageId: messageId || undefined, parts: contentAccumulator.getParts() },
+        {
+          replaceMessageId: messageId || undefined,
+          parts: contentAccumulator.getParts(),
+        },
       )
         .catch((err: unknown) => {
           logger.error('Failed to save partial conversation on disconnect', {
@@ -5841,7 +5860,11 @@ export const deleteAgent =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
 
@@ -6558,7 +6581,11 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
-            if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
               contentAccumulator.feedToolCallStart(dataLine);
             }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {

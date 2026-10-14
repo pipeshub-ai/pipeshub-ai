@@ -1,4 +1,5 @@
 """Unit tests for app.api.routes.mcp_servers."""
+from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -1378,7 +1379,7 @@ class TestDiscoverOauthMetadataEndpoint:
 
 
 @pytest.fixture
-def _instance_in_callers_org():
+def _instance_in_callers_org() -> Iterator[None]:
     """The handler under test looks the instance up (org-scoped); this one exists."""
     with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1"})):
         yield
@@ -1678,6 +1679,8 @@ class TestHandleOauthCallback:
         result = await self._call_back(config_service, exchange)
 
         assert result["error"] == "token_exchange_failed"
+        # PipesHub's own registration: nothing for an administrator to fix.
+        assert "registers a new one" in result["errorMessage"]
         (marked,) = [c.args[1] for c in config_service.set_config.await_args_list if c.args[0] == "/services/mcp/dcr-clients/inst-1"]
         assert marked["clientId"] == "cid-1"
         assert marked["rejectedAt"] > 0
@@ -1695,6 +1698,9 @@ class TestHandleOauthCallback:
         result = await self._call_back(config_service, exchange)
 
         assert result["error"] == "token_exchange_failed"
+        # Live: Google said "The provided client secret is invalid"; the window said only "failed".
+        assert "client ID or client secret is wrong" in result["errorMessage"]
+        assert result["errorMessage"].endswith("(The provider answered invalid_client.)")
         deleted = [c.args[0] for c in config_service.delete_config.await_args_list]
         written = [c.args[0] for c in config_service.set_config.await_args_list]
         assert not any("client" in path for path in deleted + written)
@@ -1926,3 +1932,24 @@ class TestCredentialInputIsBounded:
             _validate_instance_config(payload, MagicMock())
         assert exc_info.value.status_code == 400
         assert "only to API token or header sign-in" in exc_info.value.detail
+
+
+class TestTokenExchangeFailureMessage:
+    @pytest.mark.parametrize("code,expected", [
+        ("invalid_grant", "didn't accept the sign-in code"),
+        ("INVALID_SCOPE", "refused the permissions"),
+        ("unauthorized_client", "doesn't allow this server's OAuth app"),
+    ])
+    def test_a_standard_refusal_says_what_it_means_and_names_the_code(self, code: str, expected: str) -> None:
+        from app.api.routes.mcp_servers import _token_exchange_failure_message
+
+        message = _token_exchange_failure_message(code, registered_client=False)
+        assert expected in message
+        assert message.endswith(f"(The provider answered {code.lower()}.)")
+
+    @pytest.mark.parametrize("code", [None, "", "server_error", "<script>alert(1)</script>"])
+    def test_anything_else_gets_the_general_message_without_echoing_it(self, code: str | None) -> None:
+        from app.api.routes.mcp_servers import _token_exchange_failure_message
+
+        message = _token_exchange_failure_message(code, registered_client=False)
+        assert message == "Failed to exchange the authorization code for tokens. Please try connecting again."

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 import types
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -52,6 +53,9 @@ from app.api.routes.mcp_servers import (
     update_oauth_config,
 )
 from app.config.constants.service import DefaultEndpoints
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _DEFAULT_FRONTEND = DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
 
@@ -683,7 +687,7 @@ class TestAuthHandlers:
 
 
 @pytest.fixture
-def _instance_in_callers_org():
+def _instance_in_callers_org() -> Iterator[None]:
     """The handler under test looks the instance up (org-scoped); this one exists."""
     with patch("app.api.routes.mcp_servers._get_org_instance", new=AsyncMock(return_value={"_id": "inst-1"})):
         yield

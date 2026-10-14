@@ -2820,7 +2820,7 @@
         "edit": "编辑"
       },
       "status": {
-        "ready": "就绪",
+        "ready": "已连接",
         "notConnected": "未连接",
         "reconnectNeeded": "需要重新连接",
         "waitingForAdmin": "等待管理员",
@@ -2995,7 +2995,9 @@
         "callbackUrlLabel": "回调 URL",
         "copyCallbackUrl": "复制回调 URL",
         "callbackUrlCopied": "已复制回调 URL",
-        "providerDocsLink": "查看提供商设置文档"
+        "providerDocsLink": "查看提供商设置文档",
+        "clientSecretPrefixHint": "以 {{prefix}} 开头。请复制完整的密钥，包括这一部分。",
+        "clientSecretPrefixMissing": "此值不以 {{prefix}} 开头，提供方会拒绝它。双击复制会漏掉这一部分：请复制完整的密钥。"
       },
       "oauth": {
         "completingTitle": "正在完成登录…",

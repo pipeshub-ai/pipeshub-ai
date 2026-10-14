@@ -2820,7 +2820,7 @@
         "edit": "편집"
       },
       "status": {
-        "ready": "준비됨",
+        "ready": "연결됨",
         "notConnected": "연결 안 됨",
         "reconnectNeeded": "다시 연결 필요",
         "waitingForAdmin": "관리자 대기 중",
@@ -2995,7 +2995,9 @@
         "callbackUrlLabel": "콜백 URL",
         "copyCallbackUrl": "콜백 URL 복사",
         "callbackUrlCopied": "콜백 URL이 복사되었습니다",
-        "providerDocsLink": "공급자 설정 문서 보기"
+        "providerDocsLink": "공급자 설정 문서 보기",
+        "clientSecretPrefixHint": "{{prefix}}(으)로 시작합니다. 이 부분을 포함해 시크릿 전체를 복사하세요.",
+        "clientSecretPrefixMissing": "{{prefix}}(으)로 시작하지 않아 공급자가 거부합니다. 더블클릭으로 복사하면 이 부분이 빠집니다. 시크릿 전체를 복사하세요."
       },
       "oauth": {
         "completingTitle": "로그인을 완료하는 중…",

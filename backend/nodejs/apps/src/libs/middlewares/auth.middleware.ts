@@ -308,7 +308,10 @@ export class AuthMiddleware {
     };
     // The web app's client name lets an agent run wait for a person to approve a tool call.
     // An OAuth or personal access token is a program, not the web app, so it can't claim it.
-    if (String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() === WEB_CLIENT_NAME) {
+    if (
+      String(req.headers[CLIENT_NAME_HEADER] ?? '').toLowerCase() ===
+      WEB_CLIENT_NAME
+    ) {
       req.headers[CLIENT_NAME_HEADER] = TOKEN_CLIENT_NAME;
     }
 

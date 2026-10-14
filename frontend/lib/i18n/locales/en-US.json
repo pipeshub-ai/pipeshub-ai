@@ -2829,7 +2829,7 @@
         "edit": "Edit"
       },
       "status": {
-        "ready": "Ready",
+        "ready": "Connected",
         "notConnected": "Not connected",
         "reconnectNeeded": "Reconnect needed",
         "waitingForAdmin": "Waiting for admin",
@@ -3004,7 +3004,9 @@
         "callbackUrlLabel": "Callback URL",
         "copyCallbackUrl": "Copy callback URL",
         "callbackUrlCopied": "Callback URL copied",
-        "providerDocsLink": "View provider setup documentation"
+        "providerDocsLink": "View provider setup documentation",
+        "clientSecretPrefixHint": "Starts with {{prefix}}. Copy the whole secret, including that part.",
+        "clientSecretPrefixMissing": "This doesn't start with {{prefix}}, so the provider will reject it. Copying it by double-click leaves that part out: copy the whole secret."
       },
       "oauth": {
         "completingTitle": "Completing sign-in…",

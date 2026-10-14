@@ -20,7 +20,10 @@ from app.agents.agent_loop.mcp_session import MCPSessionManager
 from app.agents.agent_loop.mcp_tool_loader import MCPToolProvider
 from app.agents.mcp.client import ToolListing
 from app.agents.mcp.models import MCPToolInfo
-from app.agents.mcp.service import credentials_to_discovery_dict, instance_config_from_dict
+from app.agents.mcp.service import (
+    credentials_to_discovery_dict,
+    instance_config_from_dict,
+)
 from tests.unit.agents.adapter.conftest import make_context
 
 

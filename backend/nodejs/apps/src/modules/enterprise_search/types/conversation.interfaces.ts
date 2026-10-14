@@ -154,7 +154,12 @@ export interface IMessagePart {
   roleName?: string;
   parts?: IMessagePart[];
   /** On an `mcp_sign_in` part: the MCP servers to sign in to again, for more permission (Python `mcp_sign_in.py`). */
-  servers?: Array<{ instanceId: string; serverName: string; scopes: string[]; agentKey?: string }>;
+  servers?: Array<{
+    instanceId: string;
+    serverName: string;
+    scopes: string[];
+    agentKey?: string;
+  }>;
 }
 
 export interface IMessage {

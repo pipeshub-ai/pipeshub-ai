@@ -446,7 +446,7 @@ class TestSetConfig:
 # =========================================================================
 class TestCreateConfigIfAbsentTtl:
     @pytest.mark.asyncio
-    async def test_ttl_is_passed_to_the_store(self):
+    async def test_ttl_is_passed_to_the_store(self) -> None:
         store = AsyncMock()
         store.create_key = AsyncMock(return_value=True)
         svc = _build_service(store)
@@ -456,7 +456,7 @@ class TestCreateConfigIfAbsentTtl:
         store.create_key.assert_awaited_once_with("/lock", {"owner": "a"}, overwrite=False, ttl=60)
 
     @pytest.mark.asyncio
-    async def test_no_ttl_by_default(self):
+    async def test_no_ttl_by_default(self) -> None:
         store = AsyncMock()
         store.create_key = AsyncMock(return_value=False)
         svc = _build_service(store)
