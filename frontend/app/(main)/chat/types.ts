@@ -459,6 +459,13 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
 /**
+ * How long one attachment upload may take. The server parses the file and has
+ * a vision model describe its images before it answers, which can outlast the
+ * API client's 90s default on a scanned or image-heavy PDF.
+ */
+export const CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS = 180_000;
+
+/**
  * AG-UI wire event type discriminators (`data.type` on every AG-UI frame —
  * see `backend/python/app/agents/agent_loop/protocol/agui.py::AGUIEventType`
  * and the Node-side mirror in `backend/nodejs/.../utils/agui.ts`).

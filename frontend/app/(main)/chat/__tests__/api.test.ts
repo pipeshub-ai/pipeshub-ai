@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { ChatApi } from '../api';
-import type { StreamChatRequest } from '../types';
+import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -128,5 +128,23 @@ describe('ChatApi.streamMessage — answering a tool approval card', () => {
   it('sends nothing when there is no answer', async () => {
     await ChatApi.streamMessage({ ...base, agentId: 'agent-1' }, {});
     expect(sentBody()).not.toHaveProperty('toolApproval');
+  });
+});
+
+describe('ChatApi.uploadAttachments', () => {
+  beforeEach(() => {
+    mockedPost.mockReset();
+  });
+
+  it('waits longer than the 90s client default, since the server describes images first', async () => {
+    mockedPost.mockResolvedValueOnce({ data: { attachments: [{ recordId: 'rec-1' }] } });
+    const file = new File(['%PDF-1.4'], 'report.pdf', { type: 'application/pdf' });
+
+    const refs = await ChatApi.uploadAttachments([file], { conversationId: 'conv-1' });
+
+    expect(refs).toEqual([{ recordId: 'rec-1' }]);
+    const config = mockedPost.mock.calls[0][2] as { timeout?: number };
+    expect(config.timeout).toBe(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS);
+    expect(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS).toBeGreaterThan(90_000);
   });
 });

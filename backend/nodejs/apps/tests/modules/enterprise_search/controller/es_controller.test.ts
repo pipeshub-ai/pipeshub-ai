@@ -13332,6 +13332,8 @@ describe('Enterprise Search Controller', () => {
           expect(payload.attachments).to.have.length(1)
           expect(payload.attachments[0].mimeType).to.equal('application/pdf')
           expect(payload.attachments[0].contentBase64).to.be.a('string')
+          // A retry would store the files a second time.
+          expect(this.maxAttempts).to.equal(1)
           return Promise.resolve({
             statusCode: 200,
             data: { attachments: [{ recordId: 'rec-upload-1' }] },
@@ -13374,6 +13376,7 @@ describe('Enterprise Search Controller', () => {
         sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
           const payload = JSON.parse(this.body)
           expect(payload.isServiceAgent).to.equal(true)
+          expect(this.maxAttempts).to.equal(1)
           return Promise.resolve({ statusCode: 201, data: { ok: true } } as any)
         })
 

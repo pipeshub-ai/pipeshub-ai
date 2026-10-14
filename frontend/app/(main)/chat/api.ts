@@ -25,6 +25,7 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
   AttachmentRef,
+  CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
@@ -642,6 +643,7 @@ export const ChatApi = {
       : `/api/v1/conversations/attachments/upload`;
     const { data } = await apiClient.post<{ attachments: AttachmentRef[] }>(url, fd, {
       signal: opts.signal,
+      timeout: CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
       // Remove the default application/json Content-Type so axios can auto-set
       // multipart/form-data with the correct boundary for this FormData upload.
       headers: { 'Content-Type': undefined },
