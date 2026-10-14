@@ -36605,7 +36605,8 @@ paths:
                       clientSecret: your-atlassian-client-secret
                       oauthInstanceName: Atlassian app
               jiraSavedOAuthApp:
-                summary: Jira with a saved OAuth app (required for non-admins)
+                summary: Jira with a saved OAuth app (team scope needs an admin; non-admins use this form with scope
+                  personal)
                 value:
                   connectorType: Jira
                   instanceName: Engineering Jira

@@ -180,9 +180,18 @@ class TestSavedOAuthApps:
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
     ) -> None:
         """Every connector type's OAuth apps; this list counts ``totalItems``."""
-        resp = oauth_configs_api.list_all_configs(page=1, limit=100)
-        assert resp.status_code == 200, resp.text
-        assert_response_strictly_matches_openapi_operation(resp.json(), "listOAuthConfigs")
+        listed: set[str] = set()
+        page = 1
+        while True:
+            resp = oauth_configs_api.list_all_configs(page=page, limit=100)
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert_response_strictly_matches_openapi_operation(body, "listOAuthConfigs")
+            listed |= {c.get("_id") for c in body["oauthConfigs"]}
+            if jira_oauth_connector.oauth_config_id in listed or not body["pagination"]["hasNext"]:
+                break
+            page += 1
+        assert jira_oauth_connector.oauth_config_id in listed, "the saved Jira app is not listed"
 
     def test_get_oauth_config_matches_spec(
         self, oauth_configs_api: ConnectorOAuthConfigsClient, jira_oauth_connector: Any
