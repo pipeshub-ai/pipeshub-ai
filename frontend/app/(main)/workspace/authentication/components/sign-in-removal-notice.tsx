@@ -7,7 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { AUTH_METHOD_META, type AuthMethodState, type ConfigStatus } from '../types';
 
 /** The release that removes SAML and custom OAuth/OIDC sign-in. */
-export const SIGN_IN_REMOVAL_VERSION = '0.11.0';
+export const SIGN_IN_REMOVAL_VERSION = '0.12.0';
 
 /** Sign-in methods that SIGN_IN_REMOVAL_VERSION removes. */
 export const METHODS_BEING_REMOVED = ['samlSso', 'oauth'] as const;
